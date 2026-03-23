@@ -1,8 +1,33 @@
+# Rust
 /target
+**/*.rs.bk
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Editors
 *.swp
 *.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Dashboard (SvelteKit)
 dashboard/node_modules/
 dashboard/.svelte-kit/
 dashboard/build/
+
+# Logs
+*.log
+/tmp/
+
+# Database dumps
+*.dump
+*.sql.gz
