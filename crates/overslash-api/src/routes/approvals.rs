@@ -1,0 +1,106 @@
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::{
+    AppState,
+    error::{AppError, Result},
+    extractors::AuthContext,
+};
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/v1/approvals", get(list_approvals))
+        .route("/v1/approvals/{id}", get(get_approval))
+        .route("/v1/approvals/{id}/resolve", post(resolve_approval))
+}
+
+#[derive(Serialize)]
+struct ApprovalResponse {
+    id: Uuid,
+    identity_id: Uuid,
+    action_summary: String,
+    permission_keys: Vec<String>,
+    status: String,
+    token: String,
+    expires_at: String,
+    created_at: String,
+}
+
+impl From<overslash_db::repos::approval::ApprovalRow> for ApprovalResponse {
+    fn from(r: overslash_db::repos::approval::ApprovalRow) -> Self {
+        Self {
+            id: r.id,
+            identity_id: r.identity_id,
+            action_summary: r.action_summary,
+            permission_keys: r.permission_keys,
+            status: r.status,
+            token: r.token,
+            expires_at: r.expires_at.to_string(),
+            created_at: r.created_at.to_string(),
+        }
+    }
+}
+
+async fn list_approvals(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Vec<ApprovalResponse>>> {
+    let rows = overslash_db::repos::approval::list_pending_by_org(&state.db, auth.org_id).await?;
+    Ok(Json(rows.into_iter().map(ApprovalResponse::from).collect()))
+}
+
+async fn get_approval(
+    State(state): State<AppState>,
+    _auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApprovalResponse>> {
+    let row = overslash_db::repos::approval::get_by_id(&state.db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+    Ok(Json(ApprovalResponse::from(row)))
+}
+
+#[derive(Deserialize)]
+struct ResolveRequest {
+    decision: String, // "allow", "deny", "allow_remember"
+}
+
+async fn resolve_approval(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ResolveRequest>,
+) -> Result<Json<ApprovalResponse>> {
+    let (status, remember) = match req.decision.as_str() {
+        "allow" => ("allowed", false),
+        "deny" => ("denied", false),
+        "allow_remember" => ("allowed", true),
+        other => return Err(AppError::BadRequest(format!("invalid decision: {other}"))),
+    };
+
+    let row = overslash_db::repos::approval::resolve(&state.db, id, status, "user", remember)
+        .await?
+        .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
+
+    // If allow_remember, create permission rules from the approval's permission keys
+    if remember {
+        let identity_id = row.identity_id;
+        for key in &row.permission_keys {
+            let _ = overslash_db::repos::permission_rule::create(
+                &state.db,
+                auth.org_id,
+                identity_id,
+                key,
+                "allow",
+            )
+            .await;
+        }
+    }
+
+    Ok(Json(ApprovalResponse::from(row)))
+}

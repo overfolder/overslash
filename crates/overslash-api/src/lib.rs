@@ -1,5 +1,6 @@
 pub mod config;
 pub mod error;
+pub mod extractors;
 pub mod routes;
 pub mod services;
 
@@ -32,6 +33,13 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
 
     let app = Router::new()
         .merge(routes::health::router())
+        .merge(routes::orgs::router())
+        .merge(routes::identities::router())
+        .merge(routes::api_keys::router())
+        .merge(routes::secrets::router())
+        .merge(routes::permissions::router())
+        .merge(routes::actions::router())
+        .merge(routes::approvals::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
