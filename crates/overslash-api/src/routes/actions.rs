@@ -67,13 +67,15 @@ async fn execute_action(
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
 
     // Resolve the request to a concrete ActionRequest
-    let (action_req, description) = resolve_request(&state, &auth, identity_id, &req).await?;
+    // `auth_injected` is true when OAuth tokens were resolved and injected into headers
+    let (action_req, description, auth_injected) =
+        resolve_request(&state, &auth, identity_id, &req).await?;
 
     // Derive permission keys
     let perm_keys = PermissionKey::from_http(&action_req.method, &action_req.url);
 
-    // Gate if secrets or connection involved
-    let needs_gate = !action_req.secrets.is_empty() || req.connection.is_some();
+    // Gate if any auth is involved: secrets, connection, or OAuth token injected
+    let needs_gate = !action_req.secrets.is_empty() || req.connection.is_some() || auth_injected;
 
     if needs_gate {
         let rule_rows =
@@ -212,7 +214,8 @@ async fn resolve_request(
     auth: &AuthContext,
     identity_id: Uuid,
     req: &ExecuteRequest,
-) -> Result<(ActionRequest, Option<String>), AppError> {
+) -> Result<(ActionRequest, Option<String>, bool), AppError> {
+    // Returns: (request, description, auth_was_injected)
     // Mode B: explicit connection — resolve OAuth token and inject as header
     if let Some(conn_id) = req.connection {
         let conn = overslash_db::repos::connection::get_by_id(&state.db, conn_id)
@@ -267,6 +270,7 @@ async fn resolve_request(
                 secrets: vec![],
             },
             Some(format!("OAuth request via {provider_key} connection")),
+            true, // auth was injected
         ));
     }
 
@@ -321,7 +325,7 @@ async fn resolve_request(
         }
 
         // Auto-resolve auth: try OAuth connection first, then API key secret
-        let secrets =
+        let (secrets, oauth_injected) =
             resolve_service_auth(state, identity_id, svc, &req.secrets, &mut headers).await;
 
         let description = format!("{} ({})", action.description, svc.display_name);
@@ -335,6 +339,7 @@ async fn resolve_request(
                 secrets,
             },
             Some(description),
+            oauth_injected, // true if OAuth token was injected into headers
         ));
     }
 
@@ -356,10 +361,12 @@ async fn resolve_request(
             secrets: req.secrets.clone(),
         },
         None,
+        false, // no OAuth injection in raw HTTP mode
     ))
 }
 
 /// Auto-resolve auth for a service. Tries OAuth connection first, then API key secret.
+/// Returns (secret_refs, oauth_was_injected).
 /// If OAuth token is resolved, it's injected directly into headers (not via SecretRef).
 async fn resolve_service_auth(
     state: &AppState,
@@ -367,9 +374,9 @@ async fn resolve_service_auth(
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     headers: &mut HashMap<String, String>,
-) -> Vec<SecretRef> {
+) -> (Vec<SecretRef>, bool) {
     if !explicit_secrets.is_empty() {
-        return explicit_secrets.to_vec();
+        return (explicit_secrets.to_vec(), false);
     }
 
     // Try OAuth first: check if identity has a connection for this service's OAuth provider
@@ -412,7 +419,7 @@ async fn resolve_service_auth(
                     if let Some(header_name) = &token_injection.header_name {
                         headers.insert(header_name.clone(), value);
                     }
-                    return vec![]; // No SecretRef needed, token already in headers
+                    return (vec![], true); // OAuth token injected into headers
                 }
             }
         }
@@ -425,21 +432,24 @@ async fn resolve_service_auth(
             injection,
         } = service_auth
         {
-            return vec![SecretRef {
-                name: default_secret_name.clone(),
-                inject_as: if injection.inject_as == "query" {
-                    InjectAs::Query
-                } else {
-                    InjectAs::Header
-                },
-                header_name: injection.header_name.clone(),
-                query_param: injection.query_param.clone(),
-                prefix: injection.prefix.clone(),
-            }];
+            return (
+                vec![SecretRef {
+                    name: default_secret_name.clone(),
+                    inject_as: if injection.inject_as == "query" {
+                        InjectAs::Query
+                    } else {
+                        InjectAs::Header
+                    },
+                    header_name: injection.header_name.clone(),
+                    query_param: injection.query_param.clone(),
+                    prefix: injection.prefix.clone(),
+                }],
+                false, // API key via SecretRef, not OAuth
+            );
         }
     }
 
-    Vec::new()
+    (Vec::new(), false)
 }
 
 fn generate_token() -> String {
