@@ -41,6 +41,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::connections::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -54,9 +55,10 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
 }
 
 /// Start the mock target in-process on a random port.
+/// Includes: echo, webhook receiver, and mock OAuth token endpoint.
 async fn start_mock() -> SocketAddr {
     use axum::{
-        Json, Router,
+        Form, Json, Router,
         body::Bytes,
         extract::State,
         http::HeaderMap,
@@ -68,6 +70,7 @@ async fn start_mock() -> SocketAddr {
     #[derive(Default)]
     struct MockState {
         webhooks: Vec<Value>,
+        webhook_headers: Vec<Value>,
     }
 
     type S = Arc<Mutex<MockState>>;
@@ -80,13 +83,59 @@ async fn start_mock() -> SocketAddr {
         Json(json!({ "headers": h, "body": String::from_utf8_lossy(&body).to_string() }))
     }
 
-    async fn receive_webhook(State(s): State<S>, Json(p): Json<Value>) -> &'static str {
-        s.lock().await.webhooks.push(p);
+    async fn receive_webhook(
+        State(s): State<S>,
+        headers: HeaderMap,
+        Json(p): Json<Value>,
+    ) -> &'static str {
+        let h: serde_json::Map<String, Value> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
+            .collect();
+        let mut state = s.lock().await;
+        state.webhooks.push(p);
+        state.webhook_headers.push(json!(h));
         "ok"
     }
 
     async fn list_webhooks(State(s): State<S>) -> Json<Value> {
-        Json(json!({ "webhooks": s.lock().await.webhooks.clone() }))
+        let state = s.lock().await;
+        Json(json!({
+            "webhooks": state.webhooks.clone(),
+            "headers": state.webhook_headers.clone(),
+        }))
+    }
+
+    // Mock OAuth token endpoint — returns fake tokens for any code/refresh_token
+    async fn oauth_token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {
+        let grant_type = params
+            .iter()
+            .find(|(k, _)| k == "grant_type")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+
+        match grant_type {
+            "authorization_code" => {
+                let code = params
+                    .iter()
+                    .find(|(k, _)| k == "code")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("unknown");
+                Json(json!({
+                    "access_token": format!("mock_access_{code}"),
+                    "refresh_token": format!("mock_refresh_{code}"),
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                }))
+            }
+            "refresh_token" => Json(json!({
+                "access_token": "mock_refreshed_access_token",
+                "refresh_token": "mock_refreshed_refresh_token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            })),
+            _ => Json(json!({"error": "unsupported_grant_type"})),
+        }
     }
 
     let state: S = Arc::new(Mutex::new(MockState::default()));
@@ -94,6 +143,7 @@ async fn start_mock() -> SocketAddr {
         .route("/echo", post(echo))
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
+        .route("/oauth/token", post(oauth_token))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -656,4 +706,319 @@ async fn test_service_registry_api(pool: PgPool) {
         .await
         .unwrap();
     assert!(actions.iter().any(|a| a["key"] == "create_pull_request"));
+}
+
+// ============================================================================
+// Webhook Tests
+// ============================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_webhook_dispatch_on_approval_resolve(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    // Create webhook subscription for approval.resolved events
+    let _wh: Value = client
+        .post(format!("{base}/v1/webhooks"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "url": format!("http://{mock_addr}/webhooks/receive"),
+            "events": ["approval.resolved"]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Store secret + trigger approval
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve approval — should trigger webhook
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"decision": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Give webhook dispatch a moment (it's fire-and-forget via tokio::spawn)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Check mock received the webhook
+    let received: Value = client
+        .get(format!("http://{mock_addr}/webhooks/received"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let webhooks = received["webhooks"].as_array().unwrap();
+    assert!(
+        !webhooks.is_empty(),
+        "expected at least one webhook delivery"
+    );
+    assert_eq!(webhooks[0]["status"], "allowed");
+    assert!(webhooks[0]["approval_id"].is_string());
+
+    // Verify HMAC signature was sent
+    let headers = received["headers"].as_array().unwrap();
+    let sig_header = headers[0]["x-overslash-signature"].as_str().unwrap();
+    assert!(
+        sig_header.starts_with("sha256="),
+        "signature should start with sha256="
+    );
+}
+
+// ============================================================================
+// OAuth Tests
+// ============================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) {
+    let mock_addr = start_mock().await;
+
+    // Set env vars for OAuth client credentials (the callback route reads these)
+    // SAFETY: test-only, single-threaded at this point before server starts
+    unsafe {
+        std::env::set_var("OAUTH_GITHUB_CLIENT_ID", "test_client_id");
+        std::env::set_var("OAUTH_GITHUB_CLIENT_SECRET", "test_client_secret");
+    }
+
+    // Point the "github" provider's token_endpoint at our mock.
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+
+    // Bootstrap org + identity
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "OAuthOrg", "slug": format!("oauth-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "name": "test"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let api_key = key_resp["key"].as_str().unwrap().to_string();
+
+    let ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({"name": "oauth-agent", "kind": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
+
+    // Simulate OAuth callback with a code
+    // State format: org_id:identity_id:provider_key
+    let state_param = format!("{org_id}:{ident_id}:github");
+    let callback_resp: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=test_auth_code_123&state={state_param}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(callback_resp["status"], "connected");
+    assert_eq!(callback_resp["provider"], "github");
+    let conn_id = callback_resp["connection_id"].as_str().unwrap();
+    assert!(!conn_id.is_empty());
+
+    // Verify connection is listed
+    let agent_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_api_key = agent_key["key"].as_str().unwrap();
+
+    let conns: Vec<Value> = client
+        .get(format!("{base}/v1/connections"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(conns.len(), 1);
+    assert_eq!(conns[0]["provider_key"], "github");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_resolve_access_token_refreshes_when_expired(pool: PgPool) {
+    let mock_addr = start_mock().await;
+
+    // Point github provider at mock token endpoint
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let enc_key_hex = "ab".repeat(32);
+    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+
+    // Create org + identity
+    let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test")
+        .await
+        .unwrap();
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+        .await
+        .unwrap();
+
+    // Store a connection with an EXPIRED access token
+    let expired_access = overslash_core::crypto::encrypt(&enc_key, b"old_expired_token").unwrap();
+    let refresh_tok = overslash_core::crypto::encrypt(&enc_key, b"valid_refresh_token").unwrap();
+    let expired_time = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+
+    let conn = overslash_db::repos::connection::create(
+        &pool,
+        &overslash_db::repos::connection::CreateConnection {
+            org_id: org.id,
+            identity_id: ident.id,
+            provider_key: "github",
+            encrypted_access_token: &expired_access,
+            encrypted_refresh_token: Some(&refresh_tok),
+            token_expires_at: Some(expired_time),
+            scopes: &[],
+            account_email: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // resolve_access_token should detect expiry and refresh
+    let http_client = reqwest::Client::new();
+    let new_token = overslash_api::services::oauth::resolve_access_token(
+        &pool,
+        &http_client,
+        &enc_key,
+        &conn,
+        "fake_client_id",
+        "fake_client_secret",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(new_token, "mock_refreshed_access_token");
+
+    // Verify the DB was updated with new tokens
+    let updated_conn = overslash_db::repos::connection::get_by_id(&pool, conn.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let decrypted_new =
+        overslash_core::crypto::decrypt(&enc_key, &updated_conn.encrypted_access_token).unwrap();
+    assert_eq!(
+        String::from_utf8(decrypted_new).unwrap(),
+        "mock_refreshed_access_token"
+    );
+    // Token should now have a future expiry
+    assert!(updated_conn.token_expires_at.unwrap() > time::OffsetDateTime::now_utc());
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_resolve_access_token_returns_valid_without_refresh(pool: PgPool) {
+    let enc_key_hex = "ab".repeat(32);
+    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+
+    let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test")
+        .await
+        .unwrap();
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+        .await
+        .unwrap();
+
+    // Store a connection with a VALID (non-expired) access token
+    let valid_access = overslash_core::crypto::encrypt(&enc_key, b"still_valid_token").unwrap();
+    let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+
+    let conn = overslash_db::repos::connection::create(
+        &pool,
+        &overslash_db::repos::connection::CreateConnection {
+            org_id: org.id,
+            identity_id: ident.id,
+            provider_key: "github",
+            encrypted_access_token: &valid_access,
+            encrypted_refresh_token: None,
+            token_expires_at: Some(future_time),
+            scopes: &[],
+            account_email: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Should return the existing token without refreshing
+    let http_client = reqwest::Client::new();
+    let token = overslash_api::services::oauth::resolve_access_token(
+        &pool,
+        &http_client,
+        &enc_key,
+        &conn,
+        "unused",
+        "unused",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(token, "still_valid_token");
 }
