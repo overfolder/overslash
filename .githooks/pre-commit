@@ -1,0 +1,18 @@
+#!/bin/bash
+set -e
+
+echo "Running pre-commit checks..."
+
+echo "  cargo fmt --check"
+cargo fmt --check || {
+    echo "ERROR: Code not formatted. Run 'cargo fmt' first."
+    exit 1
+}
+
+echo "  cargo clippy"
+cargo clippy --workspace -- -D warnings || {
+    echo "ERROR: Clippy warnings found. Fix them before committing."
+    exit 1
+}
+
+echo "Pre-commit checks passed."

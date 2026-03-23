@@ -1,0 +1,30 @@
+[package]
+name = "overslash-api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+overslash-core = { path = "../overslash-core" }
+overslash-db = { path = "../overslash-db" }
+axum = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+rand = { workspace = true }
+argon2 = "0.5"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+base62 = "2"

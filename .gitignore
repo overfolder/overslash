@@ -1,0 +1,8 @@
+/target
+.env
+*.swp
+*.swo
+.DS_Store
+dashboard/node_modules/
+dashboard/.svelte-kit/
+dashboard/build/

@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: overslash
+      POSTGRES_PASSWORD: overslash
+      POSTGRES_DB: overslash
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U overslash
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
