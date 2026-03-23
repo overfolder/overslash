@@ -40,7 +40,7 @@ new-migration:
 
 # Regenerate SCHEMA.sql
 schema:
-	pg_dump --schema-only --no-owner --no-acl "$${DATABASE_URL}" > SCHEMA.sql
+	pg_dump --schema-only --no-owner --no-acl --schema=public --exclude-table=_sqlx_migrations "$${DATABASE_URL}" > SCHEMA.sql
 
 # Regenerate sqlx offline caches
 sqlx-prepare:
