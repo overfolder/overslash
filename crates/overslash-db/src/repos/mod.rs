@@ -5,3 +5,4 @@ pub mod identity;
 pub mod org;
 pub mod permission_rule;
 pub mod secret;
+pub mod webhook;

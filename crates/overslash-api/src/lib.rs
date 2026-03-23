@@ -31,6 +31,28 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         http_client: reqwest::Client::new(),
     };
 
+    // Spawn background tasks
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            // Approval expiry loop: expire stale pending approvals every 60s
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                match overslash_db::repos::approval::expire_stale(&db).await {
+                    Ok(n) if n > 0 => tracing::info!("Expired {n} stale approvals"),
+                    Err(e) => tracing::error!("Approval expiry error: {e}"),
+                    _ => {}
+                }
+            }
+        });
+
+        // Webhook retry loop
+        tokio::spawn(services::webhook_dispatcher::spawn_retry_loop(
+            state.db.clone(),
+            state.http_client.clone(),
+        ));
+    }
+
     let app = Router::new()
         .merge(routes::health::router())
         .merge(routes::orgs::router())
@@ -40,6 +62,8 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::permissions::router())
         .merge(routes::actions::router())
         .merge(routes::approvals::router())
+        .merge(routes::audit::router())
+        .merge(routes::webhooks::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

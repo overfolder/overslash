@@ -27,3 +27,10 @@ argon2 = "0.5"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+
+[dev-dependencies]
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }

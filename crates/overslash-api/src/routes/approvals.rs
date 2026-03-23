@@ -102,5 +102,29 @@ async fn resolve_approval(
         }
     }
 
+    // Dispatch webhook (fire-and-forget)
+    {
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let org_id = auth.org_id;
+        let approval_id = row.id;
+        let summary = row.action_summary.clone();
+        let final_status = row.status.clone();
+        tokio::spawn(async move {
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                "approval.resolved",
+                serde_json::json!({
+                    "approval_id": approval_id,
+                    "status": final_status,
+                    "action_summary": summary,
+                }),
+            )
+            .await;
+        });
+    }
+
     Ok(Json(ApprovalResponse::from(row)))
 }
