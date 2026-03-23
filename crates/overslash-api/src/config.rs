@@ -7,6 +7,7 @@ pub struct Config {
     pub database_url: String,
     pub secrets_encryption_key: String,
     pub approval_expiry_secs: u64,
+    pub services_dir: String,
 }
 
 impl Config {
@@ -25,6 +26,7 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1800),
+            services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
         }
     }
 

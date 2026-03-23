@@ -2,6 +2,8 @@
 
 use std::net::SocketAddr;
 
+use std::sync::Arc;
+
 use reqwest::Client;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -16,6 +18,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         database_url: String::new(), // unused, we pass pool directly
         secrets_encryption_key: "ab".repeat(32),
         approval_expiry_secs: 1800,
+        services_dir: "services".into(),
     };
 
     // Build the app with the test pool directly
@@ -23,6 +26,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
     };
 
     let app = axum::Router::new()
@@ -36,6 +40,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
+        .merge(overslash_api::routes::services::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

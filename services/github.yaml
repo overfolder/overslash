@@ -1,0 +1,72 @@
+key: github
+display_name: GitHub
+hosts:
+  - api.github.com
+auth:
+  - type: oauth
+    provider: github
+    token_injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+  - type: api_key
+    default_secret_name: github_token
+    injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+actions:
+  list_repos:
+    method: GET
+    path: /user/repos
+    description: List repositories for the authenticated user
+    risk: read
+    params:
+      sort:
+        type: string
+        description: Sort by created, updated, pushed, full_name
+        enum: [created, updated, pushed, full_name]
+      per_page:
+        type: integer
+        description: Results per page (max 100)
+        default: 30
+  create_pull_request:
+    method: POST
+    path: /repos/{repo}/pulls
+    description: Create a pull request
+    risk: write
+    params:
+      repo:
+        type: string
+        required: true
+        description: "owner/repo"
+      title:
+        type: string
+        required: true
+        description: PR title
+      head:
+        type: string
+        required: true
+        description: Branch to merge from
+      base:
+        type: string
+        required: true
+        description: Branch to merge into
+      body:
+        type: string
+        description: PR description
+  create_issue:
+    method: POST
+    path: /repos/{repo}/issues
+    description: Create an issue
+    risk: write
+    params:
+      repo:
+        type: string
+        required: true
+        description: "owner/repo"
+      title:
+        type: string
+        required: true
+      body:
+        type: string

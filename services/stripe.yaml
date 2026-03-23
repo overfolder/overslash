@@ -1,0 +1,44 @@
+key: stripe
+display_name: Stripe
+hosts:
+  - api.stripe.com
+auth:
+  - type: api_key
+    default_secret_name: stripe_key
+    injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+actions:
+  list_charges:
+    method: GET
+    path: /v1/charges
+    description: List recent charges
+    risk: read
+    params:
+      limit:
+        type: integer
+        description: Number of charges to return (max 100)
+        default: 10
+  create_charge:
+    method: POST
+    path: /v1/charges
+    description: Create a charge
+    risk: write
+    params:
+      amount:
+        type: integer
+        required: true
+        description: Amount in cents
+      currency:
+        type: string
+        required: true
+        description: Three-letter ISO currency code
+      source:
+        type: string
+        description: Payment source token
+  list_customers:
+    method: GET
+    path: /v1/customers
+    description: List customers
+    risk: read
