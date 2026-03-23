@@ -127,3 +127,27 @@ pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
         .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Delete scoped to org — for org-admin keys.
+pub async fn delete_by_org(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM connections WHERE id = $1 AND org_id = $2")
+        .bind(id)
+        .bind(org_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Delete scoped to identity — for user/agent keys (can only delete own connections).
+pub async fn delete_by_identity(
+    pool: &PgPool,
+    id: Uuid,
+    identity_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM connections WHERE id = $1 AND identity_id = $2")
+        .bind(id)
+        .bind(identity_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}

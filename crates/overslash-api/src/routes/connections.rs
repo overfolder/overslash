@@ -61,12 +61,13 @@ async fn initiate_connection(
         std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into())
     );
 
-    // State encodes: org_id:identity_id:provider_key
+    // OAuth connections require an identity-bound API key
     let identity_id = auth
         .identity_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "none".into());
-    let oauth_state = format!("{}:{}:{}", auth.org_id, identity_id, req.provider);
+        .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
+    // State encodes: org_id:identity_id:provider_key
+    let identity_id_str = identity_id.to_string();
+    let oauth_state = format!("{}:{}:{}", auth.org_id, identity_id_str, req.provider);
 
     let auth_url = oauth::build_auth_url(
         &provider,
@@ -216,9 +217,15 @@ async fn list_connections(
 
 async fn delete_connection(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted = overslash_db::repos::connection::delete(&state.db, id).await?;
+    // Scope delete: if identity-bound key, must own the connection.
+    // Org-level keys can delete any connection in the org.
+    let deleted = if let Some(identity_id) = auth.identity_id {
+        overslash_db::repos::connection::delete_by_identity(&state.db, id, identity_id).await?
+    } else {
+        overslash_db::repos::connection::delete_by_org(&state.db, id, auth.org_id).await?
+    };
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

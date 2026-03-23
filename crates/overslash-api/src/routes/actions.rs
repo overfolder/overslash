@@ -67,7 +67,7 @@ async fn execute_action(
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
 
     // Resolve the request to a concrete ActionRequest
-    let (action_req, description) = resolve_request(&state, &auth, &req)?;
+    let (action_req, description) = resolve_request(&state, &auth, identity_id, &req).await?;
 
     // Derive permission keys
     let perm_keys = PermissionKey::from_http(&action_req.method, &action_req.url);
@@ -206,11 +206,70 @@ async fn execute_action(
 }
 
 /// Resolve an ExecuteRequest into a concrete ActionRequest + human-readable description.
-fn resolve_request(
+/// Handles Mode A (raw HTTP), Mode B (connection-based), and Mode C (service+action).
+async fn resolve_request(
     state: &AppState,
-    _auth: &AuthContext,
+    auth: &AuthContext,
+    identity_id: Uuid,
     req: &ExecuteRequest,
 ) -> Result<(ActionRequest, Option<String>), AppError> {
+    // Mode B: explicit connection — resolve OAuth token and inject as header
+    if let Some(conn_id) = req.connection {
+        let conn = overslash_db::repos::connection::get_by_id(&state.db, conn_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
+
+        // Verify ownership
+        if conn.org_id != auth.org_id {
+            return Err(AppError::Forbidden(
+                "connection belongs to another org".into(),
+            ));
+        }
+
+        let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+        let provider_key = conn.provider_key.clone();
+
+        // Get client credentials for token refresh
+        let client_id = std::env::var(format!("OAUTH_{}_CLIENT_ID", provider_key.to_uppercase()))
+            .unwrap_or_default();
+        let client_secret = std::env::var(format!(
+            "OAUTH_{}_CLIENT_SECRET",
+            provider_key.to_uppercase()
+        ))
+        .unwrap_or_default();
+
+        let access_token = crate::services::oauth::resolve_access_token(
+            &state.db,
+            &state.http_client,
+            &enc_key,
+            &conn,
+            &client_id,
+            &client_secret,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("OAuth token resolution failed: {e}")))?;
+
+        let method = req.method.clone().unwrap_or_else(|| "GET".into());
+        let url = req
+            .url
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("'url' required for connection mode".into()))?;
+
+        let mut headers = req.headers.clone();
+        headers.insert("Authorization".into(), format!("Bearer {access_token}"));
+
+        return Ok((
+            ActionRequest {
+                method,
+                url,
+                headers,
+                body: req.body.clone(),
+                secrets: vec![],
+            },
+            Some(format!("OAuth request via {provider_key} connection")),
+        ));
+    }
+
     // Mode C: service + action
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
         let svc = state
@@ -224,7 +283,6 @@ fn resolve_request(
             ))
         })?;
 
-        // Build the URL from the host + path template
         let host = svc
             .hosts
             .first()
@@ -241,7 +299,6 @@ fn resolve_request(
 
         let url = format!("https://{host}{path}");
 
-        // Build body from remaining params (those not used in path)
         let body = if action.method != "GET" && action.method != "HEAD" {
             let body_params: HashMap<String, serde_json::Value> = req
                 .params
@@ -263,8 +320,9 @@ fn resolve_request(
             headers.insert("Content-Type".to_string(), "application/json".to_string());
         }
 
-        // Auto-resolve auth from service definition
-        let secrets = resolve_service_auth(svc, &req.secrets);
+        // Auto-resolve auth: try OAuth connection first, then API key secret
+        let secrets =
+            resolve_service_auth(state, identity_id, svc, &req.secrets, &mut headers).await;
 
         let description = format!("{} ({})", action.description, svc.display_name);
 
@@ -301,22 +359,71 @@ fn resolve_request(
     ))
 }
 
-/// If the request doesn't specify secrets but the service has api_key auth,
-/// auto-create a secret ref using the service's default_secret_name.
-fn resolve_service_auth(
+/// Auto-resolve auth for a service. Tries OAuth connection first, then API key secret.
+/// If OAuth token is resolved, it's injected directly into headers (not via SecretRef).
+async fn resolve_service_auth(
+    state: &AppState,
+    identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
+    headers: &mut HashMap<String, String>,
 ) -> Vec<SecretRef> {
     if !explicit_secrets.is_empty() {
         return explicit_secrets.to_vec();
     }
 
-    // Try to find an api_key auth method on the service
-    for auth in &svc.auth {
+    // Try OAuth first: check if identity has a connection for this service's OAuth provider
+    for service_auth in &svc.auth {
+        if let overslash_core::types::ServiceAuth::OAuth {
+            provider,
+            token_injection,
+        } = service_auth
+        {
+            if let Ok(Some(conn)) =
+                overslash_db::repos::connection::find_by_provider(&state.db, identity_id, provider)
+                    .await
+            {
+                let enc_key = match crypto::parse_hex_key(&state.config.secrets_encryption_key) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                };
+                let client_id =
+                    std::env::var(format!("OAUTH_{}_CLIENT_ID", provider.to_uppercase()))
+                        .unwrap_or_default();
+                let client_secret =
+                    std::env::var(format!("OAUTH_{}_CLIENT_SECRET", provider.to_uppercase()))
+                        .unwrap_or_default();
+
+                if let Ok(access_token) = crate::services::oauth::resolve_access_token(
+                    &state.db,
+                    &state.http_client,
+                    &enc_key,
+                    &conn,
+                    &client_id,
+                    &client_secret,
+                )
+                .await
+                {
+                    // Inject directly into headers
+                    let value = match &token_injection.prefix {
+                        Some(p) => format!("{p}{access_token}"),
+                        None => access_token,
+                    };
+                    if let Some(header_name) = &token_injection.header_name {
+                        headers.insert(header_name.clone(), value);
+                    }
+                    return vec![]; // No SecretRef needed, token already in headers
+                }
+            }
+        }
+    }
+
+    // Fall back to API key secret
+    for service_auth in &svc.auth {
         if let overslash_core::types::ServiceAuth::ApiKey {
             default_secret_name,
             injection,
-        } = auth
+        } = service_auth
         {
             return vec![SecretRef {
                 name: default_secret_name.clone(),
