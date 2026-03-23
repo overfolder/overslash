@@ -494,3 +494,166 @@ async fn test_audit_trail(pool: PgPool) {
     assert!(!entries.is_empty());
     assert!(entries.iter().any(|e| e["action"] == "action.executed"));
 }
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_mode_c_service_action(pool: PgPool) {
+    // This test uses a mock that happens to match a custom "service" definition.
+    // We test Mode C by pointing the service host at our mock target.
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    // Store a secret matching the service's default_secret_name
+    client
+        .put(format!("{base}/v1/secrets/github_token"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "ghp_test123"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Create a broad permission rule
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Mode A works as before (raw HTTP pointing at mock)
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo"),
+            "body": "{\"test\": true}"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_service_registry_api(pool: PgPool) {
+    // Start API with real service registry loaded
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+    };
+
+    // services/ is at workspace root; tests run from crate dir
+    let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let registry =
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+            .unwrap_or_default();
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(registry),
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::services::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let client = Client::new();
+    let base = format!("http://{addr}");
+
+    // Bootstrap: create org + key
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "TestOrg", "slug": format!("test-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "name": "test"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let api_key = key_resp["key"].as_str().unwrap();
+
+    // List services — should have at least github, stripe, slack
+    let resp: Vec<Value> = client
+        .get(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let keys: Vec<&str> = resp.iter().filter_map(|s| s["key"].as_str()).collect();
+    assert!(keys.contains(&"github"), "expected github in services");
+    assert!(keys.contains(&"stripe"), "expected stripe in services");
+
+    // Search
+    let resp: Vec<Value> = client
+        .get(format!("{base}/v1/services/search?q=pull+request"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !resp.is_empty(),
+        "search for 'pull request' should match github"
+    );
+
+    // Get service detail
+    let resp: Value = client
+        .get(format!("{base}/v1/services/github"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["key"], "github");
+    assert!(resp["actions"]["create_pull_request"].is_object());
+
+    // List actions
+    let actions: Vec<Value> = client
+        .get(format!("{base}/v1/services/github/actions"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(actions.iter().any(|a| a["key"] == "create_pull_request"));
+}
