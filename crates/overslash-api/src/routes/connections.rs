@@ -63,6 +63,7 @@ async fn initiate_connection(
         Some(identity_id),
         &req.provider,
         None,
+        req.byoc_credential_id,
     )
     .await?;
 
@@ -71,8 +72,7 @@ async fn initiate_connection(
         std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into())
     );
 
-    // Determine which BYOC credential to pin: explicit request > resolved
-    let byoc_id = req.byoc_credential_id.or(creds.byoc_credential_id);
+    let byoc_id = creds.byoc_credential_id;
     let byoc_segment = byoc_id.map_or_else(|| "_".to_string(), |id| id.to_string());
 
     // State encodes: org_id:identity_id:provider_key:byoc_credential_id
@@ -134,11 +134,11 @@ async fn oauth_callback(
         Some(identity_id),
         provider_key,
         None,
+        byoc_credential_id,
     )
     .await?;
 
-    // Use the BYOC credential from state if pinned, otherwise from resolver
-    let effective_byoc_id = byoc_credential_id.or(creds.byoc_credential_id);
+    let effective_byoc_id = creds.byoc_credential_id;
 
     let redirect_uri = format!(
         "{}/v1/oauth/callback",

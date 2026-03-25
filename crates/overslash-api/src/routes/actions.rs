@@ -239,6 +239,7 @@ async fn resolve_request(
             auth.identity_id,
             &provider_key,
             Some(&conn),
+            None,
         )
         .await?;
 
@@ -410,6 +411,7 @@ async fn resolve_service_auth(
                     Some(identity_id),
                     provider,
                     Some(&conn),
+                    None,
                 )
                 .await
                 {

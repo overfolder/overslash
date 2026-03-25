@@ -16,7 +16,7 @@ pub struct ClientCredentials {
 /// Resolve OAuth client credentials for a provider.
 ///
 /// Resolution cascade (first match wins):
-/// 1. Connection's pinned `byoc_credential_id` (if connection provided)
+/// 1. Explicit `pinned_byoc_id` or connection's pinned `byoc_credential_id`
 /// 2. Identity-level BYOC credential
 /// 3. Org-level BYOC credential (identity_id IS NULL)
 /// 4. Environment variables (only if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set)
@@ -28,13 +28,13 @@ pub async fn resolve(
     identity_id: Option<Uuid>,
     provider_key: &str,
     connection: Option<&ConnectionRow>,
+    pinned_byoc_id: Option<Uuid>,
 ) -> Result<ClientCredentials, AppError> {
-    // 1. Check connection's pinned BYOC credential
-    if let Some(conn) = connection {
-        if let Some(byoc_id) = conn.byoc_credential_id {
-            if let Some(row) = byoc_credential::get_by_id(pool, byoc_id).await? {
-                return decrypt_byoc(&row, enc_key);
-            }
+    // 1. Check explicit pin first, then connection's pinned BYOC credential
+    let pinned = pinned_byoc_id.or_else(|| connection.and_then(|c| c.byoc_credential_id));
+    if let Some(byoc_id) = pinned {
+        if let Some(row) = byoc_credential::get_by_id(pool, byoc_id).await? {
+            return decrypt_byoc(&row, enc_key);
         }
     }
 
