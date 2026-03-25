@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: overslash
       POSTGRES_DB: overslash
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

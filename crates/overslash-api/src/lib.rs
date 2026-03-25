@@ -79,6 +79,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::webhooks::router())
         .merge(routes::services::router())
         .merge(routes::connections::router())
+        .merge(routes::byoc_credentials::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

@@ -42,6 +42,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::byoc_credentials::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -809,6 +810,7 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) 
     // Set env vars for OAuth client credentials (the callback route reads these)
     // SAFETY: test-only, single-threaded at this point before server starts
     unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
         std::env::set_var("OAUTH_GITHUB_CLIENT_ID", "test_client_id");
         std::env::set_var("OAUTH_GITHUB_CLIENT_SECRET", "test_client_secret");
     }
@@ -859,8 +861,8 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) 
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
     // Simulate OAuth callback with a code
-    // State format: org_id:identity_id:provider_key
-    let state_param = format!("{org_id}:{ident_id}:github");
+    // State format: org_id:identity_id:provider_key:byoc_credential_id
+    let state_param = format!("{org_id}:{ident_id}:github:_");
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=test_auth_code_123&state={state_param}"
@@ -940,6 +942,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired(pool: PgPool) {
             token_expires_at: Some(expired_time),
             scopes: &[],
             account_email: None,
+            byoc_credential_id: None,
         },
     )
     .await
@@ -1002,6 +1005,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh(pool: PgP
             token_expires_at: Some(future_time),
             scopes: &[],
             account_email: None,
+            byoc_credential_id: None,
         },
     )
     .await
@@ -1021,4 +1025,389 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh(pool: PgP
     .unwrap();
 
     assert_eq!(token, "still_valid_token");
+}
+
+// ============================================================================
+// BYOC Credential Tests
+// ============================================================================
+
+/// Helper: bootstrap org + identity + identity-bound API key. Returns (org_id, identity_id, api_key).
+async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String) {
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "ByocOrg", "slug": format!("byoc-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    // Org-level key (needed to create identity)
+    let org_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "name": "org-admin"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_api_key = org_key["key"].as_str().unwrap().to_string();
+
+    let ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
+
+    // Identity-bound key
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let api_key = key_resp["key"].as_str().unwrap().to_string();
+
+    (org_id, ident_id, api_key)
+}
+
+// --- Test 1: BYOC CRUD API ---
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_byoc_credential_crud(pool: PgPool) {
+    let (api_addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+
+    // Create org-level BYOC credential
+    let created: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "org_gh_client",
+            "client_secret": "org_gh_secret",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(created["id"].is_string());
+    assert_eq!(created["provider_key"], "github");
+    assert!(created["identity_id"].is_null());
+    // Secrets must never be returned
+    assert!(created.get("client_id").is_none());
+    assert!(created.get("client_secret").is_none());
+    assert!(created.get("encrypted_client_id").is_none());
+
+    // Create identity-level BYOC credential
+    let created_ident: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "ident_gh_client",
+            "client_secret": "ident_gh_secret",
+            "identity_id": ident_id,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created_ident["identity_id"], ident_id.to_string());
+
+    // List — should return both
+    let list: Vec<Value> = client
+        .get(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 2);
+
+    // Duplicate org-level should fail with 409
+    let dup_resp = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "dup",
+            "client_secret": "dup",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dup_resp.status(), 409);
+
+    // Delete org-level credential
+    let del_id = created["id"].as_str().unwrap();
+    let del: Value = client
+        .delete(format!("{base}/v1/byoc-credentials/{del_id}"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(del["deleted"], true);
+
+    // List should have 1 remaining
+    let list2: Vec<Value> = client
+        .get(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list2.len(), 1);
+}
+
+// --- Test 2: Org-level BYOC credential used in OAuth callback ---
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_callback_with_org_byoc_credential(pool: PgPool) {
+    let mock_addr = start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+
+    // Create org-level BYOC credential (no identity_id)
+    let byoc: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "org_byoc_client_id",
+            "client_secret": "org_byoc_client_secret",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let byoc_id = byoc["id"].as_str().unwrap();
+
+    // OAuth callback should resolve org-level BYOC — no env vars, no danger flag
+    let state_param = format!("{org_id}:{ident_id}:github:_");
+    let callback_resp: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=byoc_test_code&state={state_param}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(callback_resp["status"], "connected");
+    assert_eq!(callback_resp["provider"], "github");
+
+    // Verify the connection has the BYOC credential pinned
+    let conn_id: Uuid = callback_resp["connection_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(conn.byoc_credential_id.unwrap().to_string(), byoc_id);
+}
+
+// --- Test 3: Identity-level BYOC takes priority over org-level ---
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_callback_identity_byoc_takes_priority(pool: PgPool) {
+    let mock_addr = start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+
+    // Create org-level BYOC
+    client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "org_client",
+            "client_secret": "org_secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Create identity-level BYOC — should win
+    let ident_byoc: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "ident_client",
+            "client_secret": "ident_secret",
+            "identity_id": ident_id,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_byoc_id = ident_byoc["id"].as_str().unwrap();
+
+    // OAuth callback — identity-level should be selected
+    let state_param = format!("{org_id}:{ident_id}:github:_");
+    let callback_resp: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=priority_code&state={state_param}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(callback_resp["status"], "connected");
+
+    // Verify the connection pinned the identity-level credential, not org-level
+    let conn_id: Uuid = callback_resp["connection_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(conn.byoc_credential_id.unwrap().to_string(), ident_byoc_id);
+}
+
+// --- Test 4: Pinned BYOC credential via state parameter ---
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_callback_pinned_byoc_credential(pool: PgPool) {
+    let mock_addr = start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+
+    // Create org-level BYOC for github
+    let byoc: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "provider": "github",
+            "client_id": "pinned_client",
+            "client_secret": "pinned_secret",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let byoc_id = byoc["id"].as_str().unwrap();
+
+    // Explicitly pin the BYOC credential in the state parameter
+    let state_param = format!("{org_id}:{ident_id}:github:{byoc_id}");
+    let callback_resp: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=pinned_code&state={state_param}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(callback_resp["status"], "connected");
+
+    let conn_id: Uuid = callback_resp["connection_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(conn.byoc_credential_id.unwrap().to_string(), byoc_id);
+}
+
+// --- Test 5: No BYOC credentials and no env vars → error ---
+// Uses "spotify" provider which has no env vars set (only github has them in tests)
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_oauth_callback_fails_without_credentials(pool: PgPool) {
+    let (api_addr, client) = start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, _api_key) = bootstrap_org_identity(&base, &client).await;
+
+    // Use "spotify" provider — no BYOC credentials exist, and no OAUTH_SPOTIFY_* env vars set.
+    // Even if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set by another test,
+    // there are no OAUTH_SPOTIFY_* env vars, so env fallback also fails.
+    let state_param = format!("{org_id}:{ident_id}:spotify:_");
+    let resp = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=will_fail&state={state_param}"
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let err = body["error"].as_str().unwrap();
+    assert!(
+        err.contains("no OAuth client"),
+        "expected credential error, got: {err}"
+    );
 }

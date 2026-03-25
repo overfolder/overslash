@@ -28,6 +28,7 @@ pub struct CreateConnection<'a> {
     pub token_expires_at: Option<OffsetDateTime>,
     pub scopes: &'a [String],
     pub account_email: Option<&'a str>,
+    pub byoc_credential_id: Option<Uuid>,
 }
 
 pub async fn create(
@@ -36,8 +37,8 @@ pub async fn create(
 ) -> Result<ConnectionRow, sqlx::Error> {
     sqlx::query_as::<_, ConnectionRow>(
         "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,
-         encrypted_refresh_token, token_expires_at, scopes, account_email)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,
                    encrypted_refresh_token, token_expires_at, scopes, account_email,
                    byoc_credential_id, is_default, created_at, updated_at",
@@ -50,6 +51,7 @@ pub async fn create(
     .bind(input.token_expires_at)
     .bind(input.scopes)
     .bind(input.account_email)
+    .bind(input.byoc_credential_id)
     .fetch_one(pool)
     .await
 }
