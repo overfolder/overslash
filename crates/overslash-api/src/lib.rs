@@ -4,11 +4,14 @@ pub mod extractors;
 pub mod routes;
 pub mod services;
 
+use std::sync::Arc;
+
 use axum::Router;
 use sqlx::PgPool;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 use crate::config::Config;
+use overslash_core::registry::ServiceRegistry;
 
 /// Application state shared across handlers.
 #[derive(Clone)]
@@ -16,6 +19,7 @@ pub struct AppState {
     pub db: PgPool,
     pub config: Config,
     pub http_client: reqwest::Client,
+    pub registry: Arc<ServiceRegistry>,
 }
 
 /// Create the application router with all routes and middleware.
@@ -25,10 +29,19 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
 
+    // Load service registry
+    let registry = ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir))
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to load service registry: {e}");
+            ServiceRegistry::default()
+        });
+    tracing::info!("Loaded {} service definitions", registry.len());
+
     let state = AppState {
         db,
         config,
         http_client: reqwest::Client::new(),
+        registry: Arc::new(registry),
     };
 
     // Spawn background tasks
@@ -64,6 +77,8 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::approvals::router())
         .merge(routes::audit::router())
         .merge(routes::webhooks::router())
+        .merge(routes::services::router())
+        .merge(routes::connections::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

@@ -1,0 +1,38 @@
+key: slack
+display_name: Slack
+hosts:
+  - slack.com
+  - api.slack.com
+auth:
+  - type: oauth
+    provider: slack
+    token_injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+  - type: api_key
+    default_secret_name: slack_token
+    injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+actions:
+  send_message:
+    method: POST
+    path: /api/chat.postMessage
+    description: Send a message to a Slack channel
+    risk: write
+    params:
+      channel:
+        type: string
+        required: true
+        description: Channel ID
+      text:
+        type: string
+        required: true
+        description: Message text
+  list_channels:
+    method: GET
+    path: /api/conversations.list
+    description: List Slack channels
+    risk: read
