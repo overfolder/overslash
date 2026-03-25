@@ -30,12 +30,20 @@ pub async fn resolve(
     connection: Option<&ConnectionRow>,
     pinned_byoc_id: Option<Uuid>,
 ) -> Result<ClientCredentials, AppError> {
-    // 1. Check explicit pin first, then connection's pinned BYOC credential
+    // 1. Check explicit pin first, then connection's pinned BYOC credential.
+    //    If a pinned credential was specified but no longer exists, error immediately
+    //    rather than silently falling through to a different credential.
     let pinned = pinned_byoc_id.or_else(|| connection.and_then(|c| c.byoc_credential_id));
     if let Some(byoc_id) = pinned {
-        if let Some(row) = byoc_credential::get_by_id(pool, byoc_id).await? {
-            return decrypt_byoc(&row, enc_key);
-        }
+        let row = byoc_credential::get_by_id(pool, byoc_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "pinned BYOC credential '{byoc_id}' not found — \
+                     it may have been deleted. Create a new connection."
+                ))
+            })?;
+        return decrypt_byoc(&row, enc_key);
     }
 
     // 2 + 3. Cascade: identity-level → org-level
