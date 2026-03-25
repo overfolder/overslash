@@ -232,22 +232,23 @@ async fn resolve_request(
         let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
         let provider_key = conn.provider_key.clone();
 
-        // Get client credentials for token refresh
-        let client_id = std::env::var(format!("OAUTH_{}_CLIENT_ID", provider_key.to_uppercase()))
-            .unwrap_or_default();
-        let client_secret = std::env::var(format!(
-            "OAUTH_{}_CLIENT_SECRET",
-            provider_key.to_uppercase()
-        ))
-        .unwrap_or_default();
+        let creds = crate::services::client_credentials::resolve(
+            &state.db,
+            &enc_key,
+            auth.org_id,
+            auth.identity_id,
+            &provider_key,
+            Some(&conn),
+        )
+        .await?;
 
         let access_token = crate::services::oauth::resolve_access_token(
             &state.db,
             &state.http_client,
             &enc_key,
             &conn,
-            &client_id,
-            &client_secret,
+            &creds.client_id,
+            &creds.client_secret,
         )
         .await
         .map_err(|e| AppError::Internal(format!("OAuth token resolution failed: {e}")))?;
@@ -325,8 +326,15 @@ async fn resolve_request(
         }
 
         // Auto-resolve auth: try OAuth connection first, then API key secret
-        let (secrets, oauth_injected) =
-            resolve_service_auth(state, identity_id, svc, &req.secrets, &mut headers).await;
+        let (secrets, oauth_injected) = resolve_service_auth(
+            state,
+            auth.org_id,
+            identity_id,
+            svc,
+            &req.secrets,
+            &mut headers,
+        )
+        .await;
 
         let description = format!("{} ({})", action.description, svc.display_name);
 
@@ -370,6 +378,7 @@ async fn resolve_request(
 /// If OAuth token is resolved, it's injected directly into headers (not via SecretRef).
 async fn resolve_service_auth(
     state: &AppState,
+    org_id: Uuid,
     identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
@@ -394,20 +403,27 @@ async fn resolve_service_auth(
                     Ok(k) => k,
                     Err(_) => continue,
                 };
-                let client_id =
-                    std::env::var(format!("OAUTH_{}_CLIENT_ID", provider.to_uppercase()))
-                        .unwrap_or_default();
-                let client_secret =
-                    std::env::var(format!("OAUTH_{}_CLIENT_SECRET", provider.to_uppercase()))
-                        .unwrap_or_default();
+                let creds = match crate::services::client_credentials::resolve(
+                    &state.db,
+                    &enc_key,
+                    org_id,
+                    Some(identity_id),
+                    provider,
+                    Some(&conn),
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
 
                 if let Ok(access_token) = crate::services::oauth::resolve_access_token(
                     &state.db,
                     &state.http_client,
                     &enc_key,
                     &conn,
-                    &client_id,
-                    &client_secret,
+                    &creds.client_id,
+                    &creds.client_secret,
                 )
                 .await
                 {

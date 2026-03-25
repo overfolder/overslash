@@ -488,6 +488,13 @@ CREATE INDEX idx_permission_rules_identity ON public.permission_rules USING btre
 
 
 --
+-- Name: byoc_credentials_org_provider_null_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX byoc_credentials_org_provider_null_identity ON public.byoc_credentials USING btree (org_id, provider_key) WHERE (identity_id IS NULL);
+
+
+--
 -- Name: idx_secret_versions_secret; Type: INDEX; Schema: public; Owner: -
 --
 

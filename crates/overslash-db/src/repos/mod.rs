@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod approval;
 pub mod audit;
+pub mod byoc_credential;
 pub mod connection;
 pub mod identity;
 pub mod oauth_provider;

@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS byoc_credentials_org_provider_null_identity;

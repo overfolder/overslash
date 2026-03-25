@@ -2,6 +2,7 @@ pub mod actions;
 pub mod api_keys;
 pub mod approvals;
 pub mod audit;
+pub mod byoc_credentials;
 pub mod connections;
 pub mod health;
 pub mod identities;
