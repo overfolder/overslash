@@ -76,12 +76,16 @@ async fn start_mock() -> SocketAddr {
 
     type S = Arc<Mutex<MockState>>;
 
-    async fn echo(headers: HeaderMap, body: Bytes) -> Json<Value> {
+    async fn echo(uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
         let h: serde_json::Map<String, Value> = headers
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
             .collect();
-        Json(json!({ "headers": h, "body": String::from_utf8_lossy(&body).to_string() }))
+        Json(json!({
+            "headers": h,
+            "body": String::from_utf8_lossy(&body).to_string(),
+            "uri": uri.to_string(),
+        }))
     }
 
     async fn receive_webhook(
@@ -141,10 +145,11 @@ async fn start_mock() -> SocketAddr {
 
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
-        .route("/echo", post(echo))
+        .route("/echo", get(echo).post(echo).put(echo).delete(echo))
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
         .route("/oauth/token", post(oauth_token))
+        .fallback(echo)
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1410,4 +1415,573 @@ async fn test_oauth_callback_fails_without_credentials(pool: PgPool) {
         err.contains("no OAuth client"),
         "expected credential error, got: {err}"
     );
+}
+
+// ============================================================================
+// Google Calendar — mock test (CI-safe, all three execution modes)
+// ============================================================================
+
+/// Helper: start API with real service registry, optionally overriding a service's host.
+async fn start_api_with_registry(
+    pool: PgPool,
+    host_override: Option<(&str, String)>,
+) -> (String, Client) {
+    let enc_key_hex = "ab".repeat(32);
+    let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let mut registry =
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+            .unwrap_or_default();
+
+    if let Some((service_key, new_host)) = host_override {
+        if let Some(svc) = registry.get(service_key) {
+            let mut svc = svc.clone();
+            svc.hosts = vec![new_host];
+            registry.insert(svc);
+        }
+    }
+
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: enc_key_hex,
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(registry),
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::permissions::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::audit::router())
+        .merge(overslash_api::routes::webhooks::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::byoc_credentials::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    (format!("http://{addr}"), Client::new())
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_google_calendar_three_modes(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let mock_host = format!("http://{mock_addr}");
+
+    // Point google provider's token_endpoint at mock
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Start API with registry, override google_calendar host to mock
+    let (base, client) =
+        start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host.clone()))).await;
+
+    // Bootstrap org + identity + API key
+    let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    // Create broad permission rule
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+
+    // ===== MODE A: Raw HTTP with secret injection =====
+    client
+        .put(format!("{base}/v1/secrets/gcal_token"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "manual-token-xyz"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{
+                "name": "gcal_token",
+                "inject_as": "header",
+                "header_name": "Authorization",
+                "prefix": "Bearer "
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        echo["headers"]["authorization"], "Bearer manual-token-xyz",
+        "Mode A: secret should be injected as Authorization header"
+    );
+
+    // ===== MODE B: Connection-based OAuth =====
+    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let encrypted_token =
+        overslash_core::crypto::encrypt(&enc_key, b"google-oauth-token-123").unwrap();
+    let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+
+    let conn = overslash_db::repos::connection::create(
+        &pool,
+        &overslash_db::repos::connection::CreateConnection {
+            org_id,
+            identity_id: ident_id,
+            provider_key: "google",
+            encrypted_access_token: &encrypted_token,
+            encrypted_refresh_token: None,
+            token_expires_at: Some(future_time),
+            scopes: &[],
+            account_email: None,
+            byoc_credential_id: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "connection": conn.id.to_string(),
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo")
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        echo["headers"]["authorization"], "Bearer google-oauth-token-123",
+        "Mode B: OAuth token should be injected from connection"
+    );
+
+    // ===== MODE C (POST): create_event — path template + JSON body + OAuth auto-resolve =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "create_event",
+            "params": {
+                "calendarId": "primary",
+                "summary": "Team Meeting",
+                "start": {"dateTime": "2026-03-27T10:00:00Z"},
+                "end": {"dateTime": "2026-03-27T11:00:00Z"},
+                "description": "Weekly sync"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/calendar/v3/calendars/primary/events"),
+        "Mode C POST: URL should contain resolved path, got: {uri}"
+    );
+
+    // Verify body contains non-path params as JSON
+    let req_body: Value = serde_json::from_str(echo["body"].as_str().unwrap()).unwrap();
+    assert_eq!(req_body["summary"], "Team Meeting");
+    assert_eq!(req_body["description"], "Weekly sync");
+
+    // Verify auth was auto-resolved from the connection
+    assert_eq!(
+        echo["headers"]["authorization"], "Bearer google-oauth-token-123",
+        "Mode C: OAuth token should be auto-resolved from connection"
+    );
+
+    // ===== MODE C (GET): list_events — query param construction =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_events",
+            "params": {
+                "calendarId": "primary",
+                "timeMin": "2026-03-27T00:00:00Z",
+                "maxResults": 10
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/calendar/v3/calendars/primary/events"),
+        "Mode C GET: URL should contain resolved path, got: {uri}"
+    );
+    assert!(
+        uri.contains("timeMin="),
+        "Mode C GET: query params should be appended, got: {uri}"
+    );
+    assert!(
+        uri.contains("maxResults="),
+        "Mode C GET: query params should be appended, got: {uri}"
+    );
+
+    // ===== MODE C (GET): list_calendars — no path params =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_calendars",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/calendar/v3/users/me/calendarList"),
+        "Mode C GET: list_calendars path should be correct, got: {uri}"
+    );
+}
+
+// ============================================================================
+// Google Calendar — real test (requires GOOGLE_TEST_REFRESH_TOKEN, uses BYOC)
+// ============================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_google_calendar_real_byoc(pool: PgPool) {
+    // Skip if required env vars are not set
+    let refresh_token = match std::env::var("GOOGLE_TEST_REFRESH_TOKEN") {
+        Ok(t) if !t.is_empty() => t,
+        _ => {
+            eprintln!("SKIP: GOOGLE_TEST_REFRESH_TOKEN not set");
+            return;
+        }
+    };
+    let client_id = std::env::var("OAUTH_GOOGLE_CLIENT_ID")
+        .expect("OAUTH_GOOGLE_CLIENT_ID required for real test");
+    let client_secret = std::env::var("OAUTH_GOOGLE_CLIENT_SECRET")
+        .expect("OAUTH_GOOGLE_CLIENT_SECRET required for real test");
+
+    // Start API with real service registry (no host override — hits real Google)
+    let (base, client) = start_api_with_registry(pool.clone(), None).await;
+
+    // Bootstrap org + identity + API key
+    let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    // Store BYOC credential via API (production path)
+    let byoc_resp: Value = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "provider": "google",
+            "client_id": client_id,
+            "client_secret": client_secret
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let byoc_id: Uuid = byoc_resp["id"].as_str().unwrap().parse().unwrap();
+
+    // Exchange refresh token for access token via real Google token endpoint
+    let token_resp: Value = reqwest::Client::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh_token),
+            ("client_id", &client_id),
+            ("client_secret", &client_secret),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let access_token = token_resp["access_token"]
+        .as_str()
+        .expect("failed to get access_token from Google token endpoint");
+    let expires_in = token_resp["expires_in"].as_i64().unwrap_or(3600);
+
+    // Encrypt tokens and insert connection in DB
+    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let encrypted_access =
+        overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
+    let encrypted_refresh =
+        overslash_core::crypto::encrypt(&enc_key, refresh_token.as_bytes()).unwrap();
+    let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in);
+
+    let conn = overslash_db::repos::connection::create(
+        &pool,
+        &overslash_db::repos::connection::CreateConnection {
+            org_id,
+            identity_id: ident_id,
+            provider_key: "google",
+            encrypted_access_token: &encrypted_access,
+            encrypted_refresh_token: Some(&encrypted_refresh),
+            token_expires_at: Some(expires_at),
+            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
+            account_email: Some("angel.overspiral@gmail.com"),
+            byoc_credential_id: Some(byoc_id),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Create broad permission rule
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+
+    // ===== TEST 1: list_calendars (Mode C) =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_calendars",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let gcal_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(
+        gcal_body["items"].is_array(),
+        "list_calendars should return items array, got: {gcal_body}"
+    );
+    eprintln!(
+        "  list_calendars: found {} calendars",
+        gcal_body["items"].as_array().unwrap().len()
+    );
+
+    // ===== TEST 2: create_event (Mode C) =====
+    let now = time::OffsetDateTime::now_utc();
+    let start = now + time::Duration::hours(1);
+    let end = now + time::Duration::hours(2);
+    let event_summary = format!("Overslash Test - {}", now.unix_timestamp());
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "create_event",
+            "params": {
+                "calendarId": "primary",
+                "summary": event_summary,
+                "start": {"dateTime": start.format(&time::format_description::well_known::Rfc3339).unwrap()},
+                "end": {"dateTime": end.format(&time::format_description::well_known::Rfc3339).unwrap()},
+                "description": "Integration test event — will be deleted"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let created: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let event_id = created["id"]
+        .as_str()
+        .expect("created event should have an id");
+    eprintln!("  create_event: created {event_id}");
+
+    // ===== TEST 3: list_events with query params (Mode C, GET) =====
+    let time_min = now
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_events",
+            "params": {
+                "calendarId": "primary",
+                "timeMin": time_min,
+                "maxResults": 10,
+                "singleEvents": true,
+                "orderBy": "startTime"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let events: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(
+        events["items"].is_array(),
+        "list_events should return items array"
+    );
+    let found = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["summary"].as_str() == Some(&event_summary));
+    assert!(found, "created event should appear in list_events");
+    eprintln!("  list_events: found test event in listing");
+
+    // ===== TEST 4: get_event (Mode C) =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "get_event",
+            "params": {
+                "calendarId": "primary",
+                "eventId": event_id
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let fetched: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(fetched["id"].as_str().unwrap(), event_id);
+    assert_eq!(fetched["summary"].as_str().unwrap(), event_summary);
+    eprintln!("  get_event: verified event {event_id}");
+
+    // ===== TEST 5: Mode A — raw HTTP with secret =====
+    // Store the access token as a secret for raw HTTP mode
+    client
+        .put(format!("{base}/v1/secrets/gcal_raw_token"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": access_token}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!(
+                "https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
+            ),
+            "secrets": [{
+                "name": "gcal_raw_token",
+                "inject_as": "header",
+                "header_name": "Authorization",
+                "prefix": "Bearer "
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let raw_fetched: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(raw_fetched["id"].as_str().unwrap(), event_id);
+    eprintln!("  Mode A raw HTTP: verified event via direct URL");
+
+    // ===== TEST 6: Mode B — connection-based =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "connection": conn.id.to_string(),
+            "method": "GET",
+            "url": format!(
+                "https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
+            )
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let conn_fetched: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(conn_fetched["id"].as_str().unwrap(), event_id);
+    eprintln!("  Mode B connection: verified event via OAuth connection");
+
+    // ===== CLEANUP: delete_event (Mode C) =====
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "delete_event",
+            "params": {
+                "calendarId": "primary",
+                "eventId": event_id
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    // Google returns 204 No Content for successful delete
+    let status_code = body["result"]["status_code"].as_u64().unwrap();
+    assert!(
+        status_code == 204 || status_code == 200,
+        "delete should return 204 or 200, got: {status_code}"
+    );
+    eprintln!("  delete_event: cleaned up test event");
+    eprintln!("  All Google Calendar real tests passed!");
 }
