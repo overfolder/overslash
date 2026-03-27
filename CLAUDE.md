@@ -36,6 +36,11 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 - **Service registry**: Global YAML (shipped) + org DB (custom). Provides human-readable action descriptions.
 - **`on_behalf_of`**: Agents create secrets/connections at owner-user level so all agents share them.
 
+## Testing
+
+- **Split integration tests by provider.** Provider-specific tests (OAuth flows, service actions) go in their own file under `crates/overslash-api/tests/` (e.g., `oauth_x.rs`, `google_calendar.rs`). Shared helpers live in `tests/common/mod.rs`. The main `integration.rs` keeps core/generic tests only.
+- **Use `--test-threads=4`** (or similar) when running the full suite locally to avoid Postgres connection pool exhaustion.
+
 ## Rules
 
 1. **SPEC.md is the target. STATUS.md is reality.** Never confuse aspiration with current state.

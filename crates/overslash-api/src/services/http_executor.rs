@@ -23,6 +23,13 @@ pub async fn execute(
     }
 
     if let Some(body) = body {
+        // Set Content-Type to application/json if not already provided by headers
+        if !headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("content-type"))
+        {
+            builder = builder.header("Content-Type", "application/json");
+        }
         builder = builder.body(body.to_string());
     }
 

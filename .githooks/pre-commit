@@ -16,22 +16,37 @@ cargo clippy --workspace -- -D warnings || {
 }
 
 # Check SCHEMA.sql is up to date (only if DB is reachable)
+# Resolve DATABASE_URL (from env or .env file) with fallback to dev port 55432
+DB_URL="${DATABASE_URL:-}"
+if [ -z "$DB_URL" ] && [ -f .env ]; then
+    DB_URL=$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2-)
+fi
+DB_URL="${DB_URL:-postgres://overslash:overslash@localhost:55432/overslash}"
+
 if git diff --cached --name-only | grep -qE 'migrations/'; then
-    if pg_isready -h localhost -p 5432 -U overslash -q 2>/dev/null; then
+    # Extract host and port from DATABASE_URL for pg_isready
+    DB_HOST=$(echo "$DB_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
+    DB_PORT=$(echo "$DB_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
+    DB_HOST="${DB_HOST:-localhost}"
+    DB_PORT="${DB_PORT:-55432}"
+
+    if pg_isready -h "$DB_HOST" -p "$DB_PORT" -U overslash -q 2>/dev/null; then
         echo "  schema check (migrations changed)"
         TMPSCHEMA=$(mktemp)
         pg_dump --schema-only --no-owner --no-acl --schema=public \
             --exclude-table=_sqlx_migrations \
-            "${DATABASE_URL:-postgres://overslash:overslash@localhost:5432/overslash}" \
-            > "$TMPSCHEMA" 2>/dev/null
-        if ! diff -q SCHEMA.sql "$TMPSCHEMA" >/dev/null 2>&1; then
+            "$DB_URL" \
+            | grep -v '^\\restrict\|^\\unrestrict' > "$TMPSCHEMA" 2>/dev/null
+        COMMITTED_SCHEMA=$(mktemp)
+        grep -v '^\\restrict\|^\\unrestrict' SCHEMA.sql > "$COMMITTED_SCHEMA"
+        if ! diff -q "$COMMITTED_SCHEMA" "$TMPSCHEMA" >/dev/null 2>&1; then
             echo "ERROR: SCHEMA.sql is out of date. Run 'make schema' and stage it."
-            rm -f "$TMPSCHEMA"
+            rm -f "$TMPSCHEMA" "$COMMITTED_SCHEMA"
             exit 1
         fi
-        rm -f "$TMPSCHEMA"
+        rm -f "$TMPSCHEMA" "$COMMITTED_SCHEMA"
     else
-        echo "  schema check skipped (DB not reachable)"
+        echo "  schema check skipped (DB not reachable on $DB_HOST:$DB_PORT)"
     fi
 fi
 

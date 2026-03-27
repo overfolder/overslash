@@ -75,10 +75,19 @@ async fn initiate_connection(
     let byoc_id = creds.byoc_credential_id;
     let byoc_segment = byoc_id.map_or_else(|| "_".to_string(), |id| id.to_string());
 
-    // State encodes: org_id:identity_id:provider_key:byoc_credential_id
+    // Generate PKCE pair if the provider requires it
+    let pkce = if provider.supports_pkce {
+        Some(oauth::generate_pkce())
+    } else {
+        None
+    };
+
+    let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
+
+    // State encodes: org_id:identity_id:provider_key:byoc_credential_id:code_verifier
     let oauth_state = format!(
-        "{}:{}:{}:{}",
-        auth.org_id, identity_id, req.provider, byoc_segment
+        "{}:{}:{}:{}:{}",
+        auth.org_id, identity_id, req.provider, byoc_segment, verifier_segment
     );
 
     let auth_url = oauth::build_auth_url(
@@ -87,6 +96,7 @@ async fn initiate_connection(
         &redirect_uri,
         &req.scopes,
         &oauth_state,
+        pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
     Ok(Json(InitiateConnectionResponse {
@@ -106,8 +116,8 @@ async fn oauth_callback(
     State(state): State<AppState>,
     Query(params): Query<OAuthCallbackParams>,
 ) -> Result<Json<serde_json::Value>> {
-    // Parse state: org_id:identity_id:provider_key:byoc_credential_id
-    let parts: Vec<&str> = params.state.splitn(4, ':').collect();
+    // Parse state: org_id:identity_id:provider_key:byoc_credential_id[:code_verifier]
+    let parts: Vec<&str> = params.state.splitn(5, ':').collect();
     if parts.len() < 3 {
         return Err(AppError::BadRequest("invalid state parameter".into()));
     }
@@ -121,6 +131,9 @@ async fn oauth_callback(
     let byoc_credential_id: Option<Uuid> = parts
         .get(3)
         .and_then(|s| if *s == "_" { None } else { s.parse().ok() });
+    let code_verifier: Option<&str> = parts
+        .get(4)
+        .and_then(|s| if *s == "_" { None } else { Some(*s) });
 
     let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, provider_key)
         .await?
@@ -153,6 +166,7 @@ async fn oauth_callback(
         &creds.client_secret,
         &params.code,
         &redirect_uri,
+        code_verifier,
     )
     .await
     .map_err(|e| AppError::BadRequest(format!("token exchange failed: {e}")))?;

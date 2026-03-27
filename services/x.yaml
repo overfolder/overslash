@@ -1,0 +1,52 @@
+key: x
+display_name: X (Twitter)
+hosts:
+  - api.twitter.com
+  - api.x.com
+auth:
+  - type: oauth
+    provider: x
+    token_injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+actions:
+  get_me:
+    method: GET
+    path: /2/users/me
+    description: Get the authenticated user's profile
+    risk: read
+  post_tweet:
+    method: POST
+    path: /2/tweets
+    description: Create a tweet
+    risk: write
+    params:
+      text:
+        type: string
+        required: true
+        description: Tweet text content
+  delete_tweet:
+    method: DELETE
+    path: /2/tweets/{tweet_id}
+    description: Delete a tweet
+    risk: write
+    params:
+      tweet_id:
+        type: string
+        required: true
+        description: The ID of the tweet to delete
+  get_user_tweets:
+    method: GET
+    path: /2/users/{user_id}/tweets
+    description: Get tweets for a user
+    risk: read
+    params:
+      user_id:
+        type: string
+        required: true
+        description: The user ID
+      max_results:
+        type: integer
+        description: Maximum number of results (10-100)
+        default: 10

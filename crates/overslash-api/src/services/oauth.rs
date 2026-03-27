@@ -1,15 +1,44 @@
+use base64::Engine;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use overslash_core::crypto;
 use overslash_db::repos::{connection, oauth_provider};
 
+/// A PKCE pair: the verifier (sent during token exchange) and the challenge
+/// (sent in the authorization URL).
+pub struct PkcePair {
+    pub verifier: String,
+    pub challenge: String,
+}
+
+/// Generate a PKCE code verifier and its S256 challenge.
+pub fn generate_pkce() -> PkcePair {
+    use rand::RngCore;
+    let mut buf = [0u8; 32];
+    rand::rng().fill_bytes(&mut buf);
+    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf);
+    let challenge = {
+        let digest = Sha256::digest(verifier.as_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+    };
+    PkcePair {
+        verifier,
+        challenge,
+    }
+}
+
 /// Build an OAuth authorization URL for the given provider.
+/// Pass a `code_challenge` when the provider requires PKCE — the caller is
+/// responsible for generating the PKCE pair via `generate_pkce()` and keeping
+/// the verifier for `exchange_code`.
 pub fn build_auth_url(
     provider: &oauth_provider::OAuthProviderRow,
     client_id: &str,
     redirect_uri: &str,
     scopes: &[String],
     state: &str,
+    code_challenge: Option<&str>,
 ) -> String {
     let scope_str = scopes.join(" ");
     let extra: std::collections::HashMap<String, String> =
@@ -27,6 +56,11 @@ pub fn build_auth_url(
         params.push((k.as_str(), v.clone()));
     }
 
+    if let Some(challenge) = code_challenge {
+        params.push(("code_challenge", challenge.to_string()));
+        params.push(("code_challenge_method", "S256".to_string()));
+    }
+
     let query = params
         .iter()
         .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
@@ -36,7 +70,31 @@ pub fn build_auth_url(
     format!("{}?{}", provider.authorization_endpoint, query)
 }
 
+/// Build a token request with the correct auth method for the provider.
+/// `client_secret_basic` sends credentials as HTTP Basic Auth header.
+/// `client_secret_post` (default) sends them as form body fields.
+fn token_request(
+    http_client: &reqwest::Client,
+    provider: &oauth_provider::OAuthProviderRow,
+    client_id: &str,
+    client_secret: &str,
+    form: &[(&str, &str)],
+) -> reqwest::RequestBuilder {
+    let req = http_client.post(&provider.token_endpoint);
+    if provider.token_auth_method == "client_secret_basic" {
+        req.basic_auth(client_id, Some(client_secret)).form(form)
+    } else {
+        // client_secret_post: include credentials in form body
+        let mut full_form: Vec<(&str, &str)> = form.to_vec();
+        full_form.push(("client_id", client_id));
+        full_form.push(("client_secret", client_secret));
+        req.form(&full_form)
+    }
+}
+
 /// Exchange an authorization code for tokens.
+/// When the provider uses PKCE, `code_verifier` must be the verifier that was
+/// generated alongside the code challenge during `build_auth_url`.
 pub async fn exchange_code(
     http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
@@ -44,16 +102,17 @@ pub async fn exchange_code(
     client_secret: &str,
     code: &str,
     redirect_uri: &str,
+    code_verifier: Option<&str>,
 ) -> Result<TokenResponse, OAuthError> {
-    let resp = http_client
-        .post(&provider.token_endpoint)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-        ])
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+    ];
+    if let Some(verifier) = code_verifier {
+        form.push(("code_verifier", verifier));
+    }
+    let resp = token_request(http_client, provider, client_id, client_secret, &form)
         .send()
         .await
         .map_err(|e| OAuthError::HttpError(e.to_string()))?;
@@ -76,14 +135,11 @@ pub async fn refresh_token(
     client_secret: &str,
     refresh_token: &str,
 ) -> Result<TokenResponse, OAuthError> {
-    let resp = http_client
-        .post(&provider.token_endpoint)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-        ])
+    let form: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+    ];
+    let resp = token_request(http_client, provider, client_id, client_secret, &form)
         .send()
         .await
         .map_err(|e| OAuthError::HttpError(e.to_string()))?;
