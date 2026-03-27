@@ -1551,6 +1551,22 @@ async fn test_google_calendar_three_modes(pool: PgPool) {
         overslash_core::crypto::encrypt(&enc_key, b"google-oauth-token-123").unwrap();
     let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
 
+    // Create a BYOC credential so client_credentials::resolve succeeds
+    let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
+    let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
+    let byoc = overslash_db::repos::byoc_credential::create(
+        &pool,
+        &overslash_db::repos::byoc_credential::CreateByocCredential {
+            org_id,
+            identity_id: None,
+            provider_key: "google",
+            encrypted_client_id: &encrypted_cid,
+            encrypted_client_secret: &encrypted_csec,
+        },
+    )
+    .await
+    .unwrap();
+
     let conn = overslash_db::repos::connection::create(
         &pool,
         &overslash_db::repos::connection::CreateConnection {
@@ -1562,7 +1578,7 @@ async fn test_google_calendar_three_modes(pool: PgPool) {
             token_expires_at: Some(future_time),
             scopes: &[],
             account_email: None,
-            byoc_credential_id: None,
+            byoc_credential_id: Some(byoc.id),
         },
     )
     .await
