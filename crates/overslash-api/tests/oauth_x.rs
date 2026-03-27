@@ -242,6 +242,7 @@ async fn test_oauth_x_pkce_in_auth_url(pool: PgPool) {
 // Real X.com API test (requires X_TEST_REFRESH_TOKEN + OAUTH_X_* env vars)
 // ============================================================================
 
+#[ignore] // Write test: posts/deletes real tweet on X.com. Run with --ignored.
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_x_real_post_and_delete(pool: PgPool) {
     // Skip if required env vars are not set

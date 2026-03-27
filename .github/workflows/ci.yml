@@ -54,11 +54,8 @@ jobs:
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          # Google Calendar real integration test (skips if secrets not configured)
-          GOOGLE_TEST_REFRESH_TOKEN: ${{ secrets.GOOGLE_TEST_REFRESH_TOKEN }}
-          OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}
-          OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}
+          # Write-action E2E tests (Resend, X, Google Calendar) are #[ignore]d.
+          # Run manually with: cargo test -- --ignored
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

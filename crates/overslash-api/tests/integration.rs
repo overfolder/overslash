@@ -1706,6 +1706,7 @@ async fn test_google_calendar_three_modes(pool: PgPool) {
 // Google Calendar — real test (requires GOOGLE_TEST_REFRESH_TOKEN, uses BYOC)
 // ============================================================================
 
+#[ignore] // Write test: creates/deletes real calendar events. Run with --ignored.
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_google_calendar_real_byoc(pool: PgPool) {
     // Skip if required env vars are not set
@@ -2006,6 +2007,7 @@ async fn test_google_calendar_real_byoc(pool: PgPool) {
 // E2E Tests — Real External Services (gated on env vars)
 // ============================================================================
 
+#[ignore] // Write test: sends real email via Resend. Run with --ignored.
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_e2e_resend_send_email(pool: PgPool) {
     let resend_api_key = match std::env::var("RESEND_API_KEY") {
