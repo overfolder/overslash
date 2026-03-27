@@ -214,6 +214,110 @@ fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
+/// Start the Overslash API with real service registry loaded from services/ dir,
+/// bootstrap org + identity + identity-bound API key.
+/// Returns (base_url, api_key, org_id, identity_id).
+async fn setup_with_registry(pool: PgPool) -> (String, String, Uuid, Uuid) {
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+    };
+
+    let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let registry =
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+            .expect("failed to load service registry");
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(registry),
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::permissions::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::audit::router())
+        .merge(overslash_api::routes::webhooks::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::byoc_credentials::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let client = Client::new();
+    let base = format!("http://{addr}");
+
+    // Create org
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "E2eOrg", "slug": format!("e2e-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    // Create org-level API key
+    let key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "name": "bootstrap"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let raw_key = key["key"].as_str().unwrap().to_string();
+
+    // Create identity
+    let ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {raw_key}"))
+        .json(&json!({"name": "e2e-agent", "kind": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
+
+    // Create identity-bound API key
+    let agent_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_raw = agent_key["key"].as_str().unwrap().to_string();
+
+    (base, agent_raw, org_id, ident_id)
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1409,5 +1513,70 @@ async fn test_oauth_callback_fails_without_credentials(pool: PgPool) {
     assert!(
         err.contains("no OAuth client"),
         "expected credential error, got: {err}"
+    );
+}
+
+// ============================================================================
+// E2E Tests — Real External Services (gated on env vars)
+// ============================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_e2e_resend_send_email(pool: PgPool) {
+    let resend_api_key = match std::env::var("RESEND_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            eprintln!("RESEND_API_KEY not set, skipping E2E Resend send_email test");
+            return;
+        }
+    };
+
+    let (base, key, _org_id, ident_id) = setup_with_registry(pool).await;
+    let client = Client::new();
+
+    // Store the real Resend API key
+    client
+        .put(format!("{base}/v1/secrets/resend_key"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": resend_api_key}))
+        .send()
+        .await
+        .unwrap();
+
+    // Create permission rule
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Execute Mode C: service=resend, action=send_email
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "resend",
+            "action": "send_email",
+            "params": {
+                "from": "onboarding@resend.dev",
+                "to": "angel.overspiral@gmail.com",
+                "subject": "Overslash E2E Test",
+                "html": "<h1>It works!</h1><p>This email was sent via Overslash Mode C → Resend API.</p>"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let result: Value = resp.json().await.unwrap();
+    assert_eq!(result["status"], "executed");
+
+    // Resend returns {"id": "..."} on successful send
+    let body: Value = serde_json::from_str(result["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(
+        body["id"].is_string(),
+        "expected 'id' in Resend send response, got: {body}"
     );
 }
