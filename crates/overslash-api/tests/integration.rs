@@ -2047,7 +2047,7 @@ async fn test_e2e_resend_send_email(pool: PgPool) {
             "action": "send_email",
             "params": {
                 "from": "onboarding@resend.dev",
-                "to": "angel.overspiral@gmail.com",
+                "to": "amanuelmartincanto@gmail.com",
                 "subject": "Overslash E2E Test",
                 "html": "<h1>It works!</h1><p>This email was sent via Overslash Mode C → Resend API.</p>"
             }
