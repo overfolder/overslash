@@ -303,22 +303,44 @@ async fn resolve_request(
             }
         }
 
-        let url = format!("https://{host}{path}");
+        // Support hosts with explicit scheme (e.g. "http://localhost:1234" for tests)
+        let base_url = if host.contains("://") {
+            format!("{host}{path}")
+        } else {
+            format!("https://{host}{path}")
+        };
 
-        let body = if action.method != "GET" && action.method != "HEAD" {
-            let body_params: HashMap<String, serde_json::Value> = req
-                .params
-                .iter()
-                .filter(|(k, _)| !action.path.contains(&format!("{{{k}}}")))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            if body_params.is_empty() {
+        let non_path_params: HashMap<String, serde_json::Value> = req
+            .params
+            .iter()
+            .filter(|(k, _)| !action.path.contains(&format!("{{{k}}}")))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let (url, body) = if action.method == "GET" || action.method == "HEAD" {
+            // Append non-path params as query string
+            let url = if non_path_params.is_empty() {
+                base_url
+            } else {
+                let qs = non_path_params
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
+                        format!("{k}={}", urlencoding::encode(&val))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("&");
+                format!("{base_url}?{qs}")
+            };
+            (url, None)
+        } else {
+            // Non-path params become JSON body
+            let body = if non_path_params.is_empty() {
                 None
             } else {
-                Some(serde_json::to_string(&body_params).unwrap_or_default())
-            }
-        } else {
-            None
+                Some(serde_json::to_string(&non_path_params).unwrap_or_default())
+            };
+            (base_url, body)
         };
 
         let mut headers = HashMap::new();

@@ -55,6 +55,10 @@ jobs:
         env:
           RUST_LOG: warn
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          # Google Calendar real integration test (skips if secrets not configured)
+          GOOGLE_TEST_REFRESH_TOKEN: ${{ secrets.GOOGLE_TEST_REFRESH_TOKEN }}
+          OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}
+          OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
