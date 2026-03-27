@@ -187,7 +187,7 @@ For registry-known services, Overslash generates descriptions from action metada
 
 ### Two-Tier
 
-**Global**: YAML files shipped with Overslash. Common APIs (GitHub, Google, Stripe, Slack, etc.). Read-only for orgs.
+**Global**: YAML files shipped with Overslash. Common APIs (GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Read-only for orgs.
 
 **Org**: Org-admins register additional services for their own or niche APIs. OpenAPI import supported.
 
