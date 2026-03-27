@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict YJ2nPdNQU3lkbTpvJENgOzIz7JgnAmgbztuagCojNYBowFARNyGwx2ZkDgf0s1v
+\restrict MeC6EPcEKe0HNUywGkWZ2z8XVgOZEc3PfkFnDMGXxVda3GVuHwO5lC2PuoiZIxH
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -164,7 +164,8 @@ CREATE TABLE public.oauth_providers (
     supports_refresh boolean DEFAULT true NOT NULL,
     extra_auth_params jsonb DEFAULT '{}'::jsonb NOT NULL,
     is_builtin boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL
 );
 
 
@@ -411,6 +412,13 @@ ALTER TABLE ONLY public.webhook_subscriptions
 
 
 --
+-- Name: byoc_credentials_org_provider_null_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX byoc_credentials_org_provider_null_identity ON public.byoc_credentials USING btree (org_id, provider_key) WHERE (identity_id IS NULL);
+
+
+--
 -- Name: idx_api_keys_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -485,13 +493,6 @@ CREATE INDEX idx_identities_org ON public.identities USING btree (org_id);
 --
 
 CREATE INDEX idx_permission_rules_identity ON public.permission_rules USING btree (identity_id);
-
-
---
--- Name: byoc_credentials_org_provider_null_identity; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX byoc_credentials_org_provider_null_identity ON public.byoc_credentials USING btree (org_id, provider_key) WHERE (identity_id IS NULL);
 
 
 --
@@ -680,5 +681,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict YJ2nPdNQU3lkbTpvJENgOzIz7JgnAmgbztuagCojNYBowFARNyGwx2ZkDgf0s1v
+\unrestrict MeC6EPcEKe0HNUywGkWZ2z8XVgOZEc3PfkFnDMGXxVda3GVuHwO5lC2PuoiZIxH
 
