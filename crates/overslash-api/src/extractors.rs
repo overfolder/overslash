@@ -1,7 +1,54 @@
+use std::net::SocketAddr;
+
 use axum::{extract::FromRequestParts, http::request::Parts};
 use uuid::Uuid;
 
 use crate::{AppState, error::AppError};
+
+/// Extracts the client IP address from request headers or connection info.
+#[derive(Debug, Clone)]
+pub struct ClientIp(pub Option<String>);
+
+impl FromRequestParts<AppState> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &AppState,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        // X-Forwarded-For: first IP in the chain
+        if let Some(forwarded) = parts.headers.get("x-forwarded-for") {
+            if let Ok(value) = forwarded.to_str() {
+                if let Some(first) = value.split(',').next() {
+                    let ip = first.trim();
+                    if !ip.is_empty() {
+                        return Ok(ClientIp(Some(ip.to_string())));
+                    }
+                }
+            }
+        }
+
+        // X-Real-IP
+        if let Some(real_ip) = parts.headers.get("x-real-ip") {
+            if let Ok(value) = real_ip.to_str() {
+                let ip = value.trim();
+                if !ip.is_empty() {
+                    return Ok(ClientIp(Some(ip.to_string())));
+                }
+            }
+        }
+
+        // Fall back to ConnectInfo
+        if let Some(addr) = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        {
+            return Ok(ClientIp(Some(addr.0.ip().to_string())));
+        }
+
+        Ok(ClientIp(None))
+    }
+}
 
 /// Context extracted from a valid API key.
 #[derive(Debug, Clone)]

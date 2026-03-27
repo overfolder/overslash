@@ -6,7 +6,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AppState, error::Result, extractors::AuthContext};
+use crate::{
+    AppState,
+    error::Result,
+    extractors::{AuthContext, ClientIp},
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -40,6 +44,7 @@ struct PermissionResponse {
 async fn create_permission(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Json(req): Json<CreatePermissionRequest>,
 ) -> Result<Json<PermissionResponse>> {
     let row = overslash_db::repos::permission_rule::create(
@@ -50,6 +55,25 @@ async fn create_permission(
         &req.effect,
     )
     .await?;
+
+    let _ = overslash_db::repos::audit::log(
+        &state.db,
+        &overslash_db::repos::audit::AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "permission_rule.created",
+            resource_type: Some("permission_rule"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "identity_id": req.identity_id,
+                "action_pattern": &row.action_pattern,
+                "effect": &row.effect,
+            }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
+
     Ok(Json(PermissionResponse {
         id: row.id,
         identity_id: row.identity_id,
@@ -82,9 +106,27 @@ async fn list_permissions(
 
 async fn delete_permission(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
+    ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let deleted = overslash_db::repos::permission_rule::delete(&state.db, id).await?;
+
+    if deleted {
+        let _ = overslash_db::repos::audit::log(
+            &state.db,
+            &overslash_db::repos::audit::AuditEntry {
+                org_id: auth.org_id,
+                identity_id: auth.identity_id,
+                action: "permission_rule.deleted",
+                resource_type: Some("permission_rule"),
+                resource_id: Some(id),
+                detail: serde_json::json!({}),
+                ip_address: ip.0.as_deref(),
+            },
+        )
+        .await;
+    }
+
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

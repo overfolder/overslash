@@ -6,7 +6,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AppState, error::Result, extractors::AuthContext};
+use crate::{
+    AppState,
+    error::Result,
+    extractors::{AuthContext, ClientIp},
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -31,6 +35,7 @@ struct WebhookResponse {
 async fn create_webhook(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Json(req): Json<CreateWebhookRequest>,
 ) -> Result<Json<WebhookResponse>> {
     // Generate a signing secret for this subscription
@@ -47,6 +52,20 @@ async fn create_webhook(
         &secret,
     )
     .await?;
+
+    let _ = overslash_db::repos::audit::log(
+        &state.db,
+        &overslash_db::repos::audit::AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "webhook.created",
+            resource_type: Some("webhook"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({ "url": &row.url, "events": &row.events }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
 
     Ok(Json(WebhookResponse {
         id: row.id,
@@ -75,9 +94,27 @@ async fn list_webhooks(
 
 async fn delete_webhook(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
+    ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let deleted = overslash_db::repos::webhook::delete_subscription(&state.db, id).await?;
+
+    if deleted {
+        let _ = overslash_db::repos::audit::log(
+            &state.db,
+            &overslash_db::repos::audit::AuditEntry {
+                org_id: auth.org_id,
+                identity_id: auth.identity_id,
+                action: "webhook.deleted",
+                resource_type: Some("webhook"),
+                resource_id: Some(id),
+                detail: serde_json::json!({}),
+                ip_address: ip.0.as_deref(),
+            },
+        )
+        .await;
+    }
+
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

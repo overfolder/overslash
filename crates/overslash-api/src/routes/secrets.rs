@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AuthContext, ClientIp},
 };
 use overslash_core::crypto;
 
@@ -39,6 +39,7 @@ struct PutSecretResponse {
 async fn put_secret(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Path(name): Path<String>,
     Json(req): Json<PutSecretRequest>,
 ) -> Result<Json<PutSecretResponse>> {
@@ -53,6 +54,20 @@ async fn put_secret(
         auth.identity_id,
     )
     .await?;
+
+    let _ = overslash_db::repos::audit::log(
+        &state.db,
+        &overslash_db::repos::audit::AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "secret.put",
+            resource_type: Some("secret"),
+            resource_id: None,
+            detail: serde_json::json!({ "name": &secret.name, "version": secret.current_version }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
 
     Ok(Json(PutSecretResponse {
         name: secret.name,
@@ -93,10 +108,24 @@ async fn list_secrets(
 async fn delete_secret(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let deleted = overslash_db::repos::secret::soft_delete(&state.db, auth.org_id, &name).await?;
     if deleted {
+        let _ = overslash_db::repos::audit::log(
+            &state.db,
+            &overslash_db::repos::audit::AuditEntry {
+                org_id: auth.org_id,
+                identity_id: auth.identity_id,
+                action: "secret.deleted",
+                resource_type: Some("secret"),
+                resource_id: None,
+                detail: serde_json::json!({ "name": &name }),
+                ip_address: ip.0.as_deref(),
+            },
+        )
+        .await;
         Ok(Json(serde_json::json!({ "deleted": true })))
     } else {
         Err(AppError::NotFound(format!("secret '{name}' not found")))

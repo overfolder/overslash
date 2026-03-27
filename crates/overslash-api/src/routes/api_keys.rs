@@ -2,7 +2,7 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AppState, error::Result};
+use crate::{AppState, error::Result, extractors::ClientIp};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/api-keys", post(create_api_key))
@@ -25,6 +25,7 @@ struct CreateApiKeyResponse {
 
 async fn create_api_key(
     State(state): State<AppState>,
+    ip: ClientIp,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let (raw_key, key_hash, key_prefix) = generate_api_key()?;
@@ -39,6 +40,20 @@ async fn create_api_key(
         &[],
     )
     .await?;
+
+    let _ = overslash_db::repos::audit::log(
+        &state.db,
+        &overslash_db::repos::audit::AuditEntry {
+            org_id: req.org_id,
+            identity_id: None,
+            action: "api_key.created",
+            resource_type: Some("api_key"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({ "name": &row.name, "key_prefix": &key_prefix }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
 
     Ok(Json(CreateApiKeyResponse {
         id: row.id,

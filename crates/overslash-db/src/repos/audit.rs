@@ -15,43 +15,68 @@ pub struct AuditRow {
     pub created_at: OffsetDateTime,
 }
 
-pub async fn log(
-    pool: &PgPool,
-    org_id: Uuid,
-    identity_id: Option<Uuid>,
-    action: &str,
-    resource_type: Option<&str>,
-    resource_id: Option<Uuid>,
-    detail: serde_json::Value,
-) -> Result<(), sqlx::Error> {
+pub struct AuditEntry<'a> {
+    pub org_id: Uuid,
+    pub identity_id: Option<Uuid>,
+    pub action: &'a str,
+    pub resource_type: Option<&'a str>,
+    pub resource_id: Option<Uuid>,
+    pub detail: serde_json::Value,
+    pub ip_address: Option<&'a str>,
+}
+
+pub async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, ip_address)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(org_id)
-    .bind(identity_id)
-    .bind(action)
-    .bind(resource_type)
-    .bind(resource_id)
-    .bind(detail)
+    .bind(entry.org_id)
+    .bind(entry.identity_id)
+    .bind(entry.action)
+    .bind(entry.resource_type)
+    .bind(entry.resource_id)
+    .bind(&entry.detail)
+    .bind(entry.ip_address)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-pub async fn query_by_org(
+pub struct AuditFilter {
+    pub org_id: Uuid,
+    pub action: Option<String>,
+    pub resource_type: Option<String>,
+    pub identity_id: Option<Uuid>,
+    pub since: Option<OffsetDateTime>,
+    pub until: Option<OffsetDateTime>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+pub async fn query_filtered(
     pool: &PgPool,
-    org_id: Uuid,
-    limit: i64,
-    offset: i64,
+    filter: &AuditFilter,
 ) -> Result<Vec<AuditRow>, sqlx::Error> {
     sqlx::query_as::<_, AuditRow>(
         "SELECT id, org_id, identity_id, action, resource_type, resource_id, detail, ip_address, created_at
-         FROM audit_log WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+         FROM audit_log
+         WHERE org_id = $1
+           AND ($2::text IS NULL OR action = $2)
+           AND ($3::text IS NULL OR resource_type = $3)
+           AND ($4::uuid IS NULL OR identity_id = $4)
+           AND ($5::timestamptz IS NULL OR created_at >= $5)
+           AND ($6::timestamptz IS NULL OR created_at <= $6)
+         ORDER BY created_at DESC
+         LIMIT $7 OFFSET $8",
     )
-    .bind(org_id)
-    .bind(limit)
-    .bind(offset)
+    .bind(filter.org_id)
+    .bind(&filter.action)
+    .bind(&filter.resource_type)
+    .bind(filter.identity_id)
+    .bind(filter.since)
+    .bind(filter.until)
+    .bind(filter.limit)
+    .bind(filter.offset)
     .fetch_all(pool)
     .await
 }
