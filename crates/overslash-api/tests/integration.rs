@@ -2001,3 +2001,69 @@ async fn test_google_calendar_real_byoc(pool: PgPool) {
     eprintln!("  delete_event: cleaned up test event");
     eprintln!("  All Google Calendar real tests passed!");
 }
+
+// ============================================================================
+// E2E Tests — Real External Services (gated on env vars)
+// ============================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_e2e_resend_send_email(pool: PgPool) {
+    let resend_api_key = match std::env::var("RESEND_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            eprintln!("RESEND_API_KEY not set, skipping E2E Resend send_email test");
+            return;
+        }
+    };
+
+    // Use start_api_with_registry (no host override — hits real Resend)
+    let (base, client) = start_api_with_registry(pool, None).await;
+    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    // Store the real Resend API key (matches default_secret_name in resend.yaml)
+    client
+        .put(format!("{base}/v1/secrets/resend_key"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": resend_api_key}))
+        .send()
+        .await
+        .unwrap();
+
+    // Create permission rule
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Execute Mode C: service=resend, action=send_email
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "resend",
+            "action": "send_email",
+            "params": {
+                "from": "onboarding@resend.dev",
+                "to": "amanuelmartincanto@gmail.com",
+                "subject": "Overslash E2E Test",
+                "html": "<h1>It works!</h1><p>This email was sent via Overslash Mode C → Resend API.</p>"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let result: Value = resp.json().await.unwrap();
+    assert_eq!(result["status"], "executed");
+
+    // Resend returns {"id": "..."} on successful send
+    let body: Value = serde_json::from_str(result["result"]["body"].as_str().unwrap()).unwrap();
+    assert!(
+        body["id"].is_string(),
+        "expected 'id' in Resend send response, got: {body}"
+    );
+}

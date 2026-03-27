@@ -54,6 +54,7 @@ jobs:
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           # Google Calendar real integration test (skips if secrets not configured)
           GOOGLE_TEST_REFRESH_TOKEN: ${{ secrets.GOOGLE_TEST_REFRESH_TOKEN }}
           OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}
