@@ -98,7 +98,8 @@ async fn delete_webhook(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted = overslash_db::repos::webhook::delete_subscription(&state.db, id).await?;
+    let deleted =
+        overslash_db::repos::webhook::delete_subscription(&state.db, id, auth.org_id).await?;
 
     if deleted {
         let _ = overslash_db::repos::audit::log(

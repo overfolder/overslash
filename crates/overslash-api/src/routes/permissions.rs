@@ -110,7 +110,7 @@ async fn delete_permission(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted = overslash_db::repos::permission_rule::delete(&state.db, id).await?;
+    let deleted = overslash_db::repos::permission_rule::delete(&state.db, id, auth.org_id).await?;
 
     if deleted {
         let _ = overslash_db::repos::audit::log(

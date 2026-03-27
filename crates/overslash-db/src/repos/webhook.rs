@@ -60,9 +60,14 @@ pub async fn list_by_org(
     .await
 }
 
-pub async fn delete_subscription(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM webhook_subscriptions WHERE id = $1")
+pub async fn delete_subscription(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM webhook_subscriptions WHERE id = $1 AND org_id = $2")
         .bind(id)
+        .bind(org_id)
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
