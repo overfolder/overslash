@@ -8,7 +8,7 @@
 
 - [SPEC.md](SPEC.md) — Full product specification
 - [TODO.md](TODO.md) — Phased implementation roadmap
-- Design doc in Overfolder workspace: `docs/design/overslash.md`
+- [docs/design/INDEX.md](docs/design/INDEX.md) — Design documents
 
 ## What's Deployed
 

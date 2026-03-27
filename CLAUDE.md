@@ -8,7 +8,10 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 |---------------------|-----------|
 | Understand the full product | [SPEC.md](SPEC.md) |
 | Know what's deployed | [STATUS.md](STATUS.md) |
+| Check settled decisions | [DECISIONS.md](DECISIONS.md) |
 | Find what to work on | [TODO.md](TODO.md) |
+| Understand a known workaround | [TECH_DEBT.md](TECH_DEBT.md) |
+| Find a design doc | [docs/design/INDEX.md](docs/design/INDEX.md) |
 
 ## Tech Stack
 
