@@ -45,9 +45,6 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Clean stale test artifacts
-        run: cargo clean -p overslash-api 2>/dev/null || true
-
       - name: Format check
         run: cargo fmt --check
 
@@ -55,7 +52,7 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
       - name: Tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov clean --workspace && cargo llvm-cov --workspace --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
           # Write-action E2E tests (Resend, X, Google Calendar) are #[ignore]d.
