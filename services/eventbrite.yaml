@@ -1,0 +1,67 @@
+key: eventbrite
+display_name: Eventbrite
+hosts:
+  - www.eventbriteapi.com
+auth:
+  - type: oauth
+    provider: eventbrite
+    token_injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+  - type: api_key
+    default_secret_name: eventbrite_token
+    injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+actions:
+  get_me:
+    method: GET
+    path: /v3/users/me/
+    description: Get the authenticated user's profile
+    risk: read
+  list_my_orders:
+    method: GET
+    path: /v3/users/me/orders/
+    description: List orders (registrations) placed by the authenticated user
+    risk: read
+  list_organizations:
+    method: GET
+    path: /v3/users/me/organizations/
+    description: List organizations the user belongs to
+    risk: read
+  get_event:
+    method: GET
+    path: /v3/events/{event_id}/
+    description: Get details of a specific event
+    risk: read
+    params:
+      event_id:
+        type: string
+        required: true
+        description: The event ID
+  list_ticket_classes:
+    method: GET
+    path: /v3/events/{event_id}/ticket_classes/
+    description: List available ticket types for an event
+    risk: read
+    params:
+      event_id:
+        type: string
+        required: true
+        description: The event ID
+  list_event_attendees:
+    method: GET
+    path: /v3/events/{event_id}/attendees/
+    description: List attendees for an event (requires organizer access)
+    risk: read
+    params:
+      event_id:
+        type: string
+        required: true
+        description: The event ID
+      status:
+        type: string
+        description: "Filter by status: attending, not_attending, etc."
+        enum: [attending, not_attending, unpaid]
