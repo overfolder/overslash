@@ -2,6 +2,8 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::{self, AuditEntry};
+
 use crate::{AppState, error::Result, extractors::ClientIp};
 
 pub fn router() -> Router<AppState> {
@@ -28,9 +30,9 @@ async fn create_org(
 ) -> Result<Json<OrgResponse>> {
     let org = overslash_db::repos::org::create(&state.db, &req.name, &req.slug).await?;
 
-    let _ = overslash_db::repos::audit::log(
+    let _ = audit::log(
         &state.db,
-        &overslash_db::repos::audit::AuditEntry {
+        &AuditEntry {
             org_id: org.id,
             identity_id: None,
             action: "org.created",

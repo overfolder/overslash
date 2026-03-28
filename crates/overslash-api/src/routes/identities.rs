@@ -2,6 +2,8 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::{self, AuditEntry};
+
 use crate::{
     AppState,
     error::Result,
@@ -43,9 +45,9 @@ async fn create_identity(
     )
     .await?;
 
-    let _ = overslash_db::repos::audit::log(
+    let _ = audit::log(
         &state.db,
-        &overslash_db::repos::audit::AuditEntry {
+        &AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "identity.created",

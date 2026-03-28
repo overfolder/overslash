@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use overslash_db::repos::audit;
+
 use crate::{AppState, error::Result, extractors::AuthContext};
 
 pub fn router() -> Router<AppState> {
@@ -62,7 +64,7 @@ async fn query_audit(
     auth: AuthContext,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>> {
-    let filter = overslash_db::repos::audit::AuditFilter {
+    let filter = audit::AuditFilter {
         org_id: auth.org_id,
         action: params.action,
         resource_type: params.resource_type,
@@ -73,7 +75,7 @@ async fn query_audit(
         offset: params.offset,
     };
 
-    let rows = overslash_db::repos::audit::query_filtered(&state.db, &filter).await?;
+    let rows = audit::query_filtered(&state.db, &filter).await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| AuditEntry {
