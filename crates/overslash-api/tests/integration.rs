@@ -24,6 +24,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        dashboard_url: "http://localhost:5173".into(),
     };
 
     // Build the app with the test pool directly
@@ -613,6 +614,7 @@ async fn test_service_registry_api(pool: PgPool) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        dashboard_url: "http://localhost:5173".into(),
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -1466,6 +1468,7 @@ async fn start_api_with_registry(
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        dashboard_url: "http://localhost:5173".into(),
     };
 
     let state = overslash_api::AppState {
