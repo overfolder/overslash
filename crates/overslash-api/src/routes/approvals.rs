@@ -166,8 +166,12 @@ async fn get_approval_by_token(
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
-    // Don't expose expired approvals via public endpoint
-    if row.status == "pending" && row.expires_at < time::OffsetDateTime::now_utc() {
+    // Don't expose expired approvals via public endpoint — covers both:
+    // 1. Pending approvals past their expiry time (background job hasn't updated yet)
+    // 2. Approvals already marked as "expired" by the background job
+    if row.status == "expired"
+        || (row.status == "pending" && row.expires_at < time::OffsetDateTime::now_utc())
+    {
         return Err(AppError::Gone("approval has expired".into()));
     }
 
