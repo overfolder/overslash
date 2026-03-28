@@ -29,6 +29,7 @@ sha2 = "0.10"
 hex = "0.4"
 urlencoding = "2"
 base64 = "0.22"
+jsonwebtoken = { workspace = true }
 
 [dev-dependencies]
 sqlx = { workspace = true }

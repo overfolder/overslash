@@ -8,6 +8,9 @@ pub struct Config {
     pub secrets_encryption_key: String,
     pub approval_expiry_secs: u64,
     pub services_dir: String,
+    pub google_auth_client_id: Option<String>,
+    pub google_auth_client_secret: Option<String>,
+    pub public_url: String,
 }
 
 impl Config {
@@ -27,6 +30,9 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1800),
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
+            google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
+            google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
+            public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
         }
     }
 

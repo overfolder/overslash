@@ -19,6 +19,9 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         secrets_encryption_key: "ab".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
     };
 
     // Build the app with the test pool directly
@@ -239,6 +242,9 @@ pub async fn start_api_with_registry(
         secrets_encryption_key: enc_key_hex,
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
     };
 
     let state = overslash_api::AppState {
