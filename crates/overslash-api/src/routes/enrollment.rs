@@ -184,7 +184,7 @@ async fn enroll_with_token(
     ip: ClientIp,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    if !req.token.starts_with("ose_") || req.token.len() < 12 {
+    if !req.token.starts_with("ose_") || req.token.len() < 12 || !req.token.is_ascii() {
         return Err(AppError::Unauthorized("invalid token format".into()));
     }
 
@@ -314,7 +314,7 @@ async fn poll_enrollment(
     State(state): State<AppState>,
     Query(q): Query<PollQuery>,
 ) -> Result<Json<serde_json::Value>> {
-    if !q.poll_token.starts_with("osp_") || q.poll_token.len() < 12 {
+    if !q.poll_token.starts_with("osp_") || q.poll_token.len() < 12 || !q.poll_token.is_ascii() {
         return Err(AppError::NotFound("not found".into()));
     }
 
@@ -458,7 +458,7 @@ async fn resolve_enrollment(
             // Solution: store the raw key encrypted in metadata temporarily.
             let encrypted_key = encrypt_for_poll(&raw_key, &state.config.secrets_encryption_key)?;
 
-            let _ = pending_enrollment::approve(
+            let approved = pending_enrollment::approve(
                 &state.db,
                 row.id,
                 session.org,
@@ -469,6 +469,15 @@ async fn resolve_enrollment(
                 agent_name,
             )
             .await?;
+
+            if approved.is_none() {
+                // Race condition: another request already approved/denied this enrollment.
+                // Clean up the orphaned identity and key we just created.
+                let _ = identity::delete(&state.db, new_identity.id).await;
+                return Err(AppError::Conflict(
+                    "enrollment already resolved by another request".into(),
+                ));
+            }
 
             let _ = audit::log(
                 &state.db,
