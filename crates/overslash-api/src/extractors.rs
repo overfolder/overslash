@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use uuid::Uuid;
 
-use crate::{AppState, error::AppError};
+use crate::{AppState, error::AppError, services::jwt};
 
 /// Extracts the client IP address from request headers or connection info.
 #[derive(Debug, Clone)]
@@ -123,4 +123,51 @@ impl FromRequestParts<AppState> for AuthContext {
             key_id: key_row.id,
         })
     }
+}
+
+/// Auth context from either a JWT session cookie or an API key.
+/// Tries JWT cookie first (dashboard users), falls back to Bearer API key (CLI/programmatic).
+#[derive(Debug, Clone)]
+pub struct UserOrKeyAuth {
+    pub org_id: Uuid,
+    pub identity_id: Option<Uuid>,
+}
+
+impl FromRequestParts<AppState> for UserOrKeyAuth {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // Try JWT session cookie first
+        if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
+            let signing_key = hex::decode(&state.config.signing_key)
+                .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+            if let Ok(claims) = jwt::verify(&signing_key, &token) {
+                return Ok(UserOrKeyAuth {
+                    org_id: claims.org,
+                    identity_id: Some(claims.sub),
+                });
+            }
+        }
+
+        // Fall back to API key
+        let auth_ctx = AuthContext::from_request_parts(parts, state).await?;
+        Ok(UserOrKeyAuth {
+            org_id: auth_ctx.org_id,
+            identity_id: auth_ctx.identity_id,
+        })
+    }
+}
+
+fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    for pair in cookie_header.split(';') {
+        let pair = pair.trim();
+        if let Some(value) = pair.strip_prefix(&format!("{name}=")) {
+            return Some(value.to_string());
+        }
+    }
+    None
 }

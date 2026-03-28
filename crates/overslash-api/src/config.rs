@@ -6,6 +6,7 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub secrets_encryption_key: String,
+    pub signing_key: String,
     pub approval_expiry_secs: u64,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
@@ -27,6 +28,7 @@ impl Config {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL is required"),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
+            signing_key: env::var("SIGNING_KEY").expect("SIGNING_KEY is required"),
             approval_expiry_secs: env::var("APPROVAL_EXPIRY_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -45,7 +47,7 @@ impl Config {
 
     /// Check for required env vars and return list of missing ones.
     pub fn validate_env() -> Vec<&'static str> {
-        let required = ["DATABASE_URL", "SECRETS_ENCRYPTION_KEY"];
+        let required = ["DATABASE_URL", "SECRETS_ENCRYPTION_KEY", "SIGNING_KEY"];
         required
             .iter()
             .filter(|k| env::var(k).is_err())

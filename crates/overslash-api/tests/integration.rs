@@ -17,6 +17,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
         secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,
@@ -606,6 +607,7 @@ async fn test_service_registry_api(pool: PgPool) {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,
@@ -1459,6 +1461,7 @@ async fn start_api_with_registry(
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: enc_key_hex,
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,
