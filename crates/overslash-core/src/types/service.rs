@@ -51,6 +51,10 @@ pub struct ServiceAction {
     pub description: String,
     #[serde(default = "default_risk")]
     pub risk: String,
+    /// Response type hint: "json" (default) or "binary" (for file downloads).
+    /// When "binary", callers should use `prefer_stream: true` to avoid buffering.
+    #[serde(default)]
+    pub response_type: Option<String>,
     #[serde(default)]
     pub params: HashMap<String, ActionParam>,
 }

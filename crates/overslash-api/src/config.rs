@@ -12,6 +12,7 @@ pub struct Config {
     pub google_auth_client_secret: Option<String>,
     pub public_url: String,
     pub dev_auth_enabled: bool,
+    pub max_response_body_bytes: usize,
 }
 
 impl Config {
@@ -35,6 +36,10 @@ impl Config {
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
             public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
+            max_response_body_bytes: env::var("MAX_RESPONSE_BODY_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5_242_880), // 5 MB
         }
     }
 
