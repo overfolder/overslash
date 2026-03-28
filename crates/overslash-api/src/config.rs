@@ -11,6 +11,7 @@ pub struct Config {
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
     pub public_url: String,
+    pub dev_auth_enabled: bool,
 }
 
 impl Config {
@@ -33,6 +34,7 @@ impl Config {
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
             public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+            dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
         }
     }
 

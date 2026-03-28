@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/google/login", get(google_login))
         .route("/auth/google/callback", get(google_callback))
         .route("/auth/me", get(me))
+        .route("/auth/dev/token", get(dev_token))
 }
 
 /// Initiate Google OAuth login flow.
@@ -183,6 +184,64 @@ async fn me(
         "org_id": claims.org,
         "email": claims.email,
     })))
+}
+
+/// Dev-only: issue a JWT for a test user+org. Requires DEV_AUTH env var.
+async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+    if !state.config.dev_auth_enabled {
+        return Err(AppError::NotFound("not found".into()));
+    }
+
+    // Find or create a deterministic dev user
+    let dev_email = "dev@overslash.local";
+    let (org_id, identity_id) =
+        if let Some(existing) = identity::find_by_email(&state.db, dev_email).await? {
+            (existing.org_id, existing.id)
+        } else {
+            let new_org = org::create(&state.db, "Dev Org", "dev-org").await?;
+            let new_identity = identity::create_with_email(
+                &state.db,
+                new_org.id,
+                "Dev User",
+                "user",
+                Some("dev-local"),
+                Some(dev_email),
+                json!({"dev": true}),
+            )
+            .await?;
+            (new_org.id, new_identity.id)
+        };
+
+    let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = jwt::Claims {
+        sub: identity_id,
+        org: org_id,
+        email: dev_email.into(),
+        iat: now,
+        exp: now + 7 * 24 * 3600,
+    };
+    let token = jwt::mint(&jwt_secret, &claims)
+        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+
+    let session_cookie = format!(
+        "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800",
+        token
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
+
+    Ok((
+        headers,
+        axum::Json(json!({
+            "status": "authenticated",
+            "org_id": org_id,
+            "identity_id": identity_id,
+            "email": dev_email,
+            "token": token,
+        })),
+    ))
 }
 
 // --- helpers ---

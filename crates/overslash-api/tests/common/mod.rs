@@ -22,6 +22,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_id: None,
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
     };
 
     // Build the app with the test pool directly
@@ -245,6 +246,7 @@ pub async fn start_api_with_registry(
         google_auth_client_id: None,
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
     };
 
     let state = overslash_api::AppState {
