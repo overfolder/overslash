@@ -94,6 +94,79 @@ The query uses optional parameter matching (`$N::type IS NULL OR column = $N`) t
 
 Response now includes `ip_address`.
 
+## Future: Human-readable audit descriptions (Mode C)
+
+Currently, Mode C audit entries store the static action description from the service YAML (e.g. `"Delete a calendar event (Google Calendar)"`). This is useful but doesn't tell you *which* event was deleted — you'd need to cross-reference the URL's UUID with an external system.
+
+### Goal
+
+Audit entries like `Deleted event "Team Standup" (Google Calendar)` instead of `Delete a calendar event (Google Calendar)`.
+
+### Proposed approach
+
+Add two optional fields to each action in the service YAML:
+
+```yaml
+delete_event:
+  description: Delete a calendar event
+  audit_template: 'Deleted event "{summary}"'
+  audit_resolve:
+    summary:
+      from: params       # "params" or "response"
+      path: summary      # dot-path into the source object
+```
+
+**Resolution sources:**
+
+| Source | When to use | Example |
+|--------|-------------|---------|
+| `params` | Value is in the request params (create/update actions) | `summary` from create_event params |
+| `response` | Value is in the API response body (read/delete actions) | `summary` from get_event response before deletion |
+
+**For delete actions**, the response body is often empty (204 No Content). Two options:
+1. **Pre-fetch**: Before executing the delete, do a GET to retrieve the resource name. Adds latency but gives the best description.
+2. **Params only**: Only resolve from request params. For deletes that only take an ID, fall back to the static description.
+
+**Recommendation**: Start with `params`-only resolution (zero extra API calls). Add `response` resolution as a second pass. Skip pre-fetch for deletes initially — the static description + URL is enough context.
+
+### Implementation sketch
+
+1. Add `audit_template` and `audit_resolve` to `ActionDefinition` in `overslash-core/types.rs`
+2. After `resolve_request()` builds the `ActionRequest`, check if the action has `audit_resolve`
+3. For `from: params`, substitute values from `req.params` into the template
+4. For `from: response`, parse `result.body` as JSON and extract the value
+5. Store the resolved string as `detail.description` in the audit entry
+6. Fall back to the static `action.description` if resolution fails
+
+### Service YAML examples
+
+```yaml
+# Google Calendar — create uses params
+create_event:
+  audit_template: 'Created event "{summary}"'
+  audit_resolve:
+    summary: { from: params, path: summary }
+
+# Google Calendar — list uses response (count)
+list_events:
+  audit_template: 'Listed {count} events'
+  audit_resolve:
+    count: { from: response, path: items.length }
+
+# Resend — send uses params
+send_email:
+  audit_template: 'Sent email to {to}'
+  audit_resolve:
+    to: { from: params, path: to }
+
+# GitHub — create PR uses response
+create_pull:
+  audit_template: 'Created PR #{number} "{title}"'
+  audit_resolve:
+    number: { from: response, path: number }
+    title: { from: response, path: title }
+```
+
 ## Alternatives considered
 
 **Middleware-based logging**: An Axum middleware could intercept all requests and log automatically. Rejected because it can't capture resource-specific context (resource_type, resource_id, semantic action names, detail payloads). The per-handler pattern gives precise control over what's logged.
