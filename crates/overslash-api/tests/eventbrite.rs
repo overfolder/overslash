@@ -1,5 +1,10 @@
 //! Eventbrite E2E tests — list orders, get event details, ticket classes, attendees.
 //! Requires real Eventbrite credentials. Run with: cargo test --test eventbrite -- --ignored
+//!
+//! Env vars (Eventbrite calls the OAuth client_id "API Key" in their dashboard):
+//!   OAUTH_EVENTBRITE_CLIENT_ID      — API Key from Eventbrite app settings
+//!   OAUTH_EVENTBRITE_CLIENT_SECRET   — Client Secret
+//!   OAUTH_EVENTBRITE_PRIVATE_TOKEN   — Private Token (used as bearer for E2E)
 
 mod common;
 

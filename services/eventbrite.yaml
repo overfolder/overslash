@@ -65,23 +65,3 @@ actions:
         type: string
         description: "Filter by status: attending, not_attending, etc."
         enum: [attending, not_attending, unpaid]
-  create_order:
-    method: POST
-    path: /v3/events/{event_id}/orders/
-    description: Place an order (register) for an event
-    risk: write
-    params:
-      event_id:
-        type: string
-        required: true
-        description: The event ID to register for
-  cancel_order:
-    method: POST
-    path: /v3/users/me/orders/{order_id}/cancel/
-    description: Cancel an existing order
-    risk: write
-    params:
-      order_id:
-        type: string
-        required: true
-        description: The order ID to cancel
