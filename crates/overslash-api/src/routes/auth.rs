@@ -207,37 +207,29 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
         if let Some(existing) = identity::find_by_email(&state.db, dev_email).await? {
             (existing.org_id, existing.id)
         } else {
-            let new_org = match org::create(&state.db, "Dev Org", "dev-org").await {
-                Ok(o) => o,
+            match org::create(&state.db, "Dev Org", "dev-org").await {
+                Ok(new_org) => {
+                    let new_identity = identity::create_with_email(
+                        &state.db,
+                        new_org.id,
+                        "Dev User",
+                        "user",
+                        Some("dev-local"),
+                        Some(dev_email),
+                        json!({"dev": true}),
+                    )
+                    .await?;
+                    (new_org.id, new_identity.id)
+                }
                 Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
                     // Concurrent request already created it — retry lookup
                     let existing = identity::find_by_email(&state.db, dev_email)
                         .await?
                         .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
-                    return Ok((
-                        HeaderMap::new(),
-                        axum::Json(json!({
-                            "status": "authenticated",
-                            "org_id": existing.org_id,
-                            "identity_id": existing.id,
-                            "email": dev_email,
-                            "token": "",
-                        })),
-                    ));
+                    (existing.org_id, existing.id)
                 }
                 Err(e) => return Err(e.into()),
-            };
-            let new_identity = identity::create_with_email(
-                &state.db,
-                new_org.id,
-                "Dev User",
-                "user",
-                Some("dev-local"),
-                Some(dev_email),
-                json!({"dev": true}),
-            )
-            .await?;
-            (new_org.id, new_identity.id)
+            }
         };
 
     let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
