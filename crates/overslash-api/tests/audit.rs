@@ -1,9 +1,10 @@
 //! Audit log integration tests: covers the DB repo layer, the query API endpoint,
-//! and every code path that emits an audit entry.
+//! filtering capabilities, and every code path that emits an audit entry.
 
 mod common;
 
 use common::{auth, bootstrap_org_identity, start_api, start_mock};
+use overslash_db::repos::audit::{AuditEntry, AuditFilter};
 use reqwest::Client;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -26,16 +27,10 @@ async fn fetch_audit(base: &str, client: &Client, key: &str) -> Vec<Value> {
         .unwrap()
 }
 
-/// Fetch audit entries with explicit limit/offset.
-async fn fetch_audit_paged(
-    base: &str,
-    client: &Client,
-    key: &str,
-    limit: i64,
-    offset: i64,
-) -> Vec<Value> {
+/// Fetch audit entries with explicit query params.
+async fn fetch_audit_with(base: &str, client: &Client, key: &str, qs: &str) -> Vec<Value> {
     client
-        .get(format!("{base}/v1/audit?limit={limit}&offset={offset}"))
+        .get(format!("{base}/v1/audit?{qs}"))
         .header(auth(key).0, auth(key).1)
         .send()
         .await
@@ -45,14 +40,73 @@ async fn fetch_audit_paged(
         .unwrap()
 }
 
+/// Insert an org directly in the DB. Returns org_id.
+async fn insert_org(pool: &PgPool) -> Uuid {
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("TestOrg")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(pool)
+        .await
+        .unwrap();
+    org_id
+}
+
+/// Insert an identity directly in the DB. Returns identity_id.
+async fn insert_identity(pool: &PgPool, org_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, $4)")
+        .bind(id)
+        .bind(org_id)
+        .bind("agent")
+        .bind("agent")
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+/// Helper to build an AuditEntry for insertion.
+fn entry<'a>(
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+    action: &'a str,
+    resource_type: Option<&'a str>,
+    resource_id: Option<Uuid>,
+    detail: serde_json::Value,
+) -> AuditEntry<'a> {
+    AuditEntry {
+        org_id,
+        identity_id,
+        action,
+        resource_type,
+        resource_id,
+        detail,
+        ip_address: None,
+    }
+}
+
+/// Helper to build an AuditFilter with defaults.
+fn filter(org_id: Uuid) -> AuditFilter {
+    AuditFilter {
+        org_id,
+        action: None,
+        resource_type: None,
+        identity_id: None,
+        since: None,
+        until: None,
+        limit: 100,
+        offset: 0,
+    }
+}
+
 /// Full bootstrap: org + identity + identity-bound key + permissions + API base URL.
-/// Returns (base_url, api_key, org_id, identity_id, client).
 async fn setup_with_perm(pool: PgPool, pattern: &str) -> (String, String, Uuid, Uuid, Client) {
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
 
-    // Grant permission
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&key).0, auth(&key).1)
@@ -64,37 +118,29 @@ async fn setup_with_perm(pool: PgPool, pattern: &str) -> (String, String, Uuid, 
     (base, key, org_id, ident_id, client)
 }
 
-// ---------------------------------------------------------------------------
-// DB repo layer
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// DB repo layer: audit::log + query_filtered
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_insert_and_query(pool: PgPool) {
-    // Create a minimal org directly in the DB so we have a valid org_id
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("AuditTestOrg")
-        .bind(format!("audit-test-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
+    let org_id = insert_org(&pool).await;
 
-    // Insert an audit entry
     overslash_db::repos::audit::log(
         &pool,
-        org_id,
-        None,
-        "test.action",
-        Some("widget"),
-        None,
-        json!({"key": "value"}),
+        &entry(
+            org_id,
+            None,
+            "test.action",
+            Some("widget"),
+            None,
+            json!({"key": "value"}),
+        ),
     )
     .await
     .unwrap();
 
-    // Query back
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
 
@@ -110,40 +156,25 @@ async fn test_audit_log_insert_and_query(pool: PgPool) {
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_with_identity_and_resource(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("AuditOrg2")
-        .bind(format!("audit2-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let identity_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, $4)")
-        .bind(identity_id)
-        .bind(org_id)
-        .bind("agent-1")
-        .bind("agent")
-        .execute(&pool)
-        .await
-        .unwrap();
-
+    let org_id = insert_org(&pool).await;
+    let identity_id = insert_identity(&pool, org_id).await;
     let resource_id = Uuid::new_v4();
 
     overslash_db::repos::audit::log(
         &pool,
-        org_id,
-        Some(identity_id),
-        "secret.created",
-        Some("secret"),
-        Some(resource_id),
-        json!({"name": "my_token"}),
+        &entry(
+            org_id,
+            Some(identity_id),
+            "secret.created",
+            Some("secret"),
+            Some(resource_id),
+            json!({"name": "my_token"}),
+        ),
     )
     .await
     .unwrap();
 
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
 
@@ -154,29 +185,45 @@ async fn test_audit_log_with_identity_and_resource(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_ordering_desc(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("OrderOrg")
-        .bind(format!("order-{}", Uuid::new_v4()))
-        .execute(&pool)
+async fn test_audit_log_with_ip_address(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+
+    overslash_db::repos::audit::log(
+        &pool,
+        &AuditEntry {
+            org_id,
+            identity_id: None,
+            action: "test.with_ip",
+            resource_type: None,
+            resource_id: None,
+            detail: json!({}),
+            ip_address: Some("192.168.1.42"),
+        },
+    )
+    .await
+    .unwrap();
+
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
+    assert_eq!(rows[0].ip_address.as_deref(), Some("192.168.1.42"));
+}
 
-    // Insert three entries sequentially
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_log_ordering_desc(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+
     for action in &["first", "second", "third"] {
-        overslash_db::repos::audit::log(&pool, org_id, None, action, None, None, json!({}))
+        overslash_db::repos::audit::log(&pool, &entry(org_id, None, action, None, None, json!({})))
             .await
             .unwrap();
     }
 
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
 
     assert_eq!(rows.len(), 3);
-    // Most recent first
     assert_eq!(rows[0].action, "third");
     assert_eq!(rows[1].action, "second");
     assert_eq!(rows[2].action, "first");
@@ -184,80 +231,65 @@ async fn test_audit_log_ordering_desc(pool: PgPool) {
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_pagination(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("PageOrg")
-        .bind(format!("page-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
+    let org_id = insert_org(&pool).await;
 
     for i in 0..5 {
         overslash_db::repos::audit::log(
             &pool,
-            org_id,
-            None,
-            &format!("action_{i}"),
-            None,
-            None,
-            json!({}),
+            &entry(org_id, None, &format!("action_{i}"), None, None, json!({})),
         )
         .await
         .unwrap();
     }
 
-    // Limit 2
-    let page1 = overslash_db::repos::audit::query_by_org(&pool, org_id, 2, 0)
+    let mut f = filter(org_id);
+
+    f.limit = 2;
+    f.offset = 0;
+    let page1 = overslash_db::repos::audit::query_filtered(&pool, &f)
         .await
         .unwrap();
     assert_eq!(page1.len(), 2);
 
-    // Offset 2, limit 2
-    let page2 = overslash_db::repos::audit::query_by_org(&pool, org_id, 2, 2)
+    f.offset = 2;
+    let page2 = overslash_db::repos::audit::query_filtered(&pool, &f)
         .await
         .unwrap();
     assert_eq!(page2.len(), 2);
 
-    // No overlap
     assert_ne!(page1[0].id, page2[0].id);
     assert_ne!(page1[1].id, page2[1].id);
 
-    // Offset past end
-    let page_empty = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 100)
+    f.offset = 100;
+    f.limit = 10;
+    let empty = overslash_db::repos::audit::query_filtered(&pool, &f)
         .await
         .unwrap();
-    assert!(page_empty.is_empty());
+    assert!(empty.is_empty());
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_org_isolation(pool: PgPool) {
-    let org_a = Uuid::new_v4();
-    let org_b = Uuid::new_v4();
-    for (id, name, slug) in [
-        (org_a, "OrgA", format!("a-{}", Uuid::new_v4())),
-        (org_b, "OrgB", format!("b-{}", Uuid::new_v4())),
-    ] {
-        sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-            .bind(id)
-            .bind(name)
-            .bind(slug)
-            .execute(&pool)
-            .await
-            .unwrap();
-    }
+    let org_a = insert_org(&pool).await;
+    let org_b = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(&pool, org_a, None, "a.action", None, None, json!({}))
-        .await
-        .unwrap();
-    overslash_db::repos::audit::log(&pool, org_b, None, "b.action", None, None, json!({}))
-        .await
-        .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_a, None, "a.action", None, None, json!({})),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_b, None, "b.action", None, None, json!({})),
+    )
+    .await
+    .unwrap();
 
-    let rows_a = overslash_db::repos::audit::query_by_org(&pool, org_a, 10, 0)
+    let rows_a = overslash_db::repos::audit::query_filtered(&pool, &filter(org_a))
         .await
         .unwrap();
-    let rows_b = overslash_db::repos::audit::query_by_org(&pool, org_b, 10, 0)
+    let rows_b = overslash_db::repos::audit::query_filtered(&pool, &filter(org_b))
         .await
         .unwrap();
 
@@ -269,16 +301,8 @@ async fn test_audit_log_org_isolation(pool: PgPool) {
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_empty_org(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("EmptyOrg")
-        .bind(format!("empty-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
+    let org_id = insert_org(&pool).await;
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
     assert!(rows.is_empty());
@@ -286,45 +310,30 @@ async fn test_audit_log_empty_org(pool: PgPool) {
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_identity_set_null_on_delete(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("NullOrg")
-        .bind(format!("null-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let identity_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, $4)")
-        .bind(identity_id)
-        .bind(org_id)
-        .bind("temp-agent")
-        .bind("agent")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let org_id = insert_org(&pool).await;
+    let identity_id = insert_identity(&pool, org_id).await;
 
     overslash_db::repos::audit::log(
         &pool,
-        org_id,
-        Some(identity_id),
-        "test.action",
-        None,
-        None,
-        json!({}),
+        &entry(
+            org_id,
+            Some(identity_id),
+            "test.action",
+            None,
+            None,
+            json!({}),
+        ),
     )
     .await
     .unwrap();
 
-    // Delete the identity — FK should SET NULL
     sqlx::query("DELETE FROM identities WHERE id = $1")
         .bind(identity_id)
         .execute(&pool)
         .await
         .unwrap();
 
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -336,27 +345,22 @@ async fn test_audit_log_identity_set_null_on_delete(pool: PgPool) {
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_log_cascade_on_org_delete(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("CascadeOrg")
-        .bind(format!("cascade-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
+    let org_id = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(&pool, org_id, None, "before.delete", None, None, json!({}))
-        .await
-        .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, None, "before.delete", None, None, json!({})),
+    )
+    .await
+    .unwrap();
 
-    // Delete the org — audit entries should cascade
     sqlx::query("DELETE FROM orgs WHERE id = $1")
         .bind(org_id)
         .execute(&pool)
         .await
         .unwrap();
 
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
         .unwrap();
     assert!(
@@ -365,19 +369,228 @@ async fn test_audit_log_cascade_on_org_delete(pool: PgPool) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// API endpoint: GET /v1/audit
-// ---------------------------------------------------------------------------
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_detail_json_structure(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+
+    let complex_detail = json!({
+        "nested": {"key": "value"},
+        "array": [1, 2, 3],
+        "number": 42,
+        "boolean": true,
+        "null_val": null
+    });
+
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(
+            org_id,
+            None,
+            "complex.detail",
+            None,
+            None,
+            complex_detail.clone(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+        .await
+        .unwrap();
+    assert_eq!(rows[0].detail, complex_detail);
+}
+
+// ===========================================================================
+// DB repo layer: query_filtered filters
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_empty(pool: PgPool) {
-    let (addr, client) = start_api(pool).await;
-    let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+async fn test_query_filtered_by_action(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
 
-    let entries = fetch_audit(&base, &client, &key).await;
-    assert!(entries.is_empty());
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, None, "action.executed", None, None, json!({})),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, None, "secret.put", None, None, json!({})),
+    )
+    .await
+    .unwrap();
+
+    let mut f = filter(org_id);
+    f.action = Some("secret.put".to_string());
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "secret.put");
 }
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_query_filtered_by_resource_type(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, None, "a.created", Some("secret"), None, json!({})),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, None, "b.created", Some("webhook"), None, json!({})),
+    )
+    .await
+    .unwrap();
+
+    let mut f = filter(org_id);
+    f.resource_type = Some("webhook".to_string());
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "b.created");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_query_filtered_by_identity_id(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+    let id_a = insert_identity(&pool, org_id).await;
+    let id_b = insert_identity(&pool, org_id).await;
+
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, Some(id_a), "from_a", None, None, json!({})),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, Some(id_b), "from_b", None, None, json!({})),
+    )
+    .await
+    .unwrap();
+
+    let mut f = filter(org_id);
+    f.identity_id = Some(id_a);
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "from_a");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_query_filtered_by_time_range(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+
+    // Insert with explicit timestamps via raw SQL to avoid timing issues
+    let early_ts = time::OffsetDateTime::now_utc() - time::Duration::minutes(10);
+    let late_ts = time::OffsetDateTime::now_utc();
+    let boundary = early_ts + time::Duration::minutes(5);
+
+    sqlx::query(
+        "INSERT INTO audit_log (org_id, action, detail, created_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(org_id)
+    .bind("early")
+    .bind(json!({}))
+    .bind(early_ts)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO audit_log (org_id, action, detail, created_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(org_id)
+    .bind("late")
+    .bind(json!({}))
+    .bind(late_ts)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // since filter: only "late"
+    let mut f = filter(org_id);
+    f.since = Some(boundary);
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "late");
+
+    // until filter: only "early"
+    let mut f2 = filter(org_id);
+    f2.until = Some(boundary);
+    let rows2 = overslash_db::repos::audit::query_filtered(&pool, &f2)
+        .await
+        .unwrap();
+    assert_eq!(rows2.len(), 1);
+    assert_eq!(rows2[0].action, "early");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_query_filtered_combined_filters(pool: PgPool) {
+    let org_id = insert_org(&pool).await;
+    let id_a = insert_identity(&pool, org_id).await;
+
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(
+            org_id,
+            Some(id_a),
+            "secret.put",
+            Some("secret"),
+            None,
+            json!({}),
+        ),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(
+            org_id,
+            Some(id_a),
+            "webhook.created",
+            Some("webhook"),
+            None,
+            json!({}),
+        ),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::audit::log(
+        &pool,
+        &entry(org_id, None, "secret.put", Some("secret"), None, json!({})),
+    )
+    .await
+    .unwrap();
+
+    let mut f = filter(org_id);
+    f.action = Some("secret.put".to_string());
+    f.identity_id = Some(id_a);
+    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].identity_id, Some(id_a));
+    assert_eq!(rows[0].action, "secret.put");
+}
+
+// ===========================================================================
+// API endpoint: GET /v1/audit
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_api_requires_auth(pool: PgPool) {
@@ -391,72 +604,6 @@ async fn test_audit_api_requires_auth(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_custom_limit(pool: PgPool) {
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
-    let mock_addr = start_mock().await;
-
-    // Execute 5 actions to generate entries
-    for _ in 0..5 {
-        client
-            .post(format!("{base}/v1/actions/execute"))
-            .header(auth(&key).0, auth(&key).1)
-            .json(&json!({
-                "method": "GET",
-                "url": format!("http://{mock_addr}/echo")
-            }))
-            .send()
-            .await
-            .unwrap();
-    }
-
-    // With limit=3 we should get exactly 3
-    let entries = fetch_audit_paged(&base, &client, &key, 3, 0).await;
-    assert_eq!(entries.len(), 3);
-
-    // With no limit (default 50), we should get all 5
-    let all = fetch_audit(&base, &client, &key).await;
-    assert_eq!(all.len(), 5);
-}
-
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_pagination(pool: PgPool) {
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
-    let mock_addr = start_mock().await;
-
-    // Execute multiple actions to generate audit entries
-    for _ in 0..3 {
-        client
-            .post(format!("{base}/v1/actions/execute"))
-            .header(auth(&key).0, auth(&key).1)
-            .json(&json!({
-                "method": "GET",
-                "url": format!("http://{mock_addr}/echo")
-            }))
-            .send()
-            .await
-            .unwrap();
-    }
-
-    let all = fetch_audit(&base, &client, &key).await;
-    assert_eq!(all.len(), 3);
-
-    // Page: limit=2, offset=0
-    let page1 = fetch_audit_paged(&base, &client, &key, 2, 0).await;
-    assert_eq!(page1.len(), 2);
-
-    // Page: limit=2, offset=2
-    let page2 = fetch_audit_paged(&base, &client, &key, 2, 2).await;
-    assert_eq!(page2.len(), 1);
-
-    // IDs should not overlap
-    let p1_ids: Vec<&str> = page1.iter().map(|e| e["id"].as_str().unwrap()).collect();
-    let p2_ids: Vec<&str> = page2.iter().map(|e| e["id"].as_str().unwrap()).collect();
-    for id in &p2_ids {
-        assert!(!p1_ids.contains(id));
-    }
-}
-
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_api_response_shape(pool: PgPool) {
     let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
     let mock_addr = start_mock().await;
@@ -464,28 +611,108 @@ async fn test_audit_api_response_shape(pool: PgPool) {
     client
         .post(format!("{base}/v1/actions/execute"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "method": "GET",
-            "url": format!("http://{mock_addr}/echo")
-        }))
+        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
         .send()
         .await
         .unwrap();
 
     let entries = fetch_audit(&base, &client, &key).await;
-    assert_eq!(entries.len(), 1);
+    let entry = entries
+        .iter()
+        .find(|e| e["action"] == "action.executed")
+        .expect("should have action.executed entry");
 
-    let entry = &entries[0];
-    // Every entry must have these fields
     assert!(entry["id"].is_string());
     assert!(entry["action"].is_string());
     assert!(entry["detail"].is_object());
     assert!(entry["created_at"].is_string());
-    // identity_id is present (nullable)
     assert!(entry.get("identity_id").is_some());
-    // resource_type and resource_id are present (nullable)
     assert!(entry.get("resource_type").is_some());
     assert!(entry.get("resource_id").is_some());
+    assert!(entry.get("ip_address").is_some());
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_api_pagination(pool: PgPool) {
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let mock_addr = start_mock().await;
+
+    for _ in 0..3 {
+        client
+            .post(format!("{base}/v1/actions/execute"))
+            .header(auth(&key).0, auth(&key).1)
+            .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let all = fetch_audit_with(&base, &client, &key, "action=action.executed").await;
+    assert_eq!(all.len(), 3);
+
+    let page1 = fetch_audit_with(
+        &base,
+        &client,
+        &key,
+        "action=action.executed&limit=2&offset=0",
+    )
+    .await;
+    assert_eq!(page1.len(), 2);
+
+    let page2 = fetch_audit_with(
+        &base,
+        &client,
+        &key,
+        "action=action.executed&limit=2&offset=2",
+    )
+    .await;
+    assert_eq!(page2.len(), 1);
+
+    let p1_ids: Vec<&str> = page1.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert!(!p1_ids.contains(&page2[0]["id"].as_str().unwrap()));
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_api_filter_by_action(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    // Store a secret → secret.put audit entry
+    client
+        .put(format!("{base}/v1/secrets/test_secret"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "val"}))
+        .send()
+        .await
+        .unwrap();
+
+    let all = fetch_audit(&base, &client, &key).await;
+    assert!(all.len() > 1, "should have multiple types of audit entries");
+
+    let filtered = fetch_audit_with(&base, &client, &key, "action=secret.put").await;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0]["action"], "secret.put");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_api_filter_by_resource_type(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    // Store a secret → resource_type=secret
+    client
+        .put(format!("{base}/v1/secrets/filter_test"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "val"}))
+        .send()
+        .await
+        .unwrap();
+
+    let filtered = fetch_audit_with(&base, &client, &key, "resource_type=secret").await;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0]["resource_type"], "secret");
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
@@ -493,45 +720,38 @@ async fn test_audit_api_org_isolation(pool: PgPool) {
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
 
-    // Create two separate orgs
-    let (_org_a, _ident_a, key_a) = bootstrap_org_identity(&base, &client).await;
+    let (_org_a, ident_a, key_a) = bootstrap_org_identity(&base, &client).await;
     let (_org_b, _ident_b, key_b) = bootstrap_org_identity(&base, &client).await;
 
     let mock_addr = start_mock().await;
 
-    // Grant permissions to both
-    for (key, ident) in [(&key_a, _ident_a), (&key_b, _ident_b)] {
-        client
-            .post(format!("{base}/v1/permissions"))
-            .header(auth(key).0, auth(key).1)
-            .json(&json!({"identity_id": ident, "action_pattern": "http:**"}))
-            .send()
-            .await
-            .unwrap();
-    }
-
-    // Execute action only with org A
+    // Grant permission + execute action only on org A
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/permissions"))
         .header(auth(&key_a).0, auth(&key_a).1)
-        .json(&json!({
-            "method": "GET",
-            "url": format!("http://{mock_addr}/echo")
-        }))
+        .json(&json!({"identity_id": ident_a, "action_pattern": "http:**"}))
         .send()
         .await
         .unwrap();
 
-    let entries_a = fetch_audit(&base, &client, &key_a).await;
-    let entries_b = fetch_audit(&base, &client, &key_b).await;
+    client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+        .send()
+        .await
+        .unwrap();
 
-    assert!(!entries_a.is_empty(), "org A should have audit entries");
-    assert!(entries_b.is_empty(), "org B should have no audit entries");
+    let entries_a = fetch_audit_with(&base, &client, &key_a, "action=action.executed").await;
+    let entries_b = fetch_audit_with(&base, &client, &key_b, "action=action.executed").await;
+
+    assert_eq!(entries_a.len(), 1);
+    assert!(entries_b.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Audit from action execution (action.executed)
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Audit events: action.executed
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_action_executed(pool: PgPool) {
@@ -551,56 +771,23 @@ async fn test_audit_action_executed(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let entries = fetch_audit(&base, &client, &key).await;
-    let executed: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["action"] == "action.executed")
-        .collect();
-    assert_eq!(executed.len(), 1);
+    let entries = fetch_audit_with(&base, &client, &key, "action=action.executed").await;
+    assert_eq!(entries.len(), 1);
 
-    let detail = &executed[0]["detail"];
+    let detail = &entries[0]["detail"];
     assert_eq!(detail["method"], "POST");
     assert!(detail["url"].as_str().unwrap().contains("/echo"));
     assert!(detail["status_code"].is_number());
     assert!(detail["duration_ms"].is_number());
-
-    // identity_id should match the agent
     assert_eq!(
-        executed[0]["identity_id"].as_str().unwrap(),
+        entries[0]["identity_id"].as_str().unwrap(),
         ident_id.to_string()
     );
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_action_executed_multiple(pool: PgPool) {
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
-    let mock_addr = start_mock().await;
-
-    // Execute 3 different actions
-    for method in &["GET", "POST", "GET"] {
-        client
-            .post(format!("{base}/v1/actions/execute"))
-            .header(auth(&key).0, auth(&key).1)
-            .json(&json!({
-                "method": method,
-                "url": format!("http://{mock_addr}/echo")
-            }))
-            .send()
-            .await
-            .unwrap();
-    }
-
-    let entries = fetch_audit(&base, &client, &key).await;
-    let executed: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["action"] == "action.executed")
-        .collect();
-    assert_eq!(executed.len(), 3);
-}
-
-// ---------------------------------------------------------------------------
-// Audit from approval creation (approval.created)
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Audit events: approval.created
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_approval_created(pool: PgPool) {
@@ -609,8 +796,7 @@ async fn test_audit_approval_created(pool: PgPool) {
     let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
     let mock_addr = start_mock().await;
 
-    // NO permission granted — action should require approval.
-    // Store a secret so the request triggers gating
+    // Store secret, no permission → triggers approval
     client
         .put(format!("{base}/v1/secrets/my_token"))
         .header(auth(&key).0, auth(&key).1)
@@ -630,29 +816,230 @@ async fn test_audit_approval_created(pool: PgPool) {
         .send()
         .await
         .unwrap();
-
-    // Should get 202 Accepted (pending_approval)
     assert_eq!(resp.status(), 202);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "pending_approval");
 
-    let entries = fetch_audit(&base, &client, &key).await;
-    let approvals: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["action"] == "approval.created")
-        .collect();
-    assert_eq!(approvals.len(), 1);
-
-    let a = approvals[0];
-    assert_eq!(a["resource_type"], "approval");
-    assert!(a["resource_id"].is_string()); // the approval UUID
-    assert!(a["detail"]["summary"].is_string());
-    assert_eq!(a["identity_id"].as_str().unwrap(), ident_id.to_string());
+    let entries = fetch_audit_with(&base, &client, &key, "action=approval.created").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "approval");
+    assert!(entries[0]["resource_id"].is_string());
+    assert!(entries[0]["detail"]["summary"].is_string());
+    assert_eq!(
+        entries[0]["identity_id"].as_str().unwrap(),
+        ident_id.to_string()
+    );
 }
 
-// ---------------------------------------------------------------------------
-// Audit from BYOC credential operations
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Audit events: approval.resolved
+// ===========================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_approval_resolved(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let mock_addr = start_mock().await;
+
+    // Create an approval
+    client
+        .put(format!("{base}/v1/secrets/tok"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "s"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tok", "inject_as": "header", "header_name": "X-T"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let approval_id = body["approval_id"].as_str().unwrap();
+
+    // Resolve the approval
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"decision": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=approval.resolved").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "approval");
+    assert_eq!(entries[0]["detail"]["decision"], "allow");
+    assert!(entries[0]["detail"]["action_summary"].is_string());
+}
+
+// ===========================================================================
+// Audit events: secret.put + secret.deleted
+// ===========================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_secret_put(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    client
+        .put(format!("{base}/v1/secrets/my_key"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "secret_value"}))
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=secret.put").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "secret");
+    assert_eq!(entries[0]["detail"]["name"], "my_key");
+    assert!(entries[0]["detail"]["version"].is_number());
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_secret_deleted(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    client
+        .put(format!("{base}/v1/secrets/to_delete"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "val"}))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .delete(format!("{base}/v1/secrets/to_delete"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=secret.deleted").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "secret");
+    assert_eq!(entries[0]["detail"]["name"], "to_delete");
+}
+
+// ===========================================================================
+// Audit events: permission_rule.created + permission_rule.deleted
+// ===========================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_permission_rule_created(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=permission_rule.created").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "permission_rule");
+    assert_eq!(entries[0]["detail"]["action_pattern"], "http:**");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_permission_rule_deleted(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+    let perm: Value = resp.json().await.unwrap();
+    let perm_id = perm["id"].as_str().unwrap();
+
+    client
+        .delete(format!("{base}/v1/permissions/{perm_id}"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=permission_rule.deleted").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "permission_rule");
+    assert_eq!(entries[0]["resource_id"].as_str().unwrap(), perm_id);
+}
+
+// ===========================================================================
+// Audit events: webhook.created + webhook.deleted
+// ===========================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_webhook_created(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    client
+        .post(format!("{base}/v1/webhooks"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"url": "https://example.com/hook", "events": ["approval.resolved"]}))
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=webhook.created").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "webhook");
+    assert_eq!(entries[0]["detail"]["url"], "https://example.com/hook");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_webhook_deleted(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/webhooks"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"url": "https://example.com/hook", "events": ["approval.resolved"]}))
+        .send()
+        .await
+        .unwrap();
+    let wh: Value = resp.json().await.unwrap();
+    let wh_id = wh["id"].as_str().unwrap();
+
+    client
+        .delete(format!("{base}/v1/webhooks/{wh_id}"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=webhook.deleted").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "webhook");
+    assert_eq!(entries[0]["resource_id"].as_str().unwrap(), wh_id);
+}
+
+// ===========================================================================
+// Audit events: byoc_credential.created + byoc_credential.deleted
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_byoc_credential_created(pool: PgPool) {
@@ -663,27 +1050,20 @@ async fn test_audit_byoc_credential_created(pool: PgPool) {
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "provider": "google",
-            "client_id": "test-client-id",
-            "client_secret": "test-client-secret"
-        }))
+        .json(&json!({"provider": "google", "client_id": "cid", "client_secret": "cs"}))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
     let cred: Value = resp.json().await.unwrap();
-    let cred_id = cred["id"].as_str().unwrap();
 
-    let entries = fetch_audit(&base, &client, &key).await;
-    let byoc: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["action"] == "byoc_credential.created")
-        .collect();
-    assert_eq!(byoc.len(), 1);
-    assert_eq!(byoc[0]["resource_type"], "byoc_credential");
-    assert_eq!(byoc[0]["resource_id"].as_str().unwrap(), cred_id);
-    assert_eq!(byoc[0]["detail"]["provider"], "google");
+    let entries = fetch_audit_with(&base, &client, &key, "action=byoc_credential.created").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_type"], "byoc_credential");
+    assert_eq!(
+        entries[0]["resource_id"].as_str().unwrap(),
+        cred["id"].as_str().unwrap()
+    );
+    assert_eq!(entries[0]["detail"]["provider"], "google");
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
@@ -692,38 +1072,26 @@ async fn test_audit_byoc_credential_deleted(pool: PgPool) {
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create a BYOC credential first
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "provider": "github",
-            "client_id": "gh-client",
-            "client_secret": "gh-secret"
-        }))
+        .json(&json!({"provider": "github", "client_id": "c", "client_secret": "s"}))
         .send()
         .await
         .unwrap();
     let cred: Value = resp.json().await.unwrap();
     let cred_id = cred["id"].as_str().unwrap();
 
-    // Delete it
-    let del_resp = client
+    client
         .delete(format!("{base}/v1/byoc-credentials/{cred_id}"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(del_resp.status(), 200);
 
-    let entries = fetch_audit(&base, &client, &key).await;
-    let deleted: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["action"] == "byoc_credential.deleted")
-        .collect();
-    assert_eq!(deleted.len(), 1);
-    assert_eq!(deleted[0]["resource_type"], "byoc_credential");
-    assert_eq!(deleted[0]["resource_id"].as_str().unwrap(), cred_id);
+    let entries = fetch_audit_with(&base, &client, &key, "action=byoc_credential.deleted").await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_id"].as_str().unwrap(), cred_id);
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
@@ -732,7 +1100,6 @@ async fn test_audit_byoc_delete_nonexistent_no_entry(pool: PgPool) {
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
 
-    // Delete a non-existent credential
     let fake_id = Uuid::new_v4();
     client
         .delete(format!("{base}/v1/byoc-credentials/{fake_id}"))
@@ -741,18 +1108,63 @@ async fn test_audit_byoc_delete_nonexistent_no_entry(pool: PgPool) {
         .await
         .unwrap();
 
-    // No audit entry should be created (delete returned false)
-    let entries = fetch_audit(&base, &client, &key).await;
-    let deleted: Vec<&Value> = entries
-        .iter()
-        .filter(|e| e["action"] == "byoc_credential.deleted")
-        .collect();
-    assert!(deleted.is_empty(), "no audit entry for non-existent delete");
+    let entries = fetch_audit_with(&base, &client, &key, "action=byoc_credential.deleted").await;
+    assert!(entries.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Combined flow: multiple audit event types in one org
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Audit events: no-op deletes should not produce entries
+// ===========================================================================
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_audit_noop_deletes_no_entries(pool: PgPool) {
+    let (addr, client) = start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+
+    // Delete non-existent webhook
+    let fake = Uuid::new_v4();
+    client
+        .delete(format!("{base}/v1/webhooks/{fake}"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+
+    // Delete non-existent permission
+    client
+        .delete(format!("{base}/v1/permissions/{fake}"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+
+    // Delete non-existent secret
+    client
+        .delete(format!("{base}/v1/secrets/nope"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+
+    let all = fetch_audit(&base, &client, &key).await;
+    let delete_entries: Vec<&Value> = all
+        .iter()
+        .filter(|e| {
+            e["action"]
+                .as_str()
+                .map_or(false, |a| a.ends_with(".deleted"))
+        })
+        .collect();
+    assert!(
+        delete_entries.is_empty(),
+        "no-op deletes should not create audit entries"
+    );
+}
+
+// ===========================================================================
+// Combined flow: mixed events + ordering
+// ===========================================================================
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_audit_mixed_events(pool: PgPool) {
@@ -761,20 +1173,25 @@ async fn test_audit_mixed_events(pool: PgPool) {
     let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
     let mock_addr = start_mock().await;
 
-    // 1. Create BYOC credential → byoc_credential.created
+    // BYOC credential
     client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "provider": "spotify",
-            "client_id": "sp-id",
-            "client_secret": "sp-secret"
-        }))
+        .json(&json!({"provider": "spotify", "client_id": "c", "client_secret": "s"}))
         .send()
         .await
         .unwrap();
 
-    // 2. Grant permission + execute action → action.executed
+    // Secret
+    client
+        .put(format!("{base}/v1/secrets/mix"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Permission + execute
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&key).0, auth(&key).1)
@@ -786,10 +1203,7 @@ async fn test_audit_mixed_events(pool: PgPool) {
     client
         .post(format!("{base}/v1/actions/execute"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "method": "GET",
-            "url": format!("http://{mock_addr}/echo")
-        }))
+        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
         .send()
         .await
         .unwrap();
@@ -801,57 +1215,15 @@ async fn test_audit_mixed_events(pool: PgPool) {
         .collect();
 
     assert!(actions.contains(&"byoc_credential.created".to_string()));
+    assert!(actions.contains(&"secret.put".to_string()));
+    assert!(actions.contains(&"permission_rule.created".to_string()));
     assert!(actions.contains(&"action.executed".to_string()));
 
-    // Verify ordering: most recent first (action.executed after byoc_credential.created)
+    // Most recent first
     let exec_pos = actions.iter().position(|a| a == "action.executed").unwrap();
     let byoc_pos = actions
         .iter()
         .position(|a| a == "byoc_credential.created")
         .unwrap();
-    assert!(
-        exec_pos < byoc_pos,
-        "action.executed should appear before byoc_credential.created (DESC order)"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Detail field correctness
-// ---------------------------------------------------------------------------
-
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_detail_json_structure(pool: PgPool) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("DetailOrg")
-        .bind(format!("detail-{}", Uuid::new_v4()))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let complex_detail = json!({
-        "nested": {"key": "value"},
-        "array": [1, 2, 3],
-        "number": 42,
-        "boolean": true,
-        "null_val": null
-    });
-
-    overslash_db::repos::audit::log(
-        &pool,
-        org_id,
-        None,
-        "complex.detail",
-        None,
-        None,
-        complex_detail.clone(),
-    )
-    .await
-    .unwrap();
-
-    let rows = overslash_db::repos::audit::query_by_org(&pool, org_id, 10, 0)
-        .await
-        .unwrap();
-    assert_eq!(rows[0].detail, complex_detail);
+    assert!(exec_pos < byoc_pos, "DESC ordering: newest first");
 }
