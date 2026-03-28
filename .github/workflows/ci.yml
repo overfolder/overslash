@@ -31,6 +31,7 @@ jobs:
     env:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +44,9 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Clean stale test artifacts
+        run: cargo clean -p overslash-api 2>/dev/null || true
 
       - name: Format check
         run: cargo fmt --check
