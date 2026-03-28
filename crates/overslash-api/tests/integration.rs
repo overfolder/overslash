@@ -19,6 +19,10 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         secrets_encryption_key: "ab".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
     };
 
     // Build the app with the test pool directly
@@ -603,6 +607,10 @@ async fn test_service_registry_api(pool: PgPool) {
         secrets_encryption_key: "ab".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -1451,6 +1459,10 @@ async fn start_api_with_registry(
         secrets_encryption_key: enc_key_hex,
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
     };
 
     let state = overslash_api::AppState {
