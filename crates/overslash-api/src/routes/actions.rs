@@ -1,6 +1,12 @@
 use std::collections::HashMap;
 
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -43,6 +49,10 @@ struct ExecuteRequest {
 
     // Mode B: explicit connection
     connection: Option<Uuid>,
+
+    // Large file handling
+    #[serde(default)]
+    prefer_stream: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -69,7 +79,7 @@ async fn execute_action(
     auth: AuthContext,
     ip: ClientIp,
     Json(req): Json<ExecuteRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     let identity_id = auth
         .identity_id
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
@@ -152,13 +162,15 @@ async fn execute_action(
                         action_description: summary,
                         expires_at: expires_at.to_string(),
                     }),
-                ));
+                )
+                    .into_response());
             }
             PermissionResult::Denied(reason) => {
                 return Ok((
                     StatusCode::FORBIDDEN,
                     Json(ExecuteResponse::Denied { reason }),
-                ));
+                )
+                    .into_response());
             }
         }
     }
@@ -183,15 +195,90 @@ async fn execute_action(
     let (resolved_url, resolved_headers) = inject_secrets(&action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    // Execute
+    // Streaming proxy path
+    if req.prefer_stream.unwrap_or(false) {
+        let upstream = http_executor::execute_streaming(
+            &state.http_client,
+            &action_req.method,
+            &resolved_url,
+            &resolved_headers,
+            action_req.body.as_deref(),
+        )
+        .await?;
+
+        let upstream_status = upstream.status();
+        let upstream_headers = upstream.headers().clone();
+        let content_length = upstream
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let _ = audit::log(
+            &state.db,
+            &AuditEntry {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                action: "action.streamed",
+                resource_type: None,
+                resource_id: None,
+                detail: serde_json::json!({
+                    "method": action_req.method,
+                    "url": action_req.url,
+                    "status_code": upstream_status.as_u16(),
+                    "content_length": content_length,
+                }),
+                ip_address: ip.0.as_deref(),
+            },
+        )
+        .await;
+
+        // Build streaming response — pipe upstream bytes through to caller
+        let stream = upstream.bytes_stream();
+        let body = axum::body::Body::from_stream(stream);
+
+        let mut response = Response::builder().status(upstream_status.as_u16());
+        // Forward safe upstream headers (content-type, content-length, content-disposition)
+        for (name, value) in upstream_headers.iter() {
+            let name_str = name.as_str();
+            match name_str {
+                "content-type"
+                | "content-length"
+                | "content-disposition"
+                | "etag"
+                | "last-modified"
+                | "cache-control" => {
+                    response = response.header(name, value);
+                }
+                _ => {}
+            }
+        }
+
+        return Ok(response.body(body).unwrap());
+    }
+
+    // Buffered execution path (default)
     let result = http_executor::execute(
         &state.http_client,
         &action_req.method,
         &resolved_url,
         &resolved_headers,
         action_req.body.as_deref(),
+        state.config.max_response_body_bytes,
     )
-    .await?;
+    .await
+    .map_err(|e| match e {
+        http_executor::ExecuteError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        } => AppError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        },
+        http_executor::ExecuteError::Request(e) => AppError::Request(e),
+    })?;
 
     let _ = audit::log(
         &state.db,
@@ -221,7 +308,8 @@ async fn execute_action(
             result,
             action_description: description,
         }),
-    ))
+    )
+        .into_response())
 }
 
 /// Resolve an ExecuteRequest into a concrete ActionRequest + human-readable description.

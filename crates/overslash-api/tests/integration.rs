@@ -23,6 +23,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
     };
 
     // Build the app with the test pool directly
@@ -611,6 +612,7 @@ async fn test_service_registry_api(pool: PgPool) {
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -1463,6 +1465,7 @@ async fn start_api_with_registry(
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
     };
 
     let state = overslash_api::AppState {

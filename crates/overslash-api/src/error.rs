@@ -38,6 +38,13 @@ pub enum AppError {
 
     #[error("crypto error: {0}")]
     Crypto(#[from] overslash_core::crypto::CryptoError),
+
+    #[error("response too large")]
+    ResponseTooLarge {
+        content_length: Option<u64>,
+        content_type: Option<String>,
+        limit_bytes: usize,
+    },
 }
 
 impl IntoResponse for AppError {
@@ -73,6 +80,23 @@ impl IntoResponse for AppError {
             Self::Crypto(e) => {
                 tracing::error!("Crypto error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "encryption error".into())
+            }
+            Self::ResponseTooLarge {
+                content_length,
+                content_type,
+                limit_bytes,
+            } => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "response_too_large",
+                        "content_length": content_length,
+                        "content_type": content_type,
+                        "limit_bytes": limit_bytes,
+                        "hint": "retry with prefer_stream: true to stream large responses"
+                    })),
+                )
+                    .into_response();
             }
         };
 

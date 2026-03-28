@@ -1,6 +1,7 @@
 //! Shared test helpers for integration tests.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
     };
 
     // Build the app with the test pool directly
@@ -73,6 +75,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: true,
+        max_response_body_bytes: 5_242_880,
     };
 
     let state = overslash_api::AppState {
@@ -189,9 +192,57 @@ pub async fn start_mock() -> SocketAddr {
         }
     }
 
+    /// Returns N bytes of 0xAB. Usage: GET /large-file?size=1000
+    async fn large_file(
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> axum::response::Response {
+        let size: usize = params
+            .get("size")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1024);
+        let data = vec![0xABu8; size];
+        ([("content-type", "application/octet-stream")], data).into_response()
+    }
+
+    use axum::response::IntoResponse;
+
+    /// Simulates Google Drive redirect: returns 302 to /drive/files/content
+    async fn drive_download(
+        headers: HeaderMap,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> axum::response::Response {
+        // Verify auth header is present
+        let has_auth = headers.get("authorization").is_some();
+        let size: usize = params
+            .get("size")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        if !has_auth {
+            return (axum::http::StatusCode::UNAUTHORIZED, "missing auth").into_response();
+        }
+        // Redirect to content endpoint (simulating Google's redirect)
+        axum::response::Redirect::temporary(&format!("/drive/files/content?size={size}"))
+            .into_response()
+    }
+
+    /// Serves file content (redirect target — no auth required, like Google's CDN)
+    async fn drive_content(
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> axum::response::Response {
+        let size: usize = params
+            .get("size")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        let data = vec![0xCDu8; size];
+        ([("content-type", "application/pdf")], data).into_response()
+    }
+
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
         .route("/echo", post(echo))
+        .route("/large-file", get(large_file))
+        .route("/drive/files/download", get(drive_download))
+        .route("/drive/files/content", get(drive_content))
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
         .route("/oauth/token", post(oauth_token))
@@ -294,6 +345,7 @@ pub async fn start_api_with_registry(
         google_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
     };
 
     let state = overslash_api::AppState {
@@ -325,4 +377,51 @@ pub async fn start_api_with_registry(
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())
+}
+
+/// Start API with a custom max response body size (for testing size limits).
+pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (SocketAddr, Client) {
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        max_response_body_bytes: max_bytes,
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::permissions::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::audit::router())
+        .merge(overslash_api::routes::webhooks::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::auth::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    (addr, Client::new())
 }
