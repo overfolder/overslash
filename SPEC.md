@@ -105,6 +105,14 @@ Org (acme)
 - Each identity has API keys for authenticating with Overslash
 - Sub-agents can have a **TTL** for auto-cleanup (ephemeral workers)
 
+### Agent Enrollment
+
+Two enrollment flows connect agents to the identity hierarchy:
+
+**User-initiated enrollment**: A user pre-creates the agent identity in the dashboard or via API, receiving a single-use enrollment token. The user pastes this token into the agent's configuration. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
+
+**Agent-initiated enrollment**: The agent discovers Overslash (e.g., via `SKILL.md` or environment hints) and requests an enrollment token. This token only grants the ability to generate a consent URL. The agent presents this URL to a user (in chat, email, etc.). The authenticated user visits the URL, reviews the agent's requested identity placement, and consents. The agent is then enrolled at the approved position in the hierarchy. This flow is documented in a `SKILL.md` that agents can read to self-onboard.
+
 ### `inherit_permissions`
 
 A live pointer (not a copy). When set on an identity, it dynamically has whatever permissions its parent has — current AND future. Parent gains a rule tomorrow, child gains it too.
@@ -125,6 +133,17 @@ When a sub-agent executes an action, every level in the ancestor chain must auth
 ### Approval Bubbling
 
 The approval is created at the gap level. That level's ancestors can resolve it. This means agents approve for their sub-agents without pestering the user.
+
+### Org-Level ACL
+
+Within an org, access control determines which users can see and manage which resources. An ACL (Access Control List) or role-based system governs:
+
+- Which users can view/manage specific services, connections, and secrets
+- Which users can create and manage agents
+- Which users can resolve approvals for other users' agents
+- Org-admin vs member vs read-only roles
+
+This is distinct from the per-identity permission rules (which gate action execution). ACL controls who can administer Overslash itself within an org.
 
 ### Permission Rules
 
@@ -187,7 +206,7 @@ For registry-known services, Overslash generates descriptions from action metada
 
 ### Two-Tier
 
-**Global**: YAML files shipped with Overslash. Common APIs (GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Read-only for orgs.
+**Global**: YAML files shipped with Overslash. Common APIs (Eventbrite, GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Read-only for orgs.
 
 **Org**: Org-admins register additional services for their own or niche APIs. OpenAPI import supported.
 
@@ -235,15 +254,23 @@ The agent harness wraps these 3 tools and handles plumbing (webhooks, approval i
 
 ## 11. Dashboard
 
-Web UI for non-API interactions.
+Web UI for non-API interactions. Built with SvelteKit + TypeScript.
+
+### Core Views
+
+- **User profile** — authenticated user info, API keys, settings
+- **Org/User/Agent hierarchy** — tree view of the identity hierarchy, with inline management (create, edit, delete, enrollment tokens)
+- **Connected services** — which services have active connections, their status, and quick actions (reconnect, revoke)
+- **Developer connection tool** — interactive API explorer for connected services. Select a service and action from the registry, fill in parameters, and execute via Mode A/B/C. Similar to Swagger UI or Postman but integrated with Overslash auth. Useful for testing connections and debugging.
+- **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
 
 ### Org-Admin Views
 
-Identities (hierarchy tree, API keys), Services (browse/register/import), Audit (searchable log), Connections (org-level OAuth), Webhooks, Permissions, Settings.
+Services (browse/register/import), Connections (org-level OAuth), Webhooks, Permissions, Settings.
 
 ### User Views
 
-My Connections, My Secrets (names + versions), Approvals (pending, one-click resolve with expiry picker), My Agents (permission management), My Audit, Permissions.
+My Connections, My Secrets (names + versions), Approvals (pending, one-click resolve with expiry picker), My Agents (permission management).
 
 ### Standalone Pages (no login required, signed URL)
 

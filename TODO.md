@@ -28,14 +28,28 @@ Phased roadmap. Each phase is usable independently.
 - [x] Connections API (initiate, list, revoke)
 - [ ] `on_behalf_of` for agent-initiated connections at user level
 - [x] Global service registry — YAML loader for shipped definitions
-- [ ] Ship top 20 service definitions — 6 shipped: GitHub, Google Calendar, Resend, Slack, Stripe, X
+- [ ] Ship top 20 service definitions — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
 - [ ] Org service registry — DB-backed, CRUD endpoints
 - [ ] OpenAPI spec import (`POST /v1/services/import`)
 - [x] Mode C execution (service + action, registry-resolved, auth auto-resolve)
 - [ ] Human-readable action descriptions from registry metadata
-- [ ] Dashboard: connections, service browser, secret management, audit viewer
 
-## Phase 3: Identity Hierarchy
+## Phase 2.5: Dashboard + Enrollment
+
+### Dashboard (SvelteKit + TypeScript)
+
+- [ ] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
+- [ ] Org/User/Agent hierarchy view — tree visualization with inline identity management
+- [ ] Connected services view — service connection status, reconnect/revoke actions
+- [ ] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
+- [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
+
+### Agent Enrollment
+
+- [ ] User-to-Agent enrollment flow — user pre-creates agent identity, gets single-use token, agent exchanges for API key
+- [ ] Agent-initiated enrollment flow + `SKILL.md` — agent discovers Overslash, gets enrollment token, generates consent URL for user approval
+
+## Phase 3: Identity Hierarchy + Permissions
 
 - [ ] Parent/child identity relationships (depth tracking, owner_id)
 - [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy)
@@ -45,6 +59,7 @@ Phased roadmap. Each phase is usable independently.
 - [ ] Approval bubbling (gap level targeting, ancestor handling)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
 - [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
+- [ ] Org-level ACL — role-based access control for who can manage resources within an org
 - [ ] Dashboard: identity hierarchy tree view, agent permission management
 
 ## Phase 4: Polish + Meta Tools
@@ -58,6 +73,14 @@ Phased roadmap. Each phase is usable independently.
 - [ ] Global service registry contribution workflow (community PRs)
 - [ ] Documentation site
 
+## Ongoing: Testing Coverage
+
+- [ ] Increase integration test coverage across all API routes
+- [ ] Add unit tests for core permission resolution logic
+- [ ] Add tests for edge cases in OAuth token refresh and BYOC fallback
+- [ ] Dashboard component tests
+- [ ] E2E tests for enrollment flows
+
 ---
 
 ## Done
@@ -65,6 +88,6 @@ Phased roadmap. Each phase is usable independently.
 - Phase 1 core backend (all API routes, permissions, approvals, audit, webhooks, expiry loop)
 - Phase 2 OAuth engine with BYOC credential resolution (identity → org → system fallback)
 - Mode C execution (service+action registry-resolved with automatic auth)
-- Service registry with 6 YAML definitions (GitHub, Google Calendar, Resend, Slack, Stripe, X)
-- E2E integration tests: Resend (token-based), Google Calendar (OAuth), X.com (OAuth+PKCE)
+- Service registry with 7 YAML definitions (Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X)
+- E2E integration tests: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token-based), X.com (OAuth+PKCE)
 - CI pipeline with coverage reporting and real OAuth provider tests

@@ -32,11 +32,12 @@
 - BYOC credential resolution with fallback chain (identity → org → system)
 - Connections API (initiate, list, revoke)
 - Global service registry — YAML loader with search API
-- 6 service definitions shipped: GitHub, Google Calendar, Resend, Slack, Stripe, X
+- 7 service definitions shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
 - Mode B execution (connection-based, token auto-injected)
 - Mode C execution (service+action, registry-resolved, auth auto-resolved)
 - X.com OAuth with PKCE support
-- E2E tests against real providers: Resend (token), Google Calendar (OAuth), X.com (OAuth+PKCE)
+- Eventbrite OAuth provider support
+- E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
 
 ### Not Yet Built
 
