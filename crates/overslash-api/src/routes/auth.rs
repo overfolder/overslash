@@ -34,9 +34,9 @@ async fn google_login(State(state): State<AppState>) -> Result<Response, AppErro
 
     let pkce = oauth::generate_pkce();
 
-    // State: login:<nonce>:<code_verifier>
+    // State contains only the CSRF nonce — verifier goes in a cookie
     let nonce = Uuid::new_v4().to_string();
-    let state_param = format!("login:{}:{}", nonce, pkce.verifier);
+    let state_param = format!("login:{nonce}");
 
     let redirect_uri = format!("{}/auth/google/callback", state.config.public_url);
     let scopes = vec![
@@ -54,14 +54,19 @@ async fn google_login(State(state): State<AppState>) -> Result<Response, AppErro
         Some(&pkce.challenge),
     );
 
-    // Set CSRF nonce cookie
-    let cookie = format!(
+    // Set CSRF nonce cookie + PKCE verifier cookie (HttpOnly, never exposed in URL)
+    let nonce_cookie = format!(
         "oss_auth_nonce={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
         nonce
     );
+    let verifier_cookie = format!(
+        "oss_auth_verifier={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
+        pkce.verifier
+    );
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, cookie.parse().unwrap());
+    headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
+    headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
 
     Ok((headers, Redirect::to(&auth_url)).into_response())
 }
@@ -80,13 +85,11 @@ async fn google_callback(
 ) -> Result<Response, AppError> {
     let (client_id, client_secret) = google_credentials(&state)?;
 
-    // Parse state: "login:<nonce>:<code_verifier>"
-    let parts: Vec<&str> = params.state.splitn(3, ':').collect();
-    if parts.len() != 3 || parts[0] != "login" {
-        return Err(AppError::BadRequest("invalid state parameter".into()));
-    }
-    let nonce = parts[1];
-    let code_verifier = parts[2];
+    // Parse state: "login:<nonce>"
+    let nonce = params
+        .state
+        .strip_prefix("login:")
+        .ok_or_else(|| AppError::BadRequest("invalid state parameter".into()))?;
 
     // Verify CSRF nonce from cookie
     let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
@@ -94,6 +97,10 @@ async fn google_callback(
     if cookie_nonce != nonce {
         return Err(AppError::BadRequest("nonce mismatch".into()));
     }
+
+    // Retrieve PKCE verifier from cookie (never exposed in URL)
+    let code_verifier = extract_cookie(&headers, "oss_auth_verifier")
+        .ok_or_else(|| AppError::BadRequest("missing auth verifier cookie".into()))?;
 
     let provider = oauth_provider::get_by_key(&state.db, "google")
         .await?
@@ -109,7 +116,7 @@ async fn google_callback(
         &client_secret,
         &params.code,
         &redirect_uri,
-        Some(code_verifier),
+        Some(&code_verifier),
     )
     .await
     .map_err(|e| AppError::Internal(format!("token exchange failed: {e}")))?;
@@ -152,6 +159,7 @@ async fn google_callback(
         token
     );
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
+    let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
     let body = json!({
         "status": "authenticated",
@@ -163,6 +171,7 @@ async fn google_callback(
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
+    resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
 
     Ok((StatusCode::OK, resp_headers, axum::Json(body)).into_response())
 }
@@ -296,18 +305,18 @@ async fn find_or_create_user(
         return Ok((existing.org_id, existing.id, userinfo.email.clone()));
     }
 
-    // Create new org
+    // Create new org + identity. If a concurrent request raced us and already
+    // created the identity (unique constraint on email), retry the lookup.
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
     let slug = generate_slug(&userinfo.email);
     let new_org = org::create(&state.db, display_name, &slug).await?;
 
-    // Create identity
     let metadata = json!({
         "google_sub": userinfo.sub,
         "name": userinfo.name,
         "picture": userinfo.picture,
     });
-    let new_identity = identity::create_with_email(
+    match identity::create_with_email(
         &state.db,
         new_org.id,
         display_name,
@@ -316,9 +325,19 @@ async fn find_or_create_user(
         Some(&userinfo.email),
         metadata,
     )
-    .await?;
-
-    Ok((new_org.id, new_identity.id, userinfo.email.clone()))
+    .await
+    {
+        Ok(new_identity) => Ok((new_org.id, new_identity.id, userinfo.email.clone())),
+        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+            // Another request won the race — use the identity they created.
+            // The orphaned org is harmless and can be cleaned up later.
+            let existing = identity::find_by_email(&state.db, &userinfo.email)
+                .await?
+                .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
+            Ok((existing.org_id, existing.id, userinfo.email.clone()))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn generate_slug(email: &str) -> String {
