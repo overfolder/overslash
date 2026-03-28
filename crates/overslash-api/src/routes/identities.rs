@@ -2,7 +2,13 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AppState, error::Result, extractors::AuthContext};
+use overslash_db::repos::audit::{self, AuditEntry};
+
+use crate::{
+    AppState,
+    error::Result,
+    extractors::{AuthContext, ClientIp},
+};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/identities", post(create_identity).get(list_identities))
@@ -27,6 +33,7 @@ struct IdentityResponse {
 async fn create_identity(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Json(req): Json<CreateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
     let row = overslash_db::repos::identity::create(
@@ -37,6 +44,21 @@ async fn create_identity(
         req.external_id.as_deref(),
     )
     .await?;
+
+    let _ = audit::log(
+        &state.db,
+        &AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "identity.created",
+            resource_type: Some("identity"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({ "name": &row.name, "kind": &row.kind }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
+
     Ok(Json(IdentityResponse {
         id: row.id,
         org_id: row.org_id,

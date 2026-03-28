@@ -6,10 +6,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::{self, AuditEntry};
+
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AuthContext, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -73,6 +75,7 @@ struct ResolveRequest {
 async fn resolve_approval(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
@@ -101,6 +104,24 @@ async fn resolve_approval(
             .await;
         }
     }
+
+    let _ = audit::log(
+        &state.db,
+        &AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "approval.resolved",
+            resource_type: Some("approval"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "decision": &req.decision,
+                "status": &row.status,
+                "action_summary": &row.action_summary,
+            }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
 
     // Dispatch webhook (fire-and-forget)
     {
