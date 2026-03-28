@@ -21,39 +21,16 @@ actions:
     path: /v3/users/me/
     description: Get the authenticated user's profile
     risk: read
-  search_events:
+  list_my_orders:
     method: GET
-    path: /v3/events/search/
-    description: Search for public events
+    path: /v3/users/me/orders/
+    description: List orders (registrations) placed by the authenticated user
     risk: read
-    params:
-      q:
-        type: string
-        description: Search query keywords
-      location.address:
-        type: string
-        description: Address to search around
-      location.latitude:
-        type: string
-        description: Latitude for location-based search
-      location.longitude:
-        type: string
-        description: Longitude for location-based search
-      location.within:
-        type: string
-        description: "Search radius with unit, e.g. '10km'"
-      categories:
-        type: string
-        description: Comma-separated category IDs
-      start_date.range_start:
-        type: string
-        description: "Start of date range (ISO 8601, e.g. 2026-01-01T00:00:00)"
-      start_date.range_end:
-        type: string
-        description: "End of date range (ISO 8601)"
-      page:
-        type: integer
-        description: Page number for pagination
+  list_organizations:
+    method: GET
+    path: /v3/users/me/organizations/
+    description: List organizations the user belongs to
+    risk: read
   get_event:
     method: GET
     path: /v3/events/{event_id}/
@@ -88,11 +65,6 @@ actions:
         type: string
         description: "Filter by status: attending, not_attending, etc."
         enum: [attending, not_attending, unpaid]
-  list_my_orders:
-    method: GET
-    path: /v3/users/me/orders/
-    description: List orders placed by the authenticated user
-    risk: read
   create_order:
     method: POST
     path: /v3/events/{event_id}/orders/

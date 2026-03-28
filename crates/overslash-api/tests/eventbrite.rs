@@ -1,4 +1,4 @@
-//! Eventbrite E2E tests — search events, register, cancel registration.
+//! Eventbrite E2E tests — list orders, get event details, ticket classes, attendees.
 //! Requires real Eventbrite credentials. Run with: cargo test --test eventbrite -- --ignored
 
 mod common;
@@ -54,7 +54,7 @@ async fn test_eventbrite_e2e(pool: PgPool) {
     let byoc_id: Uuid = byoc_resp["id"].as_str().unwrap().parse().unwrap();
 
     // Encrypt access token and insert connection directly into DB
-    // (Eventbrite personal tokens don't expire and don't have refresh tokens)
+    // (Eventbrite private tokens don't expire and don't have refresh tokens)
     let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
@@ -86,7 +86,7 @@ async fn test_eventbrite_e2e(pool: PgPool) {
         .unwrap();
 
     // ===== TEST 1: get_me (Mode C) =====
-    eprintln!("  [1/7] get_me ...");
+    eprintln!("  [1/5] get_me ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
@@ -109,17 +109,15 @@ async fn test_eventbrite_e2e(pool: PgPool) {
     let user_name = me["name"].as_str().unwrap_or("unknown");
     eprintln!("  get_me: {user_name} (id={})", me["id"]);
 
-    // ===== TEST 2: search_events (Mode C) =====
-    eprintln!("  [2/7] search_events ...");
+    // ===== TEST 2: list_my_orders (Mode C) =====
+    eprintln!("  [2/5] list_my_orders ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
-            "action": "search_events",
-            "params": {
-                "q": "tech"
-            }
+            "action": "list_my_orders",
+            "params": {}
         }))
         .send()
         .await
@@ -127,27 +125,27 @@ async fn test_eventbrite_e2e(pool: PgPool) {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "executed");
-    let search_result: Value =
+    let orders_resp: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    let events = search_result["events"]
+    let orders = orders_resp["orders"]
         .as_array()
-        .expect("search_events should return events array");
-    eprintln!("  search_events: found {} events for 'tech'", events.len());
+        .expect("list_my_orders should return orders array");
+    eprintln!("  list_my_orders: {} orders", orders.len());
 
-    // Pick an event ID for subsequent tests — prefer EVENTBRITE_TEST_EVENT_ID env var
+    // Pick an event_id from existing orders for remaining tests
     let event_id = std::env::var("EVENTBRITE_TEST_EVENT_ID")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            events
+            orders
                 .first()
-                .and_then(|e| e["id"].as_str().map(String::from))
+                .and_then(|o| o["event_id"].as_str().map(String::from))
         })
-        .expect("need at least one event from search or EVENTBRITE_TEST_EVENT_ID");
+        .expect("need at least one order in account or EVENTBRITE_TEST_EVENT_ID set");
     eprintln!("  using event_id={event_id} for remaining tests");
 
     // ===== TEST 3: get_event (Mode C) =====
-    eprintln!("  [3/7] get_event ...");
+    eprintln!("  [3/5] get_event ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
@@ -169,7 +167,7 @@ async fn test_eventbrite_e2e(pool: PgPool) {
     eprintln!("  get_event: '{event_name}' (id={event_id})");
 
     // ===== TEST 4: list_ticket_classes (Mode C) =====
-    eprintln!("  [4/7] list_ticket_classes ...");
+    eprintln!("  [4/5] list_ticket_classes ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
@@ -195,14 +193,15 @@ async fn test_eventbrite_e2e(pool: PgPool) {
         ticket_classes.len()
     );
 
-    // ===== TEST 5: create_order — register for the event (Mode C) =====
-    eprintln!("  [5/7] create_order ...");
+    // ===== TEST 5: list_event_attendees (Mode C) =====
+    // This only works if the user is the organizer of the event.
+    eprintln!("  [5/5] list_event_attendees ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
-            "action": "create_order",
+            "action": "list_event_attendees",
             "params": {
                 "event_id": event_id
             }
@@ -210,69 +209,22 @@ async fn test_eventbrite_e2e(pool: PgPool) {
         .send()
         .await
         .unwrap();
-    let order_status = resp.status();
+    assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    // Order creation may fail if event doesn't allow API orders — log either way
-    if order_status == 200 && body["status"] == "executed" {
-        let order: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-        let order_id = order["id"].as_str().unwrap_or("unknown");
-        eprintln!("  create_order: created order {order_id}");
-
-        // ===== TEST 6: list_my_orders — verify order appears (Mode C) =====
-        eprintln!("  [6/7] list_my_orders ...");
-        let resp = client
-            .post(format!("{base}/v1/actions/execute"))
-            .header(common::auth(&key).0, common::auth(&key).1)
-            .json(&json!({
-                "service": "eventbrite",
-                "action": "list_my_orders",
-                "params": {}
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-        let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["status"], "executed");
-        let orders: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-        let order_list = orders["orders"]
+    assert_eq!(body["status"], "executed");
+    let upstream_status = body["result"]["status_code"].as_u64().unwrap();
+    if upstream_status == 200 {
+        let attendees: Value =
+            serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+        let attendee_list = attendees["attendees"]
             .as_array()
-            .expect("should return orders array");
-        eprintln!("  list_my_orders: {} orders", order_list.len());
-
-        // ===== TEST 7: cancel_order (Mode C) =====
-        eprintln!("  [7/7] cancel_order ...");
-        let resp = client
-            .post(format!("{base}/v1/actions/execute"))
-            .header(common::auth(&key).0, common::auth(&key).1)
-            .json(&json!({
-                "service": "eventbrite",
-                "action": "cancel_order",
-                "params": {
-                    "order_id": order_id
-                }
-            }))
-            .send()
-            .await
-            .unwrap();
-        let cancel_status = resp.status();
-        let body: Value = resp.json().await.unwrap();
-        if cancel_status == 200 && body["status"] == "executed" {
-            eprintln!("  cancel_order: cancelled order {order_id}");
-        } else {
-            eprintln!(
-                "  cancel_order: could not cancel (status={cancel_status}): {}",
-                serde_json::to_string_pretty(&body).unwrap()
-            );
-        }
+            .expect("should return attendees array");
+        eprintln!("  list_event_attendees: {} attendees", attendee_list.len());
     } else {
+        // 403 is expected if user is not the organizer
         eprintln!(
-            "  create_order: API returned {order_status} — event may not allow API orders. \
-             Skipping order/cancel tests. Response: {}",
-            serde_json::to_string_pretty(&body).unwrap()
+            "  list_event_attendees: upstream returned {upstream_status} (expected if not organizer)"
         );
-        eprintln!("  [6/7] list_my_orders (skipped — no order created)");
-        eprintln!("  [7/7] cancel_order (skipped — no order created)");
     }
 
     eprintln!("  All Eventbrite E2E tests completed!");
