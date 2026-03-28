@@ -1,4 +1,4 @@
-.PHONY: dev down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks
+.PHONY: dev down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks docker-build docker-run infra-plan infra-apply
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 
@@ -54,3 +54,17 @@ mock-target:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "Git hooks installed."
+
+# Docker
+docker-build:
+	docker build -t overslash-api .
+
+docker-run: docker-build
+	docker compose up
+
+# Infrastructure (usage: make infra-plan ENV=prod)
+infra-plan:
+	cd infra && tofu plan -var-file=env/$(ENV).tfvars
+
+infra-apply:
+	cd infra && tofu apply -var-file=env/$(ENV).tfvars

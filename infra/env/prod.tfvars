@@ -1,0 +1,9 @@
+project_id              = "overslash-prod"
+environment             = "prod"
+region                  = "us-central1"
+domain                  = "api.overslash.com"
+cloud_run_min_instances = 1
+cloud_run_max_instances = 10
+cloud_sql_tier          = "db-custom-1-3840"
+cloud_sql_disk_size_gb  = 20
+docker_image            = "us-central1-docker.pkg.dev/overslash-prod/overslash/overslash-api:latest"

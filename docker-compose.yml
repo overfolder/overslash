@@ -1,0 +1,35 @@
+services:
+  overslash:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://overslash:overslash@postgres:5432/overslash
+      SECRETS_ENCRYPTION_KEY: "${SECRETS_ENCRYPTION_KEY:?Set SECRETS_ENCRYPTION_KEY in .env (64 hex chars)}"
+      HOST: "0.0.0.0"
+      PORT: "3000"
+      RUST_LOG: "${RUST_LOG:-info}"
+      SERVICES_DIR: "services"
+      PUBLIC_URL: "${PUBLIC_URL:-http://localhost:3000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: overslash
+      POSTGRES_PASSWORD: overslash
+      POSTGRES_DB: overslash
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U overslash
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
