@@ -47,6 +47,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -57,6 +58,52 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
     });
 
     (addr, Client::new())
+}
+
+/// Start API with dev auth enabled. Returns (base_url, client).
+pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: true,
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::permissions::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::audit::router())
+        .merge(overslash_api::routes::webhooks::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::auth::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    (format!("http://{addr}"), Client::new())
 }
 
 /// Start the mock target in-process on a random port.
@@ -270,6 +317,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
