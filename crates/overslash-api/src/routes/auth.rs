@@ -207,7 +207,26 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
         if let Some(existing) = identity::find_by_email(&state.db, dev_email).await? {
             (existing.org_id, existing.id)
         } else {
-            let new_org = org::create(&state.db, "Dev Org", "dev-org").await?;
+            let new_org = match org::create(&state.db, "Dev Org", "dev-org").await {
+                Ok(o) => o,
+                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+                    // Concurrent request already created it — retry lookup
+                    let existing = identity::find_by_email(&state.db, dev_email)
+                        .await?
+                        .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
+                    return Ok((
+                        HeaderMap::new(),
+                        axum::Json(json!({
+                            "status": "authenticated",
+                            "org_id": existing.org_id,
+                            "identity_id": existing.id,
+                            "email": dev_email,
+                            "token": "",
+                        })),
+                    ));
+                }
+                Err(e) => return Err(e.into()),
+            };
             let new_identity = identity::create_with_email(
                 &state.db,
                 new_org.id,
@@ -305,11 +324,23 @@ async fn find_or_create_user(
         return Ok((existing.org_id, existing.id, userinfo.email.clone()));
     }
 
-    // Create new org + identity. If a concurrent request raced us and already
-    // created the identity (unique constraint on email), retry the lookup.
+    // Create new org + identity. Retry slug generation on collision.
+    // If a concurrent request raced us on the identity email, retry the lookup.
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
-    let slug = generate_slug(&userinfo.email);
-    let new_org = org::create(&state.db, display_name, &slug).await?;
+    let new_org = {
+        let mut attempts = 0;
+        loop {
+            let slug = generate_slug(&userinfo.email);
+            match org::create(&state.db, display_name, &slug).await {
+                Ok(o) => break o,
+                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() && attempts < 3 => {
+                    attempts += 1;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
 
     let metadata = json!({
         "google_sub": userinfo.sub,
