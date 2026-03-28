@@ -6,10 +6,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::{self, AuditEntry};
+
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AuthContext, ClientIp},
     services::{client_credentials, oauth},
 };
 use overslash_core::crypto;
@@ -114,6 +116,7 @@ struct OAuthCallbackParams {
 
 async fn oauth_callback(
     State(state): State<AppState>,
+    ip: ClientIp,
     Query(params): Query<OAuthCallbackParams>,
 ) -> Result<Json<serde_json::Value>> {
     // Parse state: org_id:identity_id:provider_key:byoc_credential_id[:code_verifier]
@@ -200,14 +203,17 @@ async fn oauth_callback(
     .await?;
 
     // Audit
-    let _ = overslash_db::repos::audit::log(
+    let _ = audit::log(
         &state.db,
-        org_id,
-        Some(identity_id),
-        "connection.created",
-        Some("connection"),
-        Some(conn.id),
-        serde_json::json!({ "provider": provider_key }),
+        &AuditEntry {
+            org_id,
+            identity_id: Some(identity_id),
+            action: "connection.created",
+            resource_type: Some("connection"),
+            resource_id: Some(conn.id),
+            detail: serde_json::json!({ "provider": provider_key }),
+            ip_address: ip.0.as_deref(),
+        },
     )
     .await;
 
@@ -252,6 +258,7 @@ async fn list_connections(
 async fn delete_connection(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     // Scope delete: if identity-bound key, must own the connection.
@@ -261,5 +268,22 @@ async fn delete_connection(
     } else {
         overslash_db::repos::connection::delete_by_org(&state.db, id, auth.org_id).await?
     };
+
+    if deleted {
+        let _ = overslash_db::repos::audit::log(
+            &state.db,
+            &overslash_db::repos::audit::AuditEntry {
+                org_id: auth.org_id,
+                identity_id: auth.identity_id,
+                action: "connection.deleted",
+                resource_type: Some("connection"),
+                resource_id: Some(id),
+                detail: serde_json::json!({}),
+                ip_address: ip.0.as_deref(),
+            },
+        )
+        .await;
+    }
+
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }

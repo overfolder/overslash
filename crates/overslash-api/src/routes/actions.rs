@@ -4,7 +4,14 @@ use axum::{Json, Router, extract::State, http::StatusCode, response::IntoRespons
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AppState, error::AppError, extractors::AuthContext, services::http_executor};
+use overslash_db::repos::audit::{self, AuditEntry};
+
+use crate::{
+    AppState,
+    error::AppError,
+    extractors::{AuthContext, ClientIp},
+    services::http_executor,
+};
 use overslash_core::{
     crypto,
     permissions::{PermissionKey, PermissionResult, check_permissions},
@@ -60,6 +67,7 @@ enum ExecuteResponse {
 async fn execute_action(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Json(req): Json<ExecuteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let identity_id = auth
@@ -122,14 +130,17 @@ async fn execute_action(
                 )
                 .await?;
 
-                let _ = overslash_db::repos::audit::log(
+                let _ = audit::log(
                     &state.db,
-                    auth.org_id,
-                    Some(identity_id),
-                    "approval.created",
-                    Some("approval"),
-                    Some(approval.id),
-                    serde_json::json!({ "summary": summary }),
+                    &AuditEntry {
+                        org_id: auth.org_id,
+                        identity_id: Some(identity_id),
+                        action: "approval.created",
+                        resource_type: Some("approval"),
+                        resource_id: Some(approval.id),
+                        detail: serde_json::json!({ "summary": summary }),
+                        ip_address: ip.0.as_deref(),
+                    },
                 )
                 .await;
 
@@ -182,19 +193,25 @@ async fn execute_action(
     )
     .await?;
 
-    let _ = overslash_db::repos::audit::log(
+    let _ = audit::log(
         &state.db,
-        auth.org_id,
-        Some(identity_id),
-        "action.executed",
-        None,
-        None,
-        serde_json::json!({
-            "method": action_req.method,
-            "url": action_req.url,
-            "status_code": result.status_code,
-            "duration_ms": result.duration_ms,
-        }),
+        &AuditEntry {
+            org_id: auth.org_id,
+            identity_id: Some(identity_id),
+            action: "action.executed",
+            resource_type: req.service.as_deref(),
+            resource_id: None,
+            detail: serde_json::json!({
+                "method": action_req.method,
+                "url": action_req.url,
+                "status_code": result.status_code,
+                "duration_ms": result.duration_ms,
+                "description": description,
+                "service": req.service,
+                "action": req.action,
+            }),
+            ip_address: ip.0.as_deref(),
+        },
     )
     .await;
 

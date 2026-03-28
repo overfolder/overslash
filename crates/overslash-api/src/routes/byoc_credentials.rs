@@ -6,10 +6,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::audit::{self, AuditEntry};
+
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AuthContext, ClientIp},
 };
 use overslash_core::crypto;
 
@@ -41,6 +43,7 @@ struct ByocCredentialResponse {
 async fn create_byoc(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Json(req): Json<CreateByocRequest>,
 ) -> Result<Json<ByocCredentialResponse>> {
     // Validate provider exists
@@ -87,14 +90,17 @@ async fn create_byoc(
         AppError::Database(e)
     })?;
 
-    let _ = overslash_db::repos::audit::log(
+    let _ = audit::log(
         &state.db,
-        auth.org_id,
-        auth.identity_id,
-        "byoc_credential.created",
-        Some("byoc_credential"),
-        Some(row.id),
-        serde_json::json!({ "provider": req.provider }),
+        &AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "byoc_credential.created",
+            resource_type: Some("byoc_credential"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({ "provider": req.provider }),
+            ip_address: ip.0.as_deref(),
+        },
     )
     .await;
 
@@ -131,6 +137,7 @@ async fn list_byoc(
 async fn delete_byoc(
     State(state): State<AppState>,
     auth: AuthContext,
+    ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let deleted =
@@ -139,12 +146,15 @@ async fn delete_byoc(
     if deleted {
         let _ = overslash_db::repos::audit::log(
             &state.db,
-            auth.org_id,
-            auth.identity_id,
-            "byoc_credential.deleted",
-            Some("byoc_credential"),
-            Some(id),
-            serde_json::json!({}),
+            &overslash_db::repos::audit::AuditEntry {
+                org_id: auth.org_id,
+                identity_id: auth.identity_id,
+                action: "byoc_credential.deleted",
+                resource_type: Some("byoc_credential"),
+                resource_id: Some(id),
+                detail: serde_json::json!({}),
+                ip_address: ip.0.as_deref(),
+            },
         )
         .await;
     }
