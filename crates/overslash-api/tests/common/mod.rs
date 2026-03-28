@@ -392,6 +392,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,

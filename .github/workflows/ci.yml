@@ -45,17 +45,6 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Debug test files
-        run: |
-          echo "=== Test files ==="
-          ls -la crates/overslash-api/tests/*.rs
-          echo "=== common/mod.rs lines ==="
-          wc -l crates/overslash-api/tests/common/mod.rs
-          echo "=== signing_key occurrences ==="
-          grep -n signing_key crates/overslash-api/tests/common/mod.rs || echo "NONE FOUND"
-          echo "=== Config instances ==="
-          grep -n 'Config {' crates/overslash-api/tests/common/mod.rs
-
       - name: Format check
         run: cargo fmt --check
 
