@@ -1,13 +1,46 @@
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
 
-use crate::{AppState, error::Result, extractors::ClientIp};
+use crate::{
+    AppState,
+    error::Result,
+    extractors::{AuthContext, ClientIp},
+};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/api-keys", post(create_api_key))
+    Router::new().route("/v1/api-keys", get(list_api_keys).post(create_api_key))
+}
+
+#[derive(Serialize)]
+struct ApiKeyListItem {
+    id: Uuid,
+    name: String,
+    key_prefix: String,
+    identity_id: Option<Uuid>,
+    last_used_at: Option<String>,
+    created_at: String,
+}
+
+async fn list_api_keys(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Vec<ApiKeyListItem>>> {
+    let rows = overslash_db::repos::api_key::list_by_org(&state.db, auth.org_id).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| ApiKeyListItem {
+                id: r.id,
+                name: r.name,
+                key_prefix: r.key_prefix,
+                identity_id: r.identity_id,
+                last_used_at: r.last_used_at.map(|t| t.to_string()),
+                created_at: r.created_at.to_string(),
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]

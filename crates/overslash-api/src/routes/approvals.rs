@@ -19,6 +19,12 @@ pub fn router() -> Router<AppState> {
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{id}", get(get_approval))
         .route("/v1/approvals/{id}/resolve", post(resolve_approval))
+        // Token-based endpoints (no auth required — for standalone approval pages)
+        .route("/v1/approvals/by-token/{token}", get(get_approval_by_token))
+        .route(
+            "/v1/approvals/by-token/{token}/resolve",
+            post(resolve_approval_by_token),
+        )
 }
 
 #[derive(Serialize)]
@@ -128,6 +134,114 @@ async fn resolve_approval(
         let db = state.db.clone();
         let client = state.http_client.clone();
         let org_id = auth.org_id;
+        let approval_id = row.id;
+        let summary = row.action_summary.clone();
+        let final_status = row.status.clone();
+        tokio::spawn(async move {
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                "approval.resolved",
+                serde_json::json!({
+                    "approval_id": approval_id,
+                    "status": final_status,
+                    "action_summary": summary,
+                }),
+            )
+            .await;
+        });
+    }
+
+    Ok(Json(ApprovalResponse::from(row)))
+}
+
+// --- Token-based endpoints (unauthenticated, for standalone approval pages) ---
+
+async fn get_approval_by_token(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Json<ApprovalResponse>> {
+    let row = overslash_db::repos::approval::get_by_token(&state.db, &token)
+        .await?
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+
+    // Don't expose expired approvals via public endpoint
+    if row.status == "pending" && row.expires_at < time::OffsetDateTime::now_utc() {
+        return Err(AppError::Gone("approval has expired".into()));
+    }
+
+    Ok(Json(ApprovalResponse::from(row)))
+}
+
+async fn resolve_approval_by_token(
+    State(state): State<AppState>,
+    ip: ClientIp,
+    Path(token): Path<String>,
+    Json(req): Json<ResolveRequest>,
+) -> Result<Json<ApprovalResponse>> {
+    let existing = overslash_db::repos::approval::get_by_token(&state.db, &token)
+        .await?
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+
+    if existing.status != "pending" {
+        return Err(AppError::Conflict("approval is not pending".into()));
+    }
+
+    if existing.expires_at < time::OffsetDateTime::now_utc() {
+        return Err(AppError::Gone("approval has expired".into()));
+    }
+
+    let (status, remember) = match req.decision.as_str() {
+        "allow" => ("allowed", false),
+        "deny" => ("denied", false),
+        "allow_remember" => ("allowed", true),
+        other => return Err(AppError::BadRequest(format!("invalid decision: {other}"))),
+    };
+
+    let row =
+        overslash_db::repos::approval::resolve(&state.db, existing.id, status, "token", remember)
+            .await?
+            .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
+
+    // If allow_remember, create permission rules from the approval's permission keys
+    if remember {
+        for key in &row.permission_keys {
+            let _ = overslash_db::repos::permission_rule::create(
+                &state.db,
+                row.org_id,
+                row.identity_id,
+                key,
+                "allow",
+            )
+            .await;
+        }
+    }
+
+    let _ = audit::log(
+        &state.db,
+        &AuditEntry {
+            org_id: row.org_id,
+            identity_id: None,
+            action: "approval.resolved",
+            resource_type: Some("approval"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "decision": &req.decision,
+                "status": &row.status,
+                "action_summary": &row.action_summary,
+                "resolved_via": "token",
+            }),
+            ip_address: ip.0.as_deref(),
+        },
+    )
+    .await;
+
+    // Dispatch webhook (fire-and-forget)
+    {
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let org_id = row.org_id;
         let approval_id = row.id;
         let summary = row.action_summary.clone();
         let final_status = row.status.clone();

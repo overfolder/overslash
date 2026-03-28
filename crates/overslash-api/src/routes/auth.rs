@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
@@ -161,19 +161,13 @@ async fn google_callback(
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
-    let body = json!({
-        "status": "authenticated",
-        "org_id": org_id,
-        "identity_id": identity_id,
-        "email": email,
-    });
-
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
 
-    Ok((StatusCode::OK, resp_headers, axum::Json(body)).into_response())
+    // Redirect to dashboard after successful login
+    Ok((resp_headers, Redirect::to(&state.config.dashboard_url)).into_response())
 }
 
 /// Return current session user info from JWT cookie.
@@ -195,8 +189,17 @@ async fn me(
     })))
 }
 
+#[derive(Deserialize)]
+struct DevTokenQuery {
+    redirect: Option<bool>,
+}
+
 /// Dev-only: issue a JWT for a test user+org. Requires DEV_AUTH env var.
-async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+/// Pass ?redirect=true to redirect to the dashboard instead of returning JSON.
+async fn dev_token(
+    State(state): State<AppState>,
+    Query(query): Query<DevTokenQuery>,
+) -> Result<Response, AppError> {
     if !state.config.dev_auth_enabled {
         return Err(AppError::NotFound("not found".into()));
     }
@@ -252,16 +255,21 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
 
-    Ok((
-        headers,
-        axum::Json(json!({
-            "status": "authenticated",
-            "org_id": org_id,
-            "identity_id": identity_id,
-            "email": dev_email,
-            "token": token,
-        })),
-    ))
+    if query.redirect.unwrap_or(false) {
+        Ok((headers, Redirect::to(&state.config.dashboard_url)).into_response())
+    } else {
+        Ok((
+            headers,
+            axum::Json(json!({
+                "status": "authenticated",
+                "org_id": org_id,
+                "identity_id": identity_id,
+                "email": dev_email,
+                "token": token,
+            })),
+        )
+            .into_response())
+    }
 }
 
 // --- helpers ---
