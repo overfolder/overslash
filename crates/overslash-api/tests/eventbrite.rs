@@ -11,10 +11,10 @@ use uuid::Uuid;
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
 async fn test_eventbrite_e2e(pool: PgPool) {
     // --- Guard: skip if credentials not set ---
-    let access_token = match std::env::var("EVENTBRITE_TEST_ACCESS_TOKEN") {
+    let access_token = match std::env::var("OAUTH_EVENTBRITE_PRIVATE_TOKEN") {
         Ok(t) if !t.is_empty() => t,
         _ => {
-            eprintln!("SKIP: EVENTBRITE_TEST_ACCESS_TOKEN not set");
+            eprintln!("SKIP: OAUTH_EVENTBRITE_PRIVATE_TOKEN not set");
             return;
         }
     };
