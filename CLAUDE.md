@@ -47,3 +47,4 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 2. **Parse, don't validate.** Config and API inputs are parsed into typed structs at the boundary.
 3. **Secrets never leave the vault.** Encrypted at rest, injected at execution time, never returned via API.
 4. **No platform-specific logic.** Overslash is a generic gateway. Telegram buttons, Slack bots, etc. are caller-side concerns.
+5. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
