@@ -1,0 +1,28 @@
+project_id  = "your-gcp-project-id"
+region      = "us-central1"
+environment = "prod"
+
+# Domain (leave empty to use Cloud Run default URL)
+domain = "api.overslash.com"
+
+# Cloud SQL
+cloud_sql_tier         = "db-f1-micro"
+cloud_sql_disk_size_gb = 10
+
+# Cloud Run
+cloud_run_cpu           = "1"
+cloud_run_memory        = "512Mi"
+cloud_run_min_instances = 0
+cloud_run_max_instances = 10
+
+# Cloud Build / GitHub
+github_owner  = "overfolder"
+github_repo   = "overslash"
+github_branch = "^master$"
+
+# Optional features
+enable_redis = false
+enable_dns   = false
+
+# Redis (if enabled)
+redis_memory_size_gb = 1

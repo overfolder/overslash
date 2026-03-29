@@ -67,3 +67,28 @@ jobs:
 
       - name: Coverage summary
         run: cargo llvm-cov --workspace --summary-only --no-run
+
+  infra:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.8"
+          tofu_wrapper: false
+
+      - name: Format check
+        run: tofu fmt -check -recursive
+
+      - name: Initialize
+        run: tofu init -backend=false
+
+      - name: Validate
+        run: tofu validate
