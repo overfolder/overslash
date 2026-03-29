@@ -1,0 +1,82 @@
+name: Sentry Comments Check
+
+on:
+  pull_request:
+    branches: [master, dev]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issue_comment:
+    types: [created, edited, deleted]
+
+jobs:
+  check-sentry-comments:
+    name: No unresolved Sentry issues
+    if: github.event_name == 'pull_request' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for unresolved Sentry comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber =
+              context.payload.pull_request?.number ??
+              context.payload.issue?.number;
+
+            if (!prNumber) {
+              core.info('No PR number found, skipping.');
+              return;
+            }
+
+            // Fetch all review comments on the PR
+            const reviewComments = await github.paginate(
+              github.rest.pulls.listReviewComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page: 100,
+              }
+            );
+
+            // Fetch all issue comments on the PR
+            const issueComments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100,
+              }
+            );
+
+            const sentryBots = ['sentry-io[bot]', 'sentry-autofix[bot]'];
+            const isSentry = (c) => sentryBots.includes(c.user?.login);
+
+            // Review comments: unresolved if not part of a resolved thread
+            const unresolvedReview = reviewComments.filter(
+              (c) => isSentry(c) && !c.resolved
+            );
+
+            // Issue comments: look for open Sentry suggestions / issues
+            // Sentry bot comments that contain unresolved markers
+            const unresolvedIssue = issueComments.filter(
+              (c) => isSentry(c) && !c.body?.includes('<!-- resolved -->')
+            );
+
+            const total = unresolvedReview.length + unresolvedIssue.length;
+
+            if (total > 0) {
+              const lines = [];
+              for (const c of unresolvedReview) {
+                lines.push(`- Review comment ${c.html_url}`);
+              }
+              for (const c of unresolvedIssue) {
+                lines.push(`- Issue comment ${c.html_url}`);
+              }
+              core.setFailed(
+                `Found ${total} unresolved Sentry comment(s):\n${lines.join('\n')}\n\n` +
+                'Resolve all Sentry-reported issues before merging.'
+              );
+            } else {
+              core.info('No unresolved Sentry comments found.');
+            }
