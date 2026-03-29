@@ -6,7 +6,7 @@ variable "project_id" {
 variable "region" {
   description = "GCP region for all resources"
   type        = string
-  default     = "us-central1"
+  default     = "europe-west1"
 }
 
 variable "environment" {
@@ -31,6 +31,12 @@ variable "enable_dns" {
   description = "Enable Cloud DNS managed zone"
   type        = bool
   default     = false
+}
+
+variable "cloud_sql_zone" {
+  description = "Preferred zone for Cloud SQL (e.g. europe-west1-b)"
+  type        = string
+  default     = "europe-west1-b"
 }
 
 variable "cloud_sql_tier" {

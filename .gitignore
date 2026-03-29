@@ -36,5 +36,5 @@ dashboard/build/
 infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.*
-infra/*.tfvars
-!infra/*.tfvars.example
+infra/*.tfplan
+infra/terraform.tfvars

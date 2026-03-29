@@ -53,14 +53,14 @@ After infrastructure is created, you need to push the first Docker image. Cloud 
 ```bash
 # Build and push from your machine
 IMAGE_URL=$(tofu output -raw artifact_registry_url)/overslash-api:latest
-gcloud auth configure-docker us-central1-docker.pkg.dev
+gcloud auth configure-docker europe-west1-docker.pkg.dev
 docker build -t $IMAGE_URL ..
 docker push $IMAGE_URL
 
 # Deploy to Cloud Run
 gcloud run deploy overslash-api \
   --image $IMAGE_URL \
-  --region us-central1
+  --region europe-west1
 ```
 
 ### 5. Set OAuth Secrets
@@ -93,7 +93,7 @@ See `variables.tf` for all configurable options. Key ones:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `project_id` | (required) | GCP project ID |
-| `region` | `us-central1` | GCP region |
+| `region` | `europe-west1` | GCP region |
 | `domain` | `""` | Custom domain (empty = use Cloud Run URL) |
 | `cloud_sql_tier` | `db-f1-micro` | Cloud SQL machine type |
 | `enable_redis` | `false` | Enable Memorystore Redis |

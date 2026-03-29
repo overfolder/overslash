@@ -64,6 +64,7 @@ module "cloud_sql" {
 
   tier         = var.cloud_sql_tier
   disk_size_gb = var.cloud_sql_disk_size_gb
+  zone         = var.cloud_sql_zone
 
   private_network_id = module.networking.vpc_id
 

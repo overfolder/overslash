@@ -16,6 +16,11 @@ variable "disk_size_gb" {
   default = 10
 }
 
+variable "zone" {
+  type    = string
+  default = "europe-west1-b"
+}
+
 variable "private_network_id" {
   type = string
 }
@@ -43,6 +48,9 @@ resource "google_sql_database_instance" "overslash" {
     disk_size         = var.disk_size_gb
     disk_autoresize   = true
     availability_type = "ZONAL"
+    location_preference {
+      zone = var.zone
+    }
 
     ip_configuration {
       ipv4_enabled                                  = false
