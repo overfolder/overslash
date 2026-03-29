@@ -1,0 +1,15 @@
+target/
+.git/
+.github/
+.githooks/
+docs/
+infra/
+tests/mock-target/src/
+crates/overslash-api/tests/
+*.md
+!crates/**/README.md
+.env
+.env.*
+docker-compose*.yml
+Makefile
+SCHEMA.sql

@@ -1,0 +1,37 @@
+project_id = "your-gcp-project-id"
+region     = "europe-west1"
+env        = "prod"
+
+# Domain (leave empty to use Cloud Run default URL)
+domain = "api.overslash.com"
+
+# Cloud SQL
+cloud_sql_tier         = "db-f1-micro"
+cloud_sql_disk_size_gb = 10
+cloud_sql_zone         = "europe-west1-b"
+
+# Cloud Run
+cloud_run_cpu           = "1"
+cloud_run_memory        = "512Mi"
+cloud_run_min_instances = 0
+cloud_run_max_instances = 3
+
+# Networking — false = Cloud SQL Auth Proxy (cheaper), true = VPC private networking
+use_private_vpc = false
+
+# Cloud Build / GitHub
+github_owner  = "overfolder"
+github_repo   = "overslash"
+github_branch = "^master$"
+
+# Night shutdown (Europe/Madrid timezone)
+enable_infra_scheduler     = false
+infra_scheduler_stop_cron  = "0 23 * * *"
+infra_scheduler_start_cron = "0 7 * * 1-5"
+
+# Optional features
+enable_valkey = false
+enable_dns   = false
+
+# Valkey (if enabled)
+valkey_memory_size_gb = 1

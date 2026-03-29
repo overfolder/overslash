@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: overslash
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-overslash_prod}
+      POSTGRES_DB: overslash
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U overslash"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://overslash:${DB_PASSWORD:-overslash_prod}@postgres:5432/overslash
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      RUST_LOG: ${RUST_LOG:-info}
+      APPROVAL_EXPIRY_SECS: ${APPROVAL_EXPIRY_SECS:-1800}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      GOOGLE_AUTH_CLIENT_ID: ${GOOGLE_AUTH_CLIENT_ID:-}
+      GOOGLE_AUTH_CLIENT_SECRET: ${GOOGLE_AUTH_CLIENT_SECRET:-}
+      REDIS_URL: redis://valkey:6379
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
