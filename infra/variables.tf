@@ -90,7 +90,7 @@ variable "cloud_run_cpu" {
 variable "cloud_run_memory" {
   description = "Cloud Run memory allocation (e.g. 256Mi, 512Mi)"
   type        = string
-  default     = "256Mi"
+  default     = "512Mi"
 }
 
 variable "cloud_run_min_instances" {

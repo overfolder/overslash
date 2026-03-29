@@ -11,7 +11,7 @@ cloud_sql_zone         = "europe-west1-b"
 
 # Cloud Run — scale to zero, minimal resources
 cloud_run_cpu           = "1"
-cloud_run_memory        = "256Mi"
+cloud_run_memory        = "512Mi"
 cloud_run_min_instances = 0
 cloud_run_max_instances = 3
 
