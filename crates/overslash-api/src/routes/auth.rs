@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/google/login", get(google_login))
         .route("/auth/google/callback", get(google_callback))
         .route("/auth/me", get(me))
+        .route("/auth/me/identity", get(me_identity))
         .route("/auth/dev/token", get(dev_token))
 }
 
@@ -192,6 +193,34 @@ async fn me(
         "identity_id": claims.sub,
         "org_id": claims.org,
         "email": claims.email,
+    })))
+}
+
+/// Return identity details for the current session user (cookie auth).
+/// Used by the dashboard profile page.
+async fn me_identity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    let token = extract_cookie(&headers, "oss_session")
+        .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
+
+    let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
+    let claims = jwt::verify(&jwt_secret, &token)
+        .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
+
+    // Fetch the identity row for richer details (name, kind, external_id)
+    let ident = identity::get_by_id(&state.db, claims.sub)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    Ok(axum::Json(json!({
+        "identity_id": ident.id,
+        "org_id": ident.org_id,
+        "email": claims.email,
+        "name": ident.name,
+        "kind": ident.kind,
+        "external_id": ident.external_id,
     })))
 }
 

@@ -1,15 +1,33 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-body {
-  @apply bg-gray-950 text-gray-100;
+:root {
+	--color-bg: #0f1117;
+	--color-surface: #1a1d27;
+	--color-border: #2a2d3a;
+	--color-text: #e1e4ed;
+	--color-text-muted: #8b8fa3;
+	--color-primary: #6366f1;
+	--color-primary-hover: #818cf8;
+	--color-danger: #ef4444;
+	--color-success: #22c55e;
+	--font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
-/* JSON syntax highlighting */
-.json-key { color: #7dd3fc; }
-.json-string { color: #86efac; }
-.json-number { color: #fbbf24; }
-.json-bool { color: #c084fc; }
-.json-null { color: #6b7280; }
-.json-bracket { color: #9ca3af; }
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	background: var(--color-bg);
+	color: var(--color-text);
+	line-height: 1.6;
+}
+
+a {
+	color: var(--color-primary);
+	text-decoration: none;
+}
+a:hover {
+	color: var(--color-primary-hover);
+}
