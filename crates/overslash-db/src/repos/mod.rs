@@ -3,6 +3,7 @@ pub mod approval;
 pub mod audit;
 pub mod byoc_credential;
 pub mod connection;
+pub mod enrollment_token;
 pub mod identity;
 pub mod oauth_provider;
 pub mod org;

@@ -80,6 +80,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::services::router())
         .merge(routes::connections::router())
         .merge(routes::byoc_credentials::router())
+        .merge(routes::enrollment::router())
         .merge(routes::auth::router())
         .with_state(state)
         .layer(CompressionLayer::new())

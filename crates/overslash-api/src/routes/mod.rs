@@ -5,6 +5,7 @@ pub mod audit;
 pub mod auth;
 pub mod byoc_credentials;
 pub mod connections;
+pub mod enrollment;
 pub mod health;
 pub mod identities;
 pub mod orgs;

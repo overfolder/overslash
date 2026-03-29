@@ -49,6 +49,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
@@ -99,6 +100,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
@@ -369,6 +371,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
@@ -416,6 +419,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
