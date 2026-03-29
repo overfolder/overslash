@@ -35,5 +35,5 @@ output "cloud_build_service_account" {
 
 output "valkey_host" {
   description = "Valkey host (if enabled)"
-  value       = var.enable_valkey ? module.memorystore[0].valkey_host : ""
+  value       = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
 }

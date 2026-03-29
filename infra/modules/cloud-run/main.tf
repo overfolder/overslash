@@ -142,10 +142,6 @@ resource "google_cloud_run_v2_service" "api" {
         value = "0.0.0.0"
       }
       env {
-        name  = "PORT"
-        value = "8080"
-      }
-      env {
         name  = "RUST_LOG"
         value = "info"
       }
@@ -153,9 +149,12 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "APPROVAL_EXPIRY_SECS"
         value = "1800"
       }
-      env {
-        name  = "PUBLIC_URL"
-        value = var.domain != "" ? "https://${var.domain}" : "WILL_BE_SET_AFTER_DEPLOY"
+      dynamic "env" {
+        for_each = var.domain != "" ? [1] : []
+        content {
+          name  = "PUBLIC_URL"
+          value = "https://${var.domain}"
+        }
       }
       env {
         name  = "SERVICES_DIR"

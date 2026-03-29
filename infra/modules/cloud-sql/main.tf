@@ -35,13 +35,9 @@ variable "private_network_id" {
   default = ""
 }
 
-variable "db_password_secret_id" {
-  type = string
-}
-
-data "google_secret_manager_secret_version" "db_password" {
-  secret  = var.db_password_secret_id
-  project = var.project_id
+variable "db_password" {
+  type      = string
+  sensitive = true
 }
 
 resource "google_sql_database_instance" "db" {
@@ -104,7 +100,7 @@ resource "google_sql_user" "db" {
   name     = "overslash"
   instance = google_sql_database_instance.db.name
   project  = var.project_id
-  password = data.google_secret_manager_secret_version.db_password.secret_data
+  password = var.db_password
 }
 
 output "connection_name" {

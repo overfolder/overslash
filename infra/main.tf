@@ -78,7 +78,7 @@ module "cloud_sql" {
   use_private_vpc    = var.use_private_vpc
   private_network_id = var.use_private_vpc ? module.networking[0].vpc_id : ""
 
-  db_password_secret_id = module.secret_manager.db_password_secret_id
+  db_password = module.secret_manager.db_password_value
 
   depends_on = [google_project_service.apis]
 }
@@ -115,8 +115,8 @@ module "cloud_run" {
 
   domain = var.domain
 
-  redis_host = var.enable_valkey ? module.memorystore[0].redis_host : ""
-  redis_port = var.enable_valkey ? module.memorystore[0].redis_port : ""
+  redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
+  redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
   depends_on = [
     module.cloud_sql,
@@ -178,7 +178,7 @@ module "dns" {
 
 # --- Memorystore Redis (optional) ---
 module "memorystore" {
-  count = var.enable_valkey ? 1 : 0
+  count = var.enable_valkey && var.use_private_vpc ? 1 : 0
 
   source      = "./modules/memorystore"
   project_id  = var.project_id

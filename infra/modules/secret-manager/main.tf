@@ -83,6 +83,11 @@ output "db_password_secret_id" {
   value = google_secret_manager_secret.db_password.secret_id
 }
 
+output "db_password_value" {
+  value     = random_password.db_password.result
+  sensitive = true
+}
+
 output "encryption_key_secret_id" {
   value = google_secret_manager_secret.encryption_key.secret_id
 }

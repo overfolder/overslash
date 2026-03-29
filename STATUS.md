@@ -61,3 +61,7 @@ Nothing yet. Running locally via Docker Compose (Postgres on port 55432).
 - **Default branch**: `master`
 - **CI**: GitHub Actions with coverage reporting, real OAuth provider tests
 - **PR flow**: feature branches → `dev` → `master`
+- **IaC**: OpenTofu under `/infra` — deploys to GCP Cloud Run with Cloud SQL, Artifact Registry, Secret Manager, Cloud Build, and optional Memorystore/DNS
+- **Docker**: Multi-stage Dockerfile (Rust build → Debian slim runtime), `docker-compose.prod.yml` for local prod-like testing
+- **Environments**: `dev` (overslash-dev) and `prod` (overslash) via `infra/env/*.tfvars`
+- **Deployment**: `make tofu-plan ENV=dev && make tofu-apply ENV=dev`
