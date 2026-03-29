@@ -1,3 +1,13 @@
+output "env" {
+  description = "Resolved environment name"
+  value       = local.env
+}
+
+output "base_prefix" {
+  description = "Resource naming prefix"
+  value       = local.base_prefix
+}
+
 output "cloud_run_url" {
   description = "Cloud Run service URL"
   value       = module.cloud_run.service_url
@@ -23,7 +33,7 @@ output "cloud_build_service_account" {
   value       = module.iam.cloud_build_sa_email
 }
 
-output "redis_host" {
-  description = "Redis host (if enabled)"
-  value       = var.enable_redis ? module.memorystore[0].redis_host : ""
+output "valkey_host" {
+  description = "Valkey host (if enabled)"
+  value       = var.enable_valkey ? module.memorystore[0].valkey_host : ""
 }

@@ -15,6 +15,16 @@ services:
     ports:
       - "5432:5432"
 
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   api:
     build:
       context: .
@@ -32,6 +42,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       GOOGLE_AUTH_CLIENT_ID: ${GOOGLE_AUTH_CLIENT_ID:-}
       GOOGLE_AUTH_CLIENT_SECRET: ${GOOGLE_AUTH_CLIENT_SECRET:-}
+      REDIS_URL: redis://valkey:6379
     ports:
       - "8080:8080"
 

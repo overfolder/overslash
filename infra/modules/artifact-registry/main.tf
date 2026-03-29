@@ -6,14 +6,14 @@ variable "region" {
   type = string
 }
 
-variable "cloud_build_sa_email" {
+variable "base_prefix" {
   type = string
 }
 
-resource "google_artifact_registry_repository" "overslash" {
+resource "google_artifact_registry_repository" "repo" {
   location      = var.region
-  repository_id = "overslash"
-  description   = "Overslash Docker images"
+  repository_id = "${var.base_prefix}-registry"
+  description   = "${var.base_prefix} Docker images"
   format        = "DOCKER"
   project       = var.project_id
 
@@ -28,13 +28,13 @@ resource "google_artifact_registry_repository" "overslash" {
 }
 
 output "repository_id" {
-  value = google_artifact_registry_repository.overslash.id
+  value = google_artifact_registry_repository.repo.id
 }
 
 output "repository_name" {
-  value = google_artifact_registry_repository.overslash.repository_id
+  value = google_artifact_registry_repository.repo.repository_id
 }
 
 output "repository_url" {
-  value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.overslash.repository_id}"
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.repo.repository_id}"
 }

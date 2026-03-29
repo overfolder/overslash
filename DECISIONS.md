@@ -22,7 +22,25 @@ Settled architectural decisions. Don't re-litigate without new information.
 **Decision**: Use Rust/Axum, matching the Overfolder stack.
 **Rationale**: Shared expertise, proven stack, consistent tooling. AES-256-GCM for secrets at rest.
 
-## D4: Identity hierarchy with live inheritance
+## D4: Valkey over Redis
+
+**Date**: 2026-03
+**Decision**: Use Valkey (not Redis) for caching and pub/sub.
+**Rationale**: Valkey is the open-source fork of Redis, maintained by the Linux Foundation. License-compatible, drop-in replacement, actively developed. No reason to use Redis's restrictive SSPL license.
+
+## D5: Cloud SQL Auth Proxy by default (no VPC)
+
+**Date**: 2026-03
+**Decision**: Default to Cloud SQL Auth Proxy mode instead of VPC private networking.
+**Rationale**: VPC connector costs ~$7/month even idle. Auth Proxy is free, secure (IAM-authenticated), and sufficient for pre-GA. VPC mode is available via `use_private_vpc = true` for production hardening later.
+
+## D6: Podman-first container tooling
+
+**Date**: 2026-03
+**Decision**: Prefer Podman / podman-compose over Docker where available.
+**Rationale**: Rootless by default, daemonless, OCI-compliant. Docker is supported as fallback. Makefile auto-detects `podman-compose` first.
+
+## D7: Identity hierarchy with live inheritance
 
 **Date**: 2026-03
 **Decision**: `inherit_permissions` is a live pointer, not a copy. Child dynamically has parent's current + future rules.

@@ -1,55 +1,63 @@
 # Enable required GCP APIs
 resource "google_project_service" "apis" {
-  for_each = toset([
-    "run.googleapis.com",
-    "sqladmin.googleapis.com",
-    "artifactregistry.googleapis.com",
-    "cloudbuild.googleapis.com",
-    "secretmanager.googleapis.com",
-    "servicenetworking.googleapis.com",
-    "vpcaccess.googleapis.com",
-    "compute.googleapis.com",
-    "dns.googleapis.com",
-    "redis.googleapis.com",
-  ])
+  for_each = toset(concat(
+    [
+      "run.googleapis.com",
+      "sqladmin.googleapis.com",
+      "artifactregistry.googleapis.com",
+      "cloudbuild.googleapis.com",
+      "secretmanager.googleapis.com",
+      "compute.googleapis.com",
+      "cloudscheduler.googleapis.com",
+    ],
+    var.use_private_vpc ? [
+      "servicenetworking.googleapis.com",
+      "vpcaccess.googleapis.com",
+    ] : [],
+    var.enable_dns ? ["dns.googleapis.com"] : [],
+    var.enable_valkey ? ["redis.googleapis.com"] : [],
+  ))
 
   service            = each.key
   disable_on_destroy = false
 }
 
-# --- Networking ---
+# --- Networking (only when using private VPC) ---
 module "networking" {
-  source     = "./modules/networking"
-  project_id = var.project_id
-  region     = var.region
+  count = var.use_private_vpc ? 1 : 0
+
+  source      = "./modules/networking"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
 
   depends_on = [google_project_service.apis]
 }
 
 # --- IAM ---
 module "iam" {
-  source     = "./modules/iam"
-  project_id = var.project_id
-  region     = var.region
+  source      = "./modules/iam"
+  project_id  = var.project_id
+  base_prefix = local.base_prefix
 
   depends_on = [google_project_service.apis]
 }
 
 # --- Artifact Registry ---
 module "artifact_registry" {
-  source     = "./modules/artifact-registry"
-  project_id = var.project_id
-  region     = var.region
-
-  cloud_build_sa_email = module.iam.cloud_build_sa_email
+  source      = "./modules/artifact-registry"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
 
   depends_on = [google_project_service.apis]
 }
 
 # --- Secret Manager ---
 module "secret_manager" {
-  source     = "./modules/secret-manager"
-  project_id = var.project_id
+  source      = "./modules/secret-manager"
+  project_id  = var.project_id
+  base_prefix = local.base_prefix
 
   cloud_run_sa_email = module.iam.cloud_run_sa_email
 
@@ -58,32 +66,34 @@ module "secret_manager" {
 
 # --- Cloud SQL ---
 module "cloud_sql" {
-  source     = "./modules/cloud-sql"
-  project_id = var.project_id
-  region     = var.region
+  source      = "./modules/cloud-sql"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
 
   tier         = var.cloud_sql_tier
   disk_size_gb = var.cloud_sql_disk_size_gb
   zone         = var.cloud_sql_zone
 
-  private_network_id = module.networking.vpc_id
+  use_private_vpc    = var.use_private_vpc
+  private_network_id = var.use_private_vpc ? module.networking[0].vpc_id : ""
 
   db_password_secret_id = module.secret_manager.db_password_secret_id
 
-  depends_on = [
-    google_project_service.apis,
-    module.networking,
-  ]
+  depends_on = [google_project_service.apis]
 }
 
 # --- Cloud Run ---
 module "cloud_run" {
-  source     = "./modules/cloud-run"
-  project_id = var.project_id
-  region     = var.region
+  source      = "./modules/cloud-run"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
 
   service_account_email = module.iam.cloud_run_sa_email
-  vpc_connector_id      = module.networking.vpc_connector_id
+
+  use_private_vpc  = var.use_private_vpc
+  vpc_connector_id = var.use_private_vpc ? module.networking[0].vpc_connector_id : ""
 
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/overslash-api:latest"
 
@@ -105,28 +115,27 @@ module "cloud_run" {
 
   domain = var.domain
 
-  redis_host = var.enable_redis ? module.memorystore[0].redis_host : ""
-  redis_port = var.enable_redis ? module.memorystore[0].redis_port : ""
+  redis_host = var.enable_valkey ? module.memorystore[0].redis_host : ""
+  redis_port = var.enable_valkey ? module.memorystore[0].redis_port : ""
 
   depends_on = [
     module.cloud_sql,
     module.secret_manager,
-    module.networking,
     module.artifact_registry,
   ]
 }
 
 # --- Cloud Build ---
 module "cloud_build" {
-  source     = "./modules/cloud-build"
-  project_id = var.project_id
-  region     = var.region
+  source      = "./modules/cloud-build"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
 
-  repository_id   = module.artifact_registry.repository_id
   repository_name = module.artifact_registry.repository_name
 
   cloud_build_sa_id = module.iam.cloud_build_sa_id
-  cloud_run_service = "overslash-api"
+  cloud_run_service = module.cloud_run.service_name
 
   github_owner  = var.github_owner
   github_repo   = var.github_repo
@@ -138,27 +147,46 @@ module "cloud_build" {
   ]
 }
 
+# --- Night shutdown scheduler (optional) ---
+module "infra_scheduler" {
+  count = var.enable_infra_scheduler ? 1 : 0
+
+  source      = "./modules/infra-scheduler"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  cloud_sql_instance_name = module.cloud_sql.instance_name
+  stop_cron               = var.infra_scheduler_stop_cron
+  start_cron              = var.infra_scheduler_start_cron
+
+  scheduler_sa_email = module.iam.scheduler_sa_email
+
+  depends_on = [google_project_service.apis]
+}
+
 # --- DNS (optional) ---
 module "dns" {
   count = var.enable_dns ? 1 : 0
 
-  source = "./modules/dns"
-  domain = var.domain
+  source      = "./modules/dns"
+  base_prefix = local.base_prefix
+  domain      = var.domain
+
+  depends_on = [google_project_service.apis]
 }
 
 # --- Memorystore Redis (optional) ---
 module "memorystore" {
-  count = var.enable_redis ? 1 : 0
+  count = var.enable_valkey ? 1 : 0
 
-  source     = "./modules/memorystore"
-  project_id = var.project_id
-  region     = var.region
+  source      = "./modules/memorystore"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
 
-  memory_size_gb     = var.redis_memory_size_gb
-  authorized_network = module.networking.vpc_id
+  memory_size_gb     = var.valkey_memory_size_gb
+  authorized_network = module.networking[0].vpc_id
 
-  depends_on = [
-    google_project_service.apis,
-    module.networking,
-  ]
+  depends_on = [google_project_service.apis]
 }

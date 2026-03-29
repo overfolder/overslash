@@ -6,24 +6,26 @@ variable "region" {
   type = string
 }
 
-# VPC for private connectivity
+variable "base_prefix" {
+  type = string
+}
+
 resource "google_compute_network" "vpc" {
-  name                    = "overslash-vpc"
+  name                    = "${var.base_prefix}-vpc"
   project                 = var.project_id
   auto_create_subnetworks = false
 }
 
 resource "google_compute_subnetwork" "subnet" {
-  name          = "overslash-subnet"
+  name          = "${var.base_prefix}-subnet"
   project       = var.project_id
   region        = var.region
   network       = google_compute_network.vpc.id
   ip_cidr_range = "10.0.0.0/24"
 }
 
-# Private IP range for Cloud SQL
 resource "google_compute_global_address" "private_ip" {
-  name          = "overslash-private-ip"
+  name          = "${var.base_prefix}-private-ip"
   project       = var.project_id
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
@@ -31,16 +33,14 @@ resource "google_compute_global_address" "private_ip" {
   network       = google_compute_network.vpc.id
 }
 
-# Private service connection for Cloud SQL
 resource "google_service_networking_connection" "private_vpc" {
   network                 = google_compute_network.vpc.id
   service                 = "servicenetworking.googleapis.com"
   reserved_peering_ranges = [google_compute_global_address.private_ip.name]
 }
 
-# Serverless VPC Access connector for Cloud Run → Cloud SQL
 resource "google_vpc_access_connector" "connector" {
-  name          = "overslash-vpc-connector"
+  name          = "${var.base_prefix}-vpc-conn"
   project       = var.project_id
   region        = var.region
   ip_cidr_range = "10.8.0.0/28"
@@ -64,8 +64,4 @@ output "subnet_id" {
 
 output "vpc_connector_id" {
   value = google_vpc_access_connector.connector.id
-}
-
-output "private_vpc_connection" {
-  value = google_service_networking_connection.private_vpc
 }

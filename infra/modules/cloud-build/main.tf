@@ -6,7 +6,7 @@ variable "region" {
   type = string
 }
 
-variable "repository_id" {
+variable "base_prefix" {
   type = string
 }
 
@@ -35,7 +35,7 @@ variable "github_branch" {
 }
 
 resource "google_cloudbuild_trigger" "deploy" {
-  name     = "overslash-deploy"
+  name     = "${var.base_prefix}-deploy"
   project  = var.project_id
   location = var.region
 

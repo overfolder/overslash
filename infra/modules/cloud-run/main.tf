@@ -6,12 +6,22 @@ variable "region" {
   type = string
 }
 
+variable "base_prefix" {
+  type = string
+}
+
 variable "service_account_email" {
   type = string
 }
 
+variable "use_private_vpc" {
+  type    = bool
+  default = false
+}
+
 variable "vpc_connector_id" {
-  type = string
+  type    = string
+  default = ""
 }
 
 variable "image" {
@@ -25,7 +35,7 @@ variable "cpu" {
 
 variable "memory" {
   type    = string
-  default = "512Mi"
+  default = "256Mi"
 }
 
 variable "min_instances" {
@@ -35,7 +45,7 @@ variable "min_instances" {
 
 variable "max_instances" {
   type    = number
-  default = 10
+  default = 3
 }
 
 variable "cloud_sql_connection_name" {
@@ -81,12 +91,11 @@ variable "redis_port" {
   default = ""
 }
 
-resource "google_cloud_run_v2_service" "overslash" {
-  name     = "overslash-api"
+resource "google_cloud_run_v2_service" "api" {
+  name     = "${var.base_prefix}-api"
   location = var.region
   project  = var.project_id
-
-  ingress = "INGRESS_TRAFFIC_ALL"
+  ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account = var.service_account_email
@@ -96,11 +105,16 @@ resource "google_cloud_run_v2_service" "overslash" {
       max_instance_count = var.max_instances
     }
 
-    vpc_access {
-      connector = var.vpc_connector_id
-      egress    = "PRIVATE_RANGES_ONLY"
+    # VPC access only when using private networking
+    dynamic "vpc_access" {
+      for_each = var.use_private_vpc ? [1] : []
+      content {
+        connector = var.vpc_connector_id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
     }
 
+    # Cloud SQL Auth Proxy (works for both public and private IP modes)
     volumes {
       name = "cloudsql"
       cloud_sql_instance {
@@ -123,7 +137,6 @@ resource "google_cloud_run_v2_service" "overslash" {
         startup_cpu_boost = true
       }
 
-      # Non-secret env vars
       env {
         name  = "HOST"
         value = "0.0.0.0"
@@ -148,9 +161,6 @@ resource "google_cloud_run_v2_service" "overslash" {
         name  = "SERVICES_DIR"
         value = "/app/services"
       }
-
-      # DATABASE_URL constructed from Cloud SQL Unix socket + secret password
-      # Cloud Run connects via Unix socket at /cloudsql/<connection_name>
       env {
         name  = "DB_USER"
         value = var.db_user
@@ -164,7 +174,6 @@ resource "google_cloud_run_v2_service" "overslash" {
         value = var.cloud_sql_connection_name
       }
 
-      # Secret env vars from Secret Manager
       env {
         name = "DB_PASSWORD"
         value_source {
@@ -202,13 +211,6 @@ resource "google_cloud_run_v2_service" "overslash" {
         }
       }
 
-      # DATABASE_URL is constructed in the entrypoint wrapper
-      env {
-        name  = "DATABASE_URL_TEMPLATE"
-        value = "postgres://{user}:{password}@/{db_name}?host=/cloudsql/${var.cloud_sql_connection_name}"
-      }
-
-      # Redis (optional)
       dynamic "env" {
         for_each = var.redis_host != "" ? [1] : []
         content {
@@ -250,23 +252,20 @@ resource "google_cloud_run_v2_service" "overslash" {
 
   lifecycle {
     ignore_changes = [
-      # Cloud Build updates the image tag; don't revert it on next apply
       template[0].containers[0].image,
     ]
   }
 }
 
-# Allow unauthenticated access (public API)
 resource "google_cloud_run_v2_service_iam_member" "public" {
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.overslash.name
+  name     = google_cloud_run_v2_service.api.name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
 
-# Custom domain mapping (if domain is set)
-resource "google_cloud_run_domain_mapping" "overslash" {
+resource "google_cloud_run_domain_mapping" "domain" {
   count    = var.domain != "" ? 1 : 0
   location = var.region
   name     = var.domain
@@ -277,14 +276,14 @@ resource "google_cloud_run_domain_mapping" "overslash" {
   }
 
   spec {
-    route_name = google_cloud_run_v2_service.overslash.name
+    route_name = google_cloud_run_v2_service.api.name
   }
 }
 
 output "service_url" {
-  value = google_cloud_run_v2_service.overslash.uri
+  value = google_cloud_run_v2_service.api.uri
 }
 
 output "service_name" {
-  value = google_cloud_run_v2_service.overslash.name
+  value = google_cloud_run_v2_service.api.name
 }

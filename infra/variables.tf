@@ -9,10 +9,10 @@ variable "region" {
   default     = "europe-west1"
 }
 
-variable "environment" {
-  description = "Environment name (e.g. prod, staging)"
+variable "env" {
+  description = "Environment name. Defaults to the current tofu workspace name."
   type        = string
-  default     = "prod"
+  default     = ""
 }
 
 variable "domain" {
@@ -21,8 +21,16 @@ variable "domain" {
   default     = ""
 }
 
-variable "enable_redis" {
-  description = "Enable Memorystore Redis for webhooks/pub-sub"
+# --- Feature flags ---
+
+variable "use_private_vpc" {
+  description = "Use VPC private networking for Cloud SQL (true) or Cloud SQL Auth Proxy over public IP (false)"
+  type        = bool
+  default     = false
+}
+
+variable "enable_valkey" {
+  description = "Enable Memorystore Valkey for webhooks/pub-sub"
   type        = bool
   default     = false
 }
@@ -32,6 +40,26 @@ variable "enable_dns" {
   type        = bool
   default     = false
 }
+
+variable "enable_infra_scheduler" {
+  description = "Enable Cloud Scheduler to stop/start Cloud SQL on a cron (saves cost)"
+  type        = bool
+  default     = false
+}
+
+variable "infra_scheduler_stop_cron" {
+  description = "Cron to stop Cloud SQL (Europe/Madrid timezone)"
+  type        = string
+  default     = "0 23 * * *"
+}
+
+variable "infra_scheduler_start_cron" {
+  description = "Cron to start Cloud SQL (Europe/Madrid timezone)"
+  type        = string
+  default     = "0 7 * * 1-5"
+}
+
+# --- Cloud SQL ---
 
 variable "cloud_sql_zone" {
   description = "Preferred zone for Cloud SQL (e.g. europe-west1-b)"
@@ -51,6 +79,8 @@ variable "cloud_sql_disk_size_gb" {
   default     = 10
 }
 
+# --- Cloud Run ---
+
 variable "cloud_run_cpu" {
   description = "Cloud Run CPU allocation (e.g. 1, 2)"
   type        = string
@@ -58,9 +88,9 @@ variable "cloud_run_cpu" {
 }
 
 variable "cloud_run_memory" {
-  description = "Cloud Run memory allocation (e.g. 512Mi, 1Gi)"
+  description = "Cloud Run memory allocation (e.g. 256Mi, 512Mi)"
   type        = string
-  default     = "512Mi"
+  default     = "256Mi"
 }
 
 variable "cloud_run_min_instances" {
@@ -72,8 +102,10 @@ variable "cloud_run_min_instances" {
 variable "cloud_run_max_instances" {
   description = "Maximum Cloud Run instances"
   type        = number
-  default     = 10
+  default     = 3
 }
+
+# --- Cloud Build ---
 
 variable "github_owner" {
   description = "GitHub repository owner for Cloud Build trigger"
@@ -93,7 +125,9 @@ variable "github_branch" {
   default     = "^master$"
 }
 
-variable "redis_memory_size_gb" {
+# --- Redis ---
+
+variable "valkey_memory_size_gb" {
   description = "Redis instance memory size in GB"
   type        = number
   default     = 1

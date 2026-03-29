@@ -1,5 +1,6 @@
 .PHONY: dev down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks \
-       tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy
+       tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
+       infra-shutdown infra-resume
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -107,3 +108,24 @@ tofu-destroy:
 	fi
 	@echo -e "$(GREEN)Destroying tofu resources ($(ENV))...$(NC)"
 	cd $(TOFU_DIR) && $(TOFU) workspace select $(ENV) && $(TOFU) destroy -var-file=env/$(ENV).tfvars
+
+# ---------------------------------------------------------------------------
+# Infra scheduler — manual shutdown / resume
+#   Usage: make infra-shutdown ENV=prod
+#          make infra-resume ENV=prod
+# ---------------------------------------------------------------------------
+
+GCP_PROJECT = $(shell grep '^project_id' $(TF_VAR_FILE) 2>/dev/null | sed 's/.*= *"\(.*\)"/\1/')
+SQL_INSTANCE = overslash-$(ENV)-db
+
+infra-shutdown:
+	@test -f $(TF_VAR_FILE) || (echo -e "$(RED)Var file $(TF_VAR_FILE) not found.$(NC)" && exit 1)
+	@echo -e "$(GREEN)Shutting down infra ($(ENV), project: $(GCP_PROJECT))...$(NC)"
+	gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=NEVER --project=$(GCP_PROJECT) --quiet
+	@echo -e "$(GREEN)Cloud SQL stopped.$(NC)"
+
+infra-resume:
+	@test -f $(TF_VAR_FILE) || (echo -e "$(RED)Var file $(TF_VAR_FILE) not found.$(NC)" && exit 1)
+	@echo -e "$(GREEN)Resuming infra ($(ENV), project: $(GCP_PROJECT))...$(NC)"
+	gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=ALWAYS --project=$(GCP_PROJECT) --quiet
+	@echo -e "$(GREEN)Cloud SQL started.$(NC)"
