@@ -72,9 +72,19 @@ enum ExecuteResponse {
         approval_url: String,
         action_description: String,
         expires_at: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        gaps: Vec<GapInfo>,
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
+}
+
+#[derive(Debug, serde::Serialize)]
+struct GapInfo {
+    approval_id: Uuid,
+    gap_identity: String,
+    gap_identity_id: Uuid,
+    can_be_handled_by: Vec<Uuid>,
 }
 
 async fn execute_action(
@@ -155,6 +165,7 @@ async fn execute_action(
                     // Create one approval per gap
                     let mut first_approval_id = None;
                     let mut first_token = String::new();
+                    let mut gap_infos = Vec::new();
                     for gap in &gaps {
                         let token = generate_token();
                         let keys: Vec<String> =
@@ -182,6 +193,13 @@ async fn execute_action(
                             first_approval_id = Some(approval.id);
                             first_token = token;
                         }
+
+                        gap_infos.push(GapInfo {
+                            approval_id: approval.id,
+                            gap_identity: gap.gap_identity_name.clone(),
+                            gap_identity_id: gap.gap_identity_id,
+                            can_be_handled_by: gap.can_be_handled_by.clone(),
+                        });
 
                         let _ = audit::log(
                             &state.db,
@@ -241,6 +259,7 @@ async fn execute_action(
                             approval_url: format!("/approve/{first_token}"),
                             action_description: summary,
                             expires_at: expires_at.to_string(),
+                            gaps: gap_infos,
                         }),
                     )
                         .into_response());
@@ -325,6 +344,7 @@ async fn execute_action(
                             approval_url: format!("/approve/{}", approval.token),
                             action_description: summary,
                             expires_at: expires_at.to_string(),
+                            gaps: Vec::new(),
                         }),
                     )
                         .into_response());

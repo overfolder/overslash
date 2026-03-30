@@ -84,14 +84,18 @@ async fn create_identity(
             ));
         }
 
-        // Validate depth constraints
-        if let Some(max_depth) = parent.max_sub_depth {
-            if parent.depth + 1 > max_depth {
-                return Err(AppError::BadRequest(format!(
-                    "depth {} exceeds parent's max_sub_depth {}",
-                    parent.depth + 1,
-                    max_depth
-                )));
+        // Validate depth constraints — check all ancestors' max_sub_depth
+        let new_depth = parent.depth + 1;
+        let ancestors =
+            overslash_db::repos::identity::get_ancestor_chain(&state.db, parent_id).await?;
+        for ancestor in &ancestors {
+            if let Some(max_depth) = ancestor.max_sub_depth {
+                if new_depth > max_depth {
+                    return Err(AppError::BadRequest(format!(
+                        "depth {} exceeds max_sub_depth {} set by ancestor '{}'",
+                        new_depth, max_depth, ancestor.name
+                    )));
+                }
             }
         }
 
