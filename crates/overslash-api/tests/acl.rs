@@ -183,7 +183,20 @@ async fn delete_custom_role() {
 
 #[tokio::test]
 async fn assign_and_revoke_role() {
-    let (base, client, _org_id, identity_id, api_key) = setup().await;
+    let (base, client, _org_id, _identity_id, api_key) = setup().await;
+
+    // Create a second identity to assign the role to (not the caller)
+    let target_ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({"name": "target-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let target_id: Uuid = target_ident["id"].as_str().unwrap().parse().unwrap();
 
     // Create a role
     let role: Value = client
@@ -202,12 +215,12 @@ async fn assign_and_revoke_role() {
         .unwrap();
     let role_id = role["id"].as_str().unwrap();
 
-    // Assign role
+    // Assign role to the target identity (not the caller)
     let assignment: Value = client
         .post(format!("{base}/v1/acl/assignments"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
-            "identity_id": identity_id,
+            "identity_id": target_id,
             "role_id": role_id
         }))
         .send()
@@ -217,12 +230,12 @@ async fn assign_and_revoke_role() {
         .await
         .unwrap();
 
-    assert_eq!(assignment["identity_id"], identity_id.to_string());
+    assert_eq!(assignment["identity_id"], target_id.to_string());
     assert_eq!(assignment["role_id"], role_id);
 
     let assignment_id = assignment["id"].as_str().unwrap();
 
-    // List assignments
+    // List assignments — caller still has no roles, so backward compat allows through
     let assignments: Vec<Value> = client
         .get(format!("{base}/v1/acl/assignments"))
         .header("Authorization", format!("Bearer {api_key}"))
@@ -236,7 +249,7 @@ async fn assign_and_revoke_role() {
     assert!(
         assignments
             .iter()
-            .any(|a| a["identity_id"] == identity_id.to_string())
+            .any(|a| a["identity_id"] == target_id.to_string())
     );
 
     // Revoke
