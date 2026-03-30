@@ -1,0 +1,10 @@
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+
+	onMount(() => {
+		goto('/acl/roles');
+	});
+</script>
+
+<p>Redirecting...</p>

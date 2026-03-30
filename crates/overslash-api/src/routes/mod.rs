@@ -1,3 +1,4 @@
+pub mod acl;
 pub mod actions;
 pub mod api_keys;
 pub mod approvals;

@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 use overslash_db::repos::audit;
 
-use crate::{AppState, error::Result, extractors::AuthContext};
+use overslash_core::types::acl::{AclAction, AclResourceType};
+
+use crate::{AppState, acl::require_permission, error::Result, extractors::AuthContext};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/audit", get(query_audit))
@@ -64,6 +66,7 @@ async fn query_audit(
     auth: AuthContext,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>> {
+    require_permission(&state.db, auth.identity_id, AclResourceType::AuditLogs, AclAction::Read).await?;
     let filter = audit::AuditFilter {
         org_id: auth.org_id,
         action: params.action,

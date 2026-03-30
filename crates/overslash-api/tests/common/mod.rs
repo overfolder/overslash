@@ -26,6 +26,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        dashboard_dir: None,
     };
 
     // Build the app with the test pool directly
@@ -38,6 +39,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::acl::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -79,6 +81,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
+        dashboard_dir: None,
     };
 
     let state = overslash_api::AppState {
@@ -90,6 +93,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::acl::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -351,6 +355,7 @@ pub async fn start_api_with_registry(
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        dashboard_dir: None,
     };
 
     let state = overslash_api::AppState {
@@ -362,6 +367,7 @@ pub async fn start_api_with_registry(
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::acl::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
@@ -400,6 +406,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: max_bytes,
+        dashboard_dir: None,
     };
 
     let state = overslash_api::AppState {
@@ -411,6 +418,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
 
     let app = axum::Router::new()
         .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::acl::router())
         .merge(overslash_api::routes::orgs::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())

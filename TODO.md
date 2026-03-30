@@ -38,11 +38,11 @@ Phased roadmap. Each phase is usable independently.
 
 ### Dashboard (SvelteKit + TypeScript)
 
-- [ ] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
+- [x] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
 - [ ] Org/User/Agent hierarchy view — tree visualization with inline identity management
 - [ ] Connected services view — service connection status, reconnect/revoke actions
 - [ ] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
-- [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
+- [x] Audit log view — searchable, filterable log with identity/service/time/event filters
 
 ### Agent Enrollment
 
@@ -59,7 +59,7 @@ Phased roadmap. Each phase is usable independently.
 - [ ] Approval bubbling (gap level targeting, ancestor handling)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
 - [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
-- [ ] Org-level ACL — role-based access control for who can manage resources within an org
+- [x] Org-level ACL — role-based access control for who can manage resources within an org
 - [ ] Dashboard: identity hierarchy tree view, agent permission management
 
 ## Phase 4: Polish + Meta Tools

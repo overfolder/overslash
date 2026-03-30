@@ -14,6 +14,7 @@ pub struct Config {
     pub public_url: String,
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
+    pub dashboard_dir: Option<String>,
 }
 
 impl Config {
@@ -42,6 +43,7 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
+            dashboard_dir: env::var("DASHBOARD_DIR").ok(),
         }
     }
 

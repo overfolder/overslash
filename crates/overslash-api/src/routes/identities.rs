@@ -4,8 +4,11 @@ use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
 
+use overslash_core::types::acl::{AclAction, AclResourceType};
+
 use crate::{
     AppState,
+    acl::require_permission,
     error::Result,
     extractors::{AuthContext, ClientIp},
 };
@@ -36,6 +39,7 @@ async fn create_identity(
     ip: ClientIp,
     Json(req): Json<CreateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
+    require_permission(&state.db, auth.identity_id, AclResourceType::Agents, AclAction::Write).await?;
     let row = overslash_db::repos::identity::create(
         &state.db,
         auth.org_id,
@@ -72,6 +76,7 @@ async fn list_identities(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<IdentityResponse>>> {
+    require_permission(&state.db, auth.identity_id, AclResourceType::Agents, AclAction::Read).await?;
     let rows = overslash_db::repos::identity::list_by_org(&state.db, auth.org_id).await?;
     Ok(Json(
         rows.into_iter()

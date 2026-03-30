@@ -1,3 +1,4 @@
+pub mod acl;
 pub mod config;
 pub mod error;
 pub mod extractors;
@@ -8,7 +9,10 @@ use std::sync::Arc;
 
 use axum::Router;
 use sqlx::PgPool;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    compression::CompressionLayer, cors::CorsLayer,
+    services::{ServeDir, ServeFile}, trace::TraceLayer,
+};
 
 use crate::config::Config;
 use overslash_core::registry::ServiceRegistry;
@@ -73,6 +77,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
 
     let app = Router::new()
         .merge(routes::health::router())
+        .merge(routes::acl::router())
         .merge(routes::orgs::router())
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())
@@ -87,7 +92,26 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::byoc_credentials::router())
         .merge(routes::auth::router())
         .merge(routes::enrollment::router())
-        .with_state(state)
+        .with_state(state.clone());
+
+    // Serve dashboard static files if configured
+    let app = if let Some(ref dashboard_dir) = state.config.dashboard_dir {
+        let index = format!("{dashboard_dir}/index.html");
+        if std::path::Path::new(dashboard_dir).exists() {
+            tracing::info!("Serving dashboard from {dashboard_dir}");
+            app.fallback_service(
+                ServeDir::new(dashboard_dir)
+                    .not_found_service(ServeFile::new(index)),
+            )
+        } else {
+            tracing::warn!("Dashboard dir {dashboard_dir} not found, skipping static serving");
+            app
+        }
+    } else {
+        app
+    };
+
+    let app = app
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());

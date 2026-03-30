@@ -219,6 +219,19 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                         json!({"dev": true}),
                     )
                     .await?;
+                    // Bootstrap ACL for dev org
+                    if let Ok(admin_role_id) =
+                        overslash_db::repos::acl::ensure_builtin_roles(&state.db, new_org.id).await
+                    {
+                        let _ = overslash_db::repos::acl::assign_role(
+                            &state.db,
+                            new_org.id,
+                            new_identity.id,
+                            admin_role_id,
+                            None,
+                        )
+                        .await;
+                    }
                     (new_org.id, new_identity.id)
                 }
                 Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
@@ -348,7 +361,22 @@ async fn find_or_create_user(
     )
     .await
     {
-        Ok(new_identity) => Ok((new_org.id, new_identity.id, userinfo.email.clone())),
+        Ok(new_identity) => {
+            // Bootstrap ACL: seed built-in roles and assign org-admin to the first user
+            if let Ok(admin_role_id) =
+                overslash_db::repos::acl::ensure_builtin_roles(&state.db, new_org.id).await
+            {
+                let _ = overslash_db::repos::acl::assign_role(
+                    &state.db,
+                    new_org.id,
+                    new_identity.id,
+                    admin_role_id,
+                    None,
+                )
+                .await;
+            }
+            Ok((new_org.id, new_identity.id, userinfo.email.clone()))
+        }
         Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
             // Another request won the race — use the identity they created.
             // The orphaned org is harmless and can be cleaned up later.

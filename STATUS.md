@@ -39,6 +39,17 @@
 - Eventbrite OAuth provider support
 - E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
 
+### Phase 2.5 — Dashboard + ACL (in progress)
+
+- SvelteKit dashboard scaffold with Tailwind CSS, API proxy, auth flow
+- Org-level ACL: roles, grants, assignments (3 built-in roles: org-admin, member, read-only)
+- ACL API: CRUD for roles/grants/assignments, effective permissions, admin status
+- ACL enforcement: per-handler permission checks on secrets, identities, audit routes
+- AuthContext extended to support JWT session cookies (for dashboard browser auth)
+- Dashboard ACL views: role list, role detail with permission matrix, assignments, matrix overview, audit log, admin status
+- Bootstrap: first user in org auto-assigned org-admin role on OAuth/dev login
+- Static dashboard serving from Rust backend via tower-http ServeDir
+
 ### Not Yet Built
 
 - Standalone approval resolution page (signed-URL)
@@ -47,7 +58,6 @@
 - Org service registry (DB-backed CRUD)
 - OpenAPI spec import
 - Human-readable action descriptions
-- Dashboard (SvelteKit)
 - Phase 3: Identity hierarchy (parent/child, inherit_permissions, approval bubbling)
 - Phase 4: Meta tools, semantic search, rate limiting, billing
 
