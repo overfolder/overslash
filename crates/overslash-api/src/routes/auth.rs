@@ -167,7 +167,7 @@ async fn google_callback(
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
 
-    Ok((resp_headers, Redirect::to("/")).into_response())
+    Ok((resp_headers, Redirect::to(&state.config.dashboard_url)).into_response())
 }
 
 /// Return current session user info from JWT cookie.
