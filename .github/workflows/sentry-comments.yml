@@ -31,11 +31,12 @@ jobs:
 
             const sentryBots = ['sentry-io[bot]', 'sentry-autofix[bot]', 'sentry[bot]'];
 
-            // Use GraphQL to get review threads with resolution status
-            const query = `query($owner: String!, $repo: String!, $pr: Int!) {
+            // Use GraphQL to get review threads with resolution status (paginated)
+            const query = `query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
               repository(owner: $owner, name: $repo) {
                 pullRequest(number: $pr) {
-                  reviewThreads(first: 100) {
+                  reviewThreads(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
                     nodes {
                       isResolved
                       comments(first: 1) {
@@ -50,13 +51,19 @@ jobs:
               }
             }`;
 
-            const result = await github.graphql(query, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pr: prNumber,
-            });
-
-            const threads = result.repository.pullRequest.reviewThreads.nodes;
+            let threads = [];
+            let cursor = null;
+            do {
+              const result = await github.graphql(query, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pr: prNumber,
+                cursor,
+              });
+              const page = result.repository.pullRequest.reviewThreads;
+              threads = threads.concat(page.nodes);
+              cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+            } while (cursor);
             const unresolvedReview = threads
               .filter((t) => {
                 const author = t.comments.nodes[0]?.author?.login;
