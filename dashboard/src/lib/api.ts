@@ -50,6 +50,14 @@ export async function executeAction(
   return request(apiKey, 'POST', '/v1/actions/execute', req);
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // JSON syntax highlighter — returns HTML string
 export function highlightJson(value: unknown, indent = 0): string {
   const pad = '  '.repeat(indent);
@@ -57,12 +65,7 @@ export function highlightJson(value: unknown, indent = 0): string {
   if (typeof value === 'boolean') return `<span class="json-bool">${value}</span>`;
   if (typeof value === 'number') return `<span class="json-number">${value}</span>`;
   if (typeof value === 'string') {
-    const escaped = value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-    return `<span class="json-string">"${escaped}"</span>`;
+    return `<span class="json-string">"${escapeHtml(value)}"</span>`;
   }
   if (Array.isArray(value)) {
     if (value.length === 0) return `<span class="json-bracket">[]</span>`;
@@ -75,7 +78,7 @@ export function highlightJson(value: unknown, indent = 0): string {
     const lines = entries
       .map(
         ([k, v]) =>
-          `${pad}  <span class="json-key">"${k}"</span>: ${highlightJson(v, indent + 1)}`
+          `${pad}  <span class="json-key">"${escapeHtml(k)}"</span>: ${highlightJson(v, indent + 1)}`
       )
       .join(',\n');
     return `<span class="json-bracket">{</span>\n${lines}\n${pad}<span class="json-bracket">}</span>`;

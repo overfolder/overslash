@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import {
     apiKey,
     services,
@@ -254,11 +253,7 @@
     }
   }
 
-  onMount(() => {
-    if (key) fetchServices();
-  });
-
-  // Refetch when API key changes
+  // Fetch on mount and refetch when API key changes
   $effect(() => {
     if (key) fetchServices();
   });
