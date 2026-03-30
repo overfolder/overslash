@@ -17,12 +17,18 @@ export const load: PageServerLoad = async ({ url }) => {
 		// Invalid category, ignore it
 	}
 
+	function toISOSafe(val: string | undefined): string | undefined {
+		if (!val) return undefined;
+		const d = new Date(val);
+		return isNaN(d.getTime()) ? undefined : d.toISOString();
+	}
+
 	const filters: AuditFilters = {
 		identity_id: identityId,
 		category: category && EVENT_CATEGORY_MAP[category] ? category : undefined,
 		service,
-		since: since ? new Date(since).toISOString() : undefined,
-		until: until ? new Date(until).toISOString() : undefined,
+		since: toISOSafe(since),
+		until: toISOSafe(until),
 		page,
 		limit: PAGE_SIZE
 	};

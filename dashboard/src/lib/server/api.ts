@@ -39,6 +39,9 @@ export async function fetchAuditLogs(filters: AuditFilters): Promise<AuditEntry[
 	const actions = filters.category ? EVENT_CATEGORY_MAP[filters.category] : null;
 
 	if (actions && actions.length > 1) {
+		// Fetch enough entries from each action type to cover offset + limit + 1
+		// after merging. Each sub-query needs at most offset + limit + 1 entries.
+		const needed = (filters.page - 1) * filters.limit + filters.limit + 1;
 		const results = await Promise.all(
 			actions.map((action) =>
 				apiFetch<AuditEntry[]>('/v1/audit', {
@@ -47,15 +50,16 @@ export async function fetchAuditLogs(filters: AuditFilters): Promise<AuditEntry[
 					...(filters.service && { resource_type: filters.service }),
 					...(filters.since && { since: filters.since }),
 					...(filters.until && { until: filters.until }),
-					limit: String(filters.limit + 1),
-					offset: String((filters.page - 1) * filters.limit)
+					limit: String(needed),
+					offset: '0'
 				})
 			)
 		);
+		const offset = (filters.page - 1) * filters.limit;
 		return results
 			.flat()
 			.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-			.slice(0, filters.limit + 1);
+			.slice(offset, offset + filters.limit + 1);
 	}
 
 	const params: Record<string, string> = {
