@@ -368,10 +368,10 @@ async fn set_grants(
     for g in &req.grants {
         g.resource_type
             .parse::<AclResourceType>()
-            .map_err(|e| AppError::BadRequest(e))?;
+            .map_err(AppError::BadRequest)?;
         g.action
             .parse::<AclAction>()
-            .map_err(|e| AppError::BadRequest(e))?;
+            .map_err(AppError::BadRequest)?;
     }
 
     let grant_pairs: Vec<(String, String)> = req
