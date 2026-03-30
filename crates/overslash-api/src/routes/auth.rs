@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
@@ -162,19 +162,12 @@ async fn google_callback(
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
-    let body = json!({
-        "status": "authenticated",
-        "org_id": org_id,
-        "identity_id": identity_id,
-        "email": email,
-    });
-
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
 
-    Ok((StatusCode::OK, resp_headers, axum::Json(body)).into_response())
+    Ok((resp_headers, Redirect::to("/")).into_response())
 }
 
 /// Return current session user info from JWT cookie.
@@ -205,7 +198,7 @@ async fn me_identity(
     let token = extract_cookie(&headers, "oss_session")
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
-    let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
+    let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let claims = jwt::verify(&jwt_secret, &token)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
