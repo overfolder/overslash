@@ -76,6 +76,14 @@ async fn create_identity(
             return Err(AppError::Forbidden("parent belongs to another org".into()));
         }
 
+        // Validate parent allows sub-identity creation
+        if !parent.can_create_sub {
+            return Err(AppError::Forbidden(
+                "parent identity does not allow sub-identity creation (can_create_sub=false)"
+                    .into(),
+            ));
+        }
+
         // Validate depth constraints
         if let Some(max_depth) = parent.max_sub_depth {
             if parent.depth + 1 > max_depth {

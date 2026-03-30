@@ -140,6 +140,13 @@ async fn resolve_approval(
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
+    // Verify org ownership — prevent cross-org resolution
+    if existing.org_id != auth.org_id {
+        return Err(AppError::Forbidden(
+            "approval belongs to another organization".into(),
+        ));
+    }
+
     // Authorization check for hierarchical approvals
     if existing.gap_identity_id.is_some() && !existing.can_be_handled_by.is_empty() {
         let resolver_id = auth.identity_id.ok_or_else(|| {

@@ -54,9 +54,9 @@ Phased roadmap. Each phase is usable independently.
 > Design doc: [docs/design/permission-chain-implementation.md](docs/design/permission-chain-implementation.md)
 
 ### 3.1 Schema & Types
-- [ ] Migration 015: add `parent_id`, `owner_id`, `depth`, `inherit_permissions`, `can_create_sub`, `max_sub_depth`, `ttl` to identities; expand kind CHECK to include `subagent`
-- [ ] Migration 015: add `gap_identity_id`, `can_be_handled_by`, `grant_to` to approvals
-- [ ] Migration 015: add `expires_at` to permission_rules
+- [ ] Migration 016: add `parent_id`, `owner_id`, `depth`, `inherit_permissions`, `can_create_sub`, `max_sub_depth`, `ttl` to identities; expand kind CHECK to include `subagent`
+- [ ] Migration 016: add `gap_identity_id`, `can_be_handled_by`, `grant_to` to approvals
+- [ ] Migration 016: add `expires_at` to permission_rules
 - [ ] Rust types: add `SubAgent` to `IdentityKind` enum
 - [ ] Rust types: add hierarchy fields to `Identity` and `IdentityRow`
 - [ ] Rust types: add gap/grant fields to `Approval` and `ApprovalRow`

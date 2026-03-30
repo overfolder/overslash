@@ -24,7 +24,7 @@ The design is fully backwards-compatible. Existing flat identities continue to w
 
 ## 2. Data Model Changes
 
-### Migration 015: `identity_hierarchy_and_approval_bubbling`
+### Migration 016: `identity_hierarchy_and_approval_bubbling`
 
 #### 2.1 Identities Table
 
@@ -397,7 +397,7 @@ The migration is additive — no existing columns are modified or removed.
 
 ### 6.2 Gradual Adoption
 
-1. **Deploy migration 015** — schema changes only, no behavior change
+1. **Deploy migration 016** — schema changes only, no behavior change
 2. **Deploy Rust type + repo updates** — code compiles with new fields, but `execute_action` still uses flat check for all identities (since all have `parent_id=NULL`)
 3. **Deploy chain walk** — new code path activated only when `parent_id IS NOT NULL`
 4. **Users create hierarchical identities** — first agent created with `parent_id` enters the chain walk path
@@ -416,7 +416,7 @@ Steps are ordered by dependency. Each step produces a compilable intermediate st
 
 | Step | What | Key files | Depends on |
 |------|------|-----------|------------|
-| 1 | Migration 015 | `migrations/015_*.sql` | — |
+| 1 | Migration 016 | `migrations/016_*.sql` | — |
 | 2 | Rust type updates | `types/identity.rs`, `types/approval.rs` | Step 1 |
 | 3 | Identity repo functions | `repos/identity.rs`, `repos/permission_rule.rs` | Step 2 |
 | 4 | Chain walk algorithm | `permissions.rs` | Step 2 |
