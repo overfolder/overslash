@@ -39,15 +39,25 @@
 - Eventbrite OAuth provider support
 - E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
 
+### Phase 2.5 — Dashboard (in progress)
+
+- SvelteKit dashboard scaffolded (`/dashboard/`) with TypeScript, Tailwind CSS, adapter-static
+- Developer Connection Tool — interactive API explorer supporting all 3 execution modes
+  - Service/action selector with method and risk badges
+  - Auto-generated parameter forms from action schemas (text, number, enum dropdowns)
+  - Mode A (Raw HTTP), Mode B (Connection), Mode C (Service+Action) execution
+  - Response panel with JSON syntax highlighting, headers table, request inspector
+  - API key management with localStorage persistence
+
 ### Not Yet Built
 
+- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log
 - Standalone approval resolution page (signed-URL)
 - Standalone secret request page (signed-URL)
 - `on_behalf_of` for agent-initiated connections
 - Org service registry (DB-backed CRUD)
 - OpenAPI spec import
 - Human-readable action descriptions
-- Dashboard (SvelteKit)
 - Phase 3: Identity hierarchy (parent/child, inherit_permissions, approval bubbling)
 - Phase 4: Meta tools, semantic search, rate limiting, billing
 

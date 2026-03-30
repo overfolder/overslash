@@ -41,7 +41,7 @@ Phased roadmap. Each phase is usable independently.
 - [ ] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
 - [ ] Org/User/Agent hierarchy view — tree visualization with inline identity management
 - [ ] Connected services view — service connection status, reconnect/revoke actions
-- [ ] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
+- [x] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
 - [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
 
 ### Agent Enrollment
