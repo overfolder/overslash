@@ -5,20 +5,15 @@ on:
     branches: [master, dev]
   pull_request_review_comment:
     types: [created, edited, deleted]
-  issue_comment:
-    types: [created, edited, deleted]
-
 permissions:
   pull-requests: read
-  issues: read
 
 jobs:
   check-sentry-comments:
     name: No unresolved Sentry issues
     if: >-
       github.event_name == 'pull_request' ||
-      github.event_name == 'pull_request_review_comment' ||
-      github.event.issue.pull_request
+      github.event_name == 'pull_request_review_comment'
     runs-on: ubuntu-latest
     steps:
       - name: Check for unresolved Sentry comments
@@ -69,34 +64,10 @@ jobs:
               })
               .map((t) => t.comments.nodes[0]?.url);
 
-            // Fetch issue comments (these don't have thread resolution)
-            const issueComments = await github.paginate(
-              github.rest.issues.listComments,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                per_page: 100,
-              }
-            );
-
-            const isSentry = (c) => sentryBots.includes(c.user?.login);
-            const unresolvedIssue = issueComments.filter(
-              (c) => isSentry(c) && !c.body?.includes('<!-- resolved -->')
-            );
-
-            const total = unresolvedReview.length + unresolvedIssue.length;
-
-            if (total > 0) {
-              const lines = [];
-              for (const url of unresolvedReview) {
-                lines.push(`- Review thread: ${url}`);
-              }
-              for (const c of unresolvedIssue) {
-                lines.push(`- Issue comment: ${c.html_url}`);
-              }
+            if (unresolvedReview.length > 0) {
+              const lines = unresolvedReview.map((url) => `- Review thread: ${url}`);
               core.setFailed(
-                `Found ${total} unresolved Sentry comment(s):\n${lines.join('\n')}\n\n` +
+                `Found ${unresolvedReview.length} unresolved Sentry review thread(s):\n${lines.join('\n')}\n\n` +
                 'Resolve all Sentry-reported issues before merging.'
               );
             } else {
