@@ -148,24 +148,30 @@ async fn resolve_approval(
     }
 
     // Authorization check for hierarchical approvals
-    if existing.gap_identity_id.is_some() && !existing.can_be_handled_by.is_empty() {
-        let resolver_id = auth.identity_id.ok_or_else(|| {
-            AppError::Forbidden("must be authenticated as an identity to resolve".into())
-        })?;
-
-        // Self-approval forbidden
-        if Some(resolver_id) == existing.gap_identity_id {
-            return Err(AppError::Forbidden(
-                "cannot self-approve: the gap identity cannot resolve its own approval".into(),
-            ));
+    if existing.gap_identity_id.is_some() {
+        // Self-approval is always forbidden, regardless of can_be_handled_by
+        if let Some(resolver_id) = auth.identity_id {
+            if Some(resolver_id) == existing.gap_identity_id {
+                return Err(AppError::Forbidden(
+                    "cannot self-approve: the gap identity cannot resolve its own approval".into(),
+                ));
+            }
         }
 
-        // Must be in can_be_handled_by
-        if !existing.can_be_handled_by.contains(&resolver_id) {
-            return Err(AppError::Forbidden(
-                "not authorized to resolve this approval".into(),
-            ));
+        if !existing.can_be_handled_by.is_empty() {
+            // Hierarchical approval with ancestors — resolver must be in list
+            let resolver_id = auth.identity_id.ok_or_else(|| {
+                AppError::Forbidden("must be authenticated as an identity to resolve".into())
+            })?;
+
+            if !existing.can_be_handled_by.contains(&resolver_id) {
+                return Err(AppError::Forbidden(
+                    "not authorized to resolve this approval".into(),
+                ));
+            }
         }
+        // When can_be_handled_by is empty (root-level gap), any org-level key can resolve.
+        // The org ownership check above prevents cross-org access.
     }
 
     let resolved_by = auth
