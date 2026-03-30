@@ -84,12 +84,17 @@ async fn list_approvals(
 
 async fn get_approval(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
     let row = overslash_db::repos::approval::get_by_id(&state.db, id)
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+    if row.org_id != auth.org_id {
+        return Err(AppError::Forbidden(
+            "approval belongs to another organization".into(),
+        ));
+    }
     Ok(Json(ApprovalResponse::from(row)))
 }
 
