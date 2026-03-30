@@ -29,12 +29,10 @@ pub async fn create(
 ) -> Result<IdentityRow, sqlx::Error> {
     let depth = match parent_id {
         Some(pid) => {
-            let parent = sqlx::query_scalar::<_, i32>(
-                "SELECT depth FROM identities WHERE id = $1",
-            )
-            .bind(pid)
-            .fetch_one(pool)
-            .await?;
+            let parent = sqlx::query_scalar::<_, i32>("SELECT depth FROM identities WHERE id = $1")
+                .bind(pid)
+                .fetch_one(pool)
+                .await?;
             parent + 1
         }
         None => 0,
@@ -81,9 +79,7 @@ pub async fn create_with_email(
 }
 
 pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<IdentityRow>, sqlx::Error> {
-    let query = format!(
-        "SELECT {SELECT_COLS} FROM identities WHERE email = $1 AND kind = 'user'"
-    );
+    let query = format!("SELECT {SELECT_COLS} FROM identities WHERE email = $1 AND kind = 'user'");
     sqlx::query_as::<_, IdentityRow>(&query)
         .bind(email)
         .fetch_optional(pool)
@@ -91,9 +87,7 @@ pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<Identity
 }
 
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<IdentityRow>, sqlx::Error> {
-    let query = format!(
-        "SELECT {SELECT_COLS} FROM identities WHERE id = $1"
-    );
+    let query = format!("SELECT {SELECT_COLS} FROM identities WHERE id = $1");
     sqlx::query_as::<_, IdentityRow>(&query)
         .bind(id)
         .fetch_optional(pool)

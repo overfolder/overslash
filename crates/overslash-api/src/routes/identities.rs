@@ -1,4 +1,9 @@
-use axum::{Json, Router, extract::{Path, State}, http::StatusCode, routing::{get, post}};
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::StatusCode,
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -15,7 +20,9 @@ pub fn router() -> Router<AppState> {
         .route("/v1/identities", post(create_identity).get(list_identities))
         .route(
             "/v1/identities/{id}",
-            get(get_identity).put(update_identity).delete(delete_identity),
+            get(get_identity)
+                .put(update_identity)
+                .delete(delete_identity),
         )
 }
 
@@ -55,7 +62,10 @@ fn identity_response(r: overslash_db::repos::identity::IdentityRow) -> IdentityR
         parent_id: r.parent_id,
         depth: r.depth,
         email: r.email,
-        created_at: r.created_at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
+        created_at: r
+            .created_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
     }
 }
 
@@ -67,7 +77,9 @@ async fn create_identity(
 ) -> Result<Json<IdentityResponse>> {
     // Validate kind
     if req.kind != "user" && req.kind != "agent" {
-        return Err(AppError::BadRequest("kind must be 'user' or 'agent'".into()));
+        return Err(AppError::BadRequest(
+            "kind must be 'user' or 'agent'".into(),
+        ));
     }
 
     // Validate hierarchy rules
@@ -76,10 +88,14 @@ async fn create_identity(
             .await?
             .ok_or_else(|| AppError::BadRequest("parent identity not found".into()))?;
         if parent.org_id != auth.org_id {
-            return Err(AppError::BadRequest("parent identity not in same org".into()));
+            return Err(AppError::BadRequest(
+                "parent identity not in same org".into(),
+            ));
         }
         if req.kind == "user" {
-            return Err(AppError::BadRequest("users cannot have a parent identity".into()));
+            return Err(AppError::BadRequest(
+                "users cannot have a parent identity".into(),
+            ));
         }
     } else if req.kind == "agent" {
         // Agents without a parent are allowed (org-level agents)

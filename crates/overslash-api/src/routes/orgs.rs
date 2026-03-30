@@ -1,10 +1,18 @@
-use axum::{Json, Router, extract::State, routing::{get, post}};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
 
-use crate::{AppState, error::{AppError, Result}, extractors::{AuthContext, ClientIp}};
+use crate::{
+    AppState,
+    error::{AppError, Result},
+    extractors::{AuthContext, ClientIp},
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
