@@ -66,7 +66,13 @@ async fn query_audit(
     auth: AuthContext,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::AuditLogs, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::AuditLogs,
+        AclAction::Read,
+    )
+    .await?;
     let filter = audit::AuditFilter {
         org_id: auth.org_id,
         action: params.action,

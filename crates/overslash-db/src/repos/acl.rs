@@ -107,18 +107,13 @@ pub async fn update_role(
     .await
 }
 
-pub async fn delete_role(
-    pool: &PgPool,
-    id: Uuid,
-    org_id: Uuid,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM acl_roles WHERE id = $1 AND org_id = $2 AND is_builtin = false",
-    )
-    .bind(id)
-    .bind(org_id)
-    .execute(pool)
-    .await?;
+pub async fn delete_role(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM acl_roles WHERE id = $1 AND org_id = $2 AND is_builtin = false")
+            .bind(id)
+            .bind(org_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -191,18 +186,12 @@ pub async fn assign_role(
     .await
 }
 
-pub async fn revoke_assignment(
-    pool: &PgPool,
-    id: Uuid,
-    org_id: Uuid,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM acl_role_assignments WHERE id = $1 AND org_id = $2",
-    )
-    .bind(id)
-    .bind(org_id)
-    .execute(pool)
-    .await?;
+pub async fn revoke_assignment(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM acl_role_assignments WHERE id = $1 AND org_id = $2")
+        .bind(id)
+        .bind(org_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -265,10 +254,7 @@ pub async fn check_permission(
 
 /// Check if an identity has any role assignments at all.
 /// Used for backward compatibility — identities with no assignments are allowed through.
-pub async fn has_any_assignments(
-    pool: &PgPool,
-    identity_id: Uuid,
-) -> Result<bool, sqlx::Error> {
+pub async fn has_any_assignments(pool: &PgPool, identity_id: Uuid) -> Result<bool, sqlx::Error> {
     let row = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM acl_role_assignments WHERE identity_id = $1)",
     )
@@ -279,10 +265,7 @@ pub async fn has_any_assignments(
 }
 
 /// Check if an identity is an org-admin (has org-admin role assigned).
-pub async fn is_org_admin(
-    pool: &PgPool,
-    identity_id: Uuid,
-) -> Result<bool, sqlx::Error> {
+pub async fn is_org_admin(pool: &PgPool, identity_id: Uuid) -> Result<bool, sqlx::Error> {
     let row = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
             SELECT 1 FROM acl_role_assignments a
@@ -297,10 +280,7 @@ pub async fn is_org_admin(
 }
 
 /// Check if an org has at least one admin.
-pub async fn has_any_admin(
-    pool: &PgPool,
-    org_id: Uuid,
-) -> Result<bool, sqlx::Error> {
+pub async fn has_any_admin(pool: &PgPool, org_id: Uuid) -> Result<bool, sqlx::Error> {
     let row = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
             SELECT 1 FROM acl_role_assignments a
@@ -318,32 +298,48 @@ pub async fn has_any_admin(
 
 /// Idempotently create the 3 built-in roles for an org and seed their grants.
 /// Returns the org-admin role ID (for assigning to the first user).
-pub async fn ensure_builtin_roles(
-    pool: &PgPool,
-    org_id: Uuid,
-) -> Result<Uuid, sqlx::Error> {
+pub async fn ensure_builtin_roles(pool: &PgPool, org_id: Uuid) -> Result<Uuid, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     // Create roles (or get existing)
     let admin_role = upsert_builtin_role(
-        &mut tx, org_id, "Org Admin", "org-admin",
+        &mut tx,
+        org_id,
+        "Org Admin",
+        "org-admin",
         "Full access to all org resources and settings",
-    ).await?;
+    )
+    .await?;
 
     let member_role = upsert_builtin_role(
-        &mut tx, org_id, "Member", "member",
+        &mut tx,
+        org_id,
+        "Member",
+        "member",
         "Read and write access to core resources",
-    ).await?;
+    )
+    .await?;
 
     let readonly_role = upsert_builtin_role(
-        &mut tx, org_id, "Read Only", "read-only",
+        &mut tx,
+        org_id,
+        "Read Only",
+        "read-only",
         "Read-only access to most resources",
-    ).await?;
+    )
+    .await?;
 
     // Seed admin grants: manage on all
     let all_resources = [
-        "services", "connections", "secrets", "agents", "approvals",
-        "audit_logs", "webhooks", "org_settings", "acl",
+        "services",
+        "connections",
+        "secrets",
+        "agents",
+        "approvals",
+        "audit_logs",
+        "webhooks",
+        "org_settings",
+        "acl",
     ];
     for rt in &all_resources {
         upsert_grant(&mut tx, admin_role, rt, "manage").await?;
@@ -360,8 +356,13 @@ pub async fn ensure_builtin_roles(
 
     // Seed read-only grants
     let readonly_resources = [
-        "services", "connections", "secrets", "agents", "approvals",
-        "audit_logs", "webhooks",
+        "services",
+        "connections",
+        "secrets",
+        "agents",
+        "approvals",
+        "audit_logs",
+        "webhooks",
     ];
     for rt in &readonly_resources {
         upsert_grant(&mut tx, readonly_role, rt, "read").await?;

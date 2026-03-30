@@ -48,7 +48,12 @@ async fn list_roles_returns_empty_for_new_org() {
 
     // New org created via bootstrap_org_identity has no builtin roles
     // (those are seeded at OAuth login / dev_token, not via manual org creation)
-    assert!(roles.is_empty() || roles.iter().all(|r| r["is_builtin"].as_bool() == Some(false)));
+    assert!(
+        roles.is_empty()
+            || roles
+                .iter()
+                .all(|r| r["is_builtin"].as_bool() == Some(false))
+    );
 }
 
 #[tokio::test]
@@ -228,9 +233,11 @@ async fn assign_and_revoke_role() {
         .await
         .unwrap();
 
-    assert!(assignments
-        .iter()
-        .any(|a| a["identity_id"] == identity_id.to_string()));
+    assert!(
+        assignments
+            .iter()
+            .any(|a| a["identity_id"] == identity_id.to_string())
+    );
 
     // Revoke
     let res = client
@@ -300,9 +307,7 @@ async fn acl_audit_trail() {
 
     // Query audit log for ACL role events
     let entries: Vec<Value> = client
-        .get(format!(
-            "{base}/v1/audit?resource_type=acl_role&limit=10"
-        ))
+        .get(format!("{base}/v1/audit?resource_type=acl_role&limit=10"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -311,7 +316,5 @@ async fn acl_audit_trail() {
         .await
         .unwrap();
 
-    assert!(entries
-        .iter()
-        .any(|e| e["action"] == "acl_role.created"));
+    assert!(entries.iter().any(|e| e["action"] == "acl_role.created"));
 }

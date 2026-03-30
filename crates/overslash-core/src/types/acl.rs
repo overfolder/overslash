@@ -86,12 +86,7 @@ impl AclAction {
         matches!(self, AclAction::Manage)
     }
 
-    pub const ALL: &'static [AclAction] = &[
-        Self::Read,
-        Self::Write,
-        Self::Delete,
-        Self::Manage,
-    ];
+    pub const ALL: &'static [AclAction] = &[Self::Read, Self::Write, Self::Delete, Self::Manage];
 }
 
 impl fmt::Display for AclAction {

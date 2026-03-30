@@ -48,7 +48,13 @@ async fn put_secret(
     Path(name): Path<String>,
     Json(req): Json<PutSecretRequest>,
 ) -> Result<Json<PutSecretResponse>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Secrets, AclAction::Write).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Secrets,
+        AclAction::Write,
+    )
+    .await?;
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
 
@@ -86,7 +92,13 @@ async fn get_secret(
     auth: AuthContext,
     Path(name): Path<String>,
 ) -> Result<Json<SecretMetadata>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Secrets, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Secrets,
+        AclAction::Read,
+    )
+    .await?;
     let secret = overslash_db::repos::secret::get_by_name(&state.db, auth.org_id, &name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("secret '{name}' not found")))?;
@@ -101,7 +113,13 @@ async fn list_secrets(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<SecretMetadata>>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Secrets, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Secrets,
+        AclAction::Read,
+    )
+    .await?;
     let rows = overslash_db::repos::secret::list_by_org(&state.db, auth.org_id).await?;
     Ok(Json(
         rows.into_iter()
@@ -119,7 +137,13 @@ async fn delete_secret(
     ip: ClientIp,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Secrets, AclAction::Delete).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Secrets,
+        AclAction::Delete,
+    )
+    .await?;
     let deleted = overslash_db::repos::secret::soft_delete(&state.db, auth.org_id, &name).await?;
     if deleted {
         let _ = overslash_db::repos::audit::log(

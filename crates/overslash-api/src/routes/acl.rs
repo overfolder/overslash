@@ -130,7 +130,13 @@ async fn list_roles(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<RoleResponse>>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Read,
+    )
+    .await?;
 
     let roles = overslash_db::repos::acl::list_roles_by_org(&state.db, auth.org_id).await?;
     Ok(Json(
@@ -157,7 +163,13 @@ async fn create_role(
     ip: ClientIp,
     Json(req): Json<CreateRoleRequest>,
 ) -> Result<Json<RoleResponse>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Manage).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Manage,
+    )
+    .await?;
 
     let role = overslash_db::repos::acl::create_role(
         &state.db,
@@ -201,7 +213,13 @@ async fn get_role(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RoleResponse>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Read,
+    )
+    .await?;
 
     let role = overslash_db::repos::acl::get_role(&state.db, id, auth.org_id)
         .await?
@@ -238,7 +256,13 @@ async fn update_role(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateRoleRequest>,
 ) -> Result<Json<RoleResponse>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Manage).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Manage,
+    )
+    .await?;
 
     let role = overslash_db::repos::acl::update_role(
         &state.db,
@@ -248,9 +272,7 @@ async fn update_role(
         &req.description,
     )
     .await?
-    .ok_or_else(|| {
-        AppError::BadRequest("role not found or is built-in".into())
-    })?;
+    .ok_or_else(|| AppError::BadRequest("role not found or is built-in".into()))?;
 
     let _ = audit::log(
         &state.db,
@@ -285,14 +307,18 @@ async fn delete_role(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Manage).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Manage,
+    )
+    .await?;
 
     let deleted = overslash_db::repos::acl::delete_role(&state.db, id, auth.org_id).await?;
 
     if !deleted {
-        return Err(AppError::BadRequest(
-            "role not found or is built-in".into(),
-        ));
+        return Err(AppError::BadRequest("role not found or is built-in".into()));
     }
 
     let _ = audit::log(
@@ -319,7 +345,13 @@ async fn set_grants(
     Path(id): Path<Uuid>,
     Json(req): Json<SetGrantsRequest>,
 ) -> Result<Json<Vec<GrantResponse>>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Manage).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Manage,
+    )
+    .await?;
 
     // Verify role exists and belongs to org
     let role = overslash_db::repos::acl::get_role(&state.db, id, auth.org_id)
@@ -380,7 +412,13 @@ async fn list_assignments(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<AssignmentResponse>>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Read,
+    )
+    .await?;
 
     let assignments =
         overslash_db::repos::acl::list_assignments_by_org(&state.db, auth.org_id).await?;
@@ -405,7 +443,13 @@ async fn create_assignment(
     ip: ClientIp,
     Json(req): Json<CreateAssignmentRequest>,
 ) -> Result<Json<AssignmentResponse>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Manage).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Manage,
+    )
+    .await?;
 
     // Verify role belongs to this org
     overslash_db::repos::acl::get_role(&state.db, req.role_id, auth.org_id)
@@ -454,10 +498,15 @@ async fn revoke_assignment(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Manage).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Manage,
+    )
+    .await?;
 
-    let deleted =
-        overslash_db::repos::acl::revoke_assignment(&state.db, id, auth.org_id).await?;
+    let deleted = overslash_db::repos::acl::revoke_assignment(&state.db, id, auth.org_id).await?;
 
     if deleted {
         let _ = audit::log(
@@ -508,7 +557,13 @@ async fn acl_status(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<AclStatusResponse>> {
-    require_permission(&state.db, auth.identity_id, AclResourceType::Acl, AclAction::Read).await?;
+    require_permission(
+        &state.db,
+        auth.identity_id,
+        AclResourceType::Acl,
+        AclAction::Read,
+    )
+    .await?;
 
     let has_admin = overslash_db::repos::acl::has_any_admin(&state.db, auth.org_id).await?;
 

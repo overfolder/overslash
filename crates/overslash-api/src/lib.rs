@@ -10,8 +10,10 @@ use std::sync::Arc;
 use axum::Router;
 use sqlx::PgPool;
 use tower_http::{
-    compression::CompressionLayer, cors::CorsLayer,
-    services::{ServeDir, ServeFile}, trace::TraceLayer,
+    compression::CompressionLayer,
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
 };
 
 use crate::config::Config;
@@ -100,8 +102,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         if std::path::Path::new(dashboard_dir).exists() {
             tracing::info!("Serving dashboard from {dashboard_dir}");
             app.fallback_service(
-                ServeDir::new(dashboard_dir)
-                    .not_found_service(ServeFile::new(index)),
+                ServeDir::new(dashboard_dir).not_found_service(ServeFile::new(index)),
             )
         } else {
             tracing::warn!("Dashboard dir {dashboard_dir} not found, skipping static serving");
