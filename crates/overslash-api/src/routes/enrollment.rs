@@ -437,7 +437,7 @@ async fn resolve_enrollment(
 
             // Create agent identity in the user's org
             let new_identity =
-                identity::create(&state.db, session.org, agent_name, "agent", None).await?;
+                identity::create(&state.db, session.org, agent_name, "agent", None, None).await?;
 
             // Generate API key for the new identity
             let (raw_key, key_hash, key_prefix) = generate_prefixed_token("osk_")?;
