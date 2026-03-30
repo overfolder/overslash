@@ -6,7 +6,7 @@ import { fetchAuditLogs, fetchIdentities, fetchServices } from '$lib/server/api'
 const PAGE_SIZE = 20;
 
 export const load: PageServerLoad = async ({ url }) => {
-	const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'));
+	const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1') || 1);
 	const identityId = url.searchParams.get('identity') || undefined;
 	const category = (url.searchParams.get('category') as EventCategory) || undefined;
 	const service = url.searchParams.get('service') || undefined;
