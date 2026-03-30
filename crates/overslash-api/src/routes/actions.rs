@@ -20,7 +20,10 @@ use crate::{
 };
 use overslash_core::{
     crypto,
-    permissions::{PermissionKey, PermissionResult, check_permissions},
+    permissions::{
+        ChainIdentity, ChainWalkResult, PermissionKey, PermissionResult, check_permissions,
+        resolve_chain,
+    },
     secret_injection::inject_secrets,
     types::{ActionRequest, ActionResult, InjectAs, PermissionEffect, PermissionRule, SecretRef},
 };
@@ -96,81 +99,243 @@ async fn execute_action(
     let needs_gate = !action_req.secrets.is_empty() || req.connection.is_some() || auth_injected;
 
     if needs_gate {
-        let rule_rows =
-            overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?;
+        // Load the executing identity to check if it's hierarchical
+        let exec_identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
-        let rules: Vec<PermissionRule> = rule_rows
-            .into_iter()
-            .map(|r| PermissionRule {
-                id: r.id,
-                org_id: r.org_id,
-                identity_id: r.identity_id,
-                action_pattern: r.action_pattern,
-                effect: if r.effect == "deny" {
-                    PermissionEffect::Deny
-                } else {
-                    PermissionEffect::Allow
-                },
-                created_at: r.created_at,
-            })
-            .collect();
+        if exec_identity.parent_id.is_some() {
+            // Hierarchical identity — chain walk
+            let chain_rows =
+                overslash_db::repos::identity::get_ancestor_chain(&state.db, identity_id).await?;
+            let chain_ids: Vec<Uuid> = chain_rows.iter().map(|r| r.id).collect();
+            let all_rule_rows =
+                overslash_db::repos::permission_rule::list_by_identities(&state.db, &chain_ids)
+                    .await?;
 
-        match check_permissions(&rules, &perm_keys) {
-            PermissionResult::Allowed => {}
-            PermissionResult::NeedsApproval(uncovered) => {
-                let token = generate_token();
-                let expires_at = time::OffsetDateTime::now_utc()
-                    + time::Duration::seconds(state.config.approval_expiry_secs as i64);
-                let summary = description
-                    .clone()
-                    .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
-                let keys: Vec<String> = uncovered.iter().map(|k| k.0.clone()).collect();
+            let chain: Vec<ChainIdentity> = chain_rows
+                .iter()
+                .map(|r| ChainIdentity {
+                    id: r.id,
+                    name: r.name.clone(),
+                    parent_id: r.parent_id,
+                    inherit_permissions: r.inherit_permissions,
+                })
+                .collect();
 
-                let approval = overslash_db::repos::approval::create(
-                    &state.db,
-                    &overslash_db::repos::approval::CreateApproval {
-                        org_id: auth.org_id,
-                        identity_id,
-                        action_summary: &summary,
-                        action_detail: Some(serde_json::to_value(&action_req).unwrap_or_default()),
-                        permission_keys: &keys,
-                        token: &token,
-                        expires_at,
-                    },
-                )
-                .await?;
-
-                let _ = audit::log(
-                    &state.db,
-                    &AuditEntry {
-                        org_id: auth.org_id,
-                        identity_id: Some(identity_id),
-                        action: "approval.created",
-                        resource_type: Some("approval"),
-                        resource_id: Some(approval.id),
-                        detail: serde_json::json!({ "summary": summary }),
-                        ip_address: ip.0.as_deref(),
-                    },
-                )
-                .await;
-
-                return Ok((
-                    StatusCode::ACCEPTED,
-                    Json(ExecuteResponse::PendingApproval {
-                        approval_id: approval.id,
-                        approval_url: format!("/approve/{}", approval.token),
-                        action_description: summary,
-                        expires_at: expires_at.to_string(),
-                    }),
-                )
-                    .into_response());
+            let mut rules_map: std::collections::HashMap<Uuid, Vec<PermissionRule>> =
+                std::collections::HashMap::new();
+            for r in all_rule_rows {
+                rules_map
+                    .entry(r.identity_id)
+                    .or_default()
+                    .push(PermissionRule {
+                        id: r.id,
+                        org_id: r.org_id,
+                        identity_id: r.identity_id,
+                        action_pattern: r.action_pattern,
+                        effect: if r.effect == "deny" {
+                            PermissionEffect::Deny
+                        } else {
+                            PermissionEffect::Allow
+                        },
+                        created_at: r.created_at,
+                    });
             }
-            PermissionResult::Denied(reason) => {
-                return Ok((
-                    StatusCode::FORBIDDEN,
-                    Json(ExecuteResponse::Denied { reason }),
-                )
-                    .into_response());
+
+            match resolve_chain(&chain, &rules_map, &perm_keys) {
+                ChainWalkResult::Allowed => {}
+                ChainWalkResult::NeedsApproval(gaps) => {
+                    let expires_at = time::OffsetDateTime::now_utc()
+                        + time::Duration::seconds(state.config.approval_expiry_secs as i64);
+                    let summary = description
+                        .clone()
+                        .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
+
+                    // Create one approval per gap
+                    let mut first_approval_id = None;
+                    let mut first_token = String::new();
+                    for gap in &gaps {
+                        let token = generate_token();
+                        let keys: Vec<String> =
+                            gap.uncovered_keys.iter().map(|k| k.0.clone()).collect();
+
+                        let approval = overslash_db::repos::approval::create(
+                            &state.db,
+                            &overslash_db::repos::approval::CreateApproval {
+                                org_id: auth.org_id,
+                                identity_id,
+                                action_summary: &summary,
+                                action_detail: Some(
+                                    serde_json::to_value(&action_req).unwrap_or_default(),
+                                ),
+                                permission_keys: &keys,
+                                token: &token,
+                                expires_at,
+                                gap_identity_id: Some(gap.gap_identity_id),
+                                can_be_handled_by: gap.can_be_handled_by.clone(),
+                            },
+                        )
+                        .await?;
+
+                        if first_approval_id.is_none() {
+                            first_approval_id = Some(approval.id);
+                            first_token = token;
+                        }
+
+                        let _ = audit::log(
+                            &state.db,
+                            &AuditEntry {
+                                org_id: auth.org_id,
+                                identity_id: Some(identity_id),
+                                action: "approval.created",
+                                resource_type: Some("approval"),
+                                resource_id: Some(approval.id),
+                                detail: serde_json::json!({
+                                    "summary": &summary,
+                                    "gap_identity_id": gap.gap_identity_id,
+                                    "gap_identity_name": &gap.gap_identity_name,
+                                }),
+                                ip_address: ip.0.as_deref(),
+                            },
+                        )
+                        .await;
+
+                        // Dispatch approval.created webhook
+                        {
+                            let db = state.db.clone();
+                            let client = state.http_client.clone();
+                            let org_id = auth.org_id;
+                            let aid = approval.id;
+                            let sum = summary.clone();
+                            let gap_name = gap.gap_identity_name.clone();
+                            let gap_id = gap.gap_identity_id;
+                            let handlers = gap.can_be_handled_by.clone();
+                            let exp = expires_at;
+                            tokio::spawn(async move {
+                                crate::services::webhook_dispatcher::dispatch(
+                                    &db,
+                                    &client,
+                                    org_id,
+                                    "approval.created",
+                                    serde_json::json!({
+                                        "approval_id": aid,
+                                        "status": "pending",
+                                        "action_summary": sum,
+                                        "identity_id": identity_id,
+                                        "gap_identity": gap_name,
+                                        "gap_identity_id": gap_id,
+                                        "can_be_handled_by": handlers,
+                                        "expires_at": exp.to_string(),
+                                    }),
+                                )
+                                .await;
+                            });
+                        }
+                    }
+
+                    return Ok((
+                        StatusCode::ACCEPTED,
+                        Json(ExecuteResponse::PendingApproval {
+                            approval_id: first_approval_id.unwrap_or_default(),
+                            approval_url: format!("/approve/{first_token}"),
+                            action_description: summary,
+                            expires_at: expires_at.to_string(),
+                        }),
+                    )
+                        .into_response());
+                }
+                ChainWalkResult::Denied(reason) => {
+                    return Ok((
+                        StatusCode::FORBIDDEN,
+                        Json(ExecuteResponse::Denied { reason }),
+                    )
+                        .into_response());
+                }
+            }
+        } else {
+            // Flat identity — existing single-level check
+            let rule_rows =
+                overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id)
+                    .await?;
+
+            let rules: Vec<PermissionRule> = rule_rows
+                .into_iter()
+                .map(|r| PermissionRule {
+                    id: r.id,
+                    org_id: r.org_id,
+                    identity_id: r.identity_id,
+                    action_pattern: r.action_pattern,
+                    effect: if r.effect == "deny" {
+                        PermissionEffect::Deny
+                    } else {
+                        PermissionEffect::Allow
+                    },
+                    created_at: r.created_at,
+                })
+                .collect();
+
+            match check_permissions(&rules, &perm_keys) {
+                PermissionResult::Allowed => {}
+                PermissionResult::NeedsApproval(uncovered) => {
+                    let token = generate_token();
+                    let expires_at = time::OffsetDateTime::now_utc()
+                        + time::Duration::seconds(state.config.approval_expiry_secs as i64);
+                    let summary = description
+                        .clone()
+                        .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
+                    let keys: Vec<String> = uncovered.iter().map(|k| k.0.clone()).collect();
+
+                    let approval = overslash_db::repos::approval::create(
+                        &state.db,
+                        &overslash_db::repos::approval::CreateApproval {
+                            org_id: auth.org_id,
+                            identity_id,
+                            action_summary: &summary,
+                            action_detail: Some(
+                                serde_json::to_value(&action_req).unwrap_or_default(),
+                            ),
+                            permission_keys: &keys,
+                            token: &token,
+                            expires_at,
+                            gap_identity_id: None,
+                            can_be_handled_by: vec![],
+                        },
+                    )
+                    .await?;
+
+                    let _ = audit::log(
+                        &state.db,
+                        &AuditEntry {
+                            org_id: auth.org_id,
+                            identity_id: Some(identity_id),
+                            action: "approval.created",
+                            resource_type: Some("approval"),
+                            resource_id: Some(approval.id),
+                            detail: serde_json::json!({ "summary": summary }),
+                            ip_address: ip.0.as_deref(),
+                        },
+                    )
+                    .await;
+
+                    return Ok((
+                        StatusCode::ACCEPTED,
+                        Json(ExecuteResponse::PendingApproval {
+                            approval_id: approval.id,
+                            approval_url: format!("/approve/{}", approval.token),
+                            action_description: summary,
+                            expires_at: expires_at.to_string(),
+                        }),
+                    )
+                        .into_response());
+                }
+                PermissionResult::Denied(reason) => {
+                    return Ok((
+                        StatusCode::FORBIDDEN,
+                        Json(ExecuteResponse::Denied { reason }),
+                    )
+                        .into_response());
+                }
             }
         }
     }

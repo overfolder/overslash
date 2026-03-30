@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub enum IdentityKind {
     User,
     Agent,
+    SubAgent,
 }
 
 impl IdentityKind {
@@ -14,6 +15,7 @@ impl IdentityKind {
         match self {
             Self::User => "user",
             Self::Agent => "agent",
+            Self::SubAgent => "subagent",
         }
     }
 }
@@ -30,6 +32,7 @@ impl std::str::FromStr for IdentityKind {
         match s {
             "user" => Ok(Self::User),
             "agent" => Ok(Self::Agent),
+            "subagent" => Ok(Self::SubAgent),
             other => Err(format!("invalid identity kind: {other}")),
         }
     }
@@ -43,6 +46,12 @@ pub struct Identity {
     pub kind: IdentityKind,
     pub external_id: Option<String>,
     pub metadata: serde_json::Value,
+    pub parent_id: Option<Uuid>,
+    pub owner_id: Option<Uuid>,
+    pub depth: i32,
+    pub inherit_permissions: bool,
+    pub can_create_sub: bool,
+    pub max_sub_depth: Option<i32>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

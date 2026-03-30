@@ -51,16 +51,63 @@ Phased roadmap. Each phase is usable independently.
 
 ## Phase 3: Identity Hierarchy + Permissions
 
-- [ ] Parent/child identity relationships (depth tracking, owner_id)
-- [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy)
-- [ ] Sub-identity CRUD for agents (`POST /v1/sub-identities`)
-- [ ] TTL-based sub-identity auto-cleanup
-- [ ] Permission chain walk (ancestor chain, gap detection)
-- [ ] Approval bubbling (gap level targeting, ancestor handling)
-- [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
-- [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
-- [ ] Org-level ACL — role-based access control for who can manage resources within an org
-- [ ] Dashboard: identity hierarchy tree view, agent permission management
+> Design doc: [docs/design/permission-chain-implementation.md](docs/design/permission-chain-implementation.md)
+
+### 3.1 Schema & Types
+- [ ] Migration 015: add `parent_id`, `owner_id`, `depth`, `inherit_permissions`, `can_create_sub`, `max_sub_depth`, `ttl` to identities; expand kind CHECK to include `subagent`
+- [ ] Migration 015: add `gap_identity_id`, `can_be_handled_by`, `grant_to` to approvals
+- [ ] Migration 015: add `expires_at` to permission_rules
+- [ ] Rust types: add `SubAgent` to `IdentityKind` enum
+- [ ] Rust types: add hierarchy fields to `Identity` and `IdentityRow`
+- [ ] Rust types: add gap/grant fields to `Approval` and `ApprovalRow`
+- [ ] Update all existing SQL SELECT lists in identity and approval repos
+
+### 3.2 Identity Hierarchy Repo
+- [ ] `get_ancestor_chain()` — recursive CTE walking parent_id to root
+- [ ] `is_ancestor_of()` — verify ancestry relationship
+- [ ] `create_sub_identity()` — compute depth/owner_id, validate max_sub_depth
+- [ ] `list_children()` — direct children of an identity
+- [ ] `cleanup_expired_sub_identities()` — delete identities past TTL
+- [ ] `list_by_identities()` — batch-load permission rules for a set of identity IDs with expiry filter
+- [ ] Background task: TTL cleanup loop (alongside existing approval expiry)
+
+### 3.3 Chain Walk Algorithm
+- [ ] `resolve_chain()` in `permissions.rs` — walk ancestor chain bottom-to-top, detect gaps
+- [ ] `ChainWalkResult`, `PermissionGap` types
+- [ ] Handle `inherit_permissions` as live pointer (skip level, parent's rules cover)
+- [ ] Deny at any level short-circuits entire chain
+- [ ] Expired permission rules filtered out
+- [ ] Unit tests: flat identity regression, 2-level allow, 2-level gap, 3-level middle gap, deny override, multiple gaps, cascading inherit, expired rules
+
+### 3.4 Identity CRUD API
+- [ ] Extend `POST /v1/identities` to accept `parent_id`, `inherit_permissions`, `can_create_sub`, `max_sub_depth`, `ttl`
+- [ ] Validate: parent exists in same org, depth constraints, kind matches depth
+- [ ] Extend `GET /v1/identities` response with hierarchy fields
+- [ ] Dashboard: identity hierarchy tree view with parent/child visualization + inline management
+
+### 3.5 Action Execution Integration
+- [ ] In `execute_action`: detect hierarchical identity (`parent_id IS NOT NULL`), load ancestor chain, batch-load rules, call `resolve_chain()`
+- [ ] Flat identity path unchanged (backwards-compatible)
+- [ ] Create one approval per gap with `gap_identity_id` and `can_be_handled_by`
+- [ ] Extend `pending_approval` response with `gaps` array
+- [ ] Integration tests: subagent gap detection, multi-gap, legacy flat identity unchanged
+
+### 3.6 Approval Resolution & Scoping
+- [ ] `GET /v1/approvals?scope=actionable|mine|all` — scope filtering with `can_be_handled_by` array
+- [ ] Resolve authorization: verify resolver is in `can_be_handled_by`, forbid self-approval (403)
+- [ ] `allow_remember` with `grant_to` parameter — create rule on target identity
+- [ ] `allow_remember` with `expires_in` parameter — set `expires_at` on created rule
+- [ ] Dashboard: approval list with actionable/mine tabs, resolve UI with grant_to picker and expires_in picker
+- [ ] Integration tests: self-approval forbidden, ancestor resolves, scope filtering, grant_to, expires_in
+
+### 3.7 Webhook Payload Updates
+- [ ] `approval.created` event: include `gap_identity`, `gap_identity_id`, `can_be_handled_by`, `identity_id`, `expires_at`
+- [ ] `approval.resolved` event: include `gap_identity_id`, `resolved_by`, `grant_to`
+- [ ] Integration test: verify webhook payloads contain new fields
+
+### 3.8 Org-Level ACL
+- [ ] Role-based access control for who can manage resources within an org (admin/member/read-only)
+- [ ] Dashboard: org settings for role management
 
 ## Phase 4: Polish + Meta Tools
 

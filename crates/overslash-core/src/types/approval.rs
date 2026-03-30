@@ -56,4 +56,7 @@ pub struct Approval {
     pub token: String,
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
+    pub gap_identity_id: Option<Uuid>,
+    pub can_be_handled_by: Vec<Uuid>,
+    pub grant_to: Option<Uuid>,
 }

@@ -61,6 +61,11 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Enrollment expiry error: {e}"),
                     _ => {}
                 }
+                match overslash_db::repos::identity::cleanup_expired_sub_identities(&db).await {
+                    Ok(n) if n > 0 => tracing::info!("Cleaned up {n} expired sub-identities"),
+                    Err(e) => tracing::error!("Sub-identity cleanup error: {e}"),
+                    _ => {}
+                }
             }
         });
 
