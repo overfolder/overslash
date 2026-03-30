@@ -230,7 +230,13 @@ struct ConnectionSummary {
     provider_key: String,
     account_email: Option<String>,
     is_default: bool,
+    token_expires_at: Option<String>,
     created_at: String,
+}
+
+fn to_rfc3339(t: time::OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| t.to_string())
 }
 
 async fn list_connections(
@@ -249,7 +255,8 @@ async fn list_connections(
                 provider_key: r.provider_key,
                 account_email: r.account_email,
                 is_default: r.is_default,
-                created_at: r.created_at.to_string(),
+                token_expires_at: r.token_expires_at.map(to_rfc3339),
+                created_at: to_rfc3339(r.created_at),
             })
             .collect(),
     ))

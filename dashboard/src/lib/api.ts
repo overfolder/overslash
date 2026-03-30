@@ -43,6 +43,10 @@ export async function listConnections(apiKey: string): Promise<ConnectionSummary
   return request(apiKey, 'GET', '/v1/connections');
 }
 
+export async function deleteConnection(apiKey: string, id: string): Promise<{ deleted: boolean }> {
+  return request(apiKey, 'DELETE', `/v1/connections/${encodeURIComponent(id)}`);
+}
+
 export async function executeAction(
   apiKey: string,
   req: ExecuteRequest

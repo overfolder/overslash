@@ -48,7 +48,17 @@ export interface ConnectionSummary {
   provider_key: string;
   account_email: string | null;
   is_default: boolean;
+  token_expires_at: string | null;
   created_at: string;
+}
+
+export type ConnectionStatus = 'connected' | 'expired' | 'disconnected';
+
+export interface ServiceWithConnection {
+  service: ServiceSummary;
+  connection: ConnectionSummary | null;
+  status: ConnectionStatus;
+  oauthProvider: string | null;
 }
 
 export interface SecretRef {

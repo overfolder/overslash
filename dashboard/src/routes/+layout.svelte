@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../app.css';
+  import { page } from '$app/state';
   import { apiKey } from '$lib/stores';
 
   let showKey = $state(false);
@@ -15,9 +16,18 @@
 
 <div class="min-h-screen flex flex-col">
   <header class="border-b border-gray-800 bg-gray-900 px-6 py-3 flex items-center justify-between shrink-0">
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-4">
       <span class="text-lg font-bold tracking-tight text-white">Overslash</span>
-      <span class="text-xs text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">Developer Tools</span>
+      <nav class="flex items-center gap-1 text-sm">
+        <a
+          href="/"
+          class="rounded px-2.5 py-1 transition-colors {page.url.pathname === '/' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-gray-200'}"
+        >Explorer</a>
+        <a
+          href="/services"
+          class="rounded px-2.5 py-1 transition-colors {page.url.pathname === '/services' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-gray-200'}"
+        >Services</a>
+      </nav>
     </div>
     <div class="flex items-center gap-3">
       <div class="flex items-center gap-2">

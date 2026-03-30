@@ -1153,7 +1153,7 @@ async fn test_audit_noop_deletes_no_entries(pool: PgPool) {
         .filter(|e| {
             e["action"]
                 .as_str()
-                .map_or(false, |a| a.ends_with(".deleted"))
+                .is_some_and(|a| a.ends_with(".deleted"))
         })
         .collect();
     assert!(
