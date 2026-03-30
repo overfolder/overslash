@@ -57,6 +57,10 @@ schema:
 sqlx-prepare:
 	cargo sqlx prepare --workspace
 
+# Start dashboard dev server
+dev-dashboard:
+	cd dashboard && npm run dev
+
 # Start mock target
 mock-target:
 	cargo run -p mock-target
