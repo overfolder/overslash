@@ -16,8 +16,11 @@ pub async fn require_permission(
     resource_type: AclResourceType,
     action: AclAction,
 ) -> Result<(), AppError> {
-    let identity_id =
-        identity_id.ok_or_else(|| AppError::Forbidden("no identity context".into()))?;
+    // Org-level keys (no identity) are allowed through for backward compat
+    let identity_id = match identity_id {
+        Some(id) => id,
+        None => return Ok(()),
+    };
 
     // Backward compat: if no roles assigned, allow through
     if !overslash_db::repos::acl::has_any_assignments(pool, identity_id)
@@ -47,8 +50,11 @@ pub async fn require_permission(
 
 /// Check that the calling identity is an org-admin.
 pub async fn require_org_admin(pool: &PgPool, identity_id: Option<Uuid>) -> Result<(), AppError> {
-    let identity_id =
-        identity_id.ok_or_else(|| AppError::Forbidden("no identity context".into()))?;
+    // Org-level keys (no identity) are allowed through for backward compat
+    let identity_id = match identity_id {
+        Some(id) => id,
+        None => return Ok(()),
+    };
 
     // Backward compat: if no roles assigned, allow through
     if !overslash_db::repos::acl::has_any_assignments(pool, identity_id)
