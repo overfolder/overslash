@@ -258,11 +258,11 @@
     if (key) fetchServices();
   });
 
-  function tryParseJson(text: string): unknown | null {
+  function tryParseJson(text: string): { ok: true; value: unknown } | { ok: false } {
     try {
-      return JSON.parse(text);
+      return { ok: true, value: JSON.parse(text) };
     } catch {
-      return null;
+      return { ok: false };
     }
   }
 </script>
@@ -532,8 +532,8 @@
                 {/if}
               </div>
               <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-auto">
-                {#if tryParseJson(resp.result.body) !== null}
-                  <pre class="p-4 text-sm font-mono leading-relaxed overflow-x-auto">{@html highlightJson(tryParseJson(resp.result.body))}</pre>
+                {#if tryParseJson(resp.result.body).ok}
+                  <pre class="p-4 text-sm font-mono leading-relaxed overflow-x-auto">{@html highlightJson(tryParseJson(resp.result.body).value)}</pre>
                 {:else}
                   <pre class="p-4 text-sm font-mono text-gray-300 whitespace-pre-wrap">{resp.result.body}</pre>
                 {/if}
