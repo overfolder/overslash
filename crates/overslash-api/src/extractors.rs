@@ -50,7 +50,7 @@ impl FromRequestParts<AppState> for ClientIp {
     }
 }
 
-/// Context extracted from a valid API key.
+/// Context extracted from a valid API key or session cookie.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub org_id: Uuid,
@@ -58,7 +58,25 @@ pub struct AuthContext {
     pub key_id: Uuid,
 }
 
-/// Extractor that validates the API key and provides AuthContext.
+/// Helper to derive JWT secret from the encryption key (same as auth.rs).
+fn jwt_secret(encryption_key: &str) -> Vec<u8> {
+    let bytes = hex::decode(encryption_key).unwrap_or_else(|_| encryption_key.as_bytes().to_vec());
+    bytes[..32.min(bytes.len())].to_vec()
+}
+
+/// Extract cookie value by name from the Cookie header.
+fn extract_cookie(parts: &Parts, name: &str) -> Option<String> {
+    let cookie_header = parts.headers.get("cookie")?.to_str().ok()?;
+    for pair in cookie_header.split(';') {
+        let pair = pair.trim();
+        if let Some(value) = pair.strip_prefix(&format!("{name}=")) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Extractor that validates the session cookie or API key and provides AuthContext.
 impl FromRequestParts<AppState> for AuthContext {
     type Rejection = AppError;
 
@@ -66,6 +84,19 @@ impl FromRequestParts<AppState> for AuthContext {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // Try session cookie first
+        if let Some(token) = extract_cookie(parts, "oss_session") {
+            let secret = jwt_secret(&state.config.secrets_encryption_key);
+            if let Ok(claims) = jwt::verify(&secret, &token) {
+                return Ok(AuthContext {
+                    org_id: claims.org,
+                    identity_id: Some(claims.sub),
+                    key_id: Uuid::nil(),
+                });
+            }
+        }
+
+        // Fall back to API key auth
         let auth_header = parts
             .headers
             .get("authorization")

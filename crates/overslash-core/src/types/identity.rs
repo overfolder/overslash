@@ -42,6 +42,8 @@ pub struct Identity {
     pub name: String,
     pub kind: IdentityKind,
     pub external_id: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub depth: i32,
     pub metadata: serde_json::Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,

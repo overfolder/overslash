@@ -140,7 +140,7 @@ async fn test_oauth_x_token_refresh(pool: PgPool) {
     let org = overslash_db::repos::org::create(&pool, "XRefreshOrg", "x-refresh-test")
         .await
         .unwrap();
-    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None, None)
         .await
         .unwrap();
 

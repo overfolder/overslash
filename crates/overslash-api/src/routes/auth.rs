@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
@@ -161,19 +161,12 @@ async fn google_callback(
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
-    let body = json!({
-        "status": "authenticated",
-        "org_id": org_id,
-        "identity_id": identity_id,
-        "email": email,
-    });
-
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
 
-    Ok((StatusCode::OK, resp_headers, axum::Json(body)).into_response())
+    Ok((resp_headers, Redirect::to("/")).into_response())
 }
 
 /// Return current session user info from JWT cookie.

@@ -939,7 +939,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired(pool: PgPool) {
     let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test")
         .await
         .unwrap();
-    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None, None)
         .await
         .unwrap();
 
@@ -1003,7 +1003,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh(pool: PgP
     let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test")
         .await
         .unwrap();
-    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None, None)
         .await
         .unwrap();
 
