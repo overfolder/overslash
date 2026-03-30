@@ -185,7 +185,7 @@ async fn resolve_approval(
             .unwrap_or(row.identity_id);
 
         let expires_at = if let Some(ref dur_str) = req.expires_in {
-            let secs = parse_duration_secs(dur_str).map_err(|e| AppError::BadRequest(e))?;
+            let secs = parse_duration_secs(dur_str).map_err(AppError::BadRequest)?;
             Some(time::OffsetDateTime::now_utc() + time::Duration::seconds(secs))
         } else {
             None
