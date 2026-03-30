@@ -30,7 +30,11 @@
 			devMode = true;
 			await loadProfile();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Dev login failed';
+			if (e instanceof ApiError && e.status === 404) {
+				error = 'not_authenticated';
+			} else {
+				error = e instanceof Error ? e.message : 'Dev login failed';
+			}
 		}
 	}
 
@@ -55,7 +59,9 @@
 			<p>Sign in to view your profile.</p>
 			<div class="auth-actions">
 				<a href="/auth/google/login" class="btn btn-primary">Sign in with Google</a>
-				<button class="btn btn-secondary" onclick={devLogin}>Dev Login</button>
+				{#if import.meta.env.DEV}
+					<button class="btn btn-secondary" onclick={devLogin}>Dev Login</button>
+				{/if}
 			</div>
 		</div>
 	{:else if error}
