@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict MeC6EPcEKe0HNUywGkWZ2z8XVgOZEc3PfkFnDMGXxVda3GVuHwO5lC2PuoiZIxH
+\restrict wHJCgrL3s2NrYuTr54CG2Lzr6cwjPfyKaoCKqfLIXY6o7lS69q3KV4LgnSN6nBw
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -144,6 +144,7 @@ CREATE TABLE public.identities (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    email text,
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text])))
 );
 
@@ -482,10 +483,24 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
+-- Name: idx_identities_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_email ON public.identities USING btree (email) WHERE (email IS NOT NULL);
+
+
+--
 -- Name: idx_identities_org; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_identities_org ON public.identities USING btree (org_id);
+
+
+--
+-- Name: idx_identities_user_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_identities_user_email ON public.identities USING btree (email) WHERE ((kind = 'user'::text) AND (email IS NOT NULL));
 
 
 --
@@ -681,5 +696,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict MeC6EPcEKe0HNUywGkWZ2z8XVgOZEc3PfkFnDMGXxVda3GVuHwO5lC2PuoiZIxH
+\unrestrict wHJCgrL3s2NrYuTr54CG2Lzr6cwjPfyKaoCKqfLIXY6o7lS69q3KV4LgnSN6nBw
 

@@ -18,6 +18,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
         secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,
@@ -50,6 +51,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::enrollment::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -69,6 +71,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,
@@ -100,6 +103,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::enrollment::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -339,6 +343,7 @@ pub async fn start_api_with_registry(
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: enc_key_hex,
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,
@@ -370,6 +375,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::enrollment::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -386,6 +392,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         services_dir: "services".into(),
         google_auth_client_id: None,

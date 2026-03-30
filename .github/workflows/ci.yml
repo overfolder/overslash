@@ -31,6 +31,7 @@ jobs:
     env:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +52,7 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
       - name: Tests with coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov clean --workspace && cargo llvm-cov --workspace --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
           # Write-action E2E tests (Resend, X, Google Calendar) are #[ignore]d.

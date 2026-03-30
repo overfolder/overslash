@@ -141,7 +141,7 @@ async fn google_callback(
     let (org_id, identity_id, email) = find_or_create_user(&state, &userinfo).await?;
 
     // Mint JWT (7-day expiry)
-    let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
+    let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let claims = jwt::Claims {
         sub: identity_id,
@@ -184,7 +184,7 @@ async fn me(
     let token = extract_cookie(&headers, "oss_session")
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
-    let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
+    let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let claims = jwt::verify(&jwt_secret, &token)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
@@ -232,7 +232,7 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
             }
         };
 
-    let jwt_secret = jwt_secret(&state.config.secrets_encryption_key);
+    let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let claims = jwt::Claims {
         sub: identity_id,
@@ -293,10 +293,8 @@ fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
-fn jwt_secret(encryption_key: &str) -> Vec<u8> {
-    // Use first 32 bytes of the hex-encoded encryption key as JWT signing secret
-    let bytes = hex::decode(encryption_key).unwrap_or_else(|_| encryption_key.as_bytes().to_vec());
-    bytes[..32.min(bytes.len())].to_vec()
+fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
+    hex::decode(signing_key).unwrap_or_else(|_| signing_key.as_bytes().to_vec())
 }
 
 #[derive(Deserialize)]

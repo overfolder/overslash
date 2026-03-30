@@ -56,6 +56,11 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Approval expiry error: {e}"),
                     _ => {}
                 }
+                match overslash_db::repos::pending_enrollment::expire_stale(&db).await {
+                    Ok(n) if n > 0 => tracing::info!("Expired {n} stale pending enrollments"),
+                    Err(e) => tracing::error!("Enrollment expiry error: {e}"),
+                    _ => {}
+                }
             }
         });
 
@@ -81,6 +86,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::connections::router())
         .merge(routes::byoc_credentials::router())
         .merge(routes::auth::router())
+        .merge(routes::enrollment::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
