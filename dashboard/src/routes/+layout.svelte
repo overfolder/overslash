@@ -1,47 +1,93 @@
 <script lang="ts">
-  import '../app.css';
-  import { apiKey } from '$lib/stores';
+	import '../app.css';
+	import type { Snippet } from 'svelte';
 
-  let showKey = $state(false);
-  let keyValue = $state('');
-
-  apiKey.subscribe((v) => (keyValue = v));
-
-  function onKeyInput(e: Event) {
-    const target = e.target as HTMLInputElement;
-    apiKey.set(target.value);
-  }
+	let { children }: { children: Snippet } = $props();
 </script>
 
-<div class="min-h-screen flex flex-col">
-  <header class="border-b border-gray-800 bg-gray-900 px-6 py-3 flex items-center justify-between shrink-0">
-    <div class="flex items-center gap-3">
-      <span class="text-lg font-bold tracking-tight text-white">Overslash</span>
-      <span class="text-xs text-gray-500 border border-gray-700 rounded px-1.5 py-0.5">Developer Tools</span>
-    </div>
-    <div class="flex items-center gap-3">
-      <div class="flex items-center gap-2">
-        <span class="text-xs text-gray-400">API Key</span>
-        <div class="relative">
-          <input
-            type={showKey ? 'text' : 'password'}
-            value={keyValue}
-            oninput={onKeyInput}
-            placeholder="osk_..."
-            class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm font-mono text-gray-200 w-72 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 placeholder-gray-600"
-          />
-          <button
-            onclick={() => (showKey = !showKey)}
-            class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
-          >
-            {showKey ? 'Hide' : 'Show'}
-          </button>
-        </div>
-      </div>
-      <div class="w-2 h-2 rounded-full {keyValue ? 'bg-green-500' : 'bg-gray-600'}"></div>
-    </div>
-  </header>
-  <main class="flex-1 overflow-hidden">
-    <slot />
-  </main>
+<div class="app">
+	<nav class="sidebar">
+		<div class="logo">
+			<span class="logo-icon">&#x2F;&#x2F;</span>
+			<span class="logo-text">overslash</span>
+		</div>
+		<div class="nav-links">
+			<a href="/profile" class="nav-item">
+				<span class="nav-icon">&#x1D56;</span>
+				Profile
+			</a>
+		</div>
+	</nav>
+	<main class="content">
+		{@render children()}
+	</main>
 </div>
+
+<style>
+	.app {
+		display: flex;
+		min-height: 100vh;
+	}
+
+	.sidebar {
+		width: 220px;
+		background: var(--color-surface);
+		border-right: 1px solid var(--color-border);
+		padding: 1.5rem 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 2rem;
+	}
+
+	.logo {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0 0.75rem;
+	}
+
+	.logo-icon {
+		font-size: 1.5rem;
+		font-weight: 700;
+		color: var(--color-primary);
+		font-family: var(--font-mono);
+	}
+
+	.logo-text {
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--color-text);
+	}
+
+	.nav-links {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.nav-item {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.6rem 0.75rem;
+		border-radius: 6px;
+		color: var(--color-text-muted);
+		font-size: 0.9rem;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.nav-item:hover {
+		background: var(--color-border);
+		color: var(--color-text);
+	}
+
+	.nav-icon {
+		font-size: 1.1rem;
+	}
+
+	.content {
+		flex: 1;
+		padding: 2rem 3rem;
+		overflow-y: auto;
+	}
+</style>
