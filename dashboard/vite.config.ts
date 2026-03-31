@@ -1,6 +1,8 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+const apiTarget = process.env.API_URL || 'http://localhost:3000';
+
 export default defineConfig({
 	plugins: [sveltekit()],
 	server: {
@@ -8,15 +10,15 @@ export default defineConfig({
 		proxy: {
 			// Proxy API and auth requests to Rust backend
 			'/v1': {
-				target: 'http://localhost:3000',
+				target: apiTarget,
 				changeOrigin: true
 			},
 			'/auth': {
-				target: 'http://localhost:3000',
+				target: apiTarget,
 				changeOrigin: true
 			},
 			'/health': {
-				target: 'http://localhost:3000',
+				target: apiTarget,
 				changeOrigin: true
 			}
 		}

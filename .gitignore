@@ -19,6 +19,9 @@
 .DS_Store
 Thumbs.db
 
+# Playwright
+.playwright-mcp/
+
 # Dashboard (SvelteKit)
 dashboard/node_modules/
 dashboard/.svelte-kit/

@@ -25,6 +25,7 @@ services:
     environment:
       DATABASE_URL: postgres://overslash:overslash@postgres:5432/overslash
       HOST: 0.0.0.0
+      RUSTUP_TOOLCHAIN: stable
     ports:
       - "3000:3000"
     volumes:
@@ -43,6 +44,8 @@ services:
     build:
       context: ../dashboard
       dockerfile: Dockerfile.dev
+    environment:
+      API_URL: http://api:3000
     ports:
       - "5173:5173"
     volumes:
