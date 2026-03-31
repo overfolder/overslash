@@ -43,8 +43,7 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
-            dashboard_url: env::var("DASHBOARD_URL")
-                .unwrap_or_else(|_| "/".into()),
+            dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
         }
     }
 
