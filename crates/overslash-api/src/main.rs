@@ -21,6 +21,18 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
     let addr = format!("{}:{}", config.host, config.port);
     tracing::info!("Starting Overslash on {addr}");
+    tracing::info!(
+        host = %config.host,
+        port = %config.port,
+        public_url = %config.public_url,
+        dashboard_url = %config.dashboard_url,
+        dev_auth = %config.dev_auth_enabled,
+        google_oauth = %config.google_auth_client_id.is_some(),
+        services_dir = %config.services_dir,
+        approval_expiry_secs = %config.approval_expiry_secs,
+        max_response_body_bytes = %config.max_response_body_bytes,
+        "Config loaded"
+    );
 
     let app = overslash_api::create_app(config).await?;
 

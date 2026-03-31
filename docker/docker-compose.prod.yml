@@ -1,3 +1,5 @@
+name: overslash
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -27,8 +29,8 @@ services:
 
   api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: crates/overslash-api/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy

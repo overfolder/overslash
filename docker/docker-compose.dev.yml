@@ -1,0 +1,59 @@
+name: overslash
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: overslash
+      POSTGRES_PASSWORD: overslash
+      POSTGRES_DB: overslash
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U overslash
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: crates/overslash-api/Dockerfile.dev
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgres://overslash:overslash@postgres:5432/overslash
+      HOST: 0.0.0.0
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../crates/overslash-core/src:/app/crates/overslash-core/src:ro
+      - ../crates/overslash-db/src:/app/crates/overslash-db/src:ro
+      - ../crates/overslash-api/src:/app/crates/overslash-api/src:ro
+      - ../tests/mock-target/src:/app/tests/mock-target/src:ro
+      - ../services:/app/services:ro
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../dashboard:/app
+      - dashboard-node-modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  cargo-cache:
+  target-cache:
+  dashboard-node-modules:

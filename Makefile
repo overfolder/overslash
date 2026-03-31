@@ -1,4 +1,4 @@
-.PHONY: dev down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks \
+.PHONY: dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume
 
@@ -13,14 +13,21 @@ GREEN := \033[0;32m
 RED := \033[0;31m
 NC := \033[0m
 
-# Start postgres + run API server
+# Start all dev services (postgres + api with cargo-watch + dashboard)
 dev:
-	$(COMPOSE) -f docker-compose.dev.yml up -d postgres
-	cargo run -p overslash-api
+	$(COMPOSE) -f docker/docker-compose.dev.yml up --build
+
+# Start only the API (postgres + api)
+dev-api:
+	$(COMPOSE) -f docker/docker-compose.dev.yml up --build postgres api
+
+# Start only the dashboard dev server (no container)
+dev-dashboard:
+	cd dashboard && npm run dev
 
 # Stop services
 down:
-	$(COMPOSE) -f docker-compose.dev.yml down
+	$(COMPOSE) -f docker/docker-compose.dev.yml down
 
 # Run all tests
 test:

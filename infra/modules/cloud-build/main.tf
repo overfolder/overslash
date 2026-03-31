@@ -55,6 +55,7 @@ resource "google_cloudbuild_trigger" "deploy" {
       name = "gcr.io/cloud-builders/docker"
       args = [
         "build",
+        "-f", "crates/overslash-api/Dockerfile",
         "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
         "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:latest",
         ".",

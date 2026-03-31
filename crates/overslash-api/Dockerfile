@@ -1,4 +1,4 @@
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.94-trixie AS builder
 
 WORKDIR /app
 
@@ -34,7 +34,7 @@ RUN find crates/ -name "*.rs" -exec touch {} +
 RUN cargo build --release --package overslash-api
 
 # --- Runtime stage ---
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -47,7 +47,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/overslash-api /app/overslash-api
 COPY services/ /app/services/
-COPY entrypoint.sh /app/entrypoint.sh
+COPY crates/overslash-api/entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh \
     && chown -R overslash:overslash /app
