@@ -1,6 +1,8 @@
 # Overslash — Specification
 
-A standalone, multi-tenant actions and authentication gateway for AI agents. Overslash handles everything between "an agent wants to call an external API" and "the API call executes with the right credentials."
+A standalone, multi-tenant **identity and authentication gateway** for AI agents. Overslash handles everything between "an agent wants to call an external API" and "the API call executes with the right credentials."
+
+Overslash is **purely an auth and identity layer**. It does not orchestrate agents, manage compute, track which nodes are connected, schedule work, or know anything about the runtime environment agents live in. It answers one question: "is this identity allowed to do this action with these credentials?" — and if yes, executes the authenticated HTTP request.
 
 It owns: identity hierarchy, secret management, OAuth flows, permission rules, human approval workflows, action execution, service registry, and audit trail.
 
@@ -44,10 +46,13 @@ Overslash extracts all of this into a single service with a clean REST API that 
 
 ### Non-Goals
 
-1. Being an agent framework or LLM router — Overslash doesn't know about LLMs
-2. Executing code or managing VMs — Overslash executes HTTP requests, not arbitrary programs
-3. Channel-specific UIs (Telegram bots, WhatsApp) — callers build their own; Overslash provides approval URLs
-4. Being a general-purpose API gateway — no rate limiting of upstream APIs, no caching, no transformation
+1. **Being an agent framework or LLM router** — Overslash doesn't know about LLMs, prompts, or agent loops
+2. **Orchestrating agents** — Overslash does not schedule, dispatch, or coordinate agent work. It has no concept of tasks, queues, or workflows.
+3. **Managing compute or infrastructure** — no awareness of nodes, containers, runtimes, or where agents run. Overslash doesn't know or care what machine an agent lives on.
+4. **Tracking agent connectivity** — Overslash does not monitor which agents are online, healthy, or reachable. It authenticates requests when they arrive.
+5. **Executing code or managing VMs** — Overslash executes HTTP requests, not arbitrary programs
+6. **Channel-specific UIs** (Telegram bots, WhatsApp) — callers build their own; Overslash provides approval URLs
+7. **Being a general-purpose API gateway** — no rate limiting of upstream APIs, no caching, no transformation
 
 ---
 
@@ -261,7 +266,7 @@ Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 - **User profile** — authenticated user info, API keys, settings
 - **Org/User/Agent hierarchy** — tree view of the identity hierarchy, with inline management (create, edit, delete, enrollment tokens)
 - **Connected services** — which services have active connections, their status, and quick actions (reconnect, revoke)
-- **Developer connection tool** — interactive API explorer for connected services. Select a service and action from the registry, fill in parameters, and execute via Mode A/B/C. Similar to Swagger UI or Postman but integrated with Overslash auth. Useful for testing connections and debugging.
+- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service and action from the registry, fill in parameters, and execute via Mode B/C. Similar to Swagger UI or Postman but integrated with Overslash auth. Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
 - **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
 
 ### Org-Admin Views
