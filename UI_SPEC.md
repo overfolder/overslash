@@ -67,7 +67,7 @@ User
 ```
 
 - Status indicators by state: active, idle, errored (color-coded)
-- Pending approval count shown as a badge — highest-signal element, something is blocked waiting for the user
+- Pending approval count + pending secret request count shown as badges — highest-signal elements, something is blocked waiting for the user
 - Agents with many sub-agents collapse, showing the count. Expand to see children, with `[see more]` pagination for large groups. (TBD: collapse individual agents vs entire subtrees)
 - Some IDs are agent-created, others human-created — allow filtering by origin
 
@@ -79,6 +79,7 @@ When a node is selected, show:
 - **Status**: active / idle / errored
 - **Last action**: service + action name, timestamp, success/fail
 - **Pending approvals**: list of pending approval requests with inline resolution (see Approval Resolution below) — this is the primary actionable element
+- **Pending secret requests**: list of secrets the agent is waiting for — each with `[Provide]` (opens value input inline) and `[Deny]`. See also the standalone secret request page.
 - **Active permission rules**: summary count of remembered approval rules for this identity, with `[View rules]` link
 - **Links**: `[View executions]` `[View permissions]`
 
@@ -798,4 +799,123 @@ The explorer naturally adapts to what the user is allowed to do. A user with `gi
 ### Identity
 
 The API Explorer always executes as the **logged-in user's own identity**. There is no "execute as" selector — no impersonation of agents or sub-agents. All actions taken through the explorer are logged in the audit trail under the user's identity.
+
+## Standalone Pages
+
+Standalone pages have a minimal layout: Overslash logo at top, no sidebar, no nav. They handle expired and already-resolved states gracefully.
+
+### Secret Request Page (`/secrets/provide/req_...?token=jwt`)
+
+No login required — the JWT in the URL authenticates the request. Safe because providing a secret doesn't grant the agent any authority (the agent still needs a separate approval to use it).
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Overs/ash                                          │
+│                                                     │
+│  Secret Request                                     │
+│                                                     │
+│  agent:henry needs a secret:                        │
+│                                                     │
+│  Name: openai_api_key                               │
+│  Description: "OpenAI API key with GPT-4 access"    │
+│                                                     │
+│  ┌───────────────────────────────────────────────┐  │
+│  │ ••••••••••••••••••••••                        │  │
+│  │                                    [👁 Show]  │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  [Provide]  [Deny]                                  │
+│                                                     │
+│  Requested 3m ago · Expires in 12m                  │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Password-type input** — value hidden by default, toggle to reveal for verification before submitting
+- **Provide** — encrypts and stores the secret. Shows confirmation: "Secret 'openai_api_key' stored. The agent has been notified."
+- **Deny** — dismisses the request. Shows: "Request denied. The agent has been notified."
+- **Expired** — "This request has expired." No form shown.
+- **Already provided** — "This secret has already been provided."
+
+Secret requests also appear in the dashboard: as notification bell items, as badges on the agent tree, and as inline `[Provide]` / `[Deny]` actions in the agent detail panel. The standalone page is for resolving from outside the dashboard (e.g., a link in Telegram or email).
+
+### Approval Deep-Link Page (`/approvals/apr_...`)
+
+Login required. If not logged in → redirect to login → redirect back. If logged in but without authority to resolve → show approval details read-only with: "You don't have permission to resolve this approval."
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Overs/ash                              alice ▾     │
+│                                                     │
+│  Approval Request                                   │
+│                                                     │
+│  agent:henry wants to:                              │
+│  Create pull request "Fix bug" on overfolder/app    │
+│  via: user/github                                   │
+│                                                     │
+│  POST /repos/overfolder/app/pulls                   │
+│  Body: {"title":"Fix bug","head":"fix","base":"main"}│
+│                                                     │
+│  ┌─ Allow & Remember ────────────────────────────┐  │
+│  │  ○ Create pull request on overfolder/app      │  │
+│  │  ○ Create pull request on any repo            │  │
+│  │  ○ All defined GitHub actions                 │  │
+│  │                                               │  │
+│  │  Expires: [24h ▾]                             │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  [Allow Once]  [Allow & Remember]  [Deny]           │
+│                                                     │
+│  Requested 2m ago · Expires in 14m                  │
+│                                                     │
+│  [← Go to Dashboard]                               │
+└─────────────────────────────────────────────────────┘
+```
+
+- Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
+- Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as dashboard)
+- After resolution → confirmation + link to dashboard
+- **Already resolved** — "This approval was allowed by alice 3m ago." (or denied)
+- `[← Go to Dashboard]` for navigation to the full UI
+- Platforms can link users here as a zero-integration-effort path to resolve approvals
+
+### Agent Enrollment Consent Page (`/enroll/consent/...`)
+
+Login required. An agent generated a consent URL and sent it to a user. Any authenticated user in the org with agent-creation permissions can approve — not scoped to a specific user.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Overs/ash                              alice ▾     │
+│                                                     │
+│  Agent Enrollment Request                           │
+│                                                     │
+│  An agent is requesting to join your org:           │
+│                                                     │
+│  Proposed name: [research-bot        ]  (editable)  │
+│  Requested by: 203.0.113.42 · 5m ago               │
+│                                                     │
+│  Parent placement:                                  │
+│  ┌─ Select parent ─────────────────────┐            │
+│  │  ● alice (you)                      │            │
+│  │  ○ agent-henry                      │            │
+│  │    ○ sa-researcher                  │            │
+│  │  ○ agent-builder                    │            │
+│  └─────────────────────────────────────┘            │
+│                                                     │
+│  ☐ inherit_permissions                              │
+│                                                     │
+│  [Approve & Enroll]  [Deny]                         │
+│                                                     │
+│  This token expires in 10m                          │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Proposed name** — pre-filled by the agent, fully editable
+- **Requested by** — agent metadata (IP, timestamp). The agent has no identity yet.
+- **Parent placement** — mini tree picker showing only the approving user's subtree. Defaults to directly under the user.
+- **`inherit_permissions`** — checkbox, off by default
+- **No permission keys** — keys build up organically through approvals after enrollment
+- **Approve & Enroll** — creates the identity, agent picks up API key via polling/webhook. Shows: "Agent 'research-bot' enrolled under alice. The agent has been notified."
+- **Deny** — rejects enrollment, token invalidated
+- **Token expired** — "This enrollment request has expired."
+- **Already enrolled** — "This agent has already been enrolled."
 
