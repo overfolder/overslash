@@ -346,7 +346,7 @@ async fn test_approval_flow(pool: PgPool) {
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();
@@ -391,7 +391,7 @@ async fn test_allow_remember_creates_rule(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow_remember"}))
+        .json(&json!({"resolution": "allow_remember"}))
         .send()
         .await
         .unwrap();
@@ -410,6 +410,96 @@ async fn test_allow_remember_creates_rule(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_resolve_rejects_invalid_remember_keys(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve with remember_keys not in the approval's permission_keys → 400
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "resolution": "allow_remember",
+            "remember_keys": ["admin:*:*"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_resolve_rejects_invalid_ttl(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve with invalid ttl → 400
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "resolution": "allow_remember",
+            "ttl": "not_a_duration"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
@@ -491,7 +581,7 @@ async fn test_deny_keeps_gating(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "deny"}))
+        .json(&json!({"resolution": "deny"}))
         .send()
         .await
         .unwrap();
@@ -798,7 +888,7 @@ async fn test_webhook_dispatch_on_approval_resolve(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();

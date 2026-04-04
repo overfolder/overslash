@@ -867,7 +867,7 @@ async fn test_audit_approval_resolved(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();
@@ -875,7 +875,7 @@ async fn test_audit_approval_resolved(pool: PgPool) {
     let entries = fetch_audit_with(&base, &client, &key, "action=approval.resolved").await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "approval");
-    assert_eq!(entries[0]["detail"]["decision"], "allow");
+    assert_eq!(entries[0]["detail"]["resolution"], "allow");
     assert!(entries[0]["detail"]["action_summary"].is_string());
 }
 
