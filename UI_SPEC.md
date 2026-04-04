@@ -406,14 +406,16 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 Group: Engineering
 
 Service Grants
-──────────────────────────────────────────
-github:ANY:*               Full GitHub API access
-slack:defined:*            Slack — predefined actions only
-stripe:defined:*           Stripe — predefined actions only
-google_calendar:ANY:*      Full Google Calendar API access
+──────────────────────────────────────────────────────────────
+github:ANY:*               Full GitHub API access          Auto-approve reads: ✓
+slack:defined:*            Slack — predefined actions only  Auto-approve reads: ✓
+stripe:defined:*           Stripe — predefined actions only Auto-approve reads: ✗
+google_calendar:ANY:*      Full Google Calendar API access  Auto-approve reads: ✓
 ```
 
 Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known services and choose the access tier (`defined`, `ANY`, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
+
+**Auto-approve reads** toggle per service grant: when enabled, agents' non-mutating requests automatically create permission keys without user approval. Disabled by default for sensitive services (financial, PII).
 
 - **"Everyone"** group is always present, cannot be deleted, all users are implicit members
 

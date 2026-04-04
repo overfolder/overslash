@@ -209,6 +209,8 @@ Three tiers of trust emerge naturally:
 2. **`{service}:ANY:*`** — arbitrary API calls against known services. Mid trust.
 3. **`http:ANY:*`** — full HTTP proxy with secret injection. Highest trust.
 
+**Auto-approve reads:** Each service grant in a group can optionally enable `auto_approve_reads`. When set, non-mutating requests (actions where `mutating: false`, or GET/HEAD/OPTIONS for raw HTTP) from agents automatically create permission keys without requiring user approval. Mutating requests still go through normal approval flow. This is configured per-service per-group — org-admins decide which services have sensitive read operations (financial data, PII) vs ones where reads are safe (listing PRs, checking calendar events).
+
 **Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
 
 Within the group ceiling, agents require specific permission keys for each action. Keys are created when a user clicks "Allow & Remember" on an approval — they are never written by hand. Permission keys build up organically as agents are used and users approve their actions. Users acting through the dashboard or API Explorer are gated by groups only — they are their own approvers.
