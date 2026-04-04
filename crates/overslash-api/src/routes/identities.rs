@@ -67,12 +67,8 @@ async fn validate_parent(
     allowed_kinds: &[IdentityKind],
     child_kind: IdentityKind,
 ) -> Result<overslash_db::repos::identity::IdentityRow> {
-    let parent = overslash_db::repos::identity::get_by_id(&state.db, parent_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("parent identity not found".into()))?;
-    if parent.org_id != org_id {
-        return Err(AppError::NotFound("parent identity not found".into()));
-    }
+    let parent = overslash_db::repos::identity::get_by_id(&state.db, parent_id).await?;
+    let parent = crate::ownership::require_org_owned(parent, org_id, "parent identity")?;
     let parent_kind: IdentityKind = parent
         .kind
         .parse()
@@ -201,12 +197,8 @@ async fn list_children(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    let ident = overslash_db::repos::identity::get_by_id(&state.db, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    if ident.org_id != auth.org_id {
-        return Err(AppError::NotFound("identity not found".into()));
-    }
+    let ident = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
+    let _ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
     let rows = overslash_db::repos::identity::list_children(&state.db, id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
@@ -216,12 +208,8 @@ async fn get_chain(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    let ident = overslash_db::repos::identity::get_by_id(&state.db, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    if ident.org_id != auth.org_id {
-        return Err(AppError::NotFound("identity not found".into()));
-    }
+    let ident = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
+    let _ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
     let rows = overslash_db::repos::identity::get_ancestor_chain(&state.db, id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }

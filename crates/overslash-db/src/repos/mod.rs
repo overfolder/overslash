@@ -1,3 +1,20 @@
+use uuid::Uuid;
+
+pub trait OrgOwned {
+    fn org_id(&self) -> Uuid;
+}
+
+macro_rules! impl_org_owned {
+    ($ty:ty) => {
+        impl $crate::repos::OrgOwned for $ty {
+            fn org_id(&self) -> Uuid {
+                self.org_id
+            }
+        }
+    };
+}
+pub(crate) use impl_org_owned;
+
 pub mod api_key;
 pub mod approval;
 pub mod audit;

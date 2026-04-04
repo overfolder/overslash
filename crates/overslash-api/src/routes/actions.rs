@@ -343,16 +343,8 @@ async fn resolve_request(
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
     if let Some(conn_id) = req.connection {
-        let conn = overslash_db::repos::connection::get_by_id(&state.db, conn_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
-
-        // Verify ownership
-        if conn.org_id != auth.org_id {
-            return Err(AppError::Forbidden(
-                "connection belongs to another org".into(),
-            ));
-        }
+        let conn = overslash_db::repos::connection::get_by_id(&state.db, conn_id).await?;
+        let conn = crate::ownership::require_org_owned(conn, auth.org_id, "connection")?;
 
         let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
         let provider_key = conn.provider_key.clone();

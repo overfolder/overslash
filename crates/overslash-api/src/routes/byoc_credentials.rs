@@ -53,14 +53,8 @@ async fn create_byoc(
 
     // If identity_id is provided, verify it belongs to the same org
     if let Some(identity_id) = req.identity_id {
-        let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-        if identity.org_id != auth.org_id {
-            return Err(AppError::Forbidden(
-                "identity belongs to another org".into(),
-            ));
-        }
+        let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id).await?;
+        crate::ownership::require_org_owned(identity, auth.org_id, "identity")?;
     }
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;

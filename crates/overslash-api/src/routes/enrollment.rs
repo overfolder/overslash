@@ -73,12 +73,8 @@ async fn create_enrollment_token(
     Json(req): Json<CreateEnrollmentTokenRequest>,
 ) -> Result<Json<EnrollmentTokenResponse>> {
     // Verify identity exists and belongs to this org
-    let ident = identity::get_by_id(&state.db, req.identity_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    if ident.org_id != auth.org_id {
-        return Err(AppError::NotFound("identity not found".into()));
-    }
+    let ident = identity::get_by_id(&state.db, req.identity_id).await?;
+    let ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
     if ident.kind != "agent" && ident.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "enrollment tokens can only be created for agent or sub_agent identities".into(),
