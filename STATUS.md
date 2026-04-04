@@ -31,8 +31,8 @@
 - OAuth engine (authorization URL, code exchange, token storage, auto-refresh)
 - BYOC credential resolution with fallback chain (identity → org → system)
 - Connections API (initiate, list, revoke)
-- Global service registry — YAML loader with search API
-- 7 service definitions shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
+- Global service template registry — YAML loader with search API
+- 7 service templates shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
 - Connection-based execution (service + HTTP verb, token auto-injected)
 - Service+action execution (registry-resolved, auth auto-resolved)
 - X.com OAuth with PKCE support

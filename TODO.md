@@ -24,14 +24,16 @@ Phased roadmap. Each phase is usable independently.
 
 - [x] OAuth engine (authorization URL, code exchange, token storage, auto-refresh)
 - [x] BYOC credential support (identity, org, system fallback chain)
-- [x] Connections API (initiate, list, revoke)
-- [ ] `on_behalf_of` for agent-initiated connections at user level
-- [x] Global service registry — YAML loader for shipped definitions
-- [ ] Ship top 20 service definitions — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- [ ] Three-tier service registry — org (DB, CRUD) + user (DB, CRUD, gated by org setting)
-- [ ] Service definition validation endpoint (`POST /v1/services/validate`)
-- [ ] OpenAPI spec import (`POST /v1/services/import`) — parse OpenAPI 3.x, generate service + actions
-- [ ] User-to-org service sharing (propose, approve/deny)
+- [x] Connections API (initiate, list, revoke) — to be refactored into service instances
+- [ ] `on_behalf_of` for agent-initiated service creation at user level
+- [x] Global service template registry — YAML loader for shipped definitions
+- [ ] Ship top 20 service templates — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
+- [ ] Template/service split — templates (YAML blueprints) + services (named instances with credentials)
+- [ ] Three-tier template registry — global (YAML, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting)
+- [ ] Service instances — create from template, bind credentials, assign to groups
+- [ ] Template validation endpoint (`POST /v1/templates/validate`)
+- [ ] OpenAPI import (`POST /v1/templates/import`) — parse OpenAPI 3.x, generate template + actions
+- [ ] User-to-org template sharing (propose, approve/deny)
 - [x] Service + action execution (registry-resolved, auth auto-resolve)
 - [ ] Human-readable action descriptions from registry metadata
 
@@ -41,7 +43,7 @@ Phased roadmap. Each phase is usable independently.
 
 - [ ] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
 - [ ] Org/User/Agent hierarchy view — tree visualization with inline identity management
-- [ ] Connected services view — service connection status, reconnect/revoke actions
+- [ ] Services view — template catalog, service instances, create/manage/connect
 - [x] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
 - [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
 

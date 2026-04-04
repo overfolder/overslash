@@ -200,9 +200,9 @@ Permissions are enforced in two layers:
 Groups define which services are available and at what access level. They constrain users, and agents inherit their owner-user's group ceiling. A request that exceeds the group ceiling is denied outright — no approval can override it.
 
 Group examples:
-- "Engineering": `github:ANY:*`, `slack:defined:*`, `stripe:defined:*`
+- "Engineering": `company-github:ANY:*`, `company-slack:defined:*`, `company-stripe:defined:*`
 - "Admin": adds `http:ANY:*`, `secret:*:*`
-- "Read-only": `github:GET:*`, `slack:GET:*`
+- "Read-only": `company-github:GET:*`, `company-slack:GET:*`
 
 Three tiers of trust emerge naturally:
 1. **`{service}:defined:*`** — locked to predefined registry actions. Safest.
@@ -363,15 +363,16 @@ Secret values are encrypted at rest. Access to values depends on the actor:
 
 ---
 
-## 7. Connections (OAuth)
+## 7. OAuth Engine
 
-OAuth connections support three credential sources (fallback chain):
+Overslash handles OAuth flows (authorization URL generation, code exchange, token storage, automatic refresh) for services that use OAuth authentication. The OAuth engine is internal machinery — not a user-facing concept. Users interact with **services** (§9), which encapsulate their credentials.
 
-1. **Identity BYOC** — the identity's own OAuth client credentials
-2. **Org credentials** — shared across the org
-3. **Overslash system credentials** — managed by Overslash operators
+OAuth client credentials can come from three sources:
 
-Connections are created at the user level (even when initiated by an agent). All agents under that user inherit access.
+1. **Service-level** — credentials configured on the service instance itself
+2. **Overslash system credentials** — managed by Overslash operators, used as defaults for global templates
+
+When a user creates a service from a template that uses OAuth, the connect flow walks them through the OAuth redirect. The resulting token is stored encrypted and bound to that service instance.
 
 ---
 
@@ -379,15 +380,15 @@ Connections are created at the user level (even when initiated by an agent). All
 
 ### `POST /v1/actions/execute`
 
-All action execution goes through a single endpoint. The caller specifies a service and action — the level of abstraction is determined by what they choose, not by separate API "modes":
+All action execution goes through a single endpoint. The caller specifies a service instance and action — the level of abstraction is determined by what they choose:
 
-**Service + defined action** — the caller names a service and a registry-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the service definition. Auth auto-resolved from connections/secrets. This is the simplest and safest path — agents don't need to know URLs or HTTP methods. Derives key: `github:create_pull_request:{resource}`.
+**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `company-github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `company-github:create_pull_request:{resource}`.
 
-**Service + HTTP verb** — the caller names a service/connection and an HTTP method + path (e.g., `github` + `POST /repos/X/pulls`). Auth is auto-injected from the connection. For agents that know the API but want Overslash to handle auth. Derives key: `github:POST:/repos/X/pulls`.
+**Service + HTTP verb** — the caller names a service instance and an HTTP method + path (e.g., `company-github` + `POST /repos/X/pulls`). Auth is auto-injected from the service's credentials. For agents that know the API but want Overslash to handle auth. Derives key: `company-github:POST:/repos/X/pulls`.
 
-**`http` service** — the caller uses the `http` pseudo-service with a full URL, method, headers, body, and secret injection metadata. This is the lowest-level path — agents construct the full request. Requires `http` in the user's group. Derives keys: `http:POST:api.github.com` + `secret:gh_token:api.github.com`.
+**`http` pseudo-service** — the caller uses the `http` pseudo-service with a full URL, method, headers, body, and secret injection metadata. This is the lowest-level path — agents construct the full request. Requires `http` in the user's group. Derives keys: `http:POST:api.github.com` + `secret:gh_token:api.github.com`.
 
-These are not separate API modes — they are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
+These are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
 
 ### Gating
 
@@ -401,7 +402,7 @@ Every request derives permission keys. Resolution follows the two-layer model (�
 
 When using the `http` pseudo-service, the caller specifies how each secret should be injected per-call (as header, query param, or cookie). This generates `secret:{name}:{host}` permission keys alongside the `http:{METHOD}:{host}` key. Both must be covered for auto-approval.
 
-For service-based requests, auth is resolved automatically from connections — no manual secret injection needed.
+For service-based requests, auth is resolved automatically from the service instance's credentials — no manual secret injection needed.
 
 ### Human-Readable Descriptions
 
@@ -424,77 +425,117 @@ These descriptions appear in: approval requests (what the agent wants to do), au
 
 ---
 
-## 9. Service Registry
+## 9. Service Templates and Services
 
-### Three-Tier
+Two distinct concepts:
+
+- **Service Template** — a YAML definition describing an API: base URL, auth config, actions. No credentials. A blueprint.
+- **Service** — a named instance of a template, bound to specific credentials. `work-calendar` is a Google Calendar template instantiated with alice@acme.com's OAuth token.
+
+### Service Templates
+
+Templates live in a three-tier registry:
 
 | Tier | Managed by | Visible to | Mutable |
 |------|-----------|------------|---------|
 | **Global** | Overslash (shipped YAML) | Everyone | Read-only for orgs |
-| **Org** | Org-admins | Org members (gated by groups) | Full CRUD |
+| **Org** | Org-admins | Org members | Full CRUD |
 | **User** | Users (if org allows) | Creator + their agents | Full CRUD |
 
-**Global**: YAML files shipped with Overslash. Common APIs (Eventbrite, GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Org-admins can configure visibility (hide unused global services) and provide org-level OAuth credentials for global services.
+**Global**: YAML files shipped with Overslash. Common APIs (Eventbrite, GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Read-only for orgs. Org-admins can hide unused global templates from their org.
 
-**Org**: Org-admins register additional services for the org's own or niche APIs. Assigned to groups to control visibility. OpenAPI import supported.
+**Org**: Org-admins create templates for the org's internal or niche APIs. Visible to all org members (templates are blueprints — visibility doesn't grant access, creating a service instance does).
 
-**User**: Users create personal service definitions for APIs only they use. Gated by org setting (`allow_user_services`). Private by default — only the creating user and their agents see it. The group ceiling does not apply to the creator (they're providing their own API and auth), but their agents still need permission keys via approvals. Users can **propose sharing** a service to org level — org-admin reviews and approves (assigns to groups) or denies.
+**User**: Users create personal templates for APIs only they use. Gated by org setting (`allow_user_templates`). Private by default. Users can **propose sharing** a template to org level — org-admin reviews and approves or denies.
 
-### Service Definition
+**Org-admin visibility**: Org-admins can see all templates in the org (global + org + user-created) in a read-only list for security/compliance — they need to know what external APIs their users are connecting to.
+
+### Template Definition
 
 ```yaml
-key: github
-display_name: GitHub
-description: "GitHub REST API"
-hosts: [api.github.com]
-category: dev-tools
+key: google-calendar
+display_name: Google Calendar
+description: "Google Calendar API"
+hosts: [www.googleapis.com/calendar]
+category: productivity
 auth:
   - type: oauth
-    provider: github
+    provider: google
+    scopes: [https://www.googleapis.com/auth/calendar]
     token_injection: { as: header, header_name: Authorization, prefix: "Bearer " }
-  - type: api_key
-    default_secret_name: github_token
-    injection: { as: header, header_name: Authorization, prefix: "Bearer " }
 actions:
-  create_pull_request:
+  create_event:
     method: POST
-    path: /repos/{repo}/pulls
-    description: "Create pull request '{title}' on {repo}"
+    path: /calendars/{calendar_id}/events
+    description: "Create event '{summary}'[ on {calendar_id}]"
     mutating: true
-    scope_param: repo
+    scope_param: calendar_id
     params:
-      repo: { type: string, required: true, description: "owner/repo" }
-      title: { type: string, required: true }
-      head: { type: string, required: true }
-      base: { type: string, required: true }
-  list_pull_requests:
+      calendar_id: { type: string, required: true, default: primary }
+      summary: { type: string, required: true }
+      start: { type: string, required: true, description: "ISO 8601 datetime" }
+      end: { type: string, required: true, description: "ISO 8601 datetime" }
+  list_events:
     method: GET
-    path: /repos/{repo}/pulls
-    description: "List pull requests on {repo}[ with state {state}]"
+    path: /calendars/{calendar_id}/events
+    description: "List events[ on {calendar_id}]"
     # mutating: false (inferred from GET)
-    scope_param: repo
+    scope_param: calendar_id
     params:
-      repo: { type: string, required: true, description: "owner/repo" }
-      state: { type: string, enum: [open, closed, all], default: open }
+      calendar_id: { type: string, required: true, default: primary }
+      time_min: { type: string, description: "ISO 8601 datetime" }
+      time_max: { type: string, description: "ISO 8601 datetime" }
 ```
 
 **Key fields:**
-- **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. `github:create_pull_request:overfolder/backend` gets `overfolder/backend` from the `repo` param. Without `scope_param`, the arg is `*`.
-- **`mutating`** — boolean, optional. `true` for write operations, `false` for reads. When omitted, inferred from the HTTP method: GET/HEAD/OPTIONS → `false`, everything else → `true`. Informational for the UI (badges, warnings) and can influence default approval behavior.
-- **`category`** — for organizing services in the UI (dev-tools, comms, payments, etc.).
+- **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. Without `scope_param`, the arg is `*`.
+- **`mutating`** — boolean, optional. When omitted, inferred from the HTTP method: GET/HEAD/OPTIONS → `false`, else → `true`. Informational for the UI and influences auto-approve-reads behavior.
+- **`category`** — for organizing templates in the UI (dev-tools, comms, payments, productivity, etc.).
 
-### Service Lifecycle
+### Services (Instances)
 
-**Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing connections and remembered approvals are preserved.
+A service is created by instantiating a template with a name and credentials:
+
+```
+Template: Google Calendar
+  ↓
+Service: "work-calendar"     (OAuth token for alice@acme.com)
+Service: "personal-calendar" (OAuth token for alice@gmail.com)
+Service: "client-calendar"   (OAuth token for alice@bigclient.org)
+```
+
+**Service ownership:**
+- **Org services** — created by org-admins, assigned to groups. All users in those groups can use them. Example: `company-github` (org's GitHub OAuth app, per-user tokens).
+- **User services** — created by users, private to the creator and their agents. Example: `my-side-project-api`.
+
+**Permission keys reference services (instances)**, not templates:
+- `work-calendar:create_event:*`
+- `personal-calendar:list_events:*`
+- `company-github:create_pull_request:overfolder/*`
+
+**Groups grant access to services (instances)**, not templates:
+- Engineering group gets: `company-github:ANY:*`, `company-slack:defined:*`
+- User services bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
+
+**Service lifecycle:** **Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing remembered approvals are preserved.
+
+### Creating a Service
+
+1. Pick a template (from global/org/user templates)
+2. Name the service instance (e.g., "work-calendar")
+3. Connect credentials — OAuth flow, API key input, or shared credential (for org services)
+4. Optionally assign to groups (org-admin only)
+
+For org services with OAuth (per-user tokens): the org-admin creates the service with the org's OAuth app credentials. Users in the assigned groups see the service and complete their individual OAuth flow to get their own token. The service is shared, but each user has their own credential.
 
 ### OpenAPI Import
 
-Upload an OpenAPI 3.x spec (file or URL) → Overslash parses it and generates a service definition with actions and parameter schemas. Available at both org and user tier. The import is a starting point — the user reviews and edits the generated definition before saving. Partial import supported: pick which endpoints become actions, skip the rest.
+Upload an OpenAPI 3.x spec (file or URL) → Overslash parses it and generates a **template** with actions and parameter schemas. Available at both org and user tier. The import is a starting point — the user reviews and edits the generated template before saving. Partial import supported: pick which endpoints become actions, skip the rest.
 
-### Service Definition Validation
+### Template Validation
 
-The service definition YAML is parsed and validated by a Rust parser (`overslash-core`). The same parser is used by:
-- **Backend**: `POST /v1/services/validate` — accepts YAML, returns structured errors and warnings
+The template YAML is parsed and validated by a Rust parser (`overslash-core`). The same parser is used by:
+- **Backend**: `POST /v1/templates/validate` — accepts YAML, returns structured errors and warnings
 - **Dashboard**: calls the validate endpoint for linting. Future: ship the parser as WASM for instant client-side validation without a round-trip.
 
 Validation checks: required fields, valid auth types, valid HTTP methods, path template syntax (`{param}` matches defined params), parameter type consistency, duplicate action keys, etc.
@@ -523,17 +564,17 @@ Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 
 - **User profile** — authenticated user info, API keys, settings
 - **Org/User/Agent hierarchy** — tree view of the identity hierarchy, with inline management (create, edit, delete, enrollment tokens)
-- **Connected services** — which services have active connections, their status, and quick actions (reconnect, revoke)
+- **Services** — browse templates, create/manage service instances, connect credentials
 - **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and execute. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
 - **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
 
 ### Org-Admin Views
 
-Services (browse/register/import), Connections (org-level OAuth), Webhooks, Permissions, Settings.
+Templates (browse/create/import), Services (org-level instances, group assignment), Webhooks, Settings.
 
 ### User Views
 
-My Connections, My Secrets (names + versions), Approvals (pending, one-click resolve with expiry picker), My Agents (permission management).
+My Services (instances + credentials), My Secrets (names + versions), Approvals (pending, one-click resolve with expiry picker), My Agents (permission management).
 
 ### Standalone Pages
 

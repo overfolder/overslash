@@ -221,12 +221,12 @@ The permission rules section in the detail panel shows a read-only view:
 ```
 Permission Rules for agent:henry
 
-Key                                          Source          Expires
-──────────────────────────────────────────────────────────────────────
-github:create_pull_request:overfolder/*      remembered      2026-04-08
-github:GET:*                                 remembered      never
-slack:send_message:#engineering              remembered      2026-04-15
-stripe:defined:*                             inherited       —
+Key                                                Source          Expires
+───────────────────────────────────────────────────────────────────────────
+company-github:create_pull_request:overfolder/*    remembered      2026-04-08
+company-github:GET:*                               remembered      never
+company-slack:send_message:#engineering            remembered      2026-04-15
+company-stripe:defined:*                           inherited       —
 ```
 
 - **Key** — the permission key string (`{service}:{action}:{arg}`)
@@ -245,13 +245,13 @@ The remembered approvals section shows:
 ```
 Remembered Approvals for agent:henry
 
-Permission Keys                                    Approved By    Approved At         Expires
-──────────────────────────────────────────────────────────────────────────────────────────────
-github:create_pull_request:overfolder/*            alice          2026-04-01 10:30    2026-04-08
-http:POST:api.example.com                          alice          2026-03-28 14:00    never
+Permission Keys                                          Approved By    Approved At         Expires
+────────────────────────────────────────────────────────────────────────────────────────────────────
+company-github:create_pull_request:overfolder/*          alice          2026-04-01 10:30    2026-04-08
+http:POST:api.example.com                                alice          2026-03-28 14:00    never
   + secret:api_key:api.example.com
 
-                                                                        [Revoke] per rule
+                                                                              [Revoke] per rule
 ```
 
 - Rules are grouped by the approval event — each "Allow & Remember" produces a set of permission keys that were approved together
@@ -351,12 +351,12 @@ A view of all "Allow & Remember" rules across the user's subtree (their own iden
 ```
 Remembered Approvals
 
-Identity                    Permission Keys                                    Approved At         Expires        Actions
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-agent:henry                 github:create_pull_request:overfolder/*            2026-04-01 10:30    2026-04-08     [Revoke]
-agent:henry                 http:POST:api.example.com                          2026-03-28 14:00    never          [Revoke]
+Identity                    Permission Keys                                          Approved At         Expires        Actions
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+agent:henry                 company-github:create_pull_request:overfolder/*          2026-04-01 10:30    2026-04-08     [Revoke]
+agent:henry                 http:POST:api.example.com                                2026-03-28 14:00    never          [Revoke]
                               + secret:api_key:api.example.com
-agent:builder/sa:coder      github:GET:*                                       2026-03-25 09:00    2026-04-25     [Revoke]
+agent:builder/sa:coder      company-github:GET:*                                     2026-03-25 09:00    2026-04-25     [Revoke]
 ```
 
 - **Filtering**: by identity (pick from agent tree), by service/host, by expiry status (active, expired, never-expiring)
@@ -406,11 +406,11 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 Group: Engineering
 
 Service Grants
-──────────────────────────────────────────────────────────────
-github:ANY:*               Full GitHub API access          Auto-approve reads: ✓
-slack:defined:*            Slack — predefined actions only  Auto-approve reads: ✓
-stripe:defined:*           Stripe — predefined actions only Auto-approve reads: ✗
-google_calendar:ANY:*      Full Google Calendar API access  Auto-approve reads: ✓
+──────────────────────────────────────────────────────────────────
+company-github:ANY:*        Full GitHub API access          Auto-approve reads: ✓
+company-slack:defined:*     Slack — predefined actions only  Auto-approve reads: ✓
+company-stripe:defined:*    Stripe — predefined actions only Auto-approve reads: ✗
+work-calendar:ANY:*         Google Calendar API access       Auto-approve reads: ✓
 ```
 
 Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known services and choose the access tier (`defined`, `ANY`, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
@@ -421,89 +421,108 @@ Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known ser
 
 ## Services view
 
-A single view in the nav for discovering, connecting, managing, and creating services. "Connected Services" is a filter preset within this view, not a separate page.
+A single nav item covering both **service templates** (API blueprints) and **services** (named instances with credentials). Two sub-views via tabs at the top: **My Services** (default) and **Template Catalog**.
 
-### Service list
+### My Services
 
-Shows all services visible to the user, regardless of source:
+Shows the user's service instances — both org-provided and user-created:
 
 ```
-Service            Source          Actions   Status            Actions
-──────────────────────────────────────────────────────────────────────────
-GitHub             Overslash       12        ● Connected       [Manage]
-Google Calendar    Org             8         ● Connected       [Manage]
-Stripe             Org             15        ○ Available       [Connect]
-Slack              Overslash       6         ○ Available       [Connect]
-Internal CRM       Org (custom)    3         ○ Available       [Connect]
-My Scraper API     You             2         ● Connected       [Edit] [Manage]
+My Services
+
+Name                 Template            Owner     Status          Actions
+──────────────────────────────────────────────────────────────────────────────
+company-github       GitHub              Org       ● Connected     [Manage]
+work-calendar        Google Calendar     Org       ● Connected     [Manage]
+personal-calendar    Google Calendar     You       ● Connected     [Manage]
+company-stripe       Stripe              Org       ○ Needs setup   [Connect]
+my-scraper           My Scraper API      You       ● Connected     [Edit] [Manage]
 ```
 
-**Source**: where the service definition comes from.
-- **Overslash** — global registry (shipped YAML), read-only
-- **Org** — org-provided (org-admin managed)
-- **You** — user-defined custom service
+- **Name** — the service instance name (used in permission keys and by agents)
+- **Template** — which template this instance is based on
+- **Owner** — `Org` (assigned via group) or `You` (user-created)
+- **Status**: Connected, Needs setup (org service where user hasn't completed OAuth), Draft, Archived
 
-**Status**:
-- **Connected** — active connection for this user
-- **Available** — definition exists, not yet connected
-- **Draft** — service defined but not yet activated (testing only)
-- **Archived** — hidden, connections preserved
+**Filtering**: by owner (Org / You), by status, by template category
 
-**Filtering**: by source, by status (the "Connected Services" shortcut), by category (dev tools, comms, payments, etc.)
+`[+ New Service]` button — opens the service creation flow (see below). Only visible if the org allows user-created services.
 
-**Actions column**: shows defined action count — clickable to view the action list.
+### Template Catalog
 
-### Connect flow
+Browse available templates to create new service instances from:
 
-Triggered by `[Connect]` on an available service. The flow depends on the service auth config:
+```
+Template Catalog
 
-**Org-provided services**:
-- *Shared credentials* (e.g., org Stripe account): one-click activate, no auth needed
-- *Per-user OAuth with org client* (e.g., Google Calendar — org provides the OAuth app, each user needs their own token): click Connect → OAuth redirect → done
+Template            Source          Actions   Category
+──────────────────────────────────────────────────────────────
+GitHub              Overslash       12        Dev Tools         [View] [Create Service]
+Google Calendar     Overslash       8         Productivity      [View] [Create Service]
+Stripe              Overslash       15        Payments          [View] [Create Service]
+Internal CRM        Org             3         Custom            [View] [Create Service]
+My Scraper API      You             2         Custom            [View] [Edit] [Share]
+```
 
-**Templated services** (Overslash global registry or org-defined):
-- *OAuth*: shows requested scopes → Connect → OAuth redirect → callback → connected
-- *API key*: form to paste the key → stored as a versioned secret → connected
-- *Both available*: user picks which auth method
+- **Source**: Overslash (global, read-only), Org (org-admin managed), You (user-created)
+- **`[View]`** — opens the Template Editor in read-only mode
+- **`[Create Service]`** — starts the service creation flow with this template pre-selected
+- **`[Edit]`** — opens the Template Editor (only for user/org templates)
+- **`[Share]`** — proposes sharing a user template to org level
 
-### Manage
+`[+ New Template]` button — opens the template creation flow. Only visible if the org allows user-created templates.
 
-`[Manage]` on a connected service: reconnect, revoke, view connection health, see which agents use it.
+### Create service flow
 
-### Share
+1. **Pick a template** — dropdown or pre-selected from catalog
+2. **Name the instance** — e.g., "work-calendar", "personal-calendar". This name is used in permission keys and by agents.
+3. **Connect credentials** — depends on the template's auth config:
+   - *OAuth*: shows requested scopes → Connect → OAuth redirect → callback → done
+   - *API key*: form to paste the key → stored as a versioned secret → done
+   - *Both available*: user picks which auth method
+   - *Org service with shared credential*: one-click, no auth needed
+   - *Org service with per-user OAuth*: OAuth redirect using the org's app
+4. **Status**: starts as Active (or Draft if the user wants to test first)
 
-`[Share to Org]` on a user-defined service: proposes sharing to org level. Org-admin reviews the definition and approves (assigns to groups) or denies. Once shared, source changes to "Org (from alice)".
+### Manage service
 
-### Create service
+`[Manage]` on a service instance shows:
 
-`[+ New Service]` button at the top of the service list. Only visible if the org allows user-defined services. Two creation paths:
+- **Connection status** — connected, expired (needs re-auth), error
+- **Credential type** — OAuth (which account), API key, shared
+- **Template** — link to view the template definition
+- **Usage** — which agents used this service, last execution, execution count
+- **Actions**: `[Reconnect]` `[Revoke]` `[Archive]`
+
+### Create template
+
+`[+ New Template]` — two creation paths:
 
 **Manual creation:**
-1. **Service identity**: name, display name, base URL, description, category
-2. **Auth method**: None / API Key (injection config) / OAuth (client ID, secret, auth URL, token URL, scopes) / Both
-3. **Actions**: optional — add defined actions now or later (see Service Editor below)
-4. **Status**: starts as Draft (testable in API Explorer, not usable by agents) or Active
+1. **Template identity**: key, display name, base URL, description, category
+2. **Auth config**: None / API Key (injection config) / OAuth (provider, scopes, token injection) / Both
+3. **Actions**: optional — add defined actions now or later (see Template Editor)
+4. Save as Draft or Active
 
 **OpenAPI import:**
 1. Upload an OpenAPI 3.x spec file or paste a URL
-2. Overslash parses the spec and generates a preview: service definition + actions + parameter schemas
-3. User reviews the generated definition — pick which endpoints become actions, edit names/descriptions, skip the rest
+2. Overslash parses the spec and generates a preview: template + actions + parameter schemas
+3. User reviews — pick which endpoints become actions, edit names/descriptions, skip the rest
 4. Save as Draft or Active
 
-Both paths open the **Service Editor** for final review.
+Both paths open the **Template Editor** for final review.
 
-### Service Editor
+### Template Editor
 
-The main editing view for user-defined and org-defined services. Two tabs:
+The editing view for user-defined and org-defined templates. Two tabs:
 
 #### Visual tab
 
-A form-based editor for the service definition:
+A form-based editor for the template definition:
 
-**Service section:**
-- Name, display name, description, base URL, category (dropdown)
-- Auth config: method picker + relevant fields (OAuth URLs, API key injection config)
-- Status toggle: Draft / Active / Archived
+**Template section:**
+- Key, display name, description, base URL, category (dropdown)
+- Auth config: method picker + relevant fields (OAuth URLs/scopes, API key injection config)
 
 **Actions section:**
 - List of defined actions with name, method badge, path, mutating badge (read/write)
@@ -518,10 +537,10 @@ A form-based editor for the service definition:
 
 #### YAML tab
 
-A code editor showing the full service definition as YAML:
+A code editor showing the full template definition as YAML:
 
 ```
-┌─ Service Editor: My Scraper API ──────────────────────────────┐
+┌─ Template Editor: My Scraper API ─────────────────────────────┐
 │  [Visual]  [YAML]                                             │
 │                                                               │
 │  ┌──────────────────────────────────────────────────────────┐ │
@@ -550,37 +569,44 @@ A code editor showing the full service definition as YAML:
 │  │   keys will use wildcard arg (*)                         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
-│                                  [Test] [Save Draft] [Activate]│
+│                                         [Test] [Save] [Delete] │
 └───────────────────────────────────────────────────────────────┘
 ```
 
 - YAML is directly editable — changes sync to the Visual tab on switch (and vice versa)
-- **Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/services/validate`). Validation runs on every edit (debounced). Errors block saving, warnings are informational.
+- **Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/templates/validate`). Validation runs on every edit (debounced). Errors block saving, warnings are informational.
 - Future: ship the Rust YAML parser as WASM for instant client-side validation without a round-trip. V1 uses the backend validate endpoint.
 
 #### View-only mode
 
-For global (Overslash-shipped) services, the editor opens in read-only mode. Both Visual and YAML tabs are viewable but not editable. This lets users inspect the definition — what actions are available, what parameters they take, how auth is configured.
+For global (Overslash-shipped) templates, the editor opens in read-only mode. Both Visual and YAML tabs are viewable but not editable. This lets users inspect the template — what actions are available, what parameters they take, how auth is configured.
+
+### Share template
+
+`[Share to Org]` on a user-created template: proposes sharing to org level. The template definition is shared (blueprint only, no credentials). Org-admin reviews and approves (making it available for org service creation) or denies.
 
 ### Org-admin: Services management
 
-Org-admins see additional capabilities within the Services view:
+Org-admins see additional capabilities:
 
-**Org service creation:**
-- Same `[+ New Service]` and Service Editor flow, but scoped to the org
-- Additional field: **Group assignment** — which groups can see and use this service
+**Org services:**
+- Create org-level service instances from any template, assign to groups
+- For OAuth templates: configure the org's OAuth app credentials (client ID/secret). Users in assigned groups complete their own OAuth flow using the org's app.
+- For API key templates: optionally provide a shared credential, or let each user provide their own.
 
-**Global service configuration:**
-- For global (Overslash-shipped) services, org-admins can:
-  - **Hide/show** global services for the org (hide services the org doesn't use)
-  - **Provide org-level OAuth credentials** so users don't need to BYOC
+**Org templates:**
+- Create/edit org-level templates (same Template Editor)
+- Hide/show global templates for the org
 
 **Pending share proposals:**
-- A badge/section showing user services proposed for org sharing
-- Org-admin reviews the definition (opens in read-only Service Editor) → `[Approve]` (assigns to groups) or `[Deny]`
+- A badge/section showing user templates proposed for org sharing
+- Org-admin reviews the definition (opens in read-only Template Editor) → `[Approve]` or `[Deny]`
+
+**User services visibility:**
+- Read-only list of all user-created services across the org: name, template, base URL, owner. For compliance/audit — org-admins need to know what external APIs their users are connecting to. No edit access to user services.
 
 **Usage stats:**
-- Per service: connection count, action execution count, which users/agents use it
+- Per service: execution count, which users/agents use it, last activity
 
 ## Audit Log view
 
@@ -650,7 +676,7 @@ Can be **hidden from users via an org setting** (e.g., orgs that don't want user
 
 The explorer uses a single flow — no separate tabs or modes. The level of abstraction is determined by what the user selects:
 
-1. **Pick a service** — dropdown showing services available through the user's groups (connected services prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
+1. **Pick a service** — dropdown showing the user's service instances (connected ones prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
 
 2. **Pick an action** — adapts to the selected service and the user's group grants:
    - **Defined actions** listed first with human-readable descriptions and mutating badges (e.g., `create_pull_request — Create a pull request [write]`)
