@@ -26,29 +26,31 @@ pub async fn create(
     pool: &PgPool,
     input: &CreateByocCredential<'_>,
 ) -> Result<ByocCredentialRow, sqlx::Error> {
-    sqlx::query_as::<_, ByocCredentialRow>(
+    sqlx::query_as!(
+        ByocCredentialRow,
         "INSERT INTO byoc_credentials (org_id, identity_id, provider_key,
          encrypted_client_id, encrypted_client_secret)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id, org_id, identity_id, provider_key,
                    encrypted_client_id, encrypted_client_secret, created_at, updated_at",
+        input.org_id,
+        input.identity_id,
+        input.provider_key,
+        input.encrypted_client_id,
+        input.encrypted_client_secret,
     )
-    .bind(input.org_id)
-    .bind(input.identity_id)
-    .bind(input.provider_key)
-    .bind(input.encrypted_client_id)
-    .bind(input.encrypted_client_secret)
     .fetch_one(pool)
     .await
 }
 
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
-    sqlx::query_as::<_, ByocCredentialRow>(
+    sqlx::query_as!(
+        ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
                 encrypted_client_id, encrypted_client_secret, created_at, updated_at
          FROM byoc_credentials WHERE id = $1",
+        id,
     )
-    .bind(id)
     .fetch_optional(pool)
     .await
 }
@@ -57,22 +59,25 @@ pub async fn list_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<ByocCredentialRow>, sqlx::Error> {
-    sqlx::query_as::<_, ByocCredentialRow>(
+    sqlx::query_as!(
+        ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
                 encrypted_client_id, encrypted_client_secret, created_at, updated_at
          FROM byoc_credentials WHERE org_id = $1 ORDER BY created_at DESC",
+        org_id,
     )
-    .bind(org_id)
     .fetch_all(pool)
     .await
 }
 
 pub async fn delete_by_org(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM byoc_credentials WHERE id = $1 AND org_id = $2")
-        .bind(id)
-        .bind(org_id)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query!(
+        "DELETE FROM byoc_credentials WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -84,7 +89,8 @@ pub async fn resolve(
     identity_id: Option<Uuid>,
     provider_key: &str,
 ) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
-    sqlx::query_as::<_, ByocCredentialRow>(
+    sqlx::query_as!(
+        ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
                 encrypted_client_id, encrypted_client_secret, created_at, updated_at
          FROM byoc_credentials
@@ -92,10 +98,10 @@ pub async fn resolve(
            AND (identity_id = $2 OR identity_id IS NULL)
          ORDER BY identity_id IS NOT NULL DESC
          LIMIT 1",
+        org_id,
+        identity_id,
+        provider_key,
     )
-    .bind(org_id)
-    .bind(identity_id)
-    .bind(provider_key)
     .fetch_optional(pool)
     .await
 }

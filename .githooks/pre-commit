@@ -15,6 +15,13 @@ cargo clippy --workspace -- -D warnings || {
     exit 1
 }
 
+# Check sqlx offline cache is up to date
+echo "  cargo sqlx prepare --check"
+cargo sqlx prepare --workspace --check || {
+    echo "ERROR: sqlx offline cache is stale. Run 'make sqlx-prepare' and stage .sqlx/."
+    exit 1
+}
+
 # Check SCHEMA.sql is up to date (only if DB is reachable)
 # Resolve DATABASE_URL (from env or .env file) with fallback to dev port 55432
 DB_URL="${DATABASE_URL:-}"

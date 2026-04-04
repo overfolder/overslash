@@ -1,0 +1,5 @@
+disallowed-methods = [
+    { path = "sqlx::query", reason = "use sqlx::query!() macro for compile-time SQL checking" },
+    { path = "sqlx::query_as", reason = "use sqlx::query_as!() macro for compile-time SQL checking" },
+    { path = "sqlx::query_scalar", reason = "use sqlx::query_scalar!() macro for compile-time SQL checking" },
+]

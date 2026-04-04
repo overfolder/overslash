@@ -19,8 +19,6 @@ pub struct IdentityRow {
     pub updated_at: OffsetDateTime,
 }
 
-const COLUMNS: &str = "id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at";
-
 pub async fn create(
     pool: &PgPool,
     org_id: Uuid,
@@ -28,14 +26,15 @@ pub async fn create(
     kind: &str,
     external_id: Option<&str>,
 ) -> Result<IdentityRow, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
+    sqlx::query_as!(
+        IdentityRow,
         "INSERT INTO identities (org_id, name, kind, external_id) VALUES ($1, $2, $3, $4)
-         RETURNING {COLUMNS}",
-    ))
-    .bind(org_id)
-    .bind(name)
-    .bind(kind)
-    .bind(external_id)
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at",
+        org_id,
+        name,
+        kind,
+        external_id,
+    )
     .fetch_one(pool)
     .await
 }
@@ -49,17 +48,18 @@ pub async fn create_with_email(
     email: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<IdentityRow, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
+    sqlx::query_as!(
+        IdentityRow,
         "INSERT INTO identities (org_id, name, kind, external_id, email, metadata)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING {COLUMNS}",
-    ))
-    .bind(org_id)
-    .bind(name)
-    .bind(kind)
-    .bind(external_id)
-    .bind(email)
-    .bind(metadata)
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at",
+        org_id,
+        name,
+        kind,
+        external_id,
+        email,
+        metadata,
+    )
     .fetch_one(pool)
     .await
 }
@@ -75,43 +75,52 @@ pub async fn create_with_parent(
     depth: i32,
     owner_id: Uuid,
 ) -> Result<IdentityRow, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
+    sqlx::query_as!(
+        IdentityRow,
         "INSERT INTO identities (org_id, name, kind, external_id, parent_id, depth, owner_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING {COLUMNS}",
-    ))
-    .bind(org_id)
-    .bind(name)
-    .bind(kind)
-    .bind(external_id)
-    .bind(parent_id)
-    .bind(depth)
-    .bind(owner_id)
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at",
+        org_id,
+        name,
+        kind,
+        external_id,
+        parent_id,
+        depth,
+        owner_id,
+    )
     .fetch_one(pool)
     .await
 }
 
 pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<IdentityRow>, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
-        "SELECT {COLUMNS} FROM identities WHERE email = $1 AND kind = 'user'",
-    ))
-    .bind(email)
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at
+         FROM identities WHERE email = $1 AND kind = 'user'",
+        email,
+    )
     .fetch_optional(pool)
     .await
 }
 
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<IdentityRow>, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!("SELECT {COLUMNS} FROM identities WHERE id = $1",))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at
+         FROM identities WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<IdentityRow>, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
-        "SELECT {COLUMNS} FROM identities WHERE org_id = $1 ORDER BY created_at",
-    ))
-    .bind(org_id)
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at
+         FROM identities WHERE org_id = $1 ORDER BY created_at",
+        org_id,
+    )
     .fetch_all(pool)
     .await
 }
@@ -120,10 +129,12 @@ pub async fn list_children(
     pool: &PgPool,
     parent_id: Uuid,
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
-        "SELECT {COLUMNS} FROM identities WHERE parent_id = $1 ORDER BY created_at",
-    ))
-    .bind(parent_id)
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at
+         FROM identities WHERE parent_id = $1 ORDER BY created_at",
+        parent_id,
+    )
     .fetch_all(pool)
     .await
 }
@@ -132,9 +143,12 @@ pub async fn get_ancestor_chain(
     pool: &PgPool,
     identity_id: Uuid,
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
-    sqlx::query_as::<_, IdentityRow>(&format!(
-        "WITH RECURSIVE chain AS (
-            SELECT {COLUMNS}, 1 AS _depth FROM identities WHERE id = $1
+    sqlx::query_as!(
+        IdentityRow,
+        r#"WITH RECURSIVE chain AS (
+            SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at,
+                   1 AS _depth
+            FROM identities WHERE id = $1
             UNION ALL
             SELECT i.id, i.org_id, i.name, i.kind, i.external_id, i.email, i.metadata,
                    i.parent_id, i.depth, i.owner_id, i.inherit_permissions,
@@ -143,16 +157,20 @@ pub async fn get_ancestor_chain(
             INNER JOIN chain c ON i.id = c.parent_id
             WHERE c._depth < 50
         )
-        SELECT {COLUMNS} FROM chain ORDER BY depth ASC",
-    ))
-    .bind(identity_id)
+        SELECT id as "id!", org_id as "org_id!", name as "name!", kind as "kind!",
+               external_id, email, metadata as "metadata!",
+               parent_id, depth as "depth!", owner_id,
+               inherit_permissions as "inherit_permissions!",
+               created_at as "created_at!", updated_at as "updated_at!"
+        FROM chain ORDER BY depth ASC"#,
+        identity_id,
+    )
     .fetch_all(pool)
     .await
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM identities WHERE id = $1")
-        .bind(id)
+    let result = sqlx::query!("DELETE FROM identities WHERE id = $1", id)
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)

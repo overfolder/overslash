@@ -20,19 +20,21 @@ pub struct OAuthProviderRow {
 }
 
 pub async fn get_by_key(pool: &PgPool, key: &str) -> Result<Option<OAuthProviderRow>, sqlx::Error> {
-    sqlx::query_as::<_, OAuthProviderRow>(
+    sqlx::query_as!(
+        OAuthProviderRow,
         "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, created_at
          FROM oauth_providers WHERE key = $1",
+        key,
     )
-    .bind(key)
     .fetch_optional(pool)
     .await
 }
 
 pub async fn list_all(pool: &PgPool) -> Result<Vec<OAuthProviderRow>, sqlx::Error> {
-    sqlx::query_as::<_, OAuthProviderRow>(
+    sqlx::query_as!(
+        OAuthProviderRow,
         "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, created_at

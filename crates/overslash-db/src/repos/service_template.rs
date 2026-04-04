@@ -39,39 +39,41 @@ pub struct UpdateServiceTemplate<'a> {
     pub actions: Option<serde_json::Value>,
 }
 
-const SELECT_COLS: &str = "id, org_id, owner_identity_id, key, display_name, description, \
-    category, hosts, auth, actions, created_at, updated_at";
-
 pub async fn create(
     pool: &PgPool,
     input: &CreateServiceTemplate<'_>,
 ) -> Result<ServiceTemplateRow, sqlx::Error> {
-    let q = format!(
+    sqlx::query_as!(
+        ServiceTemplateRow,
         "INSERT INTO service_templates (org_id, owner_identity_id, key, display_name, description, \
          category, hosts, auth, actions) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-         RETURNING {SELECT_COLS}"
-    );
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(input.org_id)
-        .bind(input.owner_identity_id)
-        .bind(input.key)
-        .bind(input.display_name)
-        .bind(input.description)
-        .bind(input.category)
-        .bind(input.hosts)
-        .bind(&input.auth)
-        .bind(&input.actions)
-        .fetch_one(pool)
-        .await
+         RETURNING id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at",
+        input.org_id,
+        input.owner_identity_id,
+        input.key,
+        input.display_name,
+        input.description,
+        input.category,
+        input.hosts,
+        input.auth,
+        input.actions,
+    )
+    .fetch_one(pool)
+    .await
 }
 
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ServiceTemplateRow>, sqlx::Error> {
-    let q = format!("SELECT {SELECT_COLS} FROM service_templates WHERE id = $1");
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(id)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at \
+         FROM service_templates WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 /// Look up a template by key within a specific tier (org or user).
@@ -81,23 +83,18 @@ pub async fn get_by_key(
     owner_identity_id: Option<Uuid>,
     key: &str,
 ) -> Result<Option<ServiceTemplateRow>, sqlx::Error> {
-    let q = if owner_identity_id.is_some() {
-        format!(
-            "SELECT {SELECT_COLS} FROM service_templates \
-             WHERE org_id = $1 AND owner_identity_id = $2 AND key = $3"
-        )
-    } else {
-        format!(
-            "SELECT {SELECT_COLS} FROM service_templates \
-             WHERE org_id = $1 AND owner_identity_id IS NULL AND key = $3"
-        )
-    };
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(org_id)
-        .bind(owner_identity_id)
-        .bind(key)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at \
+         FROM service_templates \
+         WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND key = $3",
+        org_id,
+        owner_identity_id,
+        key,
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 /// List org-level templates (owner_identity_id IS NULL).
@@ -105,14 +102,16 @@ pub async fn list_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<ServiceTemplateRow>, sqlx::Error> {
-    let q = format!(
-        "SELECT {SELECT_COLS} FROM service_templates \
-         WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY key"
-    );
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(org_id)
-        .fetch_all(pool)
-        .await
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at \
+         FROM service_templates \
+         WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY key",
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
 }
 
 /// List user-level templates for a specific identity.
@@ -121,15 +120,17 @@ pub async fn list_by_user(
     org_id: Uuid,
     identity_id: Uuid,
 ) -> Result<Vec<ServiceTemplateRow>, sqlx::Error> {
-    let q = format!(
-        "SELECT {SELECT_COLS} FROM service_templates \
-         WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY key"
-    );
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(org_id)
-        .bind(identity_id)
-        .fetch_all(pool)
-        .await
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at \
+         FROM service_templates \
+         WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY key",
+        org_id,
+        identity_id,
+    )
+    .fetch_all(pool)
+    .await
 }
 
 /// List all templates available to a caller: org-level + user-level for the given identity.
@@ -138,16 +139,18 @@ pub async fn list_available(
     org_id: Uuid,
     identity_id: Option<Uuid>,
 ) -> Result<Vec<ServiceTemplateRow>, sqlx::Error> {
-    let q = format!(
-        "SELECT {SELECT_COLS} FROM service_templates \
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at \
+         FROM service_templates \
          WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) \
-         ORDER BY key"
-    );
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(org_id)
-        .bind(identity_id)
-        .fetch_all(pool)
-        .await
+         ORDER BY key",
+        org_id,
+        identity_id,
+    )
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn update(
@@ -155,7 +158,8 @@ pub async fn update(
     id: Uuid,
     input: &UpdateServiceTemplate<'_>,
 ) -> Result<Option<ServiceTemplateRow>, sqlx::Error> {
-    let q = format!(
+    sqlx::query_as!(
+        ServiceTemplateRow,
         "UPDATE service_templates SET \
          display_name = COALESCE($2, display_name), \
          description = COALESCE($3, description), \
@@ -165,23 +169,22 @@ pub async fn update(
          actions = COALESCE($7, actions), \
          updated_at = now() \
          WHERE id = $1 \
-         RETURNING {SELECT_COLS}"
-    );
-    sqlx::query_as::<_, ServiceTemplateRow>(&q)
-        .bind(id)
-        .bind(input.display_name)
-        .bind(input.description)
-        .bind(input.category)
-        .bind(input.hosts)
-        .bind(&input.auth)
-        .bind(&input.actions)
-        .fetch_optional(pool)
-        .await
+         RETURNING id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at",
+        id,
+        input.display_name,
+        input.description,
+        input.category,
+        input.hosts as Option<&[String]>,
+        input.auth.clone() as Option<serde_json::Value>,
+        input.actions.clone() as Option<serde_json::Value>,
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM service_templates WHERE id = $1")
-        .bind(id)
+    let result = sqlx::query!("DELETE FROM service_templates WHERE id = $1", id)
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)

@@ -1,4 +1,4 @@
-.PHONY: local local-down dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks \
+.PHONY: local local-down dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume
 
@@ -71,6 +71,10 @@ schema:
 # Regenerate sqlx offline caches
 sqlx-prepare:
 	cargo sqlx prepare --workspace
+
+# Verify sqlx offline cache is up-to-date
+check-sqlx:
+	cargo sqlx prepare --workspace --check
 
 # Start mock target
 mock-target:

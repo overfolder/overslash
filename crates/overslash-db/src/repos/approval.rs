@@ -30,38 +30,41 @@ pub struct CreateApproval<'a> {
 }
 
 pub async fn create(pool: &PgPool, input: &CreateApproval<'_>) -> Result<ApprovalRow, sqlx::Error> {
-    sqlx::query_as::<_, ApprovalRow>(
+    sqlx::query_as!(
+        ApprovalRow,
         "INSERT INTO approvals (org_id, identity_id, action_summary, action_detail, permission_keys, token, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+        input.org_id,
+        input.identity_id,
+        input.action_summary,
+        input.action_detail.clone() as Option<serde_json::Value>,
+        input.permission_keys,
+        input.token,
+        input.expires_at,
     )
-    .bind(input.org_id)
-    .bind(input.identity_id)
-    .bind(input.action_summary)
-    .bind(&input.action_detail)
-    .bind(input.permission_keys)
-    .bind(input.token)
-    .bind(input.expires_at)
     .fetch_one(pool)
     .await
 }
 
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ApprovalRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApprovalRow>(
+    sqlx::query_as!(
+        ApprovalRow,
         "SELECT id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals WHERE id = $1",
+        id,
     )
-    .bind(id)
     .fetch_optional(pool)
     .await
 }
 
 pub async fn get_by_token(pool: &PgPool, token: &str) -> Result<Option<ApprovalRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApprovalRow>(
+    sqlx::query_as!(
+        ApprovalRow,
         "SELECT id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals WHERE token = $1",
+        token,
     )
-    .bind(token)
     .fetch_optional(pool)
     .await
 }
@@ -74,15 +77,16 @@ pub async fn resolve(
     resolved_by: &str,
     remember: bool,
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApprovalRow>(
+    sqlx::query_as!(
+        ApprovalRow,
         "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4
          WHERE id = $1 AND status = 'pending'
          RETURNING id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+        id,
+        status,
+        resolved_by,
+        remember,
     )
-    .bind(id)
-    .bind(status)
-    .bind(resolved_by)
-    .bind(remember)
     .fetch_optional(pool)
     .await
 }
@@ -91,17 +95,18 @@ pub async fn list_pending_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApprovalRow>(
+    sqlx::query_as!(
+        ApprovalRow,
         "SELECT id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals WHERE org_id = $1 AND status = 'pending' ORDER BY created_at DESC",
+        org_id,
     )
-    .bind(org_id)
     .fetch_all(pool)
     .await
 }
 
 pub async fn expire_stale(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
+    let result = sqlx::query!(
         "UPDATE approvals SET status = 'expired', resolved_at = now(), resolved_by = 'system'
          WHERE status = 'pending' AND expires_at < now()",
     )

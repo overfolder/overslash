@@ -26,17 +26,17 @@ pub struct AuditEntry<'a> {
 }
 
 pub async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Error> {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, ip_address)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        entry.org_id,
+        entry.identity_id,
+        entry.action,
+        entry.resource_type,
+        entry.resource_id,
+        entry.detail,
+        entry.ip_address,
     )
-    .bind(entry.org_id)
-    .bind(entry.identity_id)
-    .bind(entry.action)
-    .bind(entry.resource_type)
-    .bind(entry.resource_id)
-    .bind(&entry.detail)
-    .bind(entry.ip_address)
     .execute(pool)
     .await?;
     Ok(())
@@ -57,7 +57,8 @@ pub async fn query_filtered(
     pool: &PgPool,
     filter: &AuditFilter,
 ) -> Result<Vec<AuditRow>, sqlx::Error> {
-    sqlx::query_as::<_, AuditRow>(
+    sqlx::query_as!(
+        AuditRow,
         "SELECT id, org_id, identity_id, action, resource_type, resource_id, detail, ip_address, created_at
          FROM audit_log
          WHERE org_id = $1
@@ -68,15 +69,15 @@ pub async fn query_filtered(
            AND ($6::timestamptz IS NULL OR created_at <= $6)
          ORDER BY created_at DESC
          LIMIT $7 OFFSET $8",
+        filter.org_id,
+        filter.action,
+        filter.resource_type,
+        filter.identity_id,
+        filter.since,
+        filter.until,
+        filter.limit,
+        filter.offset,
     )
-    .bind(filter.org_id)
-    .bind(&filter.action)
-    .bind(&filter.resource_type)
-    .bind(filter.identity_id)
-    .bind(filter.since)
-    .bind(filter.until)
-    .bind(filter.limit)
-    .bind(filter.offset)
     .fetch_all(pool)
     .await
 }
