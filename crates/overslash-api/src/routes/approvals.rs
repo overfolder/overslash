@@ -96,10 +96,32 @@ async fn resolve_approval(
     if remember {
         let identity_id = row.identity_id;
         let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
-        let expires_at = req.ttl.as_deref().and_then(|t| {
-            let dur = overslash_core::types::duration::parse_ttl(t)?;
-            Some(time::OffsetDateTime::now_utc() + time::Duration::new(dur.as_secs() as i64, 0))
-        });
+
+        // Validate remember_keys are a subset of the approval's permission_keys
+        if req.remember_keys.is_some() {
+            for key in keys {
+                if !row.permission_keys.iter().any(|pk| pk == key) {
+                    return Err(AppError::BadRequest(format!(
+                        "remember_key '{key}' is not in the approval's permission_keys"
+                    )));
+                }
+            }
+        }
+
+        // Parse and validate TTL
+        let expires_at = match req.ttl.as_deref() {
+            Some(t) => {
+                let dur = overslash_core::types::duration::parse_ttl(t)
+                    .ok_or_else(|| AppError::BadRequest(format!("invalid ttl: {t}")))?;
+                let secs: i64 = dur
+                    .as_secs()
+                    .try_into()
+                    .map_err(|_| AppError::BadRequest("ttl value too large".into()))?;
+                Some(time::OffsetDateTime::now_utc() + time::Duration::new(secs, 0))
+            }
+            None => None,
+        };
+
         for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
                 &state.db,
