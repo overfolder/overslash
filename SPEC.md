@@ -96,6 +96,24 @@ Any Caller (agent platform, CI, human, script)
 
 ## 4. Identity Hierarchy
 
+### User Authentication
+
+Users authenticate to Overslash via external Identity Providers (IdPs). Overslash is a **Relying Party (RP)** — it does not store passwords or manage user credentials directly.
+
+**Protocol: OpenID Connect (OIDC)** — the authentication layer built on OAuth 2.0. OIDC provides identity (who the user is) via ID tokens, while OAuth alone only handles authorization. Overslash uses the **Authorization Code Flow with PKCE** for all web-based logins.
+
+**Supported IdP types:**
+- **Social providers** — Google, GitHub (pre-configured, just needs client ID/secret)
+- **Corporate SSO** — any OIDC-compliant IdP (Okta, Azure AD, Auth0, Keycloak, etc.) configured via the IdP's issuer URL. Overslash uses **OpenID Connect Discovery** (`.well-known/openid-configuration`) to auto-discover endpoints — org-admins only need to provide the issuer URL, client ID, and client secret.
+- **SAML 2.0** — supported for enterprise environments that require it (many corporate IdPs only offer SAML). Overslash acts as a SAML Service Provider (SP). However, OIDC is preferred where both are available — SAML is XML-heavy, harder to debug, and less suited to SPAs.
+- **Dev login** — a debug-only login method (enabled via env var, disabled in production) for local development without an external IdP.
+
+**Per-org IdP configuration:** Each org configures its own IdPs. An org can enable multiple IdPs simultaneously (e.g., Google for convenience + corporate Okta for SSO). Org-admins manage this in the Org Dashboard settings.
+
+**User provisioning:** On first login via an IdP, Overslash creates the user identity in the org (matched by email domain or explicit org assignment). Subsequent logins update the user's profile (name, avatar) from the IdP's claims.
+
+### Hierarchy
+
 ```
 Org (acme)
   └── User (alice)                     depth=0
@@ -104,7 +122,7 @@ Org (acme)
             └── SubAgent (emailer)      depth=2, parent=henry
 ```
 
-- **Users** created by org-admins
+- **Users** created by org-admins (or auto-provisioned on first IdP login)
 - **Agents** created by users
 - **Sub-agents** created by agents — no user intervention needed
 - Each identity has API keys for authenticating with Overslash
