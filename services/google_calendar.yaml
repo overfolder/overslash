@@ -32,7 +32,7 @@ actions:
   list_events:
     method: GET
     path: /calendar/v3/calendars/{calendarId}/events
-    description: List events on a calendar
+    description: "List events[ on calendar {calendarId}]"
     risk: read
     params:
       calendarId:
@@ -62,7 +62,7 @@ actions:
   get_event:
     method: GET
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
-    description: Get a single calendar event
+    description: "Get event {eventId}[ on calendar {calendarId}]"
     risk: read
     params:
       calendarId:
@@ -76,7 +76,7 @@ actions:
   create_event:
     method: POST
     path: /calendar/v3/calendars/{calendarId}/events
-    description: Create a new calendar event
+    description: "Create event '{summary}'[ on calendar {calendarId}]"
     risk: write
     params:
       calendarId:
@@ -108,7 +108,7 @@ actions:
   update_event:
     method: PUT
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
-    description: Update an existing calendar event
+    description: "Update event {eventId}[ on calendar {calendarId}]"
     risk: write
     params:
       calendarId:
@@ -140,7 +140,7 @@ actions:
   delete_event:
     method: DELETE
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
-    description: Delete a calendar event
+    description: "Delete event {eventId}[ on calendar {calendarId}]"
     risk: delete
     params:
       calendarId:

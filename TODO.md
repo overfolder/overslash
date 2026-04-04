@@ -13,7 +13,6 @@ Things already implemented that diverge from SPEC.md. Resolve each by updating t
 - [ ] **risk vs mutating**: spec uses `mutating: bool` (inferred from method); code uses `risk: read|write|delete` — richer but divergent
 - [ ] **No scope_param**: spec defines `scope_param` on actions to fill `{arg}` in permission keys; code doesn't implement it — all service-action keys have `*` as arg
 - [ ] **No category on templates**: spec defines `category` for UI grouping; code and YAMLs don't have it
-- [ ] **No description interpolation**: spec supports `{param}` substitution and `[optional segments]` in action descriptions; code treats descriptions as static strings
 - [ ] **Template/instance split**: spec separates templates (blueprints) from services (named instances with lifecycle); code has definitions + connections with no instance layer
 - [ ] **Identity depth**: spec has User/Agent/SubAgent with parent_id and depth; code has flat `kind IN ('user','agent')` — enrollment creates orphaned agents
 

@@ -20,7 +20,7 @@ actions:
   send_message:
     method: POST
     path: /api/chat.postMessage
-    description: Send a message to a Slack channel
+    description: "Send a message to Slack channel {channel}"
     risk: write
     params:
       channel:
