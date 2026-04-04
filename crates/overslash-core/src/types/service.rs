@@ -40,15 +40,32 @@ impl fmt::Display for Risk {
 }
 
 /// A service definition — describes an external API, its auth methods, and available actions.
+/// Also referred to as a "service template" (the blueprint from which service instances are created).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDefinition {
     pub key: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     #[serde(default)]
     pub auth: Vec<ServiceAuth>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
+}
+
+/// Alias: a service template is the same as a service definition.
+pub type ServiceTemplate = ServiceDefinition;
+
+/// Which tier a template belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TemplateTier {
+    Global,
+    Org,
+    User,
 }
 
 /// Auth method supported by a service.
