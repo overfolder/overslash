@@ -36,6 +36,7 @@ actions:
     path: /v3/events/{event_id}/
     description: Get details of a specific event
     risk: read
+    scope_param: event_id
     params:
       event_id:
         type: string
@@ -46,6 +47,7 @@ actions:
     path: /v3/events/{event_id}/ticket_classes/
     description: List available ticket types for an event
     risk: read
+    scope_param: event_id
     params:
       event_id:
         type: string
@@ -56,6 +58,7 @@ actions:
     path: /v3/events/{event_id}/attendees/
     description: List attendees for an event (requires organizer access)
     risk: read
+    scope_param: event_id
     params:
       event_id:
         type: string
