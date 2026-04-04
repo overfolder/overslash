@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks \
+.PHONY: local local-down dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume
 
@@ -12,6 +12,14 @@ TF_VAR_FILE := $(TOFU_DIR)/env/$(ENV).tfvars
 GREEN := \033[0;32m
 RED := \033[0;31m
 NC := \033[0m
+
+# Start local infra (postgres only)
+local:
+	$(COMPOSE) -f docker/docker-compose.dev.yml up -d postgres
+
+# Stop local infra
+local-down:
+	$(COMPOSE) -f docker/docker-compose.dev.yml down
 
 # Start all dev services (postgres + api with cargo-watch + dashboard)
 dev:
