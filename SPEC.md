@@ -215,6 +215,27 @@ When a sub-agent executes an action, every level in the ancestor chain must auth
 
 The approval is created at the gap level. That level's ancestors can resolve it. This means agents approve for their sub-agents without pestering the user.
 
+### Trust Model and Approval Resolution
+
+The core trust assumption: **agents are not trusted to approve their own actions.** Overslash exists precisely because prompt-based permission ("please ask before sending") is not real security. The approval system enforces this:
+
+**Who can resolve an approval:**
+- **Users** — via the Overslash dashboard (logged in) or via the platform's UX calling the resolve API with the user's credentials
+- **Ancestor agents** — an agent can approve for its sub-agents, but **only** if the permission being granted is already within the agent's own boundary (same or narrower keys, same or shorter TTL). A parent cannot grant a child more than it has itself.
+- **The requesting agent itself** — **never**. An agent cannot resolve its own approval requests.
+
+**How approvals flow through the platform:**
+
+1. Agent calls `overslash_execute` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`
+2. The agent cannot resolve this. The platform receives the approval event (via webhook or polling on the user's behalf).
+3. The platform surfaces the approval to the user in its own UX (Telegram buttons, Slack message, CLI prompt, etc.) including the `suggested_tiers` and `description` from the approval payload.
+4. The user makes a decision. The platform calls `POST /v1/approvals/{id}/resolve` using the **user's** Overslash credentials — not the agent's API key.
+5. The agent's pending request completes (via polling or webhook to the platform).
+
+**There is no self-authenticating approval URL.** Approval resolution always requires credentials of an identity with authority over the requesting identity. This prevents an agent from obtaining and resolving its own approval link.
+
+(The secret request page at `/secrets/provide/req_...?token=jwt` uses a signed URL because providing a secret doesn't grant the agent authority — the agent still needs a separate approval to use it.)
+
 ### Remembered Approvals
 
 "Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Users can view and revoke remembered approvals per identity via the dashboard.
@@ -412,7 +433,7 @@ Three tools that let any LLM agent use Overslash:
 | `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. |
 | `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities. |
 
-The agent harness wraps these 3 tools and handles plumbing (webhooks, approval injection into agent loop).
+The agent platform wraps these 3 tools and handles plumbing (receiving approval events via webhook/polling, surfacing them to the user, and calling the resolve API with user credentials).
 
 ---
 
@@ -436,10 +457,11 @@ Services (browse/register/import), Connections (org-level OAuth), Webhooks, Perm
 
 My Connections, My Secrets (names + versions), Approvals (pending, one-click resolve with expiry picker), My Agents (permission management).
 
-### Standalone Pages (no login required, signed URL)
+### Standalone Pages
 
-- **Approval resolution**: `https://overslash.dev/approve/apr_...?token=jwt` — Allow/Deny/Remember
-- **Secret request**: `https://overslash.dev/secrets/provide/req_...?token=jwt` — secure input field
+- **Secret request**: `https://overslash.dev/secrets/provide/req_...?token=jwt` — secure input field for secret provisioning (no login required, signed URL). This is safe because providing a secret doesn't grant the agent any new authority — the agent still needs approval to use it.
+
+Note: there is **no standalone approval resolution page**. Approvals are resolved through the dashboard (logged-in user) or through the platform's own UX calling the resolve API with user credentials. See §5 Trust Model.
 
 ---
 

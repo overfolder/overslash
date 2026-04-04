@@ -15,10 +15,9 @@ Phased roadmap. Each phase is usable independently.
 - [x] `POST /v1/actions/execute` — raw HTTP with secret injection (`http` pseudo-service)
 - [x] Permission rules (flat per-identity, no chain yet)
 - [x] Approval workflow — create, resolve (allow/deny/allow_remember), expire
-- [ ] Approval resolution page (standalone signed-URL web page)
-- [ ] Secret request page (standalone signed-URL web page)
+- [ ] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority)
 - [x] Audit trail (log every action, approval, secret access)
-- [ ] Dashboard: minimal — identity list, approval resolution, secret request
+- [ ] Dashboard: minimal — identity list, inline approval resolution, secret request
 - [x] Webhook delivery (approval.created, approval.resolved)
 
 ## Phase 2: OAuth + Service Registry (in progress)

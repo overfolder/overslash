@@ -121,7 +121,7 @@ For `http` service approvals, tiers compose the paired keys:
     http:ANY:api.example.com + secret:api_key:api.example.com
 ```
 
-The standalone approval page (`/approve/apr_...?token=jwt`) renders the same picker — it consumes the same API.
+There is no standalone self-authenticating approval page — approvals are always resolved by an authenticated user, either through this dashboard or through the agent platform's own UX calling the resolve API with user credentials (see SPEC.md §5 Trust Model).
 
 ### Live updates
 
