@@ -2347,13 +2347,39 @@ async fn test_resolve_with_broader_remember_keys_succeeds(pool: PgPool) {
         .unwrap()
         .to_string();
 
-    // Resolve with a broader remember_key pattern (wildcard host) — should succeed
+    // GET the approval to read the suggested tiers
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    let approval: Value = resp.json().await.unwrap();
+    let tiers = approval["suggested_tiers"].as_array().unwrap();
+    assert!(tiers.len() >= 2, "should have at least 2 tiers");
+
+    // Use the broadest tier's keys (last tier) as remember_keys
+    let broadest_tier_keys: Vec<String> = tiers.last().unwrap()["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+
+    // Verify the broadest tier is actually broader than the exact keys
+    assert_ne!(
+        tiers.first().unwrap()["keys"],
+        tiers.last().unwrap()["keys"],
+        "broadest tier should differ from exact tier"
+    );
+
+    // Resolve with the broadest suggested tier — should succeed
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "resolution": "allow_remember",
-            "remember_keys": ["http:POST:**"]
+            "remember_keys": broadest_tier_keys
         }))
         .send()
         .await
@@ -2361,7 +2387,7 @@ async fn test_resolve_with_broader_remember_keys_succeeds(pool: PgPool) {
     assert_eq!(
         resp.status(),
         200,
-        "broader remember_key should be accepted"
+        "broader remember_key from suggested tier should be accepted"
     );
 }
 

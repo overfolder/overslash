@@ -118,14 +118,21 @@ async fn resolve_approval(
             let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+
+            // Build the set of all keys that appear in any suggested tier.
+            // remember_keys must be a subset of these to prevent privilege escalation
+            // (e.g., submitting `*:*:*`). Once group ceilings are implemented, this
+            // validation will be replaced by a group ceiling check.
+            let tiers = overslash_core::permissions::suggest_tiers(&approval.permission_keys);
+            let allowed_keys: std::collections::HashSet<&str> = tiers
+                .iter()
+                .flat_map(|t| t.keys.iter().map(|k| k.as_str()))
+                .collect();
+
             for key in keys {
-                let covers_any = approval
-                    .permission_keys
-                    .iter()
-                    .any(|pk| glob_match::glob_match(key, pk));
-                if !covers_any {
+                if !allowed_keys.contains(key.as_str()) {
                     return Err(AppError::BadRequest(format!(
-                        "remember_key '{key}' does not cover any of the approval's permission_keys"
+                        "remember_key '{key}' is not in any suggested tier"
                     )));
                 }
             }
