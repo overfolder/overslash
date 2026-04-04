@@ -19,6 +19,8 @@ pub struct IdentityRow {
     pub updated_at: OffsetDateTime,
 }
 
+super::impl_org_owned!(IdentityRow);
+
 pub async fn create(
     pool: &PgPool,
     org_id: Uuid,

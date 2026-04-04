@@ -19,6 +19,8 @@ pub struct ConnectionRow {
     pub updated_at: OffsetDateTime,
 }
 
+super::impl_org_owned!(ConnectionRow);
+
 pub struct CreateConnection<'a> {
     pub org_id: Uuid,
     pub identity_id: Uuid,
