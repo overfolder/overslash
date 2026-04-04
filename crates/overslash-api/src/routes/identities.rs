@@ -3,6 +3,7 @@ use axum::{
     extract::{Path, State},
     routing::{get, post},
 };
+use overslash_core::types::IdentityKind;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -24,7 +25,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct CreateIdentityRequest {
     name: String,
-    kind: String,
+    kind: IdentityKind,
     external_id: Option<String>,
     parent_id: Option<Uuid>,
 }
@@ -56,14 +57,44 @@ fn identity_response(r: overslash_db::repos::identity::IdentityRow) -> IdentityR
     }
 }
 
+/// Fetch and validate a parent identity: must exist, belong to the same org, and be one of the allowed kinds.
+async fn validate_parent(
+    state: &AppState,
+    parent_id: Uuid,
+    org_id: Uuid,
+    allowed_kinds: &[IdentityKind],
+    child_kind: IdentityKind,
+) -> Result<overslash_db::repos::identity::IdentityRow> {
+    let parent = overslash_db::repos::identity::get_by_id(&state.db, parent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("parent identity not found".into()))?;
+    if parent.org_id != org_id {
+        return Err(AppError::NotFound("parent identity not found".into()));
+    }
+    let parent_kind: IdentityKind = parent
+        .kind
+        .parse()
+        .map_err(|_| AppError::Internal("invalid parent kind in database".into()))?;
+    if !allowed_kinds.contains(&parent_kind) {
+        let allowed: Vec<&str> = allowed_kinds.iter().map(IdentityKind::as_str).collect();
+        return Err(AppError::BadRequest(format!(
+            "{child_kind} parent must be a {} identity",
+            allowed.join(" or ")
+        )));
+    }
+    Ok(parent)
+}
+
 async fn create_identity(
     State(state): State<AppState>,
     auth: AuthContext,
     ip: ClientIp,
     Json(req): Json<CreateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
-    let row = match req.kind.as_str() {
-        "user" => {
+    let kind_str = req.kind.as_str();
+
+    let row = match req.kind {
+        IdentityKind::User => {
             if req.parent_id.is_some() {
                 return Err(AppError::BadRequest(
                     "user identities cannot have a parent".into(),
@@ -73,53 +104,47 @@ async fn create_identity(
                 &state.db,
                 auth.org_id,
                 &req.name,
-                &req.kind,
+                kind_str,
                 req.external_id.as_deref(),
             )
             .await?
         }
-        "agent" => {
+        IdentityKind::Agent => {
             let parent_id = req.parent_id.ok_or_else(|| {
                 AppError::BadRequest("agent identities require a parent_id".into())
             })?;
-            let parent = overslash_db::repos::identity::get_by_id(&state.db, parent_id)
-                .await?
-                .ok_or_else(|| AppError::NotFound("parent identity not found".into()))?;
-            if parent.org_id != auth.org_id {
-                return Err(AppError::NotFound("parent identity not found".into()));
-            }
-            if parent.kind != "user" {
-                return Err(AppError::BadRequest(
-                    "agent parent must be a user identity".into(),
-                ));
-            }
+            let parent = validate_parent(
+                &state,
+                parent_id,
+                auth.org_id,
+                &[IdentityKind::User],
+                req.kind,
+            )
+            .await?;
             overslash_db::repos::identity::create_with_parent(
                 &state.db,
                 auth.org_id,
                 &req.name,
-                &req.kind,
+                kind_str,
                 req.external_id.as_deref(),
                 parent_id,
                 parent.depth + 1,
-                parent.id, // owner is the user
+                parent.id,
             )
             .await?
         }
-        "sub_agent" => {
+        IdentityKind::SubAgent => {
             let parent_id = req.parent_id.ok_or_else(|| {
                 AppError::BadRequest("sub_agent identities require a parent_id".into())
             })?;
-            let parent = overslash_db::repos::identity::get_by_id(&state.db, parent_id)
-                .await?
-                .ok_or_else(|| AppError::NotFound("parent identity not found".into()))?;
-            if parent.org_id != auth.org_id {
-                return Err(AppError::NotFound("parent identity not found".into()));
-            }
-            if parent.kind != "agent" && parent.kind != "sub_agent" {
-                return Err(AppError::BadRequest(
-                    "sub_agent parent must be an agent or sub_agent identity".into(),
-                ));
-            }
+            let parent = validate_parent(
+                &state,
+                parent_id,
+                auth.org_id,
+                &[IdentityKind::Agent, IdentityKind::SubAgent],
+                req.kind,
+            )
+            .await?;
             let owner_id = parent.owner_id.ok_or_else(|| {
                 AppError::BadRequest(
                     "cannot create sub_agent under an identity with no owner chain".into(),
@@ -129,18 +154,13 @@ async fn create_identity(
                 &state.db,
                 auth.org_id,
                 &req.name,
-                &req.kind,
+                kind_str,
                 req.external_id.as_deref(),
                 parent_id,
                 parent.depth + 1,
                 owner_id,
             )
             .await?
-        }
-        other => {
-            return Err(AppError::BadRequest(format!(
-                "invalid identity kind: {other}"
-            )));
         }
     };
 
@@ -179,7 +199,6 @@ async fn list_children(
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    // Verify the identity exists and belongs to the caller's org
     let ident = overslash_db::repos::identity::get_by_id(&state.db, id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;

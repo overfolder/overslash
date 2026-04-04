@@ -436,7 +436,7 @@ async fn resolve_enrollment(
             let agent_name = req.agent_name.as_deref().unwrap_or(&row.suggested_name);
 
             // Verify the approving user's identity still exists
-            let _approver = identity::get_by_id(&state.db, session.sub)
+            let approver = identity::get_by_id(&state.db, session.sub)
                 .await?
                 .ok_or_else(|| {
                     AppError::BadRequest("approving user identity no longer exists".into())
@@ -449,9 +449,9 @@ async fn resolve_enrollment(
                 agent_name,
                 "agent",
                 None,
-                session.sub, // parent = approving user
-                1,           // depth = 1 (user is 0)
-                session.sub, // owner = approving user
+                session.sub,
+                approver.depth + 1,
+                session.sub,
             )
             .await?;
 
