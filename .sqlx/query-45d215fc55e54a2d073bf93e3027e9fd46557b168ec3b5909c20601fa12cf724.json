@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals WHERE org_id = $1 AND status = 'pending' ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "action_summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "action_detail",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "permission_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "resolved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "resolved_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "remember",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "token",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "45d215fc55e54a2d073bf93e3027e9fd46557b168ec3b5909c20601fa12cf724"
+}

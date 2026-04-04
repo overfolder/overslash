@@ -26,54 +26,57 @@ pub async fn create(
     key_prefix: &str,
     scopes: &[String],
 ) -> Result<ApiKeyRow, sqlx::Error> {
-    sqlx::query_as::<_, ApiKeyRow>(
+    sqlx::query_as!(
+        ApiKeyRow,
         "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id, org_id, identity_id, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at",
+        org_id,
+        identity_id,
+        name,
+        key_hash,
+        key_prefix,
+        scopes,
     )
-    .bind(org_id)
-    .bind(identity_id)
-    .bind(name)
-    .bind(key_hash)
-    .bind(key_prefix)
-    .bind(scopes)
     .fetch_one(pool)
     .await
 }
 
 pub async fn find_by_prefix(pool: &PgPool, prefix: &str) -> Result<Option<ApiKeyRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApiKeyRow>(
+    sqlx::query_as!(
+        ApiKeyRow,
         "SELECT id, org_id, identity_id, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
          FROM api_keys WHERE key_prefix = $1 AND revoked_at IS NULL",
+        prefix,
     )
-    .bind(prefix)
     .fetch_optional(pool)
     .await
 }
 
 pub async fn touch_last_used(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE api_keys SET last_used_at = now() WHERE id = $1")
-        .bind(id)
+    sqlx::query!("UPDATE api_keys SET last_used_at = now() WHERE id = $1", id)
         .execute(pool)
         .await?;
     Ok(())
 }
 
 pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<ApiKeyRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApiKeyRow>(
+    sqlx::query_as!(
+        ApiKeyRow,
         "SELECT id, org_id, identity_id, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
          FROM api_keys WHERE org_id = $1 AND revoked_at IS NULL ORDER BY created_at",
+        org_id,
     )
-    .bind(org_id)
     .fetch_all(pool)
     .await
 }
 
 pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result =
-        sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
-            .bind(id)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query!(
+        "UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
+        id,
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }

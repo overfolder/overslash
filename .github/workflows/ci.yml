@@ -45,6 +45,15 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+
+      - name: Run migrations
+        run: cargo sqlx migrate run --source crates/overslash-db/migrations
+
+      - name: Verify sqlx offline cache
+        run: cargo sqlx prepare --workspace --check
+
       - name: Format check
         run: cargo fmt --check
 

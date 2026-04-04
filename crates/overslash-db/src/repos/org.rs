@@ -12,20 +12,22 @@ pub struct OrgRow {
 }
 
 pub async fn create(pool: &PgPool, name: &str, slug: &str) -> Result<OrgRow, sqlx::Error> {
-    sqlx::query_as::<_, OrgRow>(
+    sqlx::query_as!(
+        OrgRow,
         "INSERT INTO orgs (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at, updated_at",
+        name,
+        slug,
     )
-    .bind(name)
-    .bind(slug)
     .fetch_one(pool)
     .await
 }
 
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
-    sqlx::query_as::<_, OrgRow>(
+    sqlx::query_as!(
+        OrgRow,
         "SELECT id, name, slug, created_at, updated_at FROM orgs WHERE id = $1",
+        id,
     )
-    .bind(id)
     .fetch_optional(pool)
     .await
 }

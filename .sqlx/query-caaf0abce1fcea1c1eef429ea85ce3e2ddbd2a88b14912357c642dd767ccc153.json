@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,\n         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,\n                   encrypted_refresh_token, token_expires_at, scopes, account_email,\n                   byoc_credential_id, is_default, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "provider_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "encrypted_access_token",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "encrypted_refresh_token",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "token_expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "account_email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "byoc_credential_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Timestamptz",
+        "TextArray",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "caaf0abce1fcea1c1eef429ea85ce3e2ddbd2a88b14912357c642dd767ccc153"
+}

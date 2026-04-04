@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes, account_email,\n                byoc_credential_id, is_default, created_at, updated_at\n         FROM connections WHERE identity_id = $1 AND provider_key = $2\n         ORDER BY is_default DESC, created_at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "provider_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "encrypted_access_token",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "encrypted_refresh_token",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "token_expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "account_email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "byoc_credential_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cb4645c1b16f737edea35e187265c2170857d020b1f08b1fc2ae403dc02a5db8"
+}

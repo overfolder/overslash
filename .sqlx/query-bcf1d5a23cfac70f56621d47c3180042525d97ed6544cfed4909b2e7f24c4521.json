@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, identity_id, action, resource_type, resource_id, detail, ip_address, created_at\n         FROM audit_log\n         WHERE org_id = $1\n           AND ($2::text IS NULL OR action = $2)\n           AND ($3::text IS NULL OR resource_type = $3)\n           AND ($4::uuid IS NULL OR identity_id = $4)\n           AND ($5::timestamptz IS NULL OR created_at >= $5)\n           AND ($6::timestamptz IS NULL OR created_at <= $6)\n         ORDER BY created_at DESC\n         LIMIT $7 OFFSET $8",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "resource_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "detail",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "ip_address",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "bcf1d5a23cfac70f56621d47c3180042525d97ed6544cfed4909b2e7f24c4521"
+}
