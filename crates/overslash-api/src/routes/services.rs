@@ -5,6 +5,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use overslash_core::types::Risk;
+
 use crate::{AppState, error::Result, extractors::AuthContext};
 
 pub fn router() -> Router<AppState> {
@@ -38,7 +40,7 @@ struct ActionSummary {
     method: String,
     path: String,
     description: String,
-    risk: String,
+    risk: Risk,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +126,7 @@ async fn list_actions(
             method: a.method.clone(),
             path: a.path.clone(),
             description: a.description.clone(),
-            risk: a.risk.clone(),
+            risk: a.risk,
         })
         .collect();
     Ok(Json(actions))

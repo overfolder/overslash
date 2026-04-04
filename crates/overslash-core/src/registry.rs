@@ -188,4 +188,41 @@ actions:
         assert_eq!(reg.search("charges").len(), 1);
         assert_eq!(reg.search("nonexistent").len(), 0);
     }
+
+    #[test]
+    fn risk_defaults_to_read_when_omitted() {
+        use crate::types::Risk;
+
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            dir.path(),
+            "test.yaml",
+            r#"
+key: test
+display_name: Test
+hosts: [api.test.com]
+actions:
+  no_risk:
+    method: GET
+    path: /items
+    description: No risk field
+  explicit_write:
+    method: POST
+    path: /items
+    description: Explicit write
+    risk: write
+  explicit_delete:
+    method: DELETE
+    path: /items/{id}
+    description: Explicit delete
+    risk: delete
+"#,
+        );
+
+        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let svc = reg.get("test").unwrap();
+        assert_eq!(svc.actions["no_risk"].risk, Risk::Read);
+        assert_eq!(svc.actions["explicit_write"].risk, Risk::Write);
+        assert_eq!(svc.actions["explicit_delete"].risk, Risk::Delete);
+    }
 }
