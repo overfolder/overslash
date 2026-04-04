@@ -211,7 +211,7 @@ Three tiers of trust emerge naturally:
 2. **`{service}:ANY:*`** — arbitrary API calls against known services. Mid trust.
 3. **`http:ANY:*`** — full HTTP proxy with secret injection. Highest trust.
 
-**Auto-approve reads:** Each service grant in a group can optionally enable `auto_approve_reads`. When set, non-mutating requests (actions where `mutating: false`, or GET/HEAD/OPTIONS for raw HTTP) from agents automatically create permission keys without requiring user approval. Mutating requests still go through normal approval flow. This is configured per-service per-group — org-admins decide which services have sensitive read operations (financial data, PII) vs ones where reads are safe (listing PRs, checking calendar events).
+**Auto-approve reads:** Each service grant in a group can optionally enable `auto_approve_reads`. When set, non-mutating requests (actions where `risk: read`, or GET/HEAD/OPTIONS for raw HTTP) from agents automatically create permission keys without requiring user approval. Mutating requests (`risk: write` or `delete`) still go through normal approval flow. This is configured per-service per-group — org-admins decide which services have sensitive read operations (financial data, PII) vs ones where reads are safe (listing PRs, checking calendar events).
 
 **Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
 
@@ -470,7 +470,7 @@ actions:
     method: POST
     path: /calendars/{calendar_id}/events
     description: "Create event '{summary}'[ on {calendar_id}]"
-    mutating: true
+    risk: write
     scope_param: calendar_id
     params:
       calendar_id: { type: string, required: true, default: primary }
@@ -481,7 +481,7 @@ actions:
     method: GET
     path: /calendars/{calendar_id}/events
     description: "List events[ on {calendar_id}]"
-    # mutating: false (inferred from GET)
+    risk: read
     scope_param: calendar_id
     params:
       calendar_id: { type: string, required: true, default: primary }
@@ -491,7 +491,7 @@ actions:
 
 **Key fields:**
 - **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. Without `scope_param`, the arg is `*`.
-- **`mutating`** — boolean, optional. When omitted, inferred from the HTTP method: GET/HEAD/OPTIONS → `false`, else → `true`. Informational for the UI and influences auto-approve-reads behavior.
+- **`risk`** — enum: `read`, `write`, `delete`. Defaults to `read` when omitted. Informational for the UI and influences auto-approve-reads behavior (`read` → non-mutating, `write`/`delete` → mutating).
 - **`category`** — for organizing templates in the UI (dev-tools, comms, payments, productivity, etc.).
 
 ### Services (Instances)
