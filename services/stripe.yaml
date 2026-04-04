@@ -23,7 +23,7 @@ actions:
   create_charge:
     method: POST
     path: /v1/charges
-    description: Create a charge
+    description: "Create charge for {amount} {currency}"
     risk: write
     params:
       amount:

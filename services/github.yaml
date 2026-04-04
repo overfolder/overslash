@@ -19,7 +19,7 @@ actions:
   list_repos:
     method: GET
     path: /user/repos
-    description: List repositories for the authenticated user
+    description: "List repositories for the authenticated user[, sorted by {sort}]"
     risk: read
     params:
       sort:
@@ -33,7 +33,7 @@ actions:
   create_pull_request:
     method: POST
     path: /repos/{repo}/pulls
-    description: Create a pull request
+    description: "Create pull request '{title}' on {repo}"
     risk: write
     scope_param: repo
     params:
@@ -59,7 +59,7 @@ actions:
   create_issue:
     method: POST
     path: /repos/{repo}/issues
-    description: Create an issue
+    description: "Create issue '{title}' on {repo}"
     risk: write
     scope_param: repo
     params:

@@ -34,7 +34,7 @@ actions:
   get_event:
     method: GET
     path: /v3/events/{event_id}/
-    description: Get details of a specific event
+    description: "Get details of event {event_id}"
     risk: read
     scope_param: event_id
     params:
@@ -45,7 +45,7 @@ actions:
   list_ticket_classes:
     method: GET
     path: /v3/events/{event_id}/ticket_classes/
-    description: List available ticket types for an event
+    description: "List ticket types for event {event_id}"
     risk: read
     scope_param: event_id
     params:
@@ -56,7 +56,7 @@ actions:
   list_event_attendees:
     method: GET
     path: /v3/events/{event_id}/attendees/
-    description: List attendees for an event (requires organizer access)
+    description: "List attendees for event {event_id}[ with status {status}]"
     risk: read
     scope_param: event_id
     params:

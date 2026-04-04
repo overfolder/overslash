@@ -29,7 +29,7 @@ actions:
   delete_tweet:
     method: DELETE
     path: /2/tweets/{tweet_id}
-    description: Delete a tweet
+    description: "Delete tweet {tweet_id}"
     risk: write
     scope_param: tweet_id
     params:
@@ -40,7 +40,7 @@ actions:
   get_user_tweets:
     method: GET
     path: /2/users/{user_id}/tweets
-    description: Get tweets for a user
+    description: "Get tweets for user {user_id}"
     risk: read
     scope_param: user_id
     params:
