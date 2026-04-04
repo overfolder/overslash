@@ -504,11 +504,11 @@ A form-based editor for the service definition:
 - Status toggle: Draft / Active / Archived
 
 **Actions section:**
-- List of defined actions with name, method badge, path, risk badge
+- List of defined actions with name, method badge, path, mutating badge (read/write)
 - `[+ New Action]` button opens an inline form:
   - Name, HTTP method (dropdown), path template (with `{param}` placeholder syntax)
   - Description template — supports `{param}` interpolation and `[conditional segments]`. Typing `{` triggers autocomplete from the action's defined params. Placeholders render as highlighted chips. Invalid placeholders (referencing non-existent params) show as validation warnings. Example: `Create pull request '{title}' on {repo}`
-  - Risk level (read / write / admin)
+  - Mutating toggle — optional, defaults to inferred from HTTP method (GET/HEAD/OPTIONS → read, else → write)
   - Scope param: which parameter drives the permission key arg (dropdown from defined params)
   - Parameters: add/remove rows — name, type (string / number / boolean / enum), required toggle, description, enum values if applicable
 - Click any action to expand and edit inline
@@ -536,7 +536,7 @@ A code editor showing the full service definition as YAML:
 │  │     method: POST                                         │ │
 │  │     path: /scrape                                        │ │
 │  │     description: "Scrape a web page"                     │ │
-│  │     risk: read                                           │ │
+│  │     # mutating: true (inferred from POST)                │ │
 │  │     params:                                              │ │
 │  │       url: { type: string, required: true }              │ │
 │  │       format: { type: string, enum: [html, text, md] }   │ │
@@ -651,7 +651,7 @@ The explorer uses a single flow — no separate tabs or modes. The level of abst
 1. **Pick a service** — dropdown showing services available through the user's groups (connected services prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
 
 2. **Pick an action** — adapts to the selected service and the user's group grants:
-   - **Defined actions** listed first with human-readable descriptions and risk badges (e.g., `create_pull_request — Create a pull request [write]`)
+   - **Defined actions** listed first with human-readable descriptions and mutating badges (e.g., `create_pull_request — Create a pull request [write]`)
    - **"Custom Request"** appears at the bottom if the user's group grants HTTP verb access for this service (e.g., `github:ANY:*` or `github:POST:*`). Opens method + path + body inputs, with auth auto-injected from the connection.
    - For **"Raw HTTP"** service: always shows method + full URL + headers + body + secret selector (pick from user's secrets, specify injection method per secret)
 

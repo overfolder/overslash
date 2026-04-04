@@ -458,7 +458,7 @@ actions:
     method: POST
     path: /repos/{repo}/pulls
     description: "Create pull request '{title}' on {repo}"
-    risk: write
+    mutating: true
     scope_param: repo
     params:
       repo: { type: string, required: true, description: "owner/repo" }
@@ -469,7 +469,7 @@ actions:
     method: GET
     path: /repos/{repo}/pulls
     description: "List pull requests on {repo}[ with state {state}]"
-    risk: read
+    # mutating: false (inferred from GET)
     scope_param: repo
     params:
       repo: { type: string, required: true, description: "owner/repo" }
@@ -478,7 +478,7 @@ actions:
 
 **Key fields:**
 - **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. `github:create_pull_request:overfolder/backend` gets `overfolder/backend` from the `repo` param. Without `scope_param`, the arg is `*`.
-- **`risk`** — `read`, `write`, or `admin`. Informational for the UI (badges, warnings) and can influence default approval behavior.
+- **`mutating`** — boolean, optional. `true` for write operations, `false` for reads. When omitted, inferred from the HTTP method: GET/HEAD/OPTIONS → `false`, everything else → `true`. Informational for the UI (badges, warnings) and can influence default approval behavior.
 - **`category`** — for organizing services in the UI (dev-tools, comms, payments, etc.).
 
 ### Service Lifecycle
