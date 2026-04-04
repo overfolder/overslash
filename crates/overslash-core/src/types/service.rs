@@ -4,18 +4,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Risk level of a service action: read, write, or delete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Risk {
+    #[default]
     Read,
     Write,
     Delete,
-}
-
-impl Default for Risk {
-    fn default() -> Self {
-        Risk::Read
-    }
 }
 
 impl Risk {
@@ -126,9 +121,18 @@ mod tests {
         assert_eq!(serde_json::to_string(&Risk::Write).unwrap(), r#""write""#);
         assert_eq!(serde_json::to_string(&Risk::Delete).unwrap(), r#""delete""#);
 
-        assert_eq!(serde_json::from_str::<Risk>(r#""read""#).unwrap(), Risk::Read);
-        assert_eq!(serde_json::from_str::<Risk>(r#""write""#).unwrap(), Risk::Write);
-        assert_eq!(serde_json::from_str::<Risk>(r#""delete""#).unwrap(), Risk::Delete);
+        assert_eq!(
+            serde_json::from_str::<Risk>(r#""read""#).unwrap(),
+            Risk::Read
+        );
+        assert_eq!(
+            serde_json::from_str::<Risk>(r#""write""#).unwrap(),
+            Risk::Write
+        );
+        assert_eq!(
+            serde_json::from_str::<Risk>(r#""delete""#).unwrap(),
+            Risk::Delete
+        );
     }
 
     #[test]
