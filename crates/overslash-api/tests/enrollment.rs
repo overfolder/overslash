@@ -16,10 +16,25 @@ async fn setup_org_with_agent(base: &str, client: &reqwest::Client) -> (Uuid, Uu
     // bootstrap_org_identity already creates an agent identity and an identity-bound key.
     // But for enrollment tokens we need the org-level key (to create tokens) and the agent identity.
     // Let's create a fresh agent identity that has NO key yet (to test enrollment properly).
+
+    // Find the user identity to use as parent (agents require a parent_id)
+    let identities: Vec<Value> = client
+        .get(format!("{base}/v1/identities"))
+        .header(common::auth(&api_key).0, common::auth(&api_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = identities.iter().find(|i| i["kind"] == "user").unwrap()["id"]
+        .as_str()
+        .unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header(common::auth(&api_key).0, common::auth(&api_key).1)
-        .json(&json!({"name": "enrollment-target", "kind": "agent"}))
+        .json(&json!({"name": "enrollment-target", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -713,10 +728,22 @@ async fn test_token_crud_with_session(pool: PgPool) {
         .unwrap();
     let admin_key = key_resp["key"].as_str().unwrap();
 
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name": "session-test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
     let agent: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({"name": "session-test-agent", "kind": "agent"}))
+        .json(&json!({"name": "session-test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()

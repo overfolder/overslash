@@ -15,7 +15,7 @@ Things already implemented that diverge from SPEC.md. Resolve each by updating t
 - [ ] **No category on templates**: spec defines `category` for UI grouping; code and YAMLs don't have it
 - [ ] **No description interpolation**: spec supports `{param}` substitution and `[optional segments]` in action descriptions; code treats descriptions as static strings
 - [ ] **Template/instance split**: spec separates templates (blueprints) from services (named instances with lifecycle); code has definitions + connections with no instance layer
-- [ ] **Identity depth**: spec has User/Agent/SubAgent with parent_id and depth; code has flat `kind IN ('user','agent')` — enrollment creates orphaned agents
+- [x] **Identity depth**: parent/child hierarchy with depth tracking, `sub_agent` kind, enrollment assigns parent
 
 ### Dashboard (dashboard/ vs UI_SPEC.md)
 
@@ -95,9 +95,9 @@ Existing dashboard code predates the unified permission model and template/servi
 
 ## Phase 3: Identity Hierarchy + Permissions
 
-- [ ] Parent/child identity relationships (depth tracking, owner_id)
-- [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy)
-- [ ] Sub-identity CRUD for agents (`POST /v1/sub-identities`)
+- [x] Parent/child identity relationships (depth tracking, owner_id)
+- [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy) *(column added, resolution logic pending)*
+- [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
 - [ ] TTL-based sub-identity auto-cleanup
 - [ ] Permission chain walk (ancestor chain, gap detection)
 - [ ] Approval bubbling (gap level targeting, ancestor handling)

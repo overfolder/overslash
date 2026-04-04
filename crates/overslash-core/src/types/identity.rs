@@ -3,10 +3,11 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum IdentityKind {
     User,
     Agent,
+    SubAgent,
 }
 
 impl IdentityKind {
@@ -14,6 +15,7 @@ impl IdentityKind {
         match self {
             Self::User => "user",
             Self::Agent => "agent",
+            Self::SubAgent => "sub_agent",
         }
     }
 }
@@ -30,6 +32,7 @@ impl std::str::FromStr for IdentityKind {
         match s {
             "user" => Ok(Self::User),
             "agent" => Ok(Self::Agent),
+            "sub_agent" => Ok(Self::SubAgent),
             other => Err(format!("invalid identity kind: {other}")),
         }
     }
@@ -42,6 +45,10 @@ pub struct Identity {
     pub name: String,
     pub kind: IdentityKind,
     pub external_id: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub depth: i32,
+    pub owner_id: Option<Uuid>,
+    pub inherit_permissions: bool,
     pub metadata: serde_json::Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,

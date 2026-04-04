@@ -195,11 +195,24 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid) {
         .unwrap();
     let raw_key = key["key"].as_str().unwrap().to_string();
 
-    // Create identity
+    // Create user identity (agents require a parent)
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {raw_key}"))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
+    // Create agent identity under user
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {raw_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -869,10 +882,22 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) 
         .unwrap();
     let api_key = key_resp["key"].as_str().unwrap().to_string();
 
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({"name": "oauth-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {api_key}"))
-        .json(&json!({"name": "oauth-agent", "kind": "agent"}))
+        .json(&json!({"name": "oauth-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -1077,10 +1102,22 @@ async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, Str
         .unwrap();
     let org_api_key = org_key["key"].as_str().unwrap().to_string();
 
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
