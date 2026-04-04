@@ -41,7 +41,7 @@ pub async fn list_by_identity(
 ) -> Result<Vec<PermissionRuleRow>, sqlx::Error> {
     sqlx::query_as::<_, PermissionRuleRow>(
         "SELECT id, org_id, identity_id, action_pattern, effect, expires_at, created_at
-         FROM permission_rules WHERE identity_id = $1 ORDER BY created_at",
+         FROM permission_rules WHERE identity_id = $1 AND (expires_at IS NULL OR expires_at > now()) ORDER BY created_at",
     )
     .bind(identity_id)
     .fetch_all(pool)
