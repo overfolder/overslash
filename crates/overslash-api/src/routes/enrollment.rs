@@ -435,6 +435,13 @@ async fn resolve_enrollment(
         "approve" => {
             let agent_name = req.agent_name.as_deref().unwrap_or(&row.suggested_name);
 
+            // Verify the approving user's identity still exists
+            let _approver = identity::get_by_id(&state.db, session.sub)
+                .await?
+                .ok_or_else(|| {
+                    AppError::BadRequest("approving user identity no longer exists".into())
+                })?;
+
             // Create agent identity under the approving user
             let new_identity = identity::create_with_parent(
                 &state.db,
