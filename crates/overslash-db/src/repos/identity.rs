@@ -134,13 +134,14 @@ pub async fn get_ancestor_chain(
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as::<_, IdentityRow>(&format!(
         "WITH RECURSIVE chain AS (
-            SELECT {COLUMNS} FROM identities WHERE id = $1
+            SELECT {COLUMNS}, 1 AS _depth FROM identities WHERE id = $1
             UNION ALL
             SELECT i.id, i.org_id, i.name, i.kind, i.external_id, i.email, i.metadata,
                    i.parent_id, i.depth, i.owner_id, i.inherit_permissions,
-                   i.created_at, i.updated_at
+                   i.created_at, i.updated_at, c._depth + 1
             FROM identities i
             INNER JOIN chain c ON i.id = c.parent_id
+            WHERE c._depth < 50
         )
         SELECT {COLUMNS} FROM chain ORDER BY depth ASC",
     ))
