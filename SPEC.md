@@ -519,6 +519,16 @@ Resolution uses **user-shadows-org**: when a user has a service with the same na
 
 This lets users override org defaults with their own credentials (e.g., personal GitHub account instead of org's) simply by creating a service with the same name.
 
+**Qualified vs unqualified names by context:**
+
+| Context | Format | Example | Why |
+|---------|--------|---------|-----|
+| Permission keys | unqualified | `github:create_pull_request:*` | Follows resolution, no pinning to a specific scope |
+| Group grants | unqualified | `github:ANY:*` | Same |
+| Audit log | fully qualified | `org/github:create_pull_request:overfolder/app` | Forensic record — must show exactly which instance and credentials were used |
+| Approval display | scope-qualified | `user/github` or `org/github` | User needs to know which credentials the agent will use (`user/` is sufficient — the user knows who they are) |
+| API requests | unqualified (default) | `github` | Resolution applies; `org/github` available to bypass shadow |
+
 **Permission keys** use the unqualified name and follow the same resolution:
 - `github:create_pull_request:overfolder/*` — resolves through the user's `github` if it shadows, else the org's
 - `google-calendar:list_events:*`
