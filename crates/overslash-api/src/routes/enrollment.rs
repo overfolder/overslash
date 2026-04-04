@@ -79,9 +79,9 @@ async fn create_enrollment_token(
     if ident.org_id != auth.org_id {
         return Err(AppError::NotFound("identity not found".into()));
     }
-    if ident.kind != "agent" {
+    if ident.kind != "agent" && ident.kind != "sub_agent" {
         return Err(AppError::BadRequest(
-            "enrollment tokens can only be created for agent identities".into(),
+            "enrollment tokens can only be created for agent or sub_agent identities".into(),
         ));
     }
 
@@ -435,9 +435,18 @@ async fn resolve_enrollment(
         "approve" => {
             let agent_name = req.agent_name.as_deref().unwrap_or(&row.suggested_name);
 
-            // Create agent identity in the user's org
-            let new_identity =
-                identity::create(&state.db, session.org, agent_name, "agent", None).await?;
+            // Create agent identity under the approving user
+            let new_identity = identity::create_with_parent(
+                &state.db,
+                session.org,
+                agent_name,
+                "agent",
+                None,
+                session.sub, // parent = approving user
+                1,           // depth = 1 (user is 0)
+                session.sub, // owner = approving user
+            )
+            .await?;
 
             // Generate API key for the new identity
             let (raw_key, key_hash, key_prefix) = generate_prefixed_token("osk_")?;

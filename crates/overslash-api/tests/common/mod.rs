@@ -287,10 +287,23 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let org_api_key = org_key["key"].as_str().unwrap().to_string();
 
+    // Create a user identity first (agents require a parent)
+    let user_ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id: Uuid = user_ident["id"].as_str().unwrap().parse().unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
