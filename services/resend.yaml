@@ -18,7 +18,7 @@ actions:
   send_email:
     method: POST
     path: /emails
-    description: "Send email to {to}[ with subject '{subject}']"
+    description: "Send email '{subject}' to {to}"
     risk: write
     params:
       from:
