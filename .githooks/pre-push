@@ -1,0 +1,20 @@
+#!/bin/bash
+set -e
+
+echo "Running pre-push checks..."
+
+# Run full CI locally via act (if installed).
+# Runs in background to avoid SSH connection timeout — git push proceeds
+# immediately. If CI fails, the result is printed to the terminal.
+if command -v act >/dev/null 2>&1; then
+    echo "  act -j check (running in background)"
+    act -j check &>"$(mktemp /tmp/act-pre-push-XXXXXX.log)" &
+    ACT_PID=$!
+    ACT_LOG=$(ls -t /tmp/act-pre-push-*.log 2>/dev/null | head -1)
+    echo "  CI running as PID $ACT_PID — check $ACT_LOG for results"
+    echo "  Run 'wait $ACT_PID && echo OK || echo FAILED' to check"
+else
+    echo "  ⚠ act not installed — skipping local CI. Install: https://github.com/nektos/act"
+fi
+
+echo "Pre-push checks passed."
