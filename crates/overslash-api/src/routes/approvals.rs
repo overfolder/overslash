@@ -91,9 +91,11 @@ async fn resolve_approval(
     // Validate remember_keys and ttl before mutating DB state (only for allow_remember)
     if remember {
         if let Some(t) = req.ttl.as_deref() {
-            overslash_core::types::duration::parse_ttl(t)
+            let dur = overslash_core::types::duration::parse_ttl(t)
                 .ok_or_else(|| AppError::BadRequest(format!("invalid ttl: {t}")))?;
-            // Full parsing happens below after resolve; this is just validation
+            if dur.as_secs() > 365 * 86400 {
+                return Err(AppError::BadRequest("ttl must not exceed 365 days".into()));
+            }
         }
         if let Some(ref keys) = req.remember_keys {
             if keys.is_empty() {
@@ -125,7 +127,7 @@ async fn resolve_approval(
         let expires_at = req.ttl.as_deref().and_then(|t| {
             let dur = overslash_core::types::duration::parse_ttl(t)?;
             let secs: i64 = dur.as_secs().try_into().ok()?;
-            Some(time::OffsetDateTime::now_utc() + time::Duration::new(secs, 0))
+            time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0))
         });
         for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
