@@ -223,10 +223,10 @@ Permission Rules for agent:henry
 
 Key                                                Source          Expires
 ───────────────────────────────────────────────────────────────────────────
-company-github:create_pull_request:overfolder/*    remembered      2026-04-08
-company-github:GET:*                               remembered      never
-company-slack:send_message:#engineering            remembered      2026-04-15
-company-stripe:defined:*                           inherited       —
+github:create_pull_request:overfolder/*    remembered      2026-04-08
+github:GET:*                               remembered      never
+slack:send_message:#engineering            remembered      2026-04-15
+stripe:defined:*                           inherited       —
 ```
 
 - **Key** — the permission key string (`{service}:{action}:{arg}`)
@@ -247,7 +247,7 @@ Remembered Approvals for agent:henry
 
 Permission Keys                                          Approved By    Approved At         Expires
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-company-github:create_pull_request:overfolder/*          alice          2026-04-01 10:30    2026-04-08
+github:create_pull_request:overfolder/*          alice          2026-04-01 10:30    2026-04-08
 http:POST:api.example.com                                alice          2026-03-28 14:00    never
   + secret:api_key:api.example.com
 
@@ -353,10 +353,10 @@ Remembered Approvals
 
 Identity                    Permission Keys                                          Approved At         Expires        Actions
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-agent:henry                 company-github:create_pull_request:overfolder/*          2026-04-01 10:30    2026-04-08     [Revoke]
+agent:henry                 github:create_pull_request:overfolder/*          2026-04-01 10:30    2026-04-08     [Revoke]
 agent:henry                 http:POST:api.example.com                                2026-03-28 14:00    never          [Revoke]
                               + secret:api_key:api.example.com
-agent:builder/sa:coder      company-github:GET:*                                     2026-03-25 09:00    2026-04-25     [Revoke]
+agent:builder/sa:coder      github:GET:*                                     2026-03-25 09:00    2026-04-25     [Revoke]
 ```
 
 - **Filtering**: by identity (pick from agent tree), by service/host, by expiry status (active, expired, never-expiring)
@@ -407,10 +407,10 @@ Group: Engineering
 
 Service Grants
 ──────────────────────────────────────────────────────────────────
-company-github:ANY:*        Full GitHub API access          Auto-approve reads: ✓
-company-slack:defined:*     Slack — predefined actions only  Auto-approve reads: ✓
-company-stripe:defined:*    Stripe — predefined actions only Auto-approve reads: ✗
-work-calendar:ANY:*         Google Calendar API access       Auto-approve reads: ✓
+github:ANY:*             Full GitHub API access            Auto-approve reads: ✓
+slack:defined:*          Slack — predefined actions only    Auto-approve reads: ✓
+stripe:defined:*         Stripe — predefined actions only   Auto-approve reads: ✗
+google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
 ```
 
 Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known services and choose the access tier (`defined`, `ANY`, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
@@ -432,12 +432,14 @@ My Services
 
 Name                 Template            Owner     Status          Actions
 ──────────────────────────────────────────────────────────────────────────────
-company-github       GitHub              Org       ● Connected     [Manage]
-work-calendar        Google Calendar     Org       ● Connected     [Manage]
-personal-calendar    Google Calendar     You       ● Connected     [Manage]
-company-stripe       Stripe              Org       ○ Needs setup   [Connect]
+github               GitHub              Org       ● Connected     [Manage]
+google-calendar      Google Calendar     Org       ● Connected     [Manage]
+google-calendar      Google Calendar     You       ● Connected     [Manage]  ← shadows org
+stripe               Stripe              Org       ○ Needs setup   [Connect]
 my-scraper           My Scraper API      You       ● Connected     [Edit] [Manage]
 ```
+
+When a user service shadows an org service with the same name, it's indicated in the list. The user's instance takes precedence for execution and permission key resolution. To use the org instance explicitly, agents can reference `org/google-calendar`.
 
 - **Name** — the service instance name (used in permission keys and by agents)
 - **Template** — which template this instance is based on
@@ -475,7 +477,7 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 ### Create service flow
 
 1. **Pick a template** — dropdown or pre-selected from catalog
-2. **Name the instance** — e.g., "work-calendar", "personal-calendar". This name is used in permission keys and by agents.
+2. **Name the instance** — defaults to the template key (e.g., `google-calendar`). The user can rename to create multiple instances (e.g., `google-calendar`, `personal-calendar`). This name is used in permission keys and by agents.
 3. **Connect credentials** — depends on the template's auth config:
    - *OAuth*: shows requested scopes → Connect → OAuth redirect → callback → done
    - *API key*: form to paste the key → stored as a versioned secret → done

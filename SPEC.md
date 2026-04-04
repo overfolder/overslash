@@ -200,9 +200,9 @@ Permissions are enforced in two layers:
 Groups define which services are available and at what access level. They constrain users, and agents inherit their owner-user's group ceiling. A request that exceeds the group ceiling is denied outright — no approval can override it.
 
 Group examples:
-- "Engineering": `company-github:ANY:*`, `company-slack:defined:*`, `company-stripe:defined:*`
+- "Engineering": `github:ANY:*`, `slack:defined:*`, `stripe:defined:*`
 - "Admin": adds `http:ANY:*`, `secret:*:*`
-- "Read-only": `company-github:GET:*`, `company-slack:GET:*`
+- "Read-only": `github:GET:*`, `slack:GET:*`
 
 Three tiers of trust emerge naturally:
 1. **`{service}:defined:*`** — locked to predefined registry actions. Safest.
@@ -382,9 +382,9 @@ When a user creates a service from a template that uses OAuth, the connect flow 
 
 All action execution goes through a single endpoint. The caller specifies a service instance and action — the level of abstraction is determined by what they choose:
 
-**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `company-github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `company-github:create_pull_request:{resource}`.
+**Service + defined action** — the caller names a service instance and a template-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the template definition. Auth auto-resolved from the service's credentials. Derives key: `github:create_pull_request:{resource}`.
 
-**Service + HTTP verb** — the caller names a service instance and an HTTP method + path (e.g., `company-github` + `POST /repos/X/pulls`). Auth is auto-injected from the service's credentials. For agents that know the API but want Overslash to handle auth. Derives key: `company-github:POST:/repos/X/pulls`.
+**Service + HTTP verb** — the caller names a service instance and an HTTP method + path (e.g., `github` + `POST /repos/X/pulls`). Auth is auto-injected from the service's credentials. For agents that know the API but want Overslash to handle auth. Derives key: `github:POST:/repos/X/pulls`.
 
 **`http` pseudo-service** — the caller uses the `http` pseudo-service with a full URL, method, headers, body, and secret injection metadata. This is the lowest-level path — agents construct the full request. Requires `http` in the user's group. Derives keys: `http:POST:api.github.com` + `secret:gh_token:api.github.com`.
 
@@ -499,22 +499,32 @@ A service is created by instantiating a template with a name and credentials:
 ```
 Template: Google Calendar
   ↓
-Service: "work-calendar"     (OAuth token for alice@acme.com)
-Service: "personal-calendar" (OAuth token for alice@gmail.com)
-Service: "client-calendar"   (OAuth token for alice@bigclient.org)
+Service: "google-calendar"          (OAuth token for alice@acme.com — org default)
+Service: "google-calendar"          (OAuth token for alice@gmail.com — user, shadows org)
+Service: "client-calendar"          (OAuth token for alice@bigclient.org — user, different name)
 ```
 
 **Service ownership:**
-- **Org services** — created by org-admins, assigned to groups. All users in those groups can use them. Example: `company-github` (org's GitHub OAuth app, per-user tokens).
-- **User services** — created by users, private to the creator and their agents. Example: `my-side-project-api`.
+- **Org services** — created by org-admins, assigned to groups. All users in those groups can use them. Example: `github` (org's GitHub OAuth app, per-user tokens).
+- **User services** — created by users, private to the creator and their agents. Example: `my-scraper`.
 
-**Permission keys reference services (instances)**, not templates:
-- `work-calendar:create_event:*`
-- `personal-calendar:list_events:*`
-- `company-github:create_pull_request:overfolder/*`
+**Naming and resolution:**
 
-**Groups grant access to services (instances)**, not templates:
-- Engineering group gets: `company-github:ANY:*`, `company-slack:defined:*`
+Service names default to the template key in lowercase (e.g., template "GitHub" → service `github`). Names are scoped: org services and user services can share the same name.
+
+Resolution uses **user-shadows-org**: when a user has a service with the same name as an org service, the user's instance takes precedence. To explicitly reference the org instance, use qualified syntax: `org/github`.
+
+- `github` → user's `github` if exists, else org's `github`
+- `org/github` → explicitly the org's instance
+
+This lets users override org defaults with their own credentials (e.g., personal GitHub account instead of org's) simply by creating a service with the same name.
+
+**Permission keys** use the unqualified name and follow the same resolution:
+- `github:create_pull_request:overfolder/*` — resolves through the user's `github` if it shadows, else the org's
+- `google-calendar:list_events:*`
+
+**Groups grant access to org services (instances)**:
+- Engineering group gets: `github:ANY:*`, `slack:defined:*`
 - User services bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
 
 **Service lifecycle:** **Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing remembered approvals are preserved.
@@ -522,7 +532,7 @@ Service: "client-calendar"   (OAuth token for alice@bigclient.org)
 ### Creating a Service
 
 1. Pick a template (from global/org/user templates)
-2. Name the service instance (e.g., "work-calendar")
+2. Name the service instance — defaults to the template key (e.g., `google-calendar`). Rename to create additional instances (e.g., `personal-calendar`).
 3. Connect credentials — OAuth flow, API key input, or shared credential (for org services)
 4. Optionally assign to groups (org-admin only)
 
