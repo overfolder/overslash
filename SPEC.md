@@ -600,8 +600,13 @@ My Services (instances + credentials), My Secrets (names + versions), Approvals 
 
 ### Standalone Pages
 
-- **Approval resolution**: `https://acme.overslash.dev/approvals/apr_abc123` — requires login. Shows approval details and specificity picker for authorized users. Platforms can link here as a zero-effort integration path. See §5 Trust Model.
-- **Secret request**: `https://overslash.dev/secrets/provide/req_...?token=jwt` — secure input field for secret provisioning (no login required, signed URL). This is safe because providing a secret doesn't grant the agent any new authority — the agent still needs approval to use it.
+Overslash provides built-in standalone pages for common user interactions. These serve two purposes: (1) direct use by unplatformed agents (e.g., agents connecting to Overslash without a platform intermediary), and (2) a zero-effort integration path for platforms that don't want to build their own UI for these flows.
+
+Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, enrollment consent payloads. The built-in pages are a convenience, not a requirement.
+
+- **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
+- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority.
+- **Enrollment consent** (`/enroll/consent/...`) — requires login. Agent-initiated enrollment approval with name editing and parent placement.
 
 ---
 
