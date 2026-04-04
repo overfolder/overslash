@@ -383,10 +383,42 @@ async fn resolve_request(
 
     // Mode C: service + action
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
-        let svc = state
-            .registry
-            .get(service_key)
-            .ok_or_else(|| AppError::NotFound(format!("service '{service_key}' not found")))?;
+        // Try to resolve through a service instance first (user-shadows-org)
+        let instance = overslash_db::repos::service_instance::resolve_by_name(
+            &state.db,
+            auth.org_id,
+            auth.identity_id,
+            service_key,
+        )
+        .await?;
+
+        // Resolve the template: if instance found use its template_key, else use service_key directly
+        let svc =
+            if let Some(ref inst) = instance {
+                // Instance exists — resolve its template; propagate errors (don't fall back
+                // to global registry, which could match on the wrong key)
+                super::templates::resolve_template_definition(
+                    state,
+                    auth.org_id,
+                    auth.identity_id,
+                    &inst.template_key,
+                )
+                .await?
+            } else {
+                // No instance — try unified resolution, then fall back to global registry
+                super::templates::resolve_template_definition(
+                    state,
+                    auth.org_id,
+                    auth.identity_id,
+                    service_key,
+                )
+                .await
+                .or_else(|_| {
+                    state.registry.get(service_key).cloned().ok_or_else(|| {
+                        AppError::NotFound(format!("service '{service_key}' not found"))
+                    })
+                })?
+            };
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
@@ -453,16 +485,30 @@ async fn resolve_request(
             headers.insert("Content-Type".to_string(), "application/json".to_string());
         }
 
-        // Auto-resolve auth: try OAuth connection first, then API key secret
-        let (secrets, oauth_injected) = resolve_service_auth(
-            state,
-            auth.org_id,
-            identity_id,
-            svc,
-            &req.secrets,
-            &mut headers,
-        )
-        .await;
+        // Auth resolution: if instance has a bound connection/secret, use that;
+        // otherwise fall back to auto-resolve from the template's auth config
+        let (secrets, oauth_injected) = if let Some(ref inst) = instance {
+            resolve_instance_auth(
+                state,
+                auth.org_id,
+                identity_id,
+                inst,
+                &svc,
+                &req.secrets,
+                &mut headers,
+            )
+            .await
+        } else {
+            resolve_service_auth(
+                state,
+                auth.org_id,
+                identity_id,
+                &svc,
+                &req.secrets,
+                &mut headers,
+            )
+            .await
+        };
 
         let interpolated =
             overslash_core::description::interpolate_description(&action.description, &req.params);
@@ -477,7 +523,7 @@ async fn resolve_request(
                 secrets,
             },
             Some(description),
-            oauth_injected, // true if OAuth token was injected into headers
+            oauth_injected,
         ));
     }
 
@@ -597,6 +643,138 @@ async fn resolve_service_auth(
     }
 
     (Vec::new(), false)
+}
+
+/// Resolve auth for a service instance. If the instance has a bound connection_id or secret_name,
+/// use that directly. Otherwise fall back to auto-resolve from the template's auth config.
+async fn resolve_instance_auth(
+    state: &AppState,
+    org_id: Uuid,
+    identity_id: Uuid,
+    instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
+    svc: &overslash_core::types::ServiceDefinition,
+    explicit_secrets: &[SecretRef],
+    headers: &mut HashMap<String, String>,
+) -> (Vec<SecretRef>, bool) {
+    if !explicit_secrets.is_empty() {
+        return (explicit_secrets.to_vec(), false);
+    }
+
+    // If instance has a bound connection, use it directly
+    if let Some(conn_id) = instance.connection_id {
+        if let Ok(Some(conn)) = overslash_db::repos::connection::get_by_id(&state.db, conn_id).await
+        {
+            let enc_key = match crypto::parse_hex_key(&state.config.secrets_encryption_key) {
+                Ok(k) => k,
+                Err(_) => {
+                    return resolve_service_auth(
+                        state,
+                        org_id,
+                        identity_id,
+                        svc,
+                        explicit_secrets,
+                        headers,
+                    )
+                    .await;
+                }
+            };
+            let creds = match crate::services::client_credentials::resolve(
+                &state.db,
+                &enc_key,
+                org_id,
+                Some(identity_id),
+                &conn.provider_key,
+                Some(&conn),
+                None,
+            )
+            .await
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    return resolve_service_auth(
+                        state,
+                        org_id,
+                        identity_id,
+                        svc,
+                        explicit_secrets,
+                        headers,
+                    )
+                    .await;
+                }
+            };
+
+            if let Ok(access_token) = crate::services::oauth::resolve_access_token(
+                &state.db,
+                &state.http_client,
+                &enc_key,
+                &conn,
+                &creds.client_id,
+                &creds.client_secret,
+            )
+            .await
+            {
+                // Find the matching token_injection from the template's auth config
+                for service_auth in &svc.auth {
+                    if let overslash_core::types::ServiceAuth::OAuth {
+                        provider,
+                        token_injection,
+                    } = service_auth
+                    {
+                        if *provider == conn.provider_key {
+                            let value = match &token_injection.prefix {
+                                Some(p) => format!("{p}{access_token}"),
+                                None => access_token,
+                            };
+                            if let Some(header_name) = &token_injection.header_name {
+                                headers.insert(header_name.clone(), value);
+                            }
+                            return (vec![], true);
+                        }
+                    }
+                }
+                // No matching auth config found, inject as Bearer by default
+                headers.insert("Authorization".into(), format!("Bearer {access_token}"));
+                return (vec![], true);
+            }
+        }
+    }
+
+    // If instance has a bound secret_name, use it
+    if let Some(ref secret_name) = instance.secret_name {
+        // Find the matching API key auth config from the template for injection settings
+        for service_auth in &svc.auth {
+            if let overslash_core::types::ServiceAuth::ApiKey { injection, .. } = service_auth {
+                return (
+                    vec![SecretRef {
+                        name: secret_name.clone(),
+                        inject_as: if injection.inject_as == "query" {
+                            InjectAs::Query
+                        } else {
+                            InjectAs::Header
+                        },
+                        header_name: injection.header_name.clone(),
+                        query_param: injection.query_param.clone(),
+                        prefix: injection.prefix.clone(),
+                    }],
+                    false,
+                );
+            }
+        }
+        // No API key auth config in template — inject as header with no prefix
+        return (
+            vec![SecretRef {
+                name: secret_name.clone(),
+                inject_as: InjectAs::Header,
+                header_name: Some("Authorization".into()),
+                query_param: None,
+                prefix: Some("Bearer ".into()),
+            }],
+            false,
+        );
+    }
+
+    // No bound credentials on instance — fall back to auto-resolve
+    resolve_service_auth(state, org_id, identity_id, svc, explicit_secrets, headers).await
 }
 
 fn generate_token() -> String {

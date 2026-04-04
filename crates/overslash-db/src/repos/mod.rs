@@ -10,4 +10,6 @@ pub mod org;
 pub mod pending_enrollment;
 pub mod permission_rule;
 pub mod secret;
+pub mod service_instance;
+pub mod service_template;
 pub mod webhook;

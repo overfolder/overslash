@@ -1,131 +1,329 @@
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    routing::get,
+    extract::{Path, State},
+    routing::{get, patch, put},
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-use crate::{AppState, error::Result, extractors::AuthContext};
+use overslash_db::repos::service_instance::{self, CreateServiceInstance, UpdateServiceInstance};
+
+use crate::{
+    AppState,
+    error::{AppError, Result},
+    extractors::AuthContext,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/services", get(list_services))
-        .route("/v1/services/search", get(search_services))
-        .route("/v1/services/{key}", get(get_service))
-        .route("/v1/services/{key}/actions", get(list_actions))
+        .route("/v1/services", get(list_services).post(create_service))
+        .route(
+            "/v1/services/{name}",
+            get(get_service).delete(delete_service),
+        )
+        .route("/v1/services/{name}/actions", get(list_service_actions))
+        .route("/v1/services/{id}/manage", put(update_service))
+        .route("/v1/services/{id}/status", patch(update_service_status))
+}
+
+// -- Response types --
+
+#[derive(Serialize)]
+struct ServiceInstanceSummary {
+    id: Uuid,
+    name: String,
+    template_source: String,
+    template_key: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_identity_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_name: Option<String>,
 }
 
 #[derive(Serialize)]
-struct ServiceSummary {
-    key: String,
-    display_name: String,
-    hosts: Vec<String>,
-    action_count: usize,
+struct ServiceInstanceDetail {
+    id: Uuid,
+    org_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_identity_id: Option<Uuid>,
+    name: String,
+    template_source: String,
+    template_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_name: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
 }
 
-#[derive(Serialize)]
-struct ServiceDetail {
-    key: String,
-    display_name: String,
-    hosts: Vec<String>,
-    auth: Vec<serde_json::Value>,
-    actions: serde_json::Value,
+// -- Request types --
+
+#[derive(Deserialize)]
+struct CreateServiceRequest {
+    template_key: String,
+    /// Defaults to template_key if not provided.
+    name: Option<String>,
+    connection_id: Option<Uuid>,
+    secret_name: Option<String>,
+    /// Defaults to "active".
+    #[serde(default = "default_status")]
+    status: String,
+    /// If true, create as user-level (requires identity-bound key). Default: true when key is identity-bound.
+    user_level: Option<bool>,
 }
 
-#[derive(Serialize)]
-struct ActionSummary {
-    key: String,
-    method: String,
-    path: String,
-    description: String,
-    risk: String,
+fn default_status() -> String {
+    "active".into()
 }
 
 #[derive(Deserialize)]
-struct SearchQuery {
-    q: String,
+struct UpdateServiceRequest {
+    name: Option<String>,
+    connection_id: Option<Option<Uuid>>,
+    secret_name: Option<Option<String>>,
 }
 
+#[derive(Deserialize)]
+struct UpdateStatusRequest {
+    status: String,
+}
+
+// -- Handlers --
+
+/// List service instances available to the caller (user's + org's).
 async fn list_services(
     State(state): State<AppState>,
-    _auth: AuthContext,
-) -> Result<Json<Vec<ServiceSummary>>> {
-    let services: Vec<ServiceSummary> = state
-        .registry
-        .all()
-        .into_iter()
-        .map(|s| ServiceSummary {
-            key: s.key.clone(),
-            display_name: s.display_name.clone(),
-            hosts: s.hosts.clone(),
-            action_count: s.actions.len(),
-        })
-        .collect();
+    auth: AuthContext,
+) -> Result<Json<Vec<ServiceInstanceSummary>>> {
+    let rows = service_instance::list_available(&state.db, auth.org_id, auth.identity_id).await?;
+
+    let services = rows.into_iter().map(row_to_summary).collect();
     Ok(Json(services))
 }
 
-async fn search_services(
-    State(state): State<AppState>,
-    _auth: AuthContext,
-    Query(params): Query<SearchQuery>,
-) -> Result<Json<Vec<ServiceSummary>>> {
-    let results: Vec<ServiceSummary> = state
-        .registry
-        .search(&params.q)
-        .into_iter()
-        .map(|s| ServiceSummary {
-            key: s.key.clone(),
-            display_name: s.display_name.clone(),
-            hosts: s.hosts.clone(),
-            action_count: s.actions.len(),
-        })
-        .collect();
-    Ok(Json(results))
-}
-
+/// Get a service instance by name using user-shadows-org resolution.
 async fn get_service(
     State(state): State<AppState>,
-    _auth: AuthContext,
-    Path(key): Path<String>,
-) -> Result<Json<ServiceDetail>> {
-    let svc = state
-        .registry
-        .get(&key)
-        .ok_or_else(|| crate::error::AppError::NotFound(format!("service '{key}' not found")))?;
-
-    Ok(Json(ServiceDetail {
-        key: svc.key.clone(),
-        display_name: svc.display_name.clone(),
-        hosts: svc.hosts.clone(),
-        auth: serde_json::to_value(&svc.auth)
-            .unwrap_or_default()
-            .as_array()
-            .cloned()
-            .unwrap_or_default(),
-        actions: serde_json::to_value(&svc.actions).unwrap_or_default(),
-    }))
+    auth: AuthContext,
+    Path(name): Path<String>,
+) -> Result<Json<ServiceInstanceDetail>> {
+    let row = service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    Ok(Json(row_to_detail(row)))
 }
 
-async fn list_actions(
+/// Create a new service instance from a template.
+async fn create_service(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(req): Json<CreateServiceRequest>,
+) -> Result<Json<ServiceInstanceDetail>> {
+    let name = req.name.as_deref().unwrap_or(&req.template_key);
+
+    // Determine if user-level or org-level
+    let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
+    let owner_identity_id = if user_level {
+        Some(auth.identity_id.ok_or_else(|| {
+            AppError::BadRequest("user-level services require an identity-bound API key".into())
+        })?)
+    } else {
+        None
+    };
+
+    // Resolve the template to determine its source tier
+    let (template_source, template_id) =
+        resolve_template_source(&state, auth.org_id, auth.identity_id, &req.template_key).await?;
+
+    // Validate status
+    if !["draft", "active", "archived"].contains(&req.status.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "invalid status '{}'; must be draft, active, or archived",
+            req.status
+        )));
+    }
+
+    let input = CreateServiceInstance {
+        org_id: auth.org_id,
+        owner_identity_id,
+        name,
+        template_source: &template_source,
+        template_key: &req.template_key,
+        template_id,
+        connection_id: req.connection_id,
+        secret_name: req.secret_name.as_deref(),
+        status: &req.status,
+    };
+
+    let row = service_instance::create(&state.db, &input)
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.constraint().is_some() {
+                    return AppError::Conflict(format!("service '{name}' already exists"));
+                }
+            }
+            AppError::Database(e)
+        })?;
+
+    Ok(Json(row_to_detail(row)))
+}
+
+/// Update a service instance by id.
+async fn update_service(
     State(state): State<AppState>,
     _auth: AuthContext,
-    Path(key): Path<String>,
-) -> Result<Json<Vec<ActionSummary>>> {
-    let svc = state
-        .registry
-        .get(&key)
-        .ok_or_else(|| crate::error::AppError::NotFound(format!("service '{key}' not found")))?;
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateServiceRequest>,
+) -> Result<Json<ServiceInstanceDetail>> {
+    let input = UpdateServiceInstance {
+        name: req.name.as_deref(),
+        connection_id: req.connection_id,
+        secret_name: req.secret_name.as_ref().map(|o| o.as_deref()),
+    };
 
-    let actions: Vec<ActionSummary> = svc
-        .actions
-        .iter()
-        .map(|(k, a)| ActionSummary {
-            key: k.clone(),
-            method: a.method.clone(),
-            path: a.path.clone(),
-            description: a.description.clone(),
-            risk: a.risk.clone(),
-        })
-        .collect();
-    Ok(Json(actions))
+    let row = service_instance::update(&state.db, id, &input)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    Ok(Json(row_to_detail(row)))
+}
+
+/// Update service instance lifecycle status.
+async fn update_service_status(
+    State(state): State<AppState>,
+    _auth: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateStatusRequest>,
+) -> Result<Json<ServiceInstanceDetail>> {
+    if !["draft", "active", "archived"].contains(&req.status.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "invalid status '{}'; must be draft, active, or archived",
+            req.status
+        )));
+    }
+
+    let row = service_instance::update_status(&state.db, id, &req.status)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    Ok(Json(row_to_detail(row)))
+}
+
+/// Delete a service instance.
+async fn delete_service(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    // Resolve by name to get the id, then delete.
+    // Parse as UUID first (for /v1/services/{id} style), otherwise resolve by name.
+    let id = if let Ok(uuid) = name.parse::<Uuid>() {
+        uuid
+    } else {
+        let row =
+            service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+        row.id
+    };
+
+    let deleted = service_instance::delete(&state.db, id).await?;
+    if !deleted {
+        return Err(AppError::NotFound("service instance not found".into()));
+    }
+    Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+/// List actions for a service instance (delegates to the underlying template).
+async fn list_service_actions(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<super::templates::ActionSummary>>> {
+    // Resolve the instance to get the template key
+    let instance =
+        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+
+    super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
+        .await
+        .map(Json)
+}
+
+// -- Helpers --
+
+fn row_to_summary(row: service_instance::ServiceInstanceRow) -> ServiceInstanceSummary {
+    ServiceInstanceSummary {
+        id: row.id,
+        name: row.name,
+        template_source: row.template_source,
+        template_key: row.template_key,
+        status: row.status,
+        owner_identity_id: row.owner_identity_id,
+        connection_id: row.connection_id,
+        secret_name: row.secret_name,
+    }
+}
+
+fn row_to_detail(row: service_instance::ServiceInstanceRow) -> ServiceInstanceDetail {
+    ServiceInstanceDetail {
+        id: row.id,
+        org_id: row.org_id,
+        owner_identity_id: row.owner_identity_id,
+        name: row.name,
+        template_source: row.template_source,
+        template_key: row.template_key,
+        template_id: row.template_id,
+        connection_id: row.connection_id,
+        secret_name: row.secret_name,
+        status: row.status,
+        created_at: row
+            .created_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        updated_at: row
+            .updated_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+    }
+}
+
+/// Determine the template source tier and optional DB template id for a given key.
+async fn resolve_template_source(
+    state: &AppState,
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+    key: &str,
+) -> Result<(String, Option<Uuid>)> {
+    use overslash_db::repos::service_template;
+
+    // Try user tier
+    if let Some(identity_id) = identity_id {
+        if let Some(t) =
+            service_template::get_by_key(&state.db, org_id, Some(identity_id), key).await?
+        {
+            return Ok(("user".into(), Some(t.id)));
+        }
+    }
+
+    // Try org tier
+    if let Some(t) = service_template::get_by_key(&state.db, org_id, None, key).await? {
+        return Ok(("org".into(), Some(t.id)));
+    }
+
+    // Try global
+    if state.registry.get(key).is_some() {
+        return Ok(("global".into(), None));
+    }
+
+    Err(AppError::NotFound(format!(
+        "template '{key}' not found in any tier"
+    )))
 }

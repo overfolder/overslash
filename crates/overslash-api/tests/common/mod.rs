@@ -49,6 +49,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
@@ -102,6 +103,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
@@ -285,10 +287,23 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let org_api_key = org_key["key"].as_str().unwrap().to_string();
 
+    // Create a user identity first (agents require a parent)
+    let user_ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id: Uuid = user_ident["id"].as_str().unwrap().parse().unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -375,6 +390,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
@@ -425,6 +441,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())

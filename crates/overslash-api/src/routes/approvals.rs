@@ -69,7 +69,9 @@ async fn get_approval(
 
 #[derive(Deserialize)]
 struct ResolveRequest {
-    decision: String, // "allow", "deny", "allow_remember"
+    resolution: String, // "allow", "deny", "allow_remember"
+    remember_keys: Option<Vec<String>>,
+    ttl: Option<String>,
 }
 
 async fn resolve_approval(
@@ -79,27 +81,62 @@ async fn resolve_approval(
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
-    let (status, remember) = match req.decision.as_str() {
+    let (status, remember) = match req.resolution.as_str() {
         "allow" => ("allowed", false),
         "deny" => ("denied", false),
         "allow_remember" => ("allowed", true),
-        other => return Err(AppError::BadRequest(format!("invalid decision: {other}"))),
+        other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
+
+    let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
+    if remember {
+        if let Some(t) = req.ttl.as_deref() {
+            let dur = overslash_core::types::duration::parse_ttl(t)
+                .ok_or_else(|| AppError::BadRequest(format!("invalid ttl: {t}")))?;
+            if dur.as_secs() > 365 * 86400 {
+                return Err(AppError::BadRequest("ttl must not exceed 365 days".into()));
+            }
+            let secs: i64 = dur
+                .as_secs()
+                .try_into()
+                .map_err(|_| AppError::BadRequest("ttl value too large".into()))?;
+            parsed_expires_at =
+                time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0));
+        }
+        if let Some(ref keys) = req.remember_keys {
+            if keys.is_empty() {
+                return Err(AppError::BadRequest(
+                    "remember_keys must not be empty".into(),
+                ));
+            }
+            let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+            for key in keys {
+                if !approval.permission_keys.iter().any(|pk| pk == key) {
+                    return Err(AppError::BadRequest(format!(
+                        "remember_key '{key}' is not in the approval's permission_keys"
+                    )));
+                }
+            }
+        }
+    }
 
     let row = overslash_db::repos::approval::resolve(&state.db, id, status, "user", remember)
         .await?
         .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
 
-    // If allow_remember, create permission rules from the approval's permission keys
     if remember {
         let identity_id = row.identity_id;
-        for key in &row.permission_keys {
+        let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
+        for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
                 &state.db,
                 auth.org_id,
                 identity_id,
                 key,
                 "allow",
+                parsed_expires_at,
             )
             .await;
         }
@@ -114,7 +151,7 @@ async fn resolve_approval(
             resource_type: Some("approval"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "decision": &req.decision,
+                "resolution": &req.resolution,
                 "status": &row.status,
                 "action_summary": &row.action_summary,
             }),

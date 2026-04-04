@@ -48,6 +48,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .with_state(state);
@@ -194,11 +195,24 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid) {
         .unwrap();
     let raw_key = key["key"].as_str().unwrap().to_string();
 
-    // Create identity
+    // Create user identity (agents require a parent)
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {raw_key}"))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
+    // Create agent identity under user
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {raw_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -332,7 +346,7 @@ async fn test_approval_flow(pool: PgPool) {
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();
@@ -377,7 +391,7 @@ async fn test_allow_remember_creates_rule(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow_remember"}))
+        .json(&json!({"resolution": "allow_remember"}))
         .send()
         .await
         .unwrap();
@@ -396,6 +410,96 @@ async fn test_allow_remember_creates_rule(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_resolve_rejects_invalid_remember_keys(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve with remember_keys not in the approval's permission_keys → 400
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "resolution": "allow_remember",
+            "remember_keys": ["admin:*:*"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_resolve_rejects_invalid_ttl(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve with invalid ttl → 400
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "resolution": "allow_remember",
+            "ttl": "not_a_duration"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }
 
 #[sqlx::test(migrator = "overslash_db::MIGRATOR")]
@@ -477,7 +581,7 @@ async fn test_deny_keeps_gating(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "deny"}))
+        .json(&json!({"resolution": "deny"}))
         .send()
         .await
         .unwrap();
@@ -642,6 +746,7 @@ async fn test_service_registry_api(pool: PgPool) {
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -673,9 +778,9 @@ async fn test_service_registry_api(pool: PgPool) {
         .unwrap();
     let api_key = key_resp["key"].as_str().unwrap();
 
-    // List services — should have at least github, stripe, slack
+    // List templates — should have at least github, stripe, slack (global tier)
     let resp: Vec<Value> = client
-        .get(format!("{base}/v1/services"))
+        .get(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -684,12 +789,12 @@ async fn test_service_registry_api(pool: PgPool) {
         .await
         .unwrap();
     let keys: Vec<&str> = resp.iter().filter_map(|s| s["key"].as_str()).collect();
-    assert!(keys.contains(&"github"), "expected github in services");
-    assert!(keys.contains(&"stripe"), "expected stripe in services");
+    assert!(keys.contains(&"github"), "expected github in templates");
+    assert!(keys.contains(&"stripe"), "expected stripe in templates");
 
     // Search
     let resp: Vec<Value> = client
-        .get(format!("{base}/v1/services/search?q=pull+request"))
+        .get(format!("{base}/v1/templates/search?q=pull+request"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -702,9 +807,9 @@ async fn test_service_registry_api(pool: PgPool) {
         "search for 'pull request' should match github"
     );
 
-    // Get service detail
+    // Get template detail
     let resp: Value = client
-        .get(format!("{base}/v1/services/github"))
+        .get(format!("{base}/v1/templates/github"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -715,9 +820,9 @@ async fn test_service_registry_api(pool: PgPool) {
     assert_eq!(resp["key"], "github");
     assert!(resp["actions"]["create_pull_request"].is_object());
 
-    // List actions
+    // List template actions
     let actions: Vec<Value> = client
-        .get(format!("{base}/v1/services/github/actions"))
+        .get(format!("{base}/v1/templates/github/actions"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -783,7 +888,7 @@ async fn test_webhook_dispatch_on_approval_resolve(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();
@@ -867,10 +972,22 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) 
         .unwrap();
     let api_key = key_resp["key"].as_str().unwrap().to_string();
 
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({"name": "oauth-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {api_key}"))
-        .json(&json!({"name": "oauth-agent", "kind": "agent"}))
+        .json(&json!({"name": "oauth-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -1075,10 +1192,22 @@ async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, Str
         .unwrap();
     let org_api_key = org_key["key"].as_str().unwrap().to_string();
 
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent"}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
         .send()
         .await
         .unwrap()
@@ -1493,6 +1622,7 @@ async fn start_api_with_registry(
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .with_state(state);

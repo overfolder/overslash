@@ -620,7 +620,7 @@ When a user service shadows an org service with the same name, it's indicated in
 - **Owner** — `Org` (assigned via group) or `You` (user-created)
 - **Status**: Connected, Needs setup (org service where user hasn't completed OAuth), Draft, Archived
 
-**Filtering**: by owner (Org / You), by status, by template category
+**Filtering**: by owner (Org / You), by status
 
 `[+ New Service]` button — opens the service creation flow (see below). Only visible if the org allows user-created services.
 
@@ -675,7 +675,7 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 `[+ New Template]` — two creation paths:
 
 **Manual creation:**
-1. **Template identity**: key, display name, base URL, description, category
+1. **Template identity**: key, display name, base URL, description
 2. **Auth config**: None / API Key (injection config) / OAuth (provider, scopes, token injection) / Both
 3. **Actions**: optional — add defined actions now or later (see Template Editor)
 4. Save as Draft or Active
@@ -697,7 +697,7 @@ The editing view for user-defined and org-defined templates. Two tabs:
 A form-based editor for the template definition:
 
 **Template section:**
-- Key, display name, description, base URL, category (dropdown)
+- Key, display name, description, base URL
 - Auth config: method picker + relevant fields (OAuth URLs/scopes, API key injection config)
 
 **Actions section:**
@@ -724,7 +724,6 @@ A code editor showing the full template definition as YAML:
 │  │ display_name: My Scraper API                             │ │
 │  │ description: "Personal web scraping service"             │ │
 │  │ hosts: [scraper.myserver.com]                            │ │
-│  │ category: custom                                         │ │
 │  │ auth:                                                    │ │
 │  │   - type: api_key                                        │ │
 │  │     injection: { as: header, header_name: X-API-Key }    │ │

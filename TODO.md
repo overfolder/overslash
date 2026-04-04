@@ -10,11 +10,11 @@ Things already implemented that diverge from SPEC.md. Resolve each by updating t
 
 - [ ] **Approval resolve field name**: spec says `resolution` + `remember_keys` + `ttl`; code uses `decision` only — no key selection or TTL at resolve time
 - [ ] **No suggested_tiers in approvals**: spec returns structured `derived_keys` + `suggested_tiers` (2-4 broadening levels); code only has flat `permission_keys: Vec<String>`
-- [ ] **risk vs mutating**: spec uses `mutating: bool` (inferred from method); code uses `risk: read|write|delete` — richer but divergent
+- [x] **risk vs mutating**: resolved — spec updated to use `risk: read|write|delete` enum matching code; `Risk` is now a proper Rust enum
 - [ ] **No scope_param**: spec defines `scope_param` on actions to fill `{arg}` in permission keys; code doesn't implement it — all service-action keys have `*` as arg
 - [ ] **No category on templates**: spec defines `category` for UI grouping; code and YAMLs don't have it
 - [ ] **Template/instance split**: spec separates templates (blueprints) from services (named instances with lifecycle); code has definitions + connections with no instance layer
-- [ ] **Identity depth**: spec has User/Agent/SubAgent with parent_id and depth; code has flat `kind IN ('user','agent')` — enrollment creates orphaned agents
+- [x] **Identity depth**: parent/child hierarchy with depth tracking, `sub_agent` kind, enrollment assigns parent
 
 ### Dashboard (dashboard/ vs UI_SPEC.md)
 
@@ -22,7 +22,7 @@ Existing dashboard code predates the unified permission model and template/servi
 
 **High priority:**
 - [ ] Types: remove Mode A/B/C execution variants, unify into single `ExecuteRequest` with service + action
-- [ ] Types: rename `risk` to `mutating: boolean` in `ServiceAction`
+- [x] Types: `risk` is now a `Risk` enum (`read|write|delete`) — aligned with spec
 - [ ] Types: add template/service instance split (`ServiceTemplate` + `ServiceInstance`)
 - [ ] Types: add permission key types (`{service}:{action}:{arg}`)
 - [ ] Types: remove `approval_url` from `ExecuteResponse` (no self-auth approval URLs)
@@ -94,9 +94,9 @@ Existing dashboard code predates the unified permission model and template/servi
 
 ## Phase 3: Identity Hierarchy + Permissions
 
-- [ ] Parent/child identity relationships (depth tracking, owner_id)
-- [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy)
-- [ ] Sub-identity CRUD for agents (`POST /v1/sub-identities`)
+- [x] Parent/child identity relationships (depth tracking, owner_id)
+- [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy) *(column added, resolution logic pending)*
+- [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
 - [ ] TTL-based sub-identity auto-cleanup
 - [ ] Permission chain walk (ancestor chain, gap detection)
 - [ ] Approval bubbling (gap level targeting, ancestor handling)

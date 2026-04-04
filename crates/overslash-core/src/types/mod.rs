@@ -1,15 +1,19 @@
 pub mod action;
 pub mod approval;
+pub mod duration;
 pub mod identity;
 pub mod org;
 pub mod permission;
 pub mod secret;
 pub mod service;
+pub mod service_instance;
 
 pub use action::*;
 pub use approval::*;
+pub use duration::*;
 pub use identity::*;
 pub use org::*;
 pub use permission::*;
 pub use secret::*;
 pub use service::*;
+pub use service_instance::*;

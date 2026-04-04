@@ -49,6 +49,16 @@
   - Response panel with JSON syntax highlighting, headers table, request inspector
   - API key management with localStorage persistence
 
+### Phase 3 — Identity Hierarchy (foundations)
+
+- Parent/child identity relationships with `parent_id`, `depth`, `owner_id` columns
+- `IdentityKind` expanded: `user`, `agent`, `sub_agent`
+- Hierarchy validation: users have no parent, agents require user parent, sub_agents require agent/sub_agent parent
+- `inherit_permissions` boolean stored (resolution logic not yet implemented)
+- Ancestor chain query (recursive CTE) and children listing endpoints
+- Enrollment approval auto-assigns parent to approving user
+- `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
+
 ### Not Yet Built
 
 - Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log
@@ -58,7 +68,7 @@
 - Org service registry (DB-backed CRUD)
 - OpenAPI spec import
 - Human-readable action descriptions
-- Phase 3: Identity hierarchy (parent/child, inherit_permissions, approval bubbling)
+- Phase 3: Identity hierarchy — permission chain walk, approval bubbling (parent/child + depth tracking done)
 - Phase 4: Meta tools, semantic search, rate limiting, billing
 
 ## What's Deployed
