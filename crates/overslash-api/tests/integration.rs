@@ -346,7 +346,7 @@ async fn test_approval_flow(pool: PgPool) {
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();
@@ -391,7 +391,7 @@ async fn test_allow_remember_creates_rule(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow_remember"}))
+        .json(&json!({"resolution": "allow_remember"}))
         .send()
         .await
         .unwrap();
@@ -491,7 +491,7 @@ async fn test_deny_keeps_gating(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "deny"}))
+        .json(&json!({"resolution": "deny"}))
         .send()
         .await
         .unwrap();
@@ -798,7 +798,7 @@ async fn test_webhook_dispatch_on_approval_resolve(pool: PgPool) {
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"decision": "allow"}))
+        .json(&json!({"resolution": "allow"}))
         .send()
         .await
         .unwrap();

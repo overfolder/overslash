@@ -69,7 +69,9 @@ async fn get_approval(
 
 #[derive(Deserialize)]
 struct ResolveRequest {
-    decision: String, // "allow", "deny", "allow_remember"
+    resolution: String, // "allow", "deny", "allow_remember"
+    remember_keys: Option<Vec<String>>,
+    ttl: Option<String>,
 }
 
 async fn resolve_approval(
@@ -79,27 +81,33 @@ async fn resolve_approval(
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
-    let (status, remember) = match req.decision.as_str() {
+    let (status, remember) = match req.resolution.as_str() {
         "allow" => ("allowed", false),
         "deny" => ("denied", false),
         "allow_remember" => ("allowed", true),
-        other => return Err(AppError::BadRequest(format!("invalid decision: {other}"))),
+        other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
 
     let row = overslash_db::repos::approval::resolve(&state.db, id, status, "user", remember)
         .await?
         .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
 
-    // If allow_remember, create permission rules from the approval's permission keys
+    // If allow_remember, create permission rules from the resolved keys
     if remember {
         let identity_id = row.identity_id;
-        for key in &row.permission_keys {
+        let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
+        let expires_at = req.ttl.as_deref().and_then(|t| {
+            let dur = overslash_core::types::duration::parse_ttl(t)?;
+            Some(time::OffsetDateTime::now_utc() + time::Duration::new(dur.as_secs() as i64, 0))
+        });
+        for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
                 &state.db,
                 auth.org_id,
                 identity_id,
                 key,
                 "allow",
+                expires_at,
             )
             .await;
         }
@@ -114,7 +122,7 @@ async fn resolve_approval(
             resource_type: Some("approval"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "decision": &req.decision,
+                "resolution": &req.resolution,
                 "status": &row.status,
                 "action_summary": &row.action_summary,
             }),

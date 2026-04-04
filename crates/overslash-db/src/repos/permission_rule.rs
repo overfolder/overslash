@@ -9,6 +9,7 @@ pub struct PermissionRuleRow {
     pub identity_id: Uuid,
     pub action_pattern: String,
     pub effect: String,
+    pub expires_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
 }
 
@@ -18,16 +19,18 @@ pub async fn create(
     identity_id: Uuid,
     action_pattern: &str,
     effect: &str,
+    expires_at: Option<OffsetDateTime>,
 ) -> Result<PermissionRuleRow, sqlx::Error> {
     sqlx::query_as::<_, PermissionRuleRow>(
-        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, org_id, identity_id, action_pattern, effect, created_at",
+        "INSERT INTO permission_rules (org_id, identity_id, action_pattern, effect, expires_at)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, org_id, identity_id, action_pattern, effect, expires_at, created_at",
     )
     .bind(org_id)
     .bind(identity_id)
     .bind(action_pattern)
     .bind(effect)
+    .bind(expires_at)
     .fetch_one(pool)
     .await
 }
@@ -37,7 +40,7 @@ pub async fn list_by_identity(
     identity_id: Uuid,
 ) -> Result<Vec<PermissionRuleRow>, sqlx::Error> {
     sqlx::query_as::<_, PermissionRuleRow>(
-        "SELECT id, org_id, identity_id, action_pattern, effect, created_at
+        "SELECT id, org_id, identity_id, action_pattern, effect, expires_at, created_at
          FROM permission_rules WHERE identity_id = $1 ORDER BY created_at",
     )
     .bind(identity_id)
