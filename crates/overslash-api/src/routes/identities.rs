@@ -43,17 +43,19 @@ struct IdentityResponse {
     inherit_permissions: bool,
 }
 
-fn identity_response(r: overslash_db::repos::identity::IdentityRow) -> IdentityResponse {
-    IdentityResponse {
-        id: r.id,
-        org_id: r.org_id,
-        name: r.name,
-        kind: r.kind,
-        external_id: r.external_id,
-        parent_id: r.parent_id,
-        depth: r.depth,
-        owner_id: r.owner_id,
-        inherit_permissions: r.inherit_permissions,
+impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
+    fn from(r: overslash_db::repos::identity::IdentityRow) -> Self {
+        Self {
+            id: r.id,
+            org_id: r.org_id,
+            name: r.name,
+            kind: r.kind,
+            external_id: r.external_id,
+            parent_id: r.parent_id,
+            depth: r.depth,
+            owner_id: r.owner_id,
+            inherit_permissions: r.inherit_permissions,
+        }
     }
 }
 
@@ -183,7 +185,7 @@ async fn create_identity(
     )
     .await;
 
-    Ok(Json(identity_response(row)))
+    Ok(Json(row.into()))
 }
 
 async fn list_identities(
@@ -191,7 +193,7 @@ async fn list_identities(
     auth: AuthContext,
 ) -> Result<Json<Vec<IdentityResponse>>> {
     let rows = overslash_db::repos::identity::list_by_org(&state.db, auth.org_id).await?;
-    Ok(Json(rows.into_iter().map(identity_response).collect()))
+    Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
 async fn list_children(
@@ -206,7 +208,7 @@ async fn list_children(
         return Err(AppError::NotFound("identity not found".into()));
     }
     let rows = overslash_db::repos::identity::list_children(&state.db, id).await?;
-    Ok(Json(rows.into_iter().map(identity_response).collect()))
+    Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
 async fn get_chain(
@@ -221,5 +223,5 @@ async fn get_chain(
         return Err(AppError::NotFound("identity not found".into()));
     }
     let rows = overslash_db::repos::identity::get_ancestor_chain(&state.db, id).await?;
-    Ok(Json(rows.into_iter().map(identity_response).collect()))
+    Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
