@@ -57,7 +57,7 @@
 - `inherit_permissions` boolean stored (resolution logic not yet implemented)
 - Ancestor chain query (recursive CTE) and children listing endpoints
 - Enrollment approval auto-assigns parent to approving user
-- `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/ancestors`
+- `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
 
 ### Not Yet Built
 

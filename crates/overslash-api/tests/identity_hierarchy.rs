@@ -482,7 +482,7 @@ async fn test_ancestor_chain(pool: PgPool) {
 
     // Get ancestor chain from sub_agent
     let chain: Vec<Value> = client
-        .get(format!("{base}/v1/identities/{sub_id}/ancestors"))
+        .get(format!("{base}/v1/identities/{sub_id}/chain"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await

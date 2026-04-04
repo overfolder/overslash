@@ -18,7 +18,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/identities", post(create_identity).get(list_identities))
         .route("/v1/identities/{id}/children", get(list_children))
-        .route("/v1/identities/{id}/ancestors", get(get_ancestors))
+        .route("/v1/identities/{id}/chain", get(get_chain))
 }
 
 #[derive(Deserialize)]
@@ -190,7 +190,7 @@ async fn list_children(
     Ok(Json(rows.into_iter().map(identity_response).collect()))
 }
 
-async fn get_ancestors(
+async fn get_chain(
     State(state): State<AppState>,
     auth: AuthContext,
     Path(id): Path<Uuid>,
