@@ -42,6 +42,57 @@ UNauth users go here, and on auth, they go back to the page they were trying to 
 
 **Empty states**: views with no data show greyed-out text: "No agents found", "No services found", etc. For agents, service templates, and services, the empty state includes a button to create the first one (e.g., `[+ Create your first agent]`).
 
+**Confirmation dialogs**: destructive actions get a modal confirmation. The modal follows a consistent pattern: title ("Delete agent?"), consequence description, two buttons — `[Cancel]` and the destructive action in red.
+
+Confirmation required:
+- **Delete agent** — "Delete agent:henry? This will also delete 3 sub-agents and revoke all their API keys."
+- **Revoke API key** — "Revoke key ovs_a1b2...? This cannot be undone."
+- **Archive/delete service** — "Archive my-scraper? Agents using this service will lose access."
+- **Delete template** — "Delete template? X services are based on this template." (block if active services exist)
+- **Disable IdP** — "Disable Google login? 12 users use this provider."
+- **Remove webhook** — "Remove webhook? Pending deliveries will be lost."
+
+No confirmation needed (immediate + toast feedback):
+- Approve/deny approval (already intentional with specificity picker)
+- Provide/deny secret request
+- Revoke remembered approval (low-risk, re-approvable)
+- Toggle `inherit_permissions`
+- Edit agent name, service name
+
+## Mobile Layout
+
+Breakpoint: 768px. Below = mobile layout, above = desktop.
+
+**Navigation**: sidebar becomes a hamburger menu (top-left) that slides in as an overlay. Swipe-right from left edge also opens it. Notification bell stays in the top bar — tapping opens a full-screen notification list (not a dropdown).
+
+**Stacked navigation with back gesture**: mobile shows one panel at a time.
+
+- **Dashboard**: default view is the agent tree (full width). Tapping an agent pushes the detail panel as a full-screen view with a `[← Back]` header.
+- **Services**: service list → service detail/editor is a full-screen push.
+- **Audit log**: event list → event detail is a full-screen push.
+- **Template Editor**: only the Visual tab is practical on mobile. YAML tab is available but shows a "best on desktop" hint — code editing on a phone is painful.
+- **Approval resolution**: specificity picker renders as a vertical radio list (works well on mobile as-is).
+
+## Loading States
+
+**Skeleton screens, not spinners.** On initial page load, show skeleton placeholders matching the layout shape — grey rectangles for text, circles for avatars, rounded boxes for badges.
+
+- **Agent tree**: 4-5 skeleton rows with grey bars for names and circles for status indicators
+- **Detail panel**: grey blocks for name, status, approvals section
+- **Service list / audit log**: skeleton table rows matching column layout
+- **SSE/WebSocket reconnection**: thin colored bar at the top of the page — yellow "Reconnecting..." → green "Connected" (auto-dismiss after 3s). Existing data stays visible.
+- **Action in progress** (approve, save, provide secret): the action button shows a small inline spinner and is disabled. No full-page loading state.
+
+## Error States
+
+**Inline errors + toasts for transient failures.**
+
+- **Page load errors** (can't fetch agents, services, etc.): error card in place of content — "Failed to load agents" with `[Retry]` button. Grey icon, not alarming.
+- **Action errors** (approve failed, save failed, etc.): sticky red-tinted toast with the error message. Form/button resets to pre-action state so the user can retry.
+- **Auth errors** (session expired, 401): redirect to login with toast "Session expired, please log in again." After login, redirect back.
+- **Permission errors** (403): show the view structure with a centered "You don't have access to this resource" message. Nav stays visible.
+- **Network offline**: persistent thin red bar at top "No connection." Existing data stays visible. Actions are disabled with tooltip "Offline."
+
 ## Page Structure
 
 All the following pages have this structure.
