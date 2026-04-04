@@ -409,18 +409,28 @@ For registry-known services, Overslash generates descriptions from action metada
 
 ## 9. Service Registry
 
-### Two-Tier
+### Three-Tier
 
-**Global**: YAML files shipped with Overslash. Common APIs (Eventbrite, GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Read-only for orgs.
+| Tier | Managed by | Visible to | Mutable |
+|------|-----------|------------|---------|
+| **Global** | Overslash (shipped YAML) | Everyone | Read-only for orgs |
+| **Org** | Org-admins | Org members (gated by groups) | Full CRUD |
+| **User** | Users (if org allows) | Creator + their agents | Full CRUD |
 
-**Org**: Org-admins register additional services for their own or niche APIs. OpenAPI import supported.
+**Global**: YAML files shipped with Overslash. Common APIs (Eventbrite, GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Org-admins can configure visibility (hide unused global services) and provide org-level OAuth credentials for global services.
+
+**Org**: Org-admins register additional services for the org's own or niche APIs. Assigned to groups to control visibility. OpenAPI import supported.
+
+**User**: Users create personal service definitions for APIs only they use. Gated by org setting (`allow_user_services`). Private by default — only the creating user and their agents see it. The group ceiling does not apply to the creator (they're providing their own API and auth), but their agents still need permission keys via approvals. Users can **propose sharing** a service to org level — org-admin reviews and approves (assigns to groups) or denies.
 
 ### Service Definition
 
 ```yaml
 key: github
 display_name: GitHub
+description: "GitHub REST API"
 hosts: [api.github.com]
+category: dev-tools
 auth:
   - type: oauth
     provider: github
@@ -434,12 +444,43 @@ actions:
     path: /repos/{repo}/pulls
     description: "Create a pull request"
     risk: write
+    scope_param: repo
     params:
-      repo: { type: string, required: true }
+      repo: { type: string, required: true, description: "owner/repo" }
       title: { type: string, required: true }
       head: { type: string, required: true }
       base: { type: string, required: true }
+  list_pull_requests:
+    method: GET
+    path: /repos/{repo}/pulls
+    description: "List pull requests"
+    risk: read
+    scope_param: repo
+    params:
+      repo: { type: string, required: true, description: "owner/repo" }
+      state: { type: string, enum: [open, closed, all], default: open }
 ```
+
+**Key fields:**
+- **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. `github:create_pull_request:overfolder/backend` gets `overfolder/backend` from the `repo` param. Without `scope_param`, the arg is `*`.
+- **`risk`** — `read`, `write`, or `admin`. Informational for the UI (badges, warnings) and can influence default approval behavior.
+- **`category`** — for organizing services in the UI (dev-tools, comms, payments, etc.).
+
+### Service Lifecycle
+
+**Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing connections and remembered approvals are preserved.
+
+### OpenAPI Import
+
+Upload an OpenAPI 3.x spec (file or URL) → Overslash parses it and generates a service definition with actions and parameter schemas. Available at both org and user tier. The import is a starting point — the user reviews and edits the generated definition before saving. Partial import supported: pick which endpoints become actions, skip the rest.
+
+### Service Definition Validation
+
+The service definition YAML is parsed and validated by a Rust parser (`overslash-core`). The same parser is used by:
+- **Backend**: `POST /v1/services/validate` — accepts YAML, returns structured errors and warnings
+- **Dashboard**: calls the validate endpoint for linting. Future: ship the parser as WASM for instant client-side validation without a round-trip.
+
+Validation checks: required fields, valid auth types, valid HTTP methods, path template syntax (`{param}` matches defined params), parameter type consistency, duplicate action keys, etc.
 
 ---
 

@@ -419,38 +419,41 @@ Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known ser
 
 ## Services view
 
-A single view in the nav for discovering, connecting, managing, and sharing services. "Connected Services" is a filter preset within this view, not a separate page.
+A single view in the nav for discovering, connecting, managing, and creating services. "Connected Services" is a filter preset within this view, not a separate page.
 
 ### Service list
 
 Shows all services visible to the user, regardless of source:
 
 ```
-Service            Source          Status            Actions
-──────────────────────────────────────────────────────────────
-GitHub             Overslash       ● Connected       [Manage] [Share]
-Google Calendar    Org             ● Connected       [Manage]
-Stripe             Org             ○ Available       [Connect]
-Slack              Overslash       ○ Available       [Connect]
-Internal CRM       Org (custom)    ○ Available       [Connect]
-My Scraper API     You (custom)    ● Connected       [Manage] [Share]
+Service            Source          Actions   Status            Actions
+──────────────────────────────────────────────────────────────────────────
+GitHub             Overslash       12        ● Connected       [Manage]
+Google Calendar    Org             8         ● Connected       [Manage]
+Stripe             Org             15        ○ Available       [Connect]
+Slack              Overslash       6         ○ Available       [Connect]
+Internal CRM       Org (custom)    3         ○ Available       [Connect]
+My Scraper API     You             2         ● Connected       [Edit] [Manage]
 ```
 
 **Source**: where the service definition comes from.
-- **Overslash** — global registry (shipped YAML)
-- **Org** — org-provided (org-defined template or org-shared connection)
+- **Overslash** — global registry (shipped YAML), read-only
+- **Org** — org-provided (org-admin managed)
 - **You** — user-defined custom service
 
 **Status**:
 - **Connected** — active connection for this user
 - **Available** — definition exists, not yet connected
-- **Shared (groups)** — user has shared this to org groups
+- **Draft** — service defined but not yet activated (testing only)
+- **Archived** — hidden, connections preserved
 
 **Filtering**: by source, by status (the "Connected Services" shortcut), by category (dev tools, comms, payments, etc.)
 
+**Actions column**: shows defined action count — clickable to view the action list.
+
 ### Connect flow
 
-Triggered by `[Connect]` on an available service. The flow depends on the service source:
+Triggered by `[Connect]` on an available service. The flow depends on the service auth config:
 
 **Org-provided services**:
 - *Shared credentials* (e.g., org Stripe account): one-click activate, no auth needed
@@ -461,19 +464,120 @@ Triggered by `[Connect]` on an available service. The flow depends on the servic
 - *API key*: form to paste the key → stored as a versioned secret → connected
 - *Both available*: user picks which auth method
 
-**Custom services** (via `[+ Add Custom Service]` button):
-1. Name + Base URL
-2. Auth method: None / API Key / OAuth (client ID, secret, auth URL, token URL, scopes)
-3. Test connection (optional)
-4. Save as template toggle — makes it reusable by the user
-
 ### Manage
 
 `[Manage]` on a connected service: reconnect, revoke, view connection health, see which agents use it.
 
 ### Share
 
-`[Share]` (visible to users with org permissions): promote the service to org level, pick which groups can see/use it. Unshare pulls it back to user-only.
+`[Share to Org]` on a user-defined service: proposes sharing to org level. Org-admin reviews the definition and approves (assigns to groups) or denies. Once shared, source changes to "Org (from alice)".
+
+### Create service
+
+`[+ New Service]` button at the top of the service list. Only visible if the org allows user-defined services. Two creation paths:
+
+**Manual creation:**
+1. **Service identity**: name, display name, base URL, description, category
+2. **Auth method**: None / API Key (injection config) / OAuth (client ID, secret, auth URL, token URL, scopes) / Both
+3. **Actions**: optional — add defined actions now or later (see Service Editor below)
+4. **Status**: starts as Draft (testable in API Explorer, not usable by agents) or Active
+
+**OpenAPI import:**
+1. Upload an OpenAPI 3.x spec file or paste a URL
+2. Overslash parses the spec and generates a preview: service definition + actions + parameter schemas
+3. User reviews the generated definition — pick which endpoints become actions, edit names/descriptions, skip the rest
+4. Save as Draft or Active
+
+Both paths open the **Service Editor** for final review.
+
+### Service Editor
+
+The main editing view for user-defined and org-defined services. Two tabs:
+
+#### Visual tab
+
+A form-based editor for the service definition:
+
+**Service section:**
+- Name, display name, description, base URL, category (dropdown)
+- Auth config: method picker + relevant fields (OAuth URLs, API key injection config)
+- Status toggle: Draft / Active / Archived
+
+**Actions section:**
+- List of defined actions with name, method badge, path, risk badge
+- `[+ New Action]` button opens an inline form:
+  - Name, HTTP method (dropdown), path template (with `{param}` placeholder syntax)
+  - Description, risk level (read / write / admin)
+  - Scope param: which parameter drives the permission key arg (dropdown from defined params)
+  - Parameters: add/remove rows — name, type (string / number / boolean / enum), required toggle, description, enum values if applicable
+- Click any action to expand and edit inline
+- Drag to reorder, delete with confirmation
+
+#### YAML tab
+
+A code editor showing the full service definition as YAML:
+
+```
+┌─ Service Editor: My Scraper API ──────────────────────────────┐
+│  [Visual]  [YAML]                                             │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │ key: my-scraper-api                                      │ │
+│  │ display_name: My Scraper API                             │ │
+│  │ description: "Personal web scraping service"             │ │
+│  │ hosts: [scraper.myserver.com]                            │ │
+│  │ category: custom                                         │ │
+│  │ auth:                                                    │ │
+│  │   - type: api_key                                        │ │
+│  │     injection: { as: header, header_name: X-API-Key }    │ │
+│  │ actions:                                                 │ │
+│  │   scrape_page:                                           │ │
+│  │     method: POST                                         │ │
+│  │     path: /scrape                                        │ │
+│  │     description: "Scrape a web page"                     │ │
+│  │     risk: read                                           │ │
+│  │     params:                                              │ │
+│  │       url: { type: string, required: true }              │ │
+│  │       format: { type: string, enum: [html, text, md] }   │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                                                               │
+│  ┌─ Validation ─────────────────────────────────────────────┐ │
+│  │ ✓ Valid                                                  │ │
+│  │ ⚠ Action "scrape_page" has no scope_param — permission   │ │
+│  │   keys will use wildcard arg (*)                         │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                                                               │
+│                                  [Test] [Save Draft] [Activate]│
+└───────────────────────────────────────────────────────────────┘
+```
+
+- YAML is directly editable — changes sync to the Visual tab on switch (and vice versa)
+- **Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/services/validate`). Validation runs on every edit (debounced). Errors block saving, warnings are informational.
+- Future: ship the Rust YAML parser as WASM for instant client-side validation without a round-trip. V1 uses the backend validate endpoint.
+
+#### View-only mode
+
+For global (Overslash-shipped) services, the editor opens in read-only mode. Both Visual and YAML tabs are viewable but not editable. This lets users inspect the definition — what actions are available, what parameters they take, how auth is configured.
+
+### Org-admin: Services management
+
+Org-admins see additional capabilities within the Services view:
+
+**Org service creation:**
+- Same `[+ New Service]` and Service Editor flow, but scoped to the org
+- Additional field: **Group assignment** — which groups can see and use this service
+
+**Global service configuration:**
+- For global (Overslash-shipped) services, org-admins can:
+  - **Hide/show** global services for the org (hide services the org doesn't use)
+  - **Provide org-level OAuth credentials** so users don't need to BYOC
+
+**Pending share proposals:**
+- A badge/section showing user services proposed for org sharing
+- Org-admin reviews the definition (opens in read-only Service Editor) → `[Approve]` (assigns to groups) or `[Deny]`
+
+**Usage stats:**
+- Per service: connection count, action execution count, which users/agents use it
 
 ## Audit Log view
 

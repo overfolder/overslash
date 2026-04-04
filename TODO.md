@@ -28,8 +28,10 @@ Phased roadmap. Each phase is usable independently.
 - [ ] `on_behalf_of` for agent-initiated connections at user level
 - [x] Global service registry — YAML loader for shipped definitions
 - [ ] Ship top 20 service definitions — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- [ ] Org service registry — DB-backed, CRUD endpoints
-- [ ] OpenAPI spec import (`POST /v1/services/import`)
+- [ ] Three-tier service registry — org (DB, CRUD) + user (DB, CRUD, gated by org setting)
+- [ ] Service definition validation endpoint (`POST /v1/services/validate`)
+- [ ] OpenAPI spec import (`POST /v1/services/import`) — parse OpenAPI 3.x, generate service + actions
+- [ ] User-to-org service sharing (propose, approve/deny)
 - [x] Service + action execution (registry-resolved, auth auto-resolve)
 - [ ] Human-readable action descriptions from registry metadata
 
