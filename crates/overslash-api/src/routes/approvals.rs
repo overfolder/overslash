@@ -96,6 +96,11 @@ async fn resolve_approval(
             // Full parsing happens below after resolve; this is just validation
         }
         if let Some(ref keys) = req.remember_keys {
+            if keys.is_empty() {
+                return Err(AppError::BadRequest(
+                    "remember_keys must not be empty".into(),
+                ));
+            }
             let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
