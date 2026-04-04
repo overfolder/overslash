@@ -1389,6 +1389,7 @@ dependencies = [
  "base64",
  "dotenvy",
  "futures-util",
+ "glob-match",
  "hex",
  "hmac",
  "jsonwebtoken",

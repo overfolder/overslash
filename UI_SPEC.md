@@ -169,8 +169,8 @@ Allow & Remember — choose scope:
   ○ Create pull request on any repo
     github:create_pull_request:*
 
-  ○ All defined GitHub actions
-    github:defined:*
+  ○ Any GitHub action
+    github:*:*
 
   Expires: [24h ▾]                         [Confirm]
 ```
@@ -292,7 +292,7 @@ Key                                                Source          Expires
 github:create_pull_request:overfolder/*    remembered      2026-04-08
 github:GET:*                               remembered      never
 slack:send_message:#engineering            remembered      2026-04-15
-stripe:defined:*                           inherited       —
+stripe:*:*                           inherited       —
 ```
 
 - **Key** — the permission key string (`{service}:{action}:{arg}`)
@@ -486,12 +486,12 @@ Group: Engineering
 Service Grants
 ──────────────────────────────────────────────────────────────────
 github:ANY:*             Full GitHub API access            Auto-approve reads: ✓
-slack:defined:*          Slack — predefined actions only    Auto-approve reads: ✓
-stripe:defined:*         Stripe — predefined actions only   Auto-approve reads: ✗
+slack:*:*          Slack — any action                 Auto-approve reads: ✓
+stripe:*:*         Stripe — any action                Auto-approve reads: ✗
 google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
 ```
 
-Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known services and choose the access tier (`defined`, `ANY`, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
+Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known services and choose the access tier (`*` for all actions, `ANY` for raw HTTP verbs, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
 
 **Auto-approve reads** toggle per service grant: when enabled, agents' non-mutating requests automatically create permission keys without user approval. Disabled by default for sensitive services (financial, PII).
 
@@ -862,7 +862,7 @@ The explorer uses a single flow — no separate tabs or modes. The level of abst
 
 4. **Execute** → response panel
 
-The explorer naturally adapts to what the user is allowed to do. A user with `github:defined:*` sees only defined GitHub actions. A user with `github:ANY:*` also sees "Custom Request". A user without `http` in any group never sees the raw HTTP option.
+The explorer naturally adapts to what the user is allowed to do. A user with `github:*:*` sees all GitHub actions. A user with `github:ANY:*` also sees "Custom Request". A user without `http` in any group never sees the raw HTTP option.
 
 ### Response panel
 
@@ -934,7 +934,7 @@ Login required. If not logged in → redirect to login → redirect back. If log
 │  ┌─ Allow & Remember ────────────────────────────┐  │
 │  │  ○ Create pull request on overfolder/app      │  │
 │  │  ○ Create pull request on any repo            │  │
-│  │  ○ All defined GitHub actions                 │  │
+│  │  ○ Any GitHub action                          │  │
 │  │                                               │  │
 │  │  Expires: [24h ▾]                             │  │
 │  └───────────────────────────────────────────────┘  │

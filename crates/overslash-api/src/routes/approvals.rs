@@ -27,6 +27,8 @@ struct ApprovalResponse {
     identity_id: Uuid,
     action_summary: String,
     permission_keys: Vec<String>,
+    derived_keys: Vec<overslash_core::permissions::DerivedKey>,
+    suggested_tiers: Vec<overslash_core::permissions::SuggestedTier>,
     status: String,
     token: String,
     expires_at: String,
@@ -35,11 +37,15 @@ struct ApprovalResponse {
 
 impl From<overslash_db::repos::approval::ApprovalRow> for ApprovalResponse {
     fn from(r: overslash_db::repos::approval::ApprovalRow) -> Self {
+        let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
+        let suggested_tiers = overslash_core::permissions::suggest_tiers(&r.permission_keys);
         Self {
             id: r.id,
             identity_id: r.identity_id,
             action_summary: r.action_summary,
             permission_keys: r.permission_keys,
+            derived_keys,
+            suggested_tiers,
             status: r.status,
             token: r.token,
             expires_at: r.expires_at.to_string(),
@@ -113,9 +119,13 @@ async fn resolve_approval(
                 .await?
                 .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
             for key in keys {
-                if !approval.permission_keys.iter().any(|pk| pk == key) {
+                let covers_any = approval
+                    .permission_keys
+                    .iter()
+                    .any(|pk| glob_match::glob_match(key, pk));
+                if !covers_any {
                     return Err(AppError::BadRequest(format!(
-                        "remember_key '{key}' is not in the approval's permission_keys"
+                        "remember_key '{key}' does not cover any of the approval's permission_keys"
                     )));
                 }
             }

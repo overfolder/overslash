@@ -2241,3 +2241,175 @@ async fn test_e2e_resend_send_email(pool: PgPool) {
         "expected 'id' in Resend send response, got: {body}"
     );
 }
+
+// ── derived_keys / suggested_tiers tests ──────────────────────────────
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_approval_response_includes_derived_keys_and_tiers(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    // Store a secret so the execute triggers gating
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Execute without permission → 202 pending approval
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let exec_body: Value = resp.json().await.unwrap();
+    let approval_id = exec_body["approval_id"].as_str().unwrap();
+
+    // GET the approval — verify derived_keys and suggested_tiers are present
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let approval: Value = resp.json().await.unwrap();
+
+    // derived_keys should be a non-empty array of objects with key/service/action/arg
+    let derived_keys = approval["derived_keys"].as_array().unwrap();
+    assert!(!derived_keys.is_empty());
+    for dk in derived_keys {
+        assert!(dk["key"].is_string());
+        assert!(dk["service"].is_string());
+        assert!(dk["action"].is_string());
+        assert!(dk["arg"].is_string());
+    }
+
+    // suggested_tiers should have 2-4 entries with keys and description
+    let tiers = approval["suggested_tiers"].as_array().unwrap();
+    assert!(tiers.len() >= 2 && tiers.len() <= 4);
+    for tier in tiers {
+        assert!(tier["keys"].is_array());
+        assert!(!tier["keys"].as_array().unwrap().is_empty());
+        assert!(tier["description"].is_string());
+        assert!(!tier["description"].as_str().unwrap().is_empty());
+    }
+
+    // First tier should be the most specific (exact keys)
+    assert_eq!(
+        tiers[0]["keys"].as_array().unwrap(),
+        approval["permission_keys"].as_array().unwrap()
+    );
+
+    // permission_keys should still be present for backward compat
+    assert!(approval["permission_keys"].is_array());
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_resolve_with_broader_remember_keys_succeeds(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Execute → 202
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve with a broader remember_key pattern (wildcard host) — should succeed
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "resolution": "allow_remember",
+            "remember_keys": ["http:POST:**"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "broader remember_key should be accepted"
+    );
+}
+
+#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
+async fn test_resolve_with_unrelated_broader_keys_still_fails(pool: PgPool) {
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Resolve with an unrelated broader key — should still fail
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "resolution": "allow_remember",
+            "remember_keys": ["slack:*:*"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "unrelated broader key should be rejected"
+    );
+}

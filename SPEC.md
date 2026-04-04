@@ -176,8 +176,8 @@ This format covers every level of abstraction — from registry-defined actions 
 
 | Key | Meaning |
 |-----|---------|
-| `github:create_pull_request:overfolder/*` | Defined registry action, scoped to repos |
-| `github:defined:*` | Any registry-defined action on GitHub |
+| `github:create_pull_request:overfolder/*` | Registry action, scoped to repos |
+| `github:*:*` | Any action on GitHub |
 | `github:POST:/repos/*/pulls` | Specific HTTP verb + path against GitHub |
 | `github:ANY:*` | Any HTTP request against GitHub |
 | `http:POST:api.example.com` | Raw HTTP to a specific host |
@@ -187,7 +187,7 @@ This format covers every level of abstraction — from registry-defined actions 
 **Special action values:**
 - **HTTP verbs** (`GET`, `POST`, `PUT`, `DELETE`, etc.) — allow specific HTTP methods against the service
 - **`ANY`** — allow any HTTP method
-- **`defined`** — allow only actions defined in the service registry (no raw HTTP verbs)
+- **`*`** — wildcard matching any action (note: `{service}:*:*` currently permits both registry actions and raw HTTP verbs against the service; in the future, groups may introduce finer-grained controls to limit `{service}:ANY` or direct HTTP access even when `{service}:*:*` is granted)
 
 **Pseudo-services:**
 - **`http`** — raw HTTP access with no service abstraction. The arg is the target host. Most orgs won't grant this — it turns Overslash into a general HTTP proxy.
@@ -202,12 +202,12 @@ Permissions are enforced in two layers:
 Groups define which services are available and at what access level. They constrain users, and agents inherit their owner-user's group ceiling. A request that exceeds the group ceiling is denied outright — no approval can override it.
 
 Group examples:
-- "Engineering": `github:ANY:*`, `slack:defined:*`, `stripe:defined:*`
+- "Engineering": `github:ANY:*`, `slack:*:*`, `stripe:*:*`
 - "Admin": adds `http:ANY:*`, `secret:*:*`
 - "Read-only": `github:GET:*`, `slack:GET:*`
 
 Three tiers of trust emerge naturally:
-1. **`{service}:defined:*`** — locked to predefined registry actions. Safest.
+1. **`{service}:*:*`** — any action on a known service. Safest (in the future, groups may distinguish registry-only access from raw HTTP verb access for finer control).
 2. **`{service}:ANY:*`** — arbitrary API calls against known services. Mid trust.
 3. **`http:ANY:*`** — full HTTP proxy with secret injection. Highest trust.
 
@@ -282,8 +282,8 @@ When an approval is created, Overslash derives the most specific permission keys
       "description": "Create pull request on overfolder/backend" },
     { "keys": ["github:create_pull_request:*"],
       "description": "Create pull request on any repo" },
-    { "keys": ["github:defined:*"],
-      "description": "All defined GitHub actions" }
+    { "keys": ["github:*:*"],
+      "description": "Any GitHub action" }
   ]
 }
 ```
@@ -534,7 +534,7 @@ This lets users override org defaults with their own credentials (e.g., personal
 - `google-calendar:list_events:*`
 
 **Groups grant access to org services (instances)**:
-- Engineering group gets: `github:ANY:*`, `slack:defined:*`
+- Engineering group gets: `github:ANY:*`, `slack:*:*`
 - User services bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
 
 **Service lifecycle:** **Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing remembered approvals are preserved.
