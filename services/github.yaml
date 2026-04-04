@@ -35,6 +35,7 @@ actions:
     path: /repos/{repo}/pulls
     description: Create a pull request
     risk: write
+    scope_param: repo
     params:
       repo:
         type: string
@@ -60,6 +61,7 @@ actions:
     path: /repos/{repo}/issues
     description: Create an issue
     risk: write
+    scope_param: repo
     params:
       repo:
         type: string

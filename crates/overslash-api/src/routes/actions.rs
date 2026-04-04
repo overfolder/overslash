@@ -74,6 +74,20 @@ enum ExecuteResponse {
     Denied { reason: String },
 }
 
+/// Metadata from request resolution, used to derive the correct permission key type.
+struct ResolvedMeta {
+    description: Option<String>,
+    auth_injected: bool,
+    /// Present only for Mode C — carries info needed to derive service-action permission keys.
+    service_scope: Option<ServiceScope>,
+}
+
+struct ServiceScope {
+    service_key: String,
+    action_key: String,
+    scope_param: Option<String>,
+}
+
 async fn execute_action(
     State(state): State<AppState>,
     auth: AuthContext,
@@ -85,15 +99,21 @@ async fn execute_action(
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
 
     // Resolve the request to a concrete ActionRequest
-    // `auth_injected` is true when OAuth tokens were resolved and injected into headers
-    let (action_req, description, auth_injected) =
-        resolve_request(&state, &auth, identity_id, &req).await?;
+    let (action_req, meta) = resolve_request(&state, &auth, identity_id, &req).await?;
 
-    // Derive permission keys
-    let perm_keys = PermissionKey::from_http(&action_req.method, &action_req.url);
+    let perm_keys = if let Some(ref scope) = meta.service_scope {
+        PermissionKey::from_service_action(
+            &scope.service_key,
+            &scope.action_key,
+            scope.scope_param.as_deref(),
+            &req.params,
+        )
+    } else {
+        PermissionKey::from_http(&action_req.method, &action_req.url)
+    };
 
-    // Gate if any auth is involved: secrets, connection, or OAuth token injected
-    let needs_gate = !action_req.secrets.is_empty() || req.connection.is_some() || auth_injected;
+    let needs_gate =
+        !action_req.secrets.is_empty() || req.connection.is_some() || meta.auth_injected;
 
     if needs_gate {
         let rule_rows =
@@ -121,7 +141,8 @@ async fn execute_action(
                 let token = generate_token();
                 let expires_at = time::OffsetDateTime::now_utc()
                     + time::Duration::seconds(state.config.approval_expiry_secs as i64);
-                let summary = description
+                let summary = meta
+                    .description
                     .clone()
                     .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
                 let keys: Vec<String> = uncovered.iter().map(|k| k.0.clone()).collect();
@@ -293,7 +314,7 @@ async fn execute_action(
                 "url": action_req.url,
                 "status_code": result.status_code,
                 "duration_ms": result.duration_ms,
-                "description": description,
+                "description": meta.description,
                 "service": req.service,
                 "action": req.action,
             }),
@@ -306,21 +327,20 @@ async fn execute_action(
         StatusCode::OK,
         Json(ExecuteResponse::Executed {
             result,
-            action_description: description,
+            action_description: meta.description,
         }),
     )
         .into_response())
 }
 
-/// Resolve an ExecuteRequest into a concrete ActionRequest + human-readable description.
+/// Resolve an ExecuteRequest into a concrete ActionRequest + metadata.
 /// Handles Mode A (raw HTTP), Mode B (connection-based), and Mode C (service+action).
 async fn resolve_request(
     state: &AppState,
     auth: &AuthContext,
     identity_id: Uuid,
     req: &ExecuteRequest,
-) -> Result<(ActionRequest, Option<String>, bool), AppError> {
-    // Returns: (request, description, auth_was_injected)
+) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
     if let Some(conn_id) = req.connection {
         let conn = overslash_db::repos::connection::get_by_id(&state.db, conn_id)
@@ -376,8 +396,11 @@ async fn resolve_request(
                 body: req.body.clone(),
                 secrets: vec![],
             },
-            Some(format!("OAuth request via {provider_key} connection")),
-            true, // auth was injected
+            ResolvedMeta {
+                description: Some(format!("OAuth request via {provider_key} connection")),
+                auth_injected: true,
+                service_scope: None,
+            },
         ));
     }
 
@@ -520,8 +543,15 @@ async fn resolve_request(
                 body,
                 secrets,
             },
-            Some(description),
-            oauth_injected,
+            ResolvedMeta {
+                description: Some(description),
+                auth_injected: oauth_injected,
+                service_scope: Some(ServiceScope {
+                    service_key: service_key.clone(),
+                    action_key: action_key.clone(),
+                    scope_param: action.scope_param.clone(),
+                }),
+            },
         ));
     }
 
@@ -542,8 +572,11 @@ async fn resolve_request(
             body: req.body.clone(),
             secrets: req.secrets.clone(),
         },
-        None,
-        false, // no OAuth injection in raw HTTP mode
+        ResolvedMeta {
+            description: None,
+            auth_injected: false,
+            service_scope: None,
+        },
     ))
 }
 

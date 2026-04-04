@@ -31,6 +31,7 @@ actions:
     path: /2/tweets/{tweet_id}
     description: Delete a tweet
     risk: write
+    scope_param: tweet_id
     params:
       tweet_id:
         type: string
@@ -41,6 +42,7 @@ actions:
     path: /2/users/{user_id}/tweets
     description: Get tweets for a user
     risk: read
+    scope_param: user_id
     params:
       user_id:
         type: string

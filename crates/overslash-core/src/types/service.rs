@@ -107,10 +107,14 @@ pub struct ServiceAction {
     pub risk: Risk,
     /// Response type hint: "json" (default) or "binary" (for file downloads).
     /// When "binary", callers should use `prefer_stream: true` to avoid buffering.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_type: Option<String>,
     #[serde(default)]
     pub params: HashMap<String, ActionParam>,
+    /// Which parameter provides the `{arg}` segment in permission keys.
+    /// Without `scope_param`, the arg defaults to `*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_param: Option<String>,
 }
 
 /// A parameter for a service action.

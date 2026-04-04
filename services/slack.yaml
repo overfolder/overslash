@@ -22,6 +22,7 @@ actions:
     path: /api/chat.postMessage
     description: Send a message to a Slack channel
     risk: write
+    scope_param: channel
     params:
       channel:
         type: string

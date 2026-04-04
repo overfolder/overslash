@@ -166,6 +166,41 @@ hosts: [api.github.com]
     }
 
     #[test]
+    fn scope_param_parsed_from_yaml() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            dir.path(),
+            "github.yaml",
+            r#"
+key: github
+display_name: GitHub
+hosts: [api.github.com]
+actions:
+  create_pull_request:
+    method: POST
+    path: /repos/{repo}/pulls
+    description: Create a pull request
+    scope_param: repo
+    params:
+      repo:
+        type: string
+        required: true
+  list_repos:
+    method: GET
+    path: /user/repos
+    description: List repositories
+"#,
+        );
+
+        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let gh = reg.get("github").unwrap();
+        let create_pr = gh.actions.get("create_pull_request").unwrap();
+        assert_eq!(create_pr.scope_param.as_deref(), Some("repo"));
+        let list_repos = gh.actions.get("list_repos").unwrap();
+        assert_eq!(list_repos.scope_param, None);
+    }
+
+    #[test]
     fn search_by_name() {
         let dir = TempDir::new().unwrap();
         write_yaml(

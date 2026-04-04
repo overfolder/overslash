@@ -1,12 +1,18 @@
+use std::collections::HashMap;
+
 use crate::types::{PermissionEffect, PermissionRule};
 
 /// A derived permission key from an action request.
-/// Format: `http:{METHOD}:{host}{path}`
+///
+/// Two formats depending on execution mode:
+/// - Raw HTTP / connection: `http:{METHOD}:{host}{path}`
+/// - Service action (Mode C): `{service}:{action}:{arg}`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionKey(pub String);
 
 impl PermissionKey {
-    /// Derive permission keys from an HTTP request.
+    /// Derive permission keys from an HTTP request (Mode A / Mode B).
+    /// Format: `http:{METHOD}:{host}{path}`
     pub fn from_http(method: &str, url: &str) -> Vec<Self> {
         let host_path = url
             .strip_prefix("https://")
@@ -14,6 +20,24 @@ impl PermissionKey {
             .unwrap_or(url);
 
         vec![Self(format!("http:{method}:{host_path}"))]
+    }
+
+    /// Derive permission keys from a service action request (Mode C).
+    /// Format: `{service}:{action}:{arg}` where arg comes from `scope_param` or defaults to `*`.
+    pub fn from_service_action(
+        service_key: &str,
+        action_key: &str,
+        scope_param: Option<&str>,
+        params: &HashMap<String, serde_json::Value>,
+    ) -> Vec<Self> {
+        let arg = scope_param
+            .and_then(|sp| params.get(sp))
+            .map(|v| match v.as_str() {
+                Some(s) => s.to_string(),
+                None => v.to_string(),
+            })
+            .unwrap_or_else(|| "*".to_string());
+        vec![Self(format!("{service_key}:{action_key}:{arg}"))]
     }
 }
 
@@ -148,5 +172,64 @@ mod tests {
     fn derive_keys_from_http() {
         let keys = PermissionKey::from_http("POST", "https://api.github.com/repos/x/pulls");
         assert_eq!(keys[0].0, "http:POST:api.github.com/repos/x/pulls");
+    }
+
+    #[test]
+    fn service_action_with_scope_param() {
+        let mut params = HashMap::new();
+        params.insert(
+            "repo".to_string(),
+            serde_json::Value::String("overfolder/backend".to_string()),
+        );
+        let keys = PermissionKey::from_service_action(
+            "github",
+            "create_pull_request",
+            Some("repo"),
+            &params,
+        );
+        assert_eq!(keys[0].0, "github:create_pull_request:overfolder/backend");
+    }
+
+    #[test]
+    fn service_action_scope_param_missing_value() {
+        let params = HashMap::new();
+        let keys = PermissionKey::from_service_action(
+            "github",
+            "create_pull_request",
+            Some("repo"),
+            &params,
+        );
+        assert_eq!(keys[0].0, "github:create_pull_request:*");
+    }
+
+    #[test]
+    fn service_action_no_scope_param() {
+        let params = HashMap::new();
+        let keys = PermissionKey::from_service_action("github", "list_repos", None, &params);
+        assert_eq!(keys[0].0, "github:list_repos:*");
+    }
+
+    #[test]
+    fn glob_matches_service_action_keys() {
+        let rules = vec![rule("github:*:overfolder/*", PermissionEffect::Allow)];
+        let keys = vec![PermissionKey(
+            "github:create_pull_request:overfolder/backend".into(),
+        )];
+        assert_eq!(check_permissions(&rules, &keys), PermissionResult::Allowed);
+    }
+
+    #[test]
+    fn service_action_deny_specific_scope() {
+        let rules = vec![
+            rule("github:*:*", PermissionEffect::Allow),
+            rule("github:*:overfolder/secret-repo", PermissionEffect::Deny),
+        ];
+        let keys = vec![PermissionKey(
+            "github:create_issue:overfolder/secret-repo".into(),
+        )];
+        assert!(matches!(
+            check_permissions(&rules, &keys),
+            PermissionResult::Denied(_)
+        ));
     }
 }

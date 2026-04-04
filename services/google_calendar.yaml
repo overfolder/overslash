@@ -34,6 +34,7 @@ actions:
     path: /calendar/v3/calendars/{calendarId}/events
     description: List events on a calendar
     risk: read
+    scope_param: calendarId
     params:
       calendarId:
         type: string
@@ -64,6 +65,7 @@ actions:
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
     description: Get a single calendar event
     risk: read
+    scope_param: calendarId
     params:
       calendarId:
         type: string
@@ -78,6 +80,7 @@ actions:
     path: /calendar/v3/calendars/{calendarId}/events
     description: Create a new calendar event
     risk: write
+    scope_param: calendarId
     params:
       calendarId:
         type: string
@@ -110,6 +113,7 @@ actions:
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
     description: Update an existing calendar event
     risk: write
+    scope_param: calendarId
     params:
       calendarId:
         type: string
@@ -142,6 +146,7 @@ actions:
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
     description: Delete a calendar event
     risk: delete
+    scope_param: calendarId
     params:
       calendarId:
         type: string
