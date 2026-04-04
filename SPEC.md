@@ -108,7 +108,9 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 - **SAML 2.0** — supported for enterprise environments that require it (many corporate IdPs only offer SAML). Overslash acts as a SAML Service Provider (SP). However, OIDC is preferred where both are available — SAML is XML-heavy, harder to debug, and less suited to SPAs.
 - **Dev login** — a debug-only login method (enabled via env var, disabled in production) for local development without an external IdP.
 
-**Per-org IdP configuration:** Each org configures its own IdPs. An org can enable multiple IdPs simultaneously (e.g., Google for convenience + corporate Okta for SSO). Org-admins manage this in the Org Dashboard settings.
+**Configuration sources:** IdPs can be configured via environment variables or in-database settings. Env vars take precedence — an IdP set via env var cannot be disabled or modified from the dashboard (shown as read-only with an "env" badge). This includes dev login: if `DEV_LOGIN=true` is set, it's active regardless of DB settings. In-database IdPs are managed by org-admins in the Org Dashboard settings.
+
+**Per-org IdP configuration:** Each org configures its own IdPs. An org can enable multiple IdPs simultaneously (e.g., Google for convenience + corporate Okta for SSO).
 
 **User provisioning:** On first login via an IdP, Overslash creates the user identity in the org (matched by email domain or explicit org assignment). Subsequent logins update the user's profile (name, avatar) from the IdP's claims.
 

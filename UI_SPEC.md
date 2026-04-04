@@ -419,6 +419,102 @@ Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known ser
 
 - **"Everyone"** group is always present, cannot be deleted, all users are implicit members
 
+### Settings
+
+A section within the Org Dashboard. Single scrollable view with four sections as cards.
+
+#### Identity Providers
+
+Configure how users authenticate to this org.
+
+```
+Identity Providers
+
+Provider          Type        Status      Users     Actions
+──────────────────────────────────────────────────────────────
+Google            OIDC        ● Active    12        [Edit] [Disable]
+Okta (SSO)        OIDC        ● Active    3         [Edit] [Disable]
+Dev Login         Debug       ● Active    —         env (read-only)
+
+                                          [+ Add Provider]
+```
+
+`[+ Add Provider]` flow:
+- **Type**: Google / GitHub / OIDC (custom)
+- **Google/GitHub**: client ID + client secret (endpoints are well-known)
+- **Custom OIDC**: issuer URL (auto-discovers via `.well-known/openid-configuration`) + client ID + client secret
+- **Dev Login**: toggle on/off. Warning badge when enabled in production.
+
+Providers configured via environment variables are shown with an "env" badge and are read-only — they cannot be edited or disabled from the dashboard. Env vars take precedence over in-database settings.
+
+Per-provider settings:
+- **Auto-create users**: create user identity on first login (matched by email domain)
+- **Allowed email domains**: restrict which domains can log in (e.g., `acme.com`)
+- **Default group**: which group new users join on first login
+
+SAML 2.0: future concern. "SAML" appears greyed out in the type dropdown with a "coming soon" tooltip.
+
+#### Webhooks
+
+Configure endpoints that receive events from Overslash. Platforms use these to surface approvals in their own UX.
+
+```
+Webhooks
+
+Endpoint                                  Events              Status      Actions
+──────────────────────────────────────────────────────────────────────────────────
+https://platform.acme.com/overslash       All                 ● Active    [Edit] [Test] [Logs]
+https://slack-bot.internal/hooks          approval.*          ● Active    [Edit] [Test] [Logs]
+
+                                                              [+ Add Webhook]
+```
+
+`[+ Add Webhook]`:
+- **URL**: the endpoint
+- **Events**: multi-select — `approval.created`, `approval.resolved`, `action.executed`, `service.connected`, `identity.created`, etc. Or "All".
+- **Secret**: auto-generated HMAC secret for signature verification. Shown once, copyable.
+- **Headers**: optional custom headers (e.g., auth token for the receiving endpoint)
+
+`[Test]` sends a test event, shows the response inline.
+
+`[Logs]` opens the delivery log for this webhook:
+
+```
+Delivery Log
+
+Event                    Sent At              Status    Response    Actions
+──────────────────────────────────────────────────────────────────────────
+approval.created         2m ago               ✓ 200     12ms        [View]
+approval.resolved        5m ago               ✓ 200     8ms         [View]
+action.executed          12m ago              ✗ 500     timeout     [View] [Retry]
+```
+
+- `[View]` shows request/response details for the delivery
+- `[Retry]` re-sends the event
+- Auto-retry: 3 attempts with exponential backoff (10s, 1m, 10m). After 3 failures → "Degraded" (orange). After 24h of continuous failures → "Failed" (red). Never auto-disabled — org-admin manually disables or fixes.
+
+#### Features
+
+Org-level feature flags.
+
+```
+Features
+
+Allow user-created templates        [✓]    Users can create personal service templates
+Allow user-created services         [✓]    Users can create personal service instances
+Show API Explorer                   [✓]    API Explorer visible in nav for all users
+Default approval TTL                [24h ▾] Pre-filled expiry for "Allow & Remember"
+```
+
+Each with a toggle or dropdown. Settings configured via environment variables are shown as read-only with an "env" badge.
+
+#### Org Info
+
+- **Org name** — editable
+- **Org slug** — used in URLs (`acme.overslash.dev`), editable with warning about URL changes
+- **Created** — timestamp
+- **Plan / billing** — placeholder for future
+
 ## Services view
 
 A single nav item covering both **service templates** (API blueprints) and **services** (named instances with credentials). Two sub-views via tabs at the top: **My Services** (default) and **Template Catalog**.
