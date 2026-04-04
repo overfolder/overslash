@@ -28,9 +28,23 @@ This login form has:
 
 UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /dashboard if no such page or a loop would form
 
+## Global UX Conventions
+
+**Appearance**: light and dark modes, toggled in user settings. No custom theming.
+
+**Routing**: SPA with History mode URLs. Most views have deep-linkable URLs — selected agent, selected service, audit log filters, etc. Sharing a URL lands the recipient on the same view (after login if needed).
+
+**Copy pattern**: click-to-copy button (clipboard icon) next to copyable values (API keys, permission keys, enrollment tokens, URLs). Toast confirmation: "Copied to clipboard."
+
+**Time display**: all timestamps shown as relative by default ("2m ago", "1h ago"), with full UTC ISO-8601 on hover. User settings allow preference: relative, absolute (local timezone), or absolute (UTC).
+
+**Toasts**: success/error feedback appears as a toast notification (bottom-right, auto-dismiss after 5s for success, sticky for errors). Used after: approve/deny, provide secret, revoke key, create agent, archive service, etc.
+
+**Empty states**: views with no data show greyed-out text: "No agents found", "No services found", etc. For agents, service templates, and services, the empty state includes a button to create the first one (e.g., `[+ Create your first agent]`).
+
 ## Page Structure
 
-All the following pages have this structure
+All the following pages have this structure.
 There is a collapsable navigation menu on the left bar on desktop, when expanded shows labels and icons, when contracted only icons. On mobile this bar can be shown and hidden using swipes.
 
 Nav items: Dashboard, Services, API Explorer, Audit Log. Org Dashboard appears under an "ADMIN" label for org-admins.
@@ -370,8 +384,20 @@ Enrollment tokens are generated via the `[+ New Agent]` flow in the Dashboard ag
 
 ### Settings
 
-- **Default approval TTL**: when this user approves an action with "Allow & Remember", the default TTL pre-filled in the expiry picker (e.g., 1h, 24h, 7d)
-- **Notification preferences**: how to receive approval requests — email, webhook URL, or dashboard-only
+User-level preferences. Changes take effect immediately.
+
+**Appearance:**
+- **Theme**: Light / Dark / System (follows OS preference)
+
+**Time display:**
+- **Format**: Relative ("2m ago") / Absolute local / Absolute UTC
+- **Timezone**: auto-detected from browser, overridable
+
+**Approvals:**
+- **Default approval TTL**: pre-filled expiry when clicking "Allow & Remember" (1h, 24h, 7d, 30d, never)
+
+**Notifications:**
+- **Notification preferences**: how to receive approval requests and secret requests — email, webhook URL, or dashboard-only
 
 ## Org Dashboard view (org-admins only)
 
