@@ -511,7 +511,7 @@ Each with a toggle or dropdown. Settings configured via environment variables ar
 #### Org Info
 
 - **Org name** — editable
-- **Org slug** — used in URLs (`acme.overslash.dev`), editable with warning about URL changes
+- **Org slug** — used in URLs on Overslash Cloud (`acme.overslash.dev`), editable with warning about URL changes. Not shown on self-hosted instances.
 - **Created** — timestamp
 - **Plan / billing** — placeholder for future
 
