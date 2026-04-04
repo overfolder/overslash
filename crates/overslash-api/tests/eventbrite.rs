@@ -81,11 +81,18 @@ async fn test_eventbrite_e2e(pool: PgPool) {
     .await
     .unwrap();
 
-    // Create broad permission rule
+    // Create broad permission rules: http:** for raw HTTP, eventbrite:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "eventbrite:*:*"}))
         .send()
         .await
         .unwrap();
