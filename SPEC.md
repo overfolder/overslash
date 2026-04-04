@@ -459,7 +459,6 @@ key: google-calendar
 display_name: Google Calendar
 description: "Google Calendar API"
 hosts: [www.googleapis.com/calendar]
-category: productivity
 auth:
   - type: oauth
     provider: google
@@ -492,7 +491,6 @@ actions:
 **Key fields:**
 - **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. Without `scope_param`, the arg is `*`.
 - **`risk`** — enum: `read`, `write`, `delete`. Defaults to `read` when omitted. Informational for the UI and influences auto-approve-reads behavior (`read` → non-mutating, `write`/`delete` → mutating).
-- **`category`** — for organizing templates in the UI (dev-tools, comms, payments, productivity, etc.).
 
 ### Services (Instances)
 

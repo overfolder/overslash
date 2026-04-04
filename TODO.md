@@ -12,7 +12,6 @@ Things already implemented that diverge from SPEC.md. Resolve each by updating t
 - [ ] **No suggested_tiers in approvals**: spec returns structured `derived_keys` + `suggested_tiers` (2-4 broadening levels); code only has flat `permission_keys: Vec<String>`
 - [x] **risk vs mutating**: resolved — spec updated to use `risk: read|write|delete` enum matching code; `Risk` is now a proper Rust enum
 - [ ] **No scope_param**: spec defines `scope_param` on actions to fill `{arg}` in permission keys; code doesn't implement it — all service-action keys have `*` as arg
-- [ ] **No category on templates**: spec defines `category` for UI grouping; code and YAMLs don't have it
 - [ ] **No description interpolation**: spec supports `{param}` substitution and `[optional segments]` in action descriptions; code treats descriptions as static strings
 - [ ] **Template/instance split**: spec separates templates (blueprints) from services (named instances with lifecycle); code has definitions + connections with no instance layer
 - [x] **Identity depth**: parent/child hierarchy with depth tracking, `sub_agent` kind, enrollment assigns parent
