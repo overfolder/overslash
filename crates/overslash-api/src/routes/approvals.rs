@@ -88,29 +88,23 @@ async fn resolve_approval(
         other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
 
-    // Validate remember_keys and ttl before mutating DB state
-    let expires_at = match req.ttl.as_deref() {
-        Some(t) => {
-            let dur = overslash_core::types::duration::parse_ttl(t)
+    // Validate remember_keys and ttl before mutating DB state (only for allow_remember)
+    if remember {
+        if let Some(t) = req.ttl.as_deref() {
+            overslash_core::types::duration::parse_ttl(t)
                 .ok_or_else(|| AppError::BadRequest(format!("invalid ttl: {t}")))?;
-            let secs: i64 = dur
-                .as_secs()
-                .try_into()
-                .map_err(|_| AppError::BadRequest("ttl value too large".into()))?;
-            Some(time::OffsetDateTime::now_utc() + time::Duration::new(secs, 0))
+            // Full parsing happens below after resolve; this is just validation
         }
-        None => None,
-    };
-
-    if let Some(ref keys) = req.remember_keys {
-        let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
-        for key in keys {
-            if !approval.permission_keys.iter().any(|pk| pk == key) {
-                return Err(AppError::BadRequest(format!(
-                    "remember_key '{key}' is not in the approval's permission_keys"
-                )));
+        if let Some(ref keys) = req.remember_keys {
+            let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+            for key in keys {
+                if !approval.permission_keys.iter().any(|pk| pk == key) {
+                    return Err(AppError::BadRequest(format!(
+                        "remember_key '{key}' is not in the approval's permission_keys"
+                    )));
+                }
             }
         }
     }
@@ -123,6 +117,11 @@ async fn resolve_approval(
     if remember {
         let identity_id = row.identity_id;
         let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
+        let expires_at = req.ttl.as_deref().and_then(|t| {
+            let dur = overslash_core::types::duration::parse_ttl(t)?;
+            let secs: i64 = dur.as_secs().try_into().ok()?;
+            Some(time::OffsetDateTime::now_utc() + time::Duration::new(secs, 0))
+        });
         for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
                 &state.db,
