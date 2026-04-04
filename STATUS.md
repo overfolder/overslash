@@ -33,11 +33,16 @@
 - Connections API (initiate, list, revoke)
 - Global service template registry — YAML loader with search API
 - 7 service templates shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- Connection-based execution (service + HTTP verb, token auto-injected)
+- Template/service instance split — templates (YAML blueprints) + service instances (named, with credentials and lifecycle)
 - Service+action execution (registry-resolved, auth auto-resolved)
+- `scope_param` on service actions — permission keys use specific args from action params
+- Description interpolation — `{param}` substitution and `[optional segments]` in action descriptions
+- Suggested tiers + derived_keys on approval payloads (2-4 broadening levels)
+- Approval resolution API aligned with spec (`resolution` + `remember_keys` + `ttl`)
 - X.com OAuth with PKCE support
 - Eventbrite OAuth provider support
 - E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
+- sqlx compile-time query checking enforced across all repos
 
 ### Phase 2.5 — Dashboard (in progress)
 
@@ -62,14 +67,13 @@
 ### Not Yet Built
 
 - Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log
-- Standalone approval resolution page (signed-URL)
-- Standalone secret request page (signed-URL)
+- Standalone pages: approval resolution, secret request, enrollment consent
 - `on_behalf_of` for agent-initiated connections
-- Org service registry (DB-backed CRUD)
-- OpenAPI spec import
-- Human-readable action descriptions
-- Phase 3: Identity hierarchy — permission chain walk, approval bubbling (parent/child + depth tracking done)
-- Phase 4: Meta tools, semantic search, rate limiting, billing
+- Three-tier template registry (org + user DB-backed CRUD)
+- Template validation endpoint + OpenAPI import
+- Groups (Layer 1 permission ceiling) + org-level ACL
+- Phase 3: `inherit_permissions` resolution, permission chain walk, approval bubbling (parent/child + depth tracking done)
+- Phase 4: Meta tools, semantic search, rate limiting, billing, documentation site
 
 ## What's Deployed
 

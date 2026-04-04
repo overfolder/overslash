@@ -8,13 +8,14 @@ Phased roadmap. Each phase is usable independently.
 
 Things already implemented that diverge from SPEC.md. Resolve each by updating the spec or the code.
 
-- [ ] **Approval resolve field name**: spec says `resolution` + `remember_keys` + `ttl`; code uses `decision` only — no key selection or TTL at resolve time
-- [ ] **No suggested_tiers in approvals**: spec returns structured `derived_keys` + `suggested_tiers` (2-4 broadening levels); code only has flat `permission_keys: Vec<String>`
-- [x] **risk vs mutating**: resolved — spec updated to use `risk: read|write|delete` enum matching code; `Risk` is now a proper Rust enum
-- [ ] **No scope_param**: spec defines `scope_param` on actions to fill `{arg}` in permission keys; code doesn't implement it — all service-action keys have `*` as arg
-- [ ] **No category on templates**: spec defines `category` for UI grouping; code and YAMLs don't have it
-- [ ] **Template/instance split**: spec separates templates (blueprints) from services (named instances with lifecycle); code has definitions + connections with no instance layer
-- [x] **Identity depth**: parent/child hierarchy with depth tracking, `sub_agent` kind, enrollment assigns parent
+- [x] **Approval resolve field name**: resolved — `decision` renamed to `resolution`, `remember_keys` + `ttl` added to resolve endpoint (PR #30)
+- [x] **No suggested_tiers in approvals**: resolved — `derived_keys` + `suggested_tiers` with broadening levels implemented (PR #40)
+- [x] **risk vs mutating**: resolved — spec updated to use `risk: read|write|delete` enum matching code; `Risk` is now a proper Rust enum (PR #29)
+- [x] **No scope_param**: resolved — `scope_param` implemented on service actions, permission keys now use specific args (PR #34)
+- [x] **No category on templates**: resolved — removed from spec; not needed (PR #33)
+- [x] **No description interpolation**: resolved — `{param}` substitution and `[optional segments]` implemented (PR #35)
+- [x] **Template/instance split**: resolved — templates (YAML blueprints) + service instances (named, with credentials) implemented (PR #31)
+- [x] **Identity depth**: resolved — parent/child hierarchy with depth tracking, `sub_agent` kind, enrollment assigns parent (PR #32)
 
 ### Dashboard (dashboard/ vs UI_SPEC.md)
 
@@ -68,14 +69,14 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] `on_behalf_of` for agent-initiated service creation at user level
 - [x] Global service template registry — YAML loader for shipped definitions
 - [ ] Ship top 20 service templates — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- [ ] Template/service split — templates (YAML blueprints) + services (named instances with credentials)
+- [x] Template/service split — templates (YAML blueprints) + services (named instances with credentials) (PR #31)
 - [ ] Three-tier template registry — global (YAML, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting)
-- [ ] Service instances — create from template, bind credentials, assign to groups
+- [x] Service instances — create from template, bind credentials, assign to groups (PR #31)
 - [ ] Template validation endpoint (`POST /v1/templates/validate`)
 - [ ] OpenAPI import (`POST /v1/templates/import`) — parse OpenAPI 3.x, generate template + actions
 - [ ] User-to-org template sharing (propose, approve/deny)
 - [x] Service + action execution (registry-resolved, auth auto-resolve)
-- [ ] Human-readable action descriptions from registry metadata
+- [x] Human-readable action descriptions from registry metadata (description interpolation, PR #35)
 
 ## Phase 2.5: Dashboard + Enrollment
 
@@ -134,3 +135,6 @@ Existing dashboard code predates the unified permission model and template/servi
 - Service registry with 7 YAML definitions (Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X)
 - E2E integration tests: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token-based), X.com (OAuth+PKCE)
 - CI pipeline with coverage reporting and real OAuth provider tests
+- All spec–code misalignments resolved (PRs #29–#40): risk enum, identity hierarchy, template/instance split, approval resolve fields, scope_param, description interpolation, suggested tiers, category removed from spec
+- sqlx compile-time query checking enforced across all repos (PR #39)
+- Code quality: CTE cycle protection (PR #38), identity_response From impl (PR #37), org ownership check helper
