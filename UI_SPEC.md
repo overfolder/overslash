@@ -85,6 +85,90 @@ The dashboard supports **streaming updates** from the backend (SSE or WebSocket)
 
 When streaming is off or unavailable, show a **refresh button** and optionally an **auto-refresh toggle** (polling fallback).
 
+### Inline identity management
+
+The agent tree supports creating, editing, and deleting agents directly.
+
+#### Tree actions
+
+- **`[+ New Agent]` button** at the top of the tree panel — starts the user-initiated enrollment flow
+- **Kebab menu (⋮)** on each agent node — options: Rename, Move (reparent), Delete
+
+#### User-initiated enrollment
+
+`[+ New Agent]` opens an inline form or modal:
+
+- **Agent name** (required)
+- **Parent** — defaults to the user, dropdown/tree-picker to choose another position in the user's subtree
+- **Permission groups** — multi-select from available groups
+- **`inherit_permissions`** — checkbox
+- **TTL** — optional, for ephemeral agents
+
+On submit, shows a **one-time enrollment snippet** designed to be pasted into the agent's conversation:
+
+```
+┌─ Enrollment Instructions ───────────────────────┐
+│                                                  │
+│  Agent "henry" created. Paste this into your     │
+│  agent's conversation:                           │
+│                                                  │
+│  ┌────────────────────────────────────────────┐  │
+│  │ # Overslash enrollment                     │  │
+│  │ OVERSLASH_URL=https://acme.overslash.dev   │  │
+│  │ OVERSLASH_ENROLLMENT_TOKEN=oet_a1b2c3...   │  │
+│  │                                            │  │
+│  │ For integration details, see:              │  │
+│  │ https://overslash.dev/enrollment/SKILL.md  │  │
+│  └────────────────────────────────────────────┘  │
+│                                    [Copy] [Done] │
+│                                                  │
+│  ⚠ This token is shown once. The agent          │
+│  exchanges it for a permanent API key.           │
+└──────────────────────────────────────────────────┘
+```
+
+The enrollment token has a **fixed 15-minute TTL**. The agent appears in the tree immediately in a **pending enrollment** state (greyed out / dashed outline) until the agent exchanges the token. If the token expires unused, the pending identity is cleaned up.
+
+#### Agent-initiated enrollment (consent page)
+
+When an agent discovers Overslash and requests enrollment, it generates a consent URL to send to a user. The consent page is a standalone page requiring login (not part of the dashboard nav).
+
+The user sees:
+
+- **Proposed name** — pre-filled by the agent, fully editable by the user
+- **Requested by** — agent metadata (IP, timestamp)
+- **Placement tree** — shows where the agent will land in the hierarchy. Defaults to directly under the approving user. A `[Change parent]` control opens a mini tree picker showing only positions the user is authorized to place agents (their subtree):
+
+```
+┌─ Select parent ─────────────┐
+│  ○ alice (you)              │
+│  ○ agent-henry              │
+│    ○ sa-researcher          │
+│  ● agent-builder  ← selected│
+└─────────────────────────────┘
+```
+
+- **Permission groups** — multi-select from available groups
+- **No `inherit_permissions` option** — the user configures this after enrollment if desired
+
+Actions: `[Approve & Enroll]` and `[Deny]`.
+
+After approval, shows a success message. The agent picks up its API key via polling or webhook.
+
+#### Detail panel — agent management
+
+When an agent is selected in the tree, the detail panel includes management controls:
+
+- **Name** — click to edit inline
+- **Origin** — badge showing "user-created" or "self-enrolled"
+- **Parent** — displayed with a `[Move]` action to reparent (opens tree picker)
+- **Permission groups** — list with `[Edit]` to add/remove groups
+- **`inherit_permissions`** — toggle, configurable at any time
+- **API Keys** — list with prefix, created/last-used dates, `[Revoke]` per key, `[+ New Key]`
+- **Actions** — `[View executions]` `[View permissions]` `[Delete agent]`
+
+Delete shows a confirmation dialog warning about child identities that will be deleted.
+
 ## User Profile view
 
 Accessible from the nav or a user avatar/menu in the top bar. Shows the authenticated user's own identity and credentials within Overslash.
@@ -107,12 +191,69 @@ The user's personal API keys for calling the Overslash REST API directly (not vi
 
 Keys are scoped to the user identity. Agent keys are managed separately in the agent detail panel.
 
+### Secrets
+
+Manages secrets in the user's subtree (their own + their agents' secrets). Org admins see all org secrets (see Org Dashboard).
+
+#### Secret list
+
+```
+Secret Name          Service       Owner          Versions    Last Used
+────────────────────────────────────────────────────────────────────────────
+github_token         GitHub        alice (you)    3           2m ago
+stripe_api_key       Stripe        alice (you)    1           1h ago
+openai_key           —             agent:henry    2           5m ago
+```
+
+- **Name** — the secret identifier used for injection
+- **Service** — associated service, if any (blank for generic secrets)
+- **Owner** — which identity in the subtree owns this secret
+- **Versions** — count, clickable to expand version history
+- **Last used** — last time any version was injected during action execution
+
+#### Value reveal
+
+Secret values are shown via a **click-to-reveal** pattern. The value is masked by default; clicking a reveal button shows it inline. This is the dashboard-only privilege — agents never receive values via API.
+
+#### Version history (expand row or side panel)
+
+```
+Secret: github_token
+
+Version   Created              Created By        Status
+───────────────────────────────────────────────────────────
+v3        2026-04-01 10:30     agent:henry       ● current
+v2        2026-03-20 14:15     user:alice         ○ previous
+v1        2026-03-10 09:00     user:alice         ○ previous
+
+                                   [Reveal v2] [Restore v2]
+                                   [Reveal v1] [Restore v1]
+```
+
+- **Created by** — which identity wrote this version (shows `on_behalf_of` provenance)
+- **Reveal** — click-to-reveal for any version, enabling comparison before rollback
+- **Restore** — creates a new version (v4) pointing to the old value. Does not delete anything.
+
+#### Actions
+
+- **`[+ New Secret]`** — name + value input + optional service association. Value shown in a password-type field during creation.
+- **`[Update Value]`** — creates a new version. Password-type input.
+- **`[Delete]`** — removes the secret entirely (all versions). Confirmation dialog warns which agents/services reference it.
+
+#### Pending secret requests
+
+When an agent requests a secret that doesn't exist (via the API), a banner appears at the top of the secrets section:
+
+```
+⚠ Pending secret requests:
+  agent:henry requests "openai_api_key" — [Provide] [Deny]
+```
+
+`[Provide]` opens the value input (creates the secret). `[Deny]` dismisses the request. This is the inline version of the standalone secret request page (`/secrets/provide/req_...?token=jwt`).
+
 ### Enrollment Tokens
 
-Tokens for enrolling new agents under this user (user-initiated enrollment flow).
-
-- **Generate token**: creates a single-use enrollment token, shown once. Copy button.
-- **Active tokens**: list of unused tokens with creation date and expiry. Revoke button per token.
+Enrollment tokens are generated via the `[+ New Agent]` flow in the Dashboard agent tree (see **Inline identity management**). This section shows a read-only list of the user's active (unused) tokens with creation date and expiry. Revoke button per token.
 
 ### Settings
 

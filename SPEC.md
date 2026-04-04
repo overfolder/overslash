@@ -114,9 +114,27 @@ Org (acme)
 
 Two enrollment flows connect agents to the identity hierarchy:
 
-**User-initiated enrollment**: A user pre-creates the agent identity in the dashboard or via API, receiving a single-use enrollment token. The user pastes this token into the agent's configuration. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
+**User-initiated enrollment**: A user creates the agent identity in the dashboard or via API, providing a name, parent placement, optional permission groups, and optional `inherit_permissions` flag. Overslash returns a single-use enrollment token. The user pastes the enrollment snippet (containing the Overslash URL, token, and a link to `overslash.dev/enrollment/SKILL.md`) into the agent's conversation. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
 
-**Agent-initiated enrollment**: The agent discovers Overslash (e.g., via `SKILL.md` or environment hints) and requests an enrollment token. This token only grants the ability to generate a consent URL. The agent presents this URL to a user (in chat, email, etc.). The authenticated user visits the URL, reviews the agent's requested identity placement, and consents. The agent is then enrolled at the approved position in the hierarchy. This flow is documented in a `SKILL.md` that agents can read to self-onboard.
+The enrollment token has a **fixed 15-minute TTL**. The agent identity appears in the hierarchy immediately in a **pending enrollment** state (inactive until token exchange). If the token expires unused, the pending identity is cleaned up automatically.
+
+**Agent-initiated enrollment**: The agent discovers Overslash (e.g., via `overslash.dev/SKILL.md` → `overslash.dev/enrollment/SKILL.md` or environment hints) and requests an enrollment token, proposing a name and optional metadata about itself. This token only grants the ability to generate a consent URL. The agent presents this URL to a user (in chat, email, etc.). The authenticated user visits the consent URL, where they can:
+
+- **Edit the agent's proposed name** (pre-filled but fully editable)
+- **Choose placement** in the hierarchy (defaults to directly under the approving user)
+- **Assign permission groups**
+
+The consent URL is scoped to the org. Any authenticated user in the org with agent-creation permissions can approve — not just one specific user. After approval, the agent's token is exchanged for a permanent API key server-side. The agent, polling or via webhook, picks up the key.
+
+Note: `inherit_permissions` is not offered during agent-initiated enrollment — the user configures this after enrollment if desired.
+
+### Identity Reconfiguration
+
+After enrollment, an identity's configuration remains mutable:
+
+- **Parent**: an identity can be reparented to a different position in the hierarchy (within the user's subtree)
+- **Permission groups**: can be added or removed at any time
+- **`inherit_permissions`**: can be enabled or disabled at any time
 
 ### `inherit_permissions`
 
@@ -160,15 +178,25 @@ Rules have optional expiry. "Allow & Remember" on an approval creates a persiste
 
 ### Versioned
 
-Every write creates a new version. Latest is always used for injection. Earlier versions can be restored (creates a new version pointing to the old value).
+Every write creates a new version. Latest is always used for injection. Earlier versions can be restored (creates a new version pointing to the old value). Version history records who created each version and when, enabling audit and confident rollback.
 
 ### Scoping
 
 Secrets belong to the identity that created them. When agents set up integrations, they use `on_behalf_of` to create secrets at the owner-user level — so all agents under that user share them.
 
-### Never Returned
+### Access Model
 
-Secret values are encrypted at rest and never returned via API. The agent can list secret names but never read values.
+Secret values are encrypted at rest. Access to values depends on the actor:
+
+| Actor | Own secrets | Child identity secrets | Other user secrets |
+|-------|-----------|----------------------|------------------|
+| **User** (dashboard) | read/write | read/write | — |
+| **Agent** (API) | list names only | list names only | — |
+| **Org admin** (dashboard) | read/write | read/write | read/write (all org) |
+
+- **Users** can view and manage secret values for all secrets in their subtree (their own + their agents' secrets) via the dashboard.
+- **Agents** can list secret names, version numbers, and timestamps (created, last used) but never read values via API. Secret values are only injected at action execution time. Version numbers and timestamps give agents enough signal to detect rotations and confirm writes without exposing values.
+- **Org admins** can view and manage all secrets across the org. This follows the standard model for org-managed credential stores (same as 1Password Teams, AWS Secrets Manager, etc.) and is required for compliance, debugging, and offboarding scenarios.
 
 ---
 
