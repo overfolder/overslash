@@ -1653,11 +1653,18 @@ async fn test_google_calendar_three_modes(pool: PgPool) {
     // Bootstrap org + identity + API key
     let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create broad permission rule
+    // Create broad permission rules: http:** for Mode A/B, google_calendar:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
         .send()
         .await
         .unwrap();
@@ -1942,11 +1949,18 @@ async fn test_google_calendar_real_byoc(pool: PgPool) {
     .await
     .unwrap();
 
-    // Create broad permission rule
+    // Create broad permission rules: http:** for raw HTTP, google_calendar:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
         .send()
         .await
         .unwrap();
@@ -2182,11 +2196,18 @@ async fn test_e2e_resend_send_email(pool: PgPool) {
         .await
         .unwrap();
 
-    // Create permission rule
+    // Create permission rules: http:** for raw HTTP, resend:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "resend:*:*"}))
         .send()
         .await
         .unwrap();
