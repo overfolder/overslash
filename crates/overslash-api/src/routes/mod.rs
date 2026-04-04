@@ -12,4 +12,5 @@ pub mod orgs;
 pub mod permissions;
 pub mod secrets;
 pub mod services;
+pub mod templates;
 pub mod webhooks;

@@ -48,6 +48,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .with_state(state);
@@ -642,6 +643,7 @@ async fn test_service_registry_api(pool: PgPool) {
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -673,9 +675,9 @@ async fn test_service_registry_api(pool: PgPool) {
         .unwrap();
     let api_key = key_resp["key"].as_str().unwrap();
 
-    // List services — should have at least github, stripe, slack
+    // List templates — should have at least github, stripe, slack (global tier)
     let resp: Vec<Value> = client
-        .get(format!("{base}/v1/services"))
+        .get(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -684,12 +686,12 @@ async fn test_service_registry_api(pool: PgPool) {
         .await
         .unwrap();
     let keys: Vec<&str> = resp.iter().filter_map(|s| s["key"].as_str()).collect();
-    assert!(keys.contains(&"github"), "expected github in services");
-    assert!(keys.contains(&"stripe"), "expected stripe in services");
+    assert!(keys.contains(&"github"), "expected github in templates");
+    assert!(keys.contains(&"stripe"), "expected stripe in templates");
 
     // Search
     let resp: Vec<Value> = client
-        .get(format!("{base}/v1/services/search?q=pull+request"))
+        .get(format!("{base}/v1/templates/search?q=pull+request"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -702,9 +704,9 @@ async fn test_service_registry_api(pool: PgPool) {
         "search for 'pull request' should match github"
     );
 
-    // Get service detail
+    // Get template detail
     let resp: Value = client
-        .get(format!("{base}/v1/services/github"))
+        .get(format!("{base}/v1/templates/github"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -715,9 +717,9 @@ async fn test_service_registry_api(pool: PgPool) {
     assert_eq!(resp["key"], "github");
     assert!(resp["actions"]["create_pull_request"].is_object());
 
-    // List actions
+    // List template actions
     let actions: Vec<Value> = client
-        .get(format!("{base}/v1/services/github/actions"))
+        .get(format!("{base}/v1/templates/github/actions"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
@@ -1493,6 +1495,7 @@ async fn start_api_with_registry(
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .with_state(state);
