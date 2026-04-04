@@ -393,26 +393,32 @@ async fn resolve_request(
         .await?;
 
         // Resolve the template: if instance found use its template_key, else use service_key directly
-        let template_key = instance
-            .as_ref()
-            .map(|i| i.template_key.as_str())
-            .unwrap_or(service_key);
-
-        let svc = super::templates::resolve_template_definition(
-            state,
-            auth.org_id,
-            auth.identity_id,
-            template_key,
-        )
-        .await
-        .or_else(|_| {
-            // Final fallback: direct global registry lookup by service_key
-            state
-                .registry
-                .get(service_key)
-                .cloned()
-                .ok_or_else(|| AppError::NotFound(format!("service '{service_key}' not found")))
-        })?;
+        let svc =
+            if let Some(ref inst) = instance {
+                // Instance exists — resolve its template; propagate errors (don't fall back
+                // to global registry, which could match on the wrong key)
+                super::templates::resolve_template_definition(
+                    state,
+                    auth.org_id,
+                    auth.identity_id,
+                    &inst.template_key,
+                )
+                .await?
+            } else {
+                // No instance — try unified resolution, then fall back to global registry
+                super::templates::resolve_template_definition(
+                    state,
+                    auth.org_id,
+                    auth.identity_id,
+                    service_key,
+                )
+                .await
+                .or_else(|_| {
+                    state.registry.get(service_key).cloned().ok_or_else(|| {
+                        AppError::NotFound(format!("service '{service_key}' not found"))
+                    })
+                })?
+            };
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
             AppError::NotFound(format!(
