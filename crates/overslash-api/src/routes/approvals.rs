@@ -88,7 +88,7 @@ async fn resolve_approval(
         other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
 
-    // Validate remember_keys and ttl before mutating DB state (only for allow_remember)
+    let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
     if remember {
         if let Some(t) = req.ttl.as_deref() {
             let dur = overslash_core::types::duration::parse_ttl(t)
@@ -96,6 +96,12 @@ async fn resolve_approval(
             if dur.as_secs() > 365 * 86400 {
                 return Err(AppError::BadRequest("ttl must not exceed 365 days".into()));
             }
+            let secs: i64 = dur
+                .as_secs()
+                .try_into()
+                .map_err(|_| AppError::BadRequest("ttl value too large".into()))?;
+            parsed_expires_at =
+                time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0));
         }
         if let Some(ref keys) = req.remember_keys {
             if keys.is_empty() {
@@ -120,15 +126,9 @@ async fn resolve_approval(
         .await?
         .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
 
-    // If allow_remember, create permission rules from the resolved keys
     if remember {
         let identity_id = row.identity_id;
         let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
-        let expires_at = req.ttl.as_deref().and_then(|t| {
-            let dur = overslash_core::types::duration::parse_ttl(t)?;
-            let secs: i64 = dur.as_secs().try_into().ok()?;
-            time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0))
-        });
         for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
                 &state.db,
@@ -136,7 +136,7 @@ async fn resolve_approval(
                 identity_id,
                 key,
                 "allow",
-                expires_at,
+                parsed_expires_at,
             )
             .await;
         }
