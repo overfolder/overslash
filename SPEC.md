@@ -403,7 +403,22 @@ For service-based requests, auth is resolved automatically from connections — 
 
 ### Human-Readable Descriptions
 
-For registry-known services, Overslash generates descriptions from action metadata: "Create pull request 'Fix bug' on acme/app" instead of "POST api.github.com/repos/acme/app/pulls".
+For registry-known services, action descriptions support **string interpolation** with `{param_name}` placeholders that resolve to the actual arguments at execution time:
+
+```yaml
+create_pull_request:
+  description: "Create pull request '{title}' on {repo}"
+  # → "Create pull request 'Fix bug' on overfolder/app"
+
+list_pull_requests:
+  description: "List pull requests on {repo}[ with state {state}]"
+  # → "List pull requests on overfolder/app with state open"  (both provided)
+  # → "List pull requests on overfolder/app"                   (state omitted)
+```
+
+**Optional params** use **conditional segments**: `[text with {optional_param}]` — the bracketed segment is included only when all its placeholders are present. This avoids dangling "with state" fragments when optional params are omitted.
+
+These descriptions appear in: approval requests (what the agent wants to do), audit log entries, specificity tier descriptions, and the API Explorer response panel.
 
 ---
 
@@ -442,7 +457,7 @@ actions:
   create_pull_request:
     method: POST
     path: /repos/{repo}/pulls
-    description: "Create a pull request"
+    description: "Create pull request '{title}' on {repo}"
     risk: write
     scope_param: repo
     params:
@@ -453,7 +468,7 @@ actions:
   list_pull_requests:
     method: GET
     path: /repos/{repo}/pulls
-    description: "List pull requests"
+    description: "List pull requests on {repo}[ with state {state}]"
     risk: read
     scope_param: repo
     params:

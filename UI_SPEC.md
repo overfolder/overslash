@@ -507,7 +507,8 @@ A form-based editor for the service definition:
 - List of defined actions with name, method badge, path, risk badge
 - `[+ New Action]` button opens an inline form:
   - Name, HTTP method (dropdown), path template (with `{param}` placeholder syntax)
-  - Description, risk level (read / write / admin)
+  - Description template — supports `{param}` interpolation and `[conditional segments]`. Typing `{` triggers autocomplete from the action's defined params. Placeholders render as highlighted chips. Invalid placeholders (referencing non-existent params) show as validation warnings. Example: `Create pull request '{title}' on {repo}`
+  - Risk level (read / write / admin)
   - Scope param: which parameter drives the permission key arg (dropdown from defined params)
   - Parameters: add/remove rows — name, type (string / number / boolean / enum), required toggle, description, enum values if applicable
 - Click any action to expand and edit inline
