@@ -1,6 +1,6 @@
 # Overslash — Status
 
-**Current state**: Phase 2 in progress. Core backend fully functional with OAuth, service registry, and 3 execution modes.
+**Current state**: Phase 2 in progress. Core backend fully functional with OAuth, service registry, and unified action execution.
 
 ---
 
@@ -19,7 +19,7 @@
 - Rust/Axum backend with Cargo workspace (`crates/overslash-api`, `crates/overslash-core`)
 - PostgreSQL schema with sqlx migrations
 - Full CRUD: orgs, identities, secrets (versioned + encrypted), API keys
-- `POST /v1/actions/execute` — Mode A (raw HTTP with secret injection)
+- `POST /v1/actions/execute` �� raw HTTP with secret injection (`http` pseudo-service)
 - Permission rules (flat per-identity)
 - Approval workflow (create, resolve with allow/deny/allow_remember, expiry loop)
 - Audit trail (all actions, approvals, secret access)
@@ -33,8 +33,8 @@
 - Connections API (initiate, list, revoke)
 - Global service registry — YAML loader with search API
 - 7 service definitions shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- Mode B execution (connection-based, token auto-injected)
-- Mode C execution (service+action, registry-resolved, auth auto-resolved)
+- Connection-based execution (service + HTTP verb, token auto-injected)
+- Service+action execution (registry-resolved, auth auto-resolved)
 - X.com OAuth with PKCE support
 - Eventbrite OAuth provider support
 - E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
@@ -42,10 +42,10 @@
 ### Phase 2.5 — Dashboard (in progress)
 
 - SvelteKit dashboard scaffolded (`/dashboard/`) with TypeScript, Tailwind CSS, adapter-static
-- Developer Connection Tool — interactive API explorer supporting all 3 execution modes
+- Developer Connection Tool — interactive API explorer with unified execution flow
   - Service/action selector with method and risk badges
   - Auto-generated parameter forms from action schemas (text, number, enum dropdowns)
-  - Mode A (Raw HTTP), Mode B (Connection), Mode C (Service+Action) execution
+  - Supports defined actions, custom HTTP requests, and raw HTTP (`http` pseudo-service)
   - Response panel with JSON syntax highlighting, headers table, request inspector
   - API key management with localStorage persistence
 

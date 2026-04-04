@@ -37,6 +37,8 @@ Nav items: Dashboard, Services, API Explorer, Audit Log. Org Dashboard appears u
 
 **Profile is NOT a nav item.** Instead, the logged-in user's avatar and name appear at the bottom of the sidebar (desktop) or top-right (mobile). Clicking opens the User Profile view.
 
+**Notifications are NOT a nav item.** A notification bell icon sits in the top bar (right side, next to the user avatar). It shows a badge count of unresolved items (pending approvals + secret requests). Clicking opens a dropdown panel listing recent notifications grouped by type — each item links to the relevant approval or secret request. Notifications also appear inline as badges on each agent node in the Dashboard agent tree (see below). There is no separate notifications page.
+
 ## User Dashboard view
 
 The default view post-login, unless the user was already trying to go to another route.
@@ -76,8 +78,50 @@ When a node is selected, show:
 - **Agent name / ID**
 - **Status**: active / idle / errored
 - **Last action**: service + action name, timestamp, success/fail
-- **Pending approvals**: list of pending approval requests — this is the primary actionable element
+- **Pending approvals**: list of pending approval requests with inline resolution (see Approval Resolution below) — this is the primary actionable element
+- **Active permission rules**: summary count of remembered approval rules for this identity, with `[View rules]` link
 - **Links**: `[View executions]` `[View permissions]`
+
+### Approval resolution
+
+When a user resolves an approval (from the detail panel, notification dropdown, or standalone approval page), three options are presented:
+
+- **Allow** — one-time approval, no keys stored
+- **Allow & Remember** — opens the specificity picker (see below)
+- **Deny**
+
+#### Specificity picker (Allow & Remember)
+
+The dashboard reads `suggested_tiers` from the approval API and renders human-readable labels from the structured key parts (`service`, `action`, `arg`). The permission key string is shown as secondary text.
+
+```
+Allow & Remember — choose scope:
+
+  ○ Create pull request on overfolder/backend
+    github:create_pull_request:overfolder/backend
+
+  ○ Create pull request on any repo
+    github:create_pull_request:*
+
+  ○ All defined GitHub actions
+    github:defined:*
+
+  Expires: [24h ▾]                         [Confirm]
+```
+
+The labels are built by the dashboard from the structured parts — not from pre-baked strings in the API. This is the same pattern agent platforms use to render in their own language and UI format.
+
+For `http` service approvals, tiers compose the paired keys:
+
+```
+  ○ POST to api.example.com with api_key
+    http:POST:api.example.com + secret:api_key:api.example.com
+
+  ○ Any request to api.example.com with api_key
+    http:ANY:api.example.com + secret:api_key:api.example.com
+```
+
+The standalone approval page (`/approve/apr_...?token=jwt`) renders the same picker — it consumes the same API.
 
 ### Live updates
 
@@ -100,8 +144,7 @@ The agent tree supports creating, editing, and deleting agents directly.
 
 - **Agent name** (required)
 - **Parent** — defaults to the user, dropdown/tree-picker to choose another position in the user's subtree
-- **Permission groups** — multi-select from available groups
-- **`inherit_permissions`** — checkbox
+- **`inherit_permissions`** — checkbox (if checked, agent inherits parent's current + future rules)
 - **TTL** — optional, for ephemeral agents
 
 On submit, shows a **one-time enrollment snippet** designed to be pasted into the agent's conversation:
@@ -148,7 +191,6 @@ The user sees:
 └─────────────────────────────┘
 ```
 
-- **Permission groups** — multi-select from available groups
 - **No `inherit_permissions` option** — the user configures this after enrollment if desired
 
 Actions: `[Approve & Enroll]` and `[Deny]`.
@@ -162,12 +204,63 @@ When an agent is selected in the tree, the detail panel includes management cont
 - **Name** — click to edit inline
 - **Origin** — badge showing "user-created" or "self-enrolled"
 - **Parent** — displayed with a `[Move]` action to reparent (opens tree picker)
-- **Permission groups** — list with `[Edit]` to add/remove groups
+- **Permission rules** — read-only list of active permission keys for this identity (see Permission Rules below)
 - **`inherit_permissions`** — toggle, configurable at any time
 - **API Keys** — list with prefix, created/last-used dates, `[Revoke]` per key, `[+ New Key]`
-- **Actions** — `[View executions]` `[View permissions]` `[Delete agent]`
+- **Remembered approvals** — list of "Allow & Remember" rules active for this identity (see Remembered Approvals below)
+- **Actions** — `[View executions]` `[Delete agent]`
 
 Delete shows a confirmation dialog warning about child identities that will be deleted.
+
+#### Permission rules
+
+Permission rules are expressed as **permission keys** — structured strings in the format `{service}:{action}:{arg}` that encode what an identity is auto-approved to do. Keys are never written by hand — they are created when a user clicks "Allow & Remember" on an approval request. They build up organically as agents are used.
+
+The permission rules section in the detail panel shows a read-only view:
+
+```
+Permission Rules for agent:henry
+
+Key                                          Source          Expires
+──────────────────────────────────────────────────────────────────────
+github:create_pull_request:overfolder/*      remembered      2026-04-08
+github:GET:*                                 remembered      never
+slack:send_message:#engineering              remembered      2026-04-15
+stripe:defined:*                             inherited       —
+```
+
+- **Key** — the permission key string (`{service}:{action}:{arg}`)
+- **Source** — `remembered` (from "Allow & Remember" approval) or `inherited` (from parent via `inherit_permissions`)
+- **Expires** — TTL from the approval, "never" if no expiry, or "—" for inherited rules
+- Inherited rules link to the parent identity. Remembered rules link to the approval event that created them.
+
+ALL permission keys for a request must be covered for auto-approval. A single missing key triggers the approval flow.
+
+#### Remembered approvals
+
+When a user clicks "Allow & Remember" on an approval, the system stores permission key rules that auto-approve matching future requests. These rules are scoped to the identity that triggered the original request. This is the only way permission keys are created — users never write them by hand.
+
+The remembered approvals section shows:
+
+```
+Remembered Approvals for agent:henry
+
+Permission Keys                                    Approved By    Approved At         Expires
+──────────────────────────────────────────────────────────────────────────────────────────────
+github:create_pull_request:overfolder/*            alice          2026-04-01 10:30    2026-04-08
+http:POST:api.example.com                          alice          2026-03-28 14:00    never
+  + secret:api_key:api.example.com
+
+                                                                        [Revoke] per rule
+```
+
+- Rules are grouped by the approval event — each "Allow & Remember" produces a set of permission keys that were approved together
+- **Approved by** — which user approved
+- **Approved at** — timestamp
+- **Expires** — TTL from the approval, or "never" if no expiry was set
+- **`[Revoke]`** — removes the remembered approval, requiring re-approval for matching requests
+
+This view is also accessible from the User Profile (showing all remembered approvals across the user's subtree) and from the Org Dashboard for org-admins.
 
 ## User Profile view
 
@@ -251,6 +344,25 @@ When an agent requests a secret that doesn't exist (via the API), a banner appea
 
 `[Provide]` opens the value input (creates the secret). `[Deny]` dismisses the request. This is the inline version of the standalone secret request page (`/secrets/provide/req_...?token=jwt`).
 
+### Remembered Approvals
+
+A view of all "Allow & Remember" rules across the user's subtree (their own identity + all agents and sub-agents). This is the primary place to audit and manage what has been auto-approved.
+
+```
+Remembered Approvals
+
+Identity                    Permission Keys                                    Approved At         Expires        Actions
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+agent:henry                 github:create_pull_request:overfolder/*            2026-04-01 10:30    2026-04-08     [Revoke]
+agent:henry                 http:POST:api.example.com                          2026-03-28 14:00    never          [Revoke]
+                              + secret:api_key:api.example.com
+agent:builder/sa:coder      github:GET:*                                       2026-03-25 09:00    2026-04-25     [Revoke]
+```
+
+- **Filtering**: by identity (pick from agent tree), by service/host, by expiry status (active, expired, never-expiring)
+- **Bulk revoke**: not supported — each rule is individually revocable to maintain granularity
+- Expired rules are greyed out and shown in a separate "Expired" section, auto-hidden after 30 days
+
 ### Enrollment Tokens
 
 Enrollment tokens are generated via the `[+ New Agent]` flow in the Dashboard agent tree (see **Inline identity management**). This section shows a read-only list of the user's active (unused) tokens with creation date and expiry. Revoke button per token.
@@ -283,10 +395,26 @@ Clicking a user navigates to their dashboard — this reuses the **User Dashboar
 
 ### Groups
 
-A section/tab within the Org Dashboard for managing user groups.
+A section/tab within the Org Dashboard for managing user groups. Groups define the coarse-grained permission ceiling — which services and access levels are available to members.
 
-- **Groups list**: name, member count, shared services count
-- **Group detail**: member list (add/remove users), list of services shared with this group
+- **Groups list**: name, member count, service grant count
+- **Group detail**:
+  - **Members**: list with add/remove
+  - **Service grants**: permission key patterns that define the ceiling for this group. Managed by org-admins.
+
+```
+Group: Engineering
+
+Service Grants
+──────────────────────────────────────────
+github:ANY:*               Full GitHub API access
+slack:defined:*            Slack — predefined actions only
+stripe:defined:*           Stripe — predefined actions only
+google_calendar:ANY:*      Full Google Calendar API access
+```
+
+Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known services and choose the access tier (`defined`, `ANY`, specific verbs, or specific actions). The UI presents this as dropdowns — not as raw key strings to type.
+
 - **"Everyone"** group is always present, cannot be deleted, all users are implicit members
 
 ## Services view
@@ -411,37 +539,30 @@ An interactive tool for testing and debugging service connections through Oversl
 
 Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the nav item is not shown.
 
-### Execution modes
+### Unified flow
 
-The explorer maps directly to Overslash's three execution modes, presented as tabs:
+The explorer uses a single flow — no separate tabs or modes. The level of abstraction is determined by what the user selects:
 
-**Mode C — Service + Action** (default, simplest):
-- Pick a service from a dropdown (only connected services)
-- Pick an action from the service registry (dropdown, with human-readable descriptions)
-- Auto-generated form: the registry defines the action's parameters, so the explorer renders input fields for each one (text, dropdown, checkbox as appropriate)
-- Hit **Execute** → shows result
+1. **Pick a service** — dropdown showing services available through the user's groups (connected services prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
 
-This is the beginner-friendly mode. No URLs, no headers, no HTTP knowledge required.
+2. **Pick an action** — adapts to the selected service and the user's group grants:
+   - **Defined actions** listed first with human-readable descriptions and risk badges (e.g., `create_pull_request — Create a pull request [write]`)
+   - **"Custom Request"** appears at the bottom if the user's group grants HTTP verb access for this service (e.g., `github:ANY:*` or `github:POST:*`). Opens method + path + body inputs, with auth auto-injected from the connection.
+   - For **"Raw HTTP"** service: always shows method + full URL + headers + body + secret selector (pick from user's secrets, specify injection method per secret)
 
-**Mode B — Connection-based**:
-- Pick a connection from a dropdown
-- Enter a path (e.g., `/repos/acme/app/pulls`)
-- Pick HTTP method (GET/POST/PUT/PATCH/DELETE)
-- Optional: request body (JSON editor), query parameters (key-value pairs)
-- Auth is injected automatically from the selected connection
-- Hit **Execute** → shows result
+3. **Fill parameters** — auto-generated form for defined actions (text, number, enum dropdowns from the registry schema). Method + path + JSON body editor for custom requests. Full URL + secret injection config for raw HTTP.
 
-For users who know the API but want Overslash to handle auth.
+4. **Execute** → response panel
+
+The explorer naturally adapts to what the user is allowed to do. A user with `github:defined:*` sees only defined GitHub actions. A user with `github:ANY:*` also sees "Custom Request". A user without `http` in any group never sees the raw HTTP option.
 
 ### Response panel
-
-All modes share the same response display:
 
 - **Status code** (color-coded: 2xx green, 4xx yellow, 5xx red)
 - **Response time**
 - **Headers** (collapsible)
 - **Body** (syntax-highlighted JSON, with raw/pretty toggle)
-- **Permission chain**: which identity was used, whether an approval was needed/resolved
+- **Permission keys derived**: shows which `{service}:{action}:{arg}` keys were checked for this request
 
 ### Identity
 

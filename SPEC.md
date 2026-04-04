@@ -114,7 +114,7 @@ Org (acme)
 
 Two enrollment flows connect agents to the identity hierarchy:
 
-**User-initiated enrollment**: A user creates the agent identity in the dashboard or via API, providing a name, parent placement, optional permission groups, and optional `inherit_permissions` flag. Overslash returns a single-use enrollment token. The user pastes the enrollment snippet (containing the Overslash URL, token, and a link to `overslash.dev/enrollment/SKILL.md`) into the agent's conversation. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
+**User-initiated enrollment**: A user creates the agent identity in the dashboard or via API, providing a name, parent placement, and optional `inherit_permissions` flag. Overslash returns a single-use enrollment token. The user pastes the enrollment snippet (containing the Overslash URL, token, and a link to `overslash.dev/enrollment/SKILL.md`) into the agent's conversation. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
 
 The enrollment token has a **fixed 15-minute TTL**. The agent identity appears in the hierarchy immediately in a **pending enrollment** state (inactive until token exchange). If the token expires unused, the pending identity is cleaned up automatically.
 
@@ -122,7 +122,7 @@ The enrollment token has a **fixed 15-minute TTL**. The agent identity appears i
 
 - **Edit the agent's proposed name** (pre-filled but fully editable)
 - **Choose placement** in the hierarchy (defaults to directly under the approving user)
-- **Assign permission groups**
+- **Review default settings** (inherit_permissions, etc.)
 
 The consent URL is scoped to the org. Any authenticated user in the org with agent-creation permissions can approve — not just one specific user. After approval, the agent's token is exchanged for a permanent API key server-side. The agent, polling or via webhook, picks up the key.
 
@@ -133,8 +133,8 @@ Note: `inherit_permissions` is not offered during agent-initiated enrollment —
 After enrollment, an identity's configuration remains mutable:
 
 - **Parent**: an identity can be reparented to a different position in the hierarchy (within the user's subtree)
-- **Permission groups**: can be added or removed at any time
 - **`inherit_permissions`**: can be enabled or disabled at any time
+- **Remembered approvals**: can be viewed and revoked per identity
 
 ### `inherit_permissions`
 
@@ -144,18 +144,135 @@ A live pointer (not a copy). When set on an identity, it dynamically has whateve
 
 ## 5. Permission System
 
+### Unified Permission Key Format
+
+All permissions in Overslash use a single key format:
+
+```
+{service}:{action}:{arg}
+```
+
+This format covers every level of abstraction — from registry-defined actions to raw HTTP:
+
+| Key | Meaning |
+|-----|---------|
+| `github:create_pull_request:overfolder/*` | Defined registry action, scoped to repos |
+| `github:defined:*` | Any registry-defined action on GitHub |
+| `github:POST:/repos/*/pulls` | Specific HTTP verb + path against GitHub |
+| `github:ANY:*` | Any HTTP request against GitHub |
+| `http:POST:api.example.com` | Raw HTTP to a specific host |
+| `http:ANY:*` | Unrestricted HTTP proxy |
+| `secret:gh_token:api.github.com` | Inject a specific secret toward a specific host |
+
+**Special action values:**
+- **HTTP verbs** (`GET`, `POST`, `PUT`, `DELETE`, etc.) — allow specific HTTP methods against the service
+- **`ANY`** — allow any HTTP method
+- **`defined`** — allow only actions defined in the service registry (no raw HTTP verbs)
+
+**Pseudo-services:**
+- **`http`** — raw HTTP access with no service abstraction. The arg is the target host. Most orgs won't grant this — it turns Overslash into a general HTTP proxy.
+- **`secret`** — secret injection gating. The action is the secret name, the arg is the target host. Required alongside `http` keys when secrets are injected. Prevents a secret approved for one host from being exfiltrated to another.
+
+### Two-Layer Model
+
+Permissions are enforced in two layers:
+
+**Layer 1: Groups (coarse-grained ceiling, org-admin managed)**
+
+Groups define which services are available and at what access level. They constrain users, and agents inherit their owner-user's group ceiling. A request that exceeds the group ceiling is denied outright — no approval can override it.
+
+Group examples:
+- "Engineering": `github:ANY:*`, `slack:defined:*`, `stripe:defined:*`
+- "Admin": adds `http:ANY:*`, `secret:*:*`
+- "Read-only": `github:GET:*`, `slack:GET:*`
+
+Three tiers of trust emerge naturally:
+1. **`{service}:defined:*`** — locked to predefined registry actions. Safest.
+2. **`{service}:ANY:*`** — arbitrary API calls against known services. Mid trust.
+3. **`http:ANY:*`** — full HTTP proxy with secret injection. Highest trust.
+
+**Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
+
+Within the group ceiling, agents require specific permission keys for each action. Keys are created when a user clicks "Allow & Remember" on an approval — they are never written by hand. Permission keys build up organically as agents are used and users approve their actions. Users acting through the dashboard or API Explorer are gated by groups only — they are their own approvers.
+
+### Resolution Flow
+
+1. Agent makes a request → system derives permission keys from the request
+2. **Group check**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
+3. **Permission key check**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
+4. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
+
 ### Hierarchical Resolution
 
 When a sub-agent executes an action, every level in the ancestor chain must authorize:
 
-1. Check sub-agent → has rule or `inherit_permissions`? Pass, continue up.
-2. Check agent → has rule? Pass, continue up.
-3. Check user → has rule? Pass. All levels authorized → **execute**.
-4. First level without a rule and without `inherit_permissions` → **gap**. Create approval at that level.
+1. Check sub-agent → has matching key or `inherit_permissions`? Pass, continue up.
+2. Check agent → has matching key? Pass, continue up.
+3. Check user → within group ceiling? Pass. All levels authorized → **execute**.
+4. First level without a matching key and without `inherit_permissions` → **gap**. Create approval at that level.
 
 ### Approval Bubbling
 
 The approval is created at the gap level. That level's ancestors can resolve it. This means agents approve for their sub-agents without pestering the user.
+
+### Remembered Approvals
+
+"Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Users can view and revoke remembered approvals per identity via the dashboard.
+
+### Specificity Tiers
+
+When an approval is created, Overslash derives the most specific permission keys from the request and generates broader alternatives by progressively replacing segments with `*`. These are returned as structured data in the approval payload — no human-readable labels, so platforms can render them in any language or UI format.
+
+```json
+{
+  "id": "apr_abc123",
+  "status": "pending",
+  "identity": "spiffe://acme/user/alice/agent/henry",
+  "derived_keys": [
+    { "key": "github:create_pull_request:overfolder/backend",
+      "service": "github", "action": "create_pull_request", "arg": "overfolder/backend" }
+  ],
+  "suggested_tiers": [
+    { "keys": ["github:create_pull_request:overfolder/backend"] },
+    { "keys": ["github:create_pull_request:*"] },
+    { "keys": ["github:defined:*"] }
+  ]
+}
+```
+
+For multi-key requests (e.g., `http` service with secret injection), keys within each tier broaden together as coherent sets — not as independent per-key choices. This keeps tiers to 2-4 options regardless of how many keys the request derives:
+
+```json
+{
+  "derived_keys": [
+    { "key": "http:POST:api.example.com", "service": "http", "action": "POST", "arg": "api.example.com" },
+    { "key": "secret:api_key:api.example.com", "service": "secret", "action": "api_key", "arg": "api.example.com" }
+  ],
+  "suggested_tiers": [
+    { "keys": ["http:POST:api.example.com", "secret:api_key:api.example.com"] },
+    { "keys": ["http:ANY:api.example.com", "secret:api_key:api.example.com"] }
+  ]
+}
+```
+
+The resolve endpoint accepts keys directly:
+
+```json
+POST /v1/approvals/{id}/resolve
+{
+  "resolution": "allow_remember",
+  "remember_keys": ["github:create_pull_request:*"],
+  "ttl": "24h"
+}
+```
+
+`resolution` can be `allow` (one-time, no keys stored), `allow_remember` (stores keys), or `deny`. `remember_keys` can be a suggested tier verbatim or a custom set — Overslash validates that the keys don't exceed the group ceiling.
+
+**Design principles:**
+
+- **Overslash generates tiers; platforms render them.** The structured parts (`service`, `action`, `arg`) give platforms everything they need to build labels in any language. Overslash is not a translation service.
+- **Suggested tiers are convenience, not a constraint.** Platforms with 2 buttons can just use "Allow" + "Allow & Remember" (most specific tier). Platforms with more room can show multiple tiers. Overslash's own dashboard renders the full picker.
+- **2-4 tiers max.** Multi-key actions compose within tiers to avoid combinatorial explosion.
 
 ### Org-Level ACL
 
@@ -166,11 +283,7 @@ Within an org, access control determines which users can see and manage which re
 - Which users can resolve approvals for other users' agents
 - Org-admin vs member vs read-only roles
 
-This is distinct from the per-identity permission rules (which gate action execution). ACL controls who can administer Overslash itself within an org.
-
-### Permission Rules
-
-Rules have optional expiry. "Allow & Remember" on an approval creates a persistent rule at the level the approver chooses, with optional TTL.
+This is distinct from the permission key system (which gates action execution). ACL controls who can administer Overslash itself within an org.
 
 ---
 
@@ -216,18 +329,29 @@ Connections are created at the user level (even when initiated by an agent). All
 
 ### `POST /v1/actions/execute`
 
-Three modes:
+All action execution goes through a single endpoint. The caller specifies a service and action — the level of abstraction is determined by what they choose, not by separate API "modes":
 
-**Mode A: Raw HTTP** — agent knows the exact request, specifies secret injection.
+**Service + defined action** — the caller names a service and a registry-defined action (e.g., `github` + `create_pull_request`). Overslash builds the HTTP request from the service definition. Auth auto-resolved from connections/secrets. This is the simplest and safest path — agents don't need to know URLs or HTTP methods. Derives key: `github:create_pull_request:{resource}`.
 
-**Mode B: Connection-based** — use a specific OAuth connection, token auto-injected.
+**Service + HTTP verb** — the caller names a service/connection and an HTTP method + path (e.g., `github` + `POST /repos/X/pulls`). Auth is auto-injected from the connection. For agents that know the API but want Overslash to handle auth. Derives key: `github:POST:/repos/X/pulls`.
 
-**Mode C: Service + Action** — registry-resolved. Overslash builds the HTTP request from the service definition. Auth auto-resolved from connections/secrets.
+**`http` service** — the caller uses the `http` pseudo-service with a full URL, method, headers, body, and secret injection metadata. This is the lowest-level path — agents construct the full request. Requires `http` in the user's group. Derives keys: `http:POST:api.github.com` + `secret:gh_token:api.github.com`.
+
+These are not separate API modes — they are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
 
 ### Gating
 
-- No auth involved → execute directly (no gate)
-- Auth involved → walk permission chain → all pass → execute; gap found → create approval
+Every request derives permission keys. Resolution follows the two-layer model (§5):
+
+1. Group ceiling check (service + access level)
+2. Permission key check (all derived keys must be covered)
+3. If uncovered → approval request → user decides → "Allow & Remember" stores keys
+
+### Secret Injection (`http` service only)
+
+When using the `http` pseudo-service, the caller specifies how each secret should be injected per-call (as header, query param, or cookie). This generates `secret:{name}:{host}` permission keys alongside the `http:{METHOD}:{host}` key. Both must be covered for auto-approval.
+
+For service-based requests, auth is resolved automatically from connections — no manual secret injection needed.
 
 ### Human-Readable Descriptions
 
@@ -294,7 +418,7 @@ Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 - **User profile** — authenticated user info, API keys, settings
 - **Org/User/Agent hierarchy** — tree view of the identity hierarchy, with inline management (create, edit, delete, enrollment tokens)
 - **Connected services** — which services have active connections, their status, and quick actions (reconnect, revoke)
-- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service and action from the registry, fill in parameters, and execute via Mode B/C. Similar to Swagger UI or Postman but integrated with Overslash auth. Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
+- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and execute. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
 - **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
 
 ### Org-Admin Views
