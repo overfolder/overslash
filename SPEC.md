@@ -234,6 +234,8 @@ The core trust assumption: **agents are not trusted to approve their own actions
 
 **There is no self-authenticating approval URL.** Approval resolution always requires credentials of an identity with authority over the requesting identity. This prevents an agent from obtaining and resolving its own approval link.
 
+**Overslash-hosted approval page:** Overslash provides a deep-link URL for each approval: `https://acme.overslash.dev/approvals/apr_abc123`. This page requires login — if the logged-in user has authority to resolve the approval, they see the full approval details and specificity picker. If not logged in, they hit the login page and get redirected back. Platforms can include this URL when surfacing approvals to users as a zero-integration-effort path — the platform doesn't need to build its own approval UI. The platform decides whether to link to Overslash's page or handle resolution in its own UX.
+
 (The secret request page at `/secrets/provide/req_...?token=jwt` uses a signed URL because providing a secret doesn't grant the agent authority — the agent still needs a separate approval to use it.)
 
 ### Remembered Approvals
@@ -459,9 +461,8 @@ My Connections, My Secrets (names + versions), Approvals (pending, one-click res
 
 ### Standalone Pages
 
+- **Approval resolution**: `https://acme.overslash.dev/approvals/apr_abc123` — requires login. Shows approval details and specificity picker for authorized users. Platforms can link here as a zero-effort integration path. See §5 Trust Model.
 - **Secret request**: `https://overslash.dev/secrets/provide/req_...?token=jwt` — secure input field for secret provisioning (no login required, signed URL). This is safe because providing a secret doesn't grant the agent any new authority — the agent still needs approval to use it.
-
-Note: there is **no standalone approval resolution page**. Approvals are resolved through the dashboard (logged-in user) or through the platform's own UX calling the resolve API with user credentials. See §5 Trust Model.
 
 ---
 

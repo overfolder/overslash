@@ -121,7 +121,7 @@ For `http` service approvals, tiers compose the paired keys:
     http:ANY:api.example.com + secret:api_key:api.example.com
 ```
 
-There is no standalone self-authenticating approval page — approvals are always resolved by an authenticated user, either through this dashboard or through the agent platform's own UX calling the resolve API with user credentials (see SPEC.md §5 Trust Model).
+Overslash also hosts a deep-link approval page at `/approvals/apr_...` (requires login) so platforms can link users directly without building their own approval UI. The page shows the same approval details and specificity picker. The platform decides whether to link here or handle resolution in its own UX.
 
 ### Live updates
 
