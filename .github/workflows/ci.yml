@@ -133,12 +133,12 @@ jobs:
           # Run manually with: cargo test -- --ignored
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: overfolder/overslash
           fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Coverage summary
         run: cargo llvm-cov --workspace --summary-only --no-run
