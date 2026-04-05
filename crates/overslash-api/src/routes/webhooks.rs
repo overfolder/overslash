@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
-    routing::{delete, post},
+    extract::{Path, Query, State},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -10,7 +10,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 
 use crate::{
     AppState,
-    error::Result,
+    error::{AppError, Result},
     extractors::{AuthContext, ClientIp},
 };
 
@@ -18,6 +18,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/webhooks", post(create_webhook).get(list_webhooks))
         .route("/v1/webhooks/{id}", delete(delete_webhook))
+        .route("/v1/webhooks/{id}/deliveries", get(list_deliveries))
 }
 
 #[derive(Deserialize)]
@@ -122,4 +123,60 @@ async fn delete_webhook(
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+// ── Delivery log ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct DeliveryQuery {
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+#[derive(Serialize)]
+struct DeliveryResponse {
+    id: Uuid,
+    subscription_id: Uuid,
+    event: String,
+    status_code: Option<i32>,
+    response_body: Option<String>,
+    attempts: i32,
+    delivered_at: Option<String>,
+    created_at: String,
+}
+
+async fn list_deliveries(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+    Query(query): Query<DeliveryQuery>,
+) -> Result<Json<Vec<DeliveryResponse>>> {
+    // Verify the subscription belongs to this org
+    let subs = overslash_db::repos::webhook::list_by_org(&state.db, auth.org_id).await?;
+    if !subs.iter().any(|s| s.id == id) {
+        return Err(AppError::NotFound("webhook not found".into()));
+    }
+
+    let limit = query.limit.clamp(1, 200);
+    let rows =
+        overslash_db::repos::webhook::list_deliveries_by_subscription(&state.db, id, limit).await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| DeliveryResponse {
+                id: r.id,
+                subscription_id: r.subscription_id,
+                event: r.event,
+                status_code: r.status_code,
+                response_body: r.response_body,
+                attempts: r.attempts,
+                delivered_at: r.delivered_at.map(|d| d.to_string()),
+                created_at: r.created_at.to_string(),
+            })
+            .collect(),
+    ))
 }

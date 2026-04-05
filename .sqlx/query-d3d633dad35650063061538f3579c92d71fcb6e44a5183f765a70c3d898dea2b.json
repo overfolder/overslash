@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, slug, created_at, updated_at FROM orgs WHERE slug = $1",
+  "query": "INSERT INTO orgs (name, slug) VALUES ($1, $2)\n         RETURNING id, name, slug, allow_user_templates, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -20,17 +20,23 @@
       },
       {
         "ordinal": 3,
+        "name": "allow_user_templates",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Text"
       ]
     },
@@ -39,8 +45,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "a727c38f669c64fe9eba8bebca8caef946493259b281c9069b58f45a2f05d59a"
+  "hash": "d3d633dad35650063061538f3579c92d71fcb6e44a5183f765a70c3d898dea2b"
 }

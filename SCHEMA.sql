@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict smE7zXluL505AywONu7TTN7venulCE9iFjSZaueZofySjdxdoOeu1kaNf1k4gn6
+\restrict miSrB1QITZEewIoulFDQqvbbkj3nlVq0tiQgGqxDP373I0rgBgd90c0HnTWqbpX
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -261,7 +261,8 @@ CREATE TABLE public.orgs (
     name text NOT NULL,
     slug text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    allow_user_templates boolean DEFAULT true NOT NULL
 );
 
 
@@ -1244,5 +1245,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict smE7zXluL505AywONu7TTN7venulCE9iFjSZaueZofySjdxdoOeu1kaNf1k4gn6
+\unrestrict miSrB1QITZEewIoulFDQqvbbkj3nlVq0tiQgGqxDP373I0rgBgd90c0HnTWqbpX
 

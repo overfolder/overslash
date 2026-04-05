@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, slug, created_at, updated_at FROM orgs WHERE id = $1",
+  "query": "SELECT id, name, slug, allow_user_templates, created_at, updated_at FROM orgs WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -20,11 +20,16 @@
       },
       {
         "ordinal": 3,
+        "name": "allow_user_templates",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -39,8 +44,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "158401822a56e4af2c97b7cb3eb537fa694b0b6901db86f7f33acf5f5ae5d228"
+  "hash": "a446ea908625db35869c2e22371db0c054e2a1d4008ff5b9fe5092d6403317c9"
 }
