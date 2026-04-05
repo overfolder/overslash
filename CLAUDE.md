@@ -12,6 +12,9 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 | Find what to work on | [TODO.md](TODO.md) |
 | Understand a known workaround | [TECH_DEBT.md](TECH_DEBT.md) |
 | Find a design doc | [docs/design/INDEX.md](docs/design/INDEX.md) |
+| Understand the UI | [UI_SPEC.md](UI_SPEC.md) |
+| Visual design reference | [Figma](https://www.figma.com/design/g385jjr9vo48bWqZq2yKCi) |
+| Design tokens (CSS) | [dashboard/src/lib/styles/design-tokens.css](dashboard/src/lib/styles/design-tokens.css) |
 
 ## Tech Stack
 
