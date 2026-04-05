@@ -72,6 +72,7 @@ async fn create_permission(
                 "action_pattern": &row.action_pattern,
                 "effect": &row.effect,
             }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -125,6 +126,7 @@ async fn delete_permission(
                 resource_type: Some("permission_rule"),
                 resource_id: Some(id),
                 detail: serde_json::json!({}),
+                description: None,
                 ip_address: ip.0.as_deref(),
             },
         )

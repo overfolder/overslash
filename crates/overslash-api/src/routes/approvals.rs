@@ -172,6 +172,7 @@ async fn resolve_approval(
                 "status": &row.status,
                 "action_summary": &row.action_summary,
             }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )

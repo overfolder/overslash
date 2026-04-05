@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use overslash_db::repos::audit;
+use overslash_db::repos::{audit, identity};
 
 use crate::{AppState, error::Result, extractors::AuthContext};
 
@@ -15,7 +17,9 @@ pub fn router() -> Router<AppState> {
 struct AuditEntry {
     id: Uuid,
     identity_id: Option<Uuid>,
+    identity_name: Option<String>,
     action: String,
+    description: Option<String>,
     resource_type: Option<String>,
     resource_id: Option<Uuid>,
     detail: serde_json::Value,
@@ -76,17 +80,50 @@ async fn query_audit(
     };
 
     let rows = audit::query_filtered(&state.db, &filter).await?;
+
+    // Batch-resolve identity names
+    let identity_ids: Vec<Uuid> = rows
+        .iter()
+        .filter_map(|r| r.identity_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let name_map: HashMap<Uuid, String> = if identity_ids.is_empty() {
+        HashMap::new()
+    } else {
+        identity::get_names_by_ids(&state.db, &identity_ids)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("failed to resolve identity names for audit response: {e}");
+                Vec::new()
+            })
+            .into_iter()
+            .collect()
+    };
+
     Ok(Json(
         rows.into_iter()
-            .map(|r| AuditEntry {
-                id: r.id,
-                identity_id: r.identity_id,
-                action: r.action,
-                resource_type: r.resource_type,
-                resource_id: r.resource_id,
-                detail: r.detail,
-                ip_address: r.ip_address,
-                created_at: r.created_at,
+            .map(|r| {
+                let identity_name = r.identity_id.and_then(|id| name_map.get(&id).cloned());
+                // Fall back to detail.description for pre-migration entries
+                let description = r.description.or_else(|| {
+                    r.detail
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                });
+                AuditEntry {
+                    id: r.id,
+                    identity_id: r.identity_id,
+                    identity_name,
+                    action: r.action,
+                    description,
+                    resource_type: r.resource_type,
+                    resource_id: r.resource_id,
+                    detail: r.detail,
+                    ip_address: r.ip_address,
+                    created_at: r.created_at,
+                }
             })
             .collect(),
     ))

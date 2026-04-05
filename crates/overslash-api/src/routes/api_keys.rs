@@ -52,6 +52,7 @@ async fn create_api_key(
             resource_type: Some("api_key"),
             resource_id: Some(row.id),
             detail: serde_json::json!({ "name": &row.name, "key_prefix": &key_prefix }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )

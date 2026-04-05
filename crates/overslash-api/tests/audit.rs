@@ -83,6 +83,7 @@ fn entry<'a>(
         resource_type,
         resource_id,
         detail,
+        description: None,
         ip_address: None,
     }
 }
@@ -200,6 +201,7 @@ async fn test_audit_log_with_ip_address() {
             resource_type: None,
             resource_id: None,
             detail: json!({}),
+            description: None,
             ip_address: Some("192.168.1.42"),
         },
     )
@@ -644,6 +646,8 @@ async fn test_audit_api_response_shape() {
     assert!(entry["detail"].is_object());
     assert!(entry["created_at"].is_string());
     assert!(entry.get("identity_id").is_some());
+    assert!(entry.get("identity_name").is_some());
+    assert!(entry.get("description").is_some());
     assert!(entry.get("resource_type").is_some());
     assert!(entry.get("resource_id").is_some());
     assert!(entry.get("ip_address").is_some());
@@ -805,6 +809,25 @@ async fn test_audit_action_executed() {
         entries[0]["identity_id"].as_str().unwrap(),
         ident_id.to_string()
     );
+
+    // Human-readable description: Mode A generates "METHOD host/path"
+    let desc = entries[0]["description"]
+        .as_str()
+        .expect("description should be present");
+    assert!(
+        desc.starts_with("POST "),
+        "Mode A description should start with method: {desc}"
+    );
+    assert!(
+        desc.contains("/echo"),
+        "Mode A description should contain path: {desc}"
+    );
+
+    // Identity name should be resolved
+    assert!(
+        entries[0]["identity_name"].is_string(),
+        "identity_name should be resolved"
+    );
 }
 
 // ===========================================================================
@@ -849,6 +872,11 @@ async fn test_audit_approval_created() {
     assert_eq!(
         entries[0]["identity_id"].as_str().unwrap(),
         ident_id.to_string()
+    );
+    // approval.created should have a description matching the summary
+    assert!(
+        entries[0]["description"].is_string(),
+        "approval.created should have a description"
     );
 }
 

@@ -66,6 +66,7 @@ async fn put_secret(
             resource_type: Some("secret"),
             resource_id: None,
             detail: serde_json::json!({ "name": &secret.name, "version": secret.current_version }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -124,6 +125,7 @@ async fn delete_secret(
                 resource_type: Some("secret"),
                 resource_id: None,
                 detail: serde_json::json!({ "name": &name }),
+                description: None,
                 ip_address: ip.0.as_deref(),
             },
         )

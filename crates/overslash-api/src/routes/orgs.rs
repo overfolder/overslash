@@ -39,6 +39,7 @@ async fn create_org(
             resource_type: Some("org"),
             resource_id: Some(org.id),
             detail: serde_json::json!({ "name": &org.name, "slug": &org.slug }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )

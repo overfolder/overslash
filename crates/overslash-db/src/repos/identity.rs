@@ -171,6 +171,16 @@ pub async fn get_ancestor_chain(
     .await
 }
 
+pub async fn get_names_by_ids(
+    pool: &PgPool,
+    ids: &[Uuid],
+) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    let rows = sqlx::query!("SELECT id, name FROM identities WHERE id = ANY($1)", ids,)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|r| (r.id, r.name)).collect())
+}
+
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM identities WHERE id = $1", id)
         .execute(pool)
