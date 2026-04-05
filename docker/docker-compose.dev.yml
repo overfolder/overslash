@@ -26,6 +26,7 @@ services:
       DATABASE_URL: postgres://overslash:overslash@postgres:5432/overslash
       HOST: 0.0.0.0
       RUSTUP_TOOLCHAIN: stable
+      SQLX_OFFLINE: "true"
     ports:
       - "3000:3000"
     volumes:
