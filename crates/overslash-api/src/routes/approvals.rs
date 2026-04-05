@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
 
+use overslash_core::permissions::{GroupCeilingResult, parse_derived_key};
+use overslash_core::types::service::Risk;
+
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -109,20 +112,19 @@ async fn resolve_approval(
             parsed_expires_at =
                 time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0));
         }
-        if let Some(ref keys) = req.remember_keys {
+        let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+
+        // Determine which keys will be stored: explicit remember_keys or fallback to permission_keys
+        let effective_keys: &[String] = if let Some(ref keys) = req.remember_keys {
             if keys.is_empty() {
                 return Err(AppError::BadRequest(
                     "remember_keys must not be empty".into(),
                 ));
             }
-            let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
-                .await?
-                .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
-            // Build the set of all keys that appear in any suggested tier.
-            // remember_keys must be a subset of these to prevent privilege escalation
-            // (e.g., submitting `*:*:*`). Once group ceilings are implemented, this
-            // validation will be replaced by a group ceiling check.
+            // Validate against suggested tiers (prevents submitting `*:*:*`)
             let tiers = overslash_core::permissions::suggest_tiers(&approval.permission_keys);
             let allowed_keys: std::collections::HashSet<&str> = tiers
                 .iter()
@@ -133,6 +135,38 @@ async fn resolve_approval(
                 if !allowed_keys.contains(key.as_str()) {
                     return Err(AppError::BadRequest(format!(
                         "remember_key '{key}' is not in any suggested tier"
+                    )));
+                }
+            }
+
+            keys
+        } else {
+            &approval.permission_keys
+        };
+
+        // Validate keys don't exceed group ceiling (applies to both explicit and fallback keys)
+        let ceiling_user_id = crate::services::group_ceiling::resolve_ceiling_user_id(
+            &state.db,
+            approval.identity_id,
+        )
+        .await?;
+
+        let ceiling =
+            crate::services::group_ceiling::load_ceiling(&state.db, ceiling_user_id).await?;
+
+        if ceiling.has_groups {
+            for key in effective_keys {
+                let dk = parse_derived_key(key);
+                // Check that the service is in the group at any access level.
+                // The execution-time ceiling check will enforce the actual access level.
+                let result = crate::services::group_ceiling::check_ceiling(
+                    &ceiling,
+                    &dk.service,
+                    Risk::Read,
+                );
+                if let GroupCeilingResult::ExceedsCeiling(reason) = result {
+                    return Err(AppError::BadRequest(format!(
+                        "key '{key}' exceeds group ceiling: {reason}"
                     )));
                 }
             }

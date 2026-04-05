@@ -65,14 +65,28 @@
 - Enrollment approval auto-assigns parent to approving user
 - `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
 
+### Phase 4 — Groups (Layer 1 Permission Ceiling)
+
+- `groups`, `group_grants`, `identity_groups` tables (migration 020)
+- Group grants reference org-level service instances with structured access levels (`read`/`write`/`admin`)
+- `allow_raw_http` per-group for Mode A raw HTTP access
+- `auto_approve_reads` per-grant — auto-creates permission keys for non-mutating agent requests
+- Full CRUD API: `POST/GET/PUT/DELETE /v1/groups`, grants, and member management
+- Group ceiling check in action execution (Layer 1, before permission key check)
+- Users gated by groups only — they are their own approvers (skip Layer 2)
+- User-owned service instances bypass ceiling for the creator
+- Service visibility filtered by group membership (`GET /v1/services`)
+- Approval resolution validates `remember_keys` against group ceiling
+- Backward compatible: no groups assigned = no ceiling enforced (permissive)
+
 ### Not Yet Built
 
-- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log
+- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management
 - Standalone pages: approval resolution, secret request, enrollment consent
 - `on_behalf_of` for agent-initiated connections
 - Three-tier template registry (org + user DB-backed CRUD)
 - Template validation endpoint + OpenAPI import
-- Groups (Layer 1 permission ceiling) + org-level ACL
+- Org-level ACL (role-based access control for who can manage groups, services, etc.)
 - Phase 3: `inherit_permissions` resolution, permission chain walk, approval bubbling (parent/child + depth tracking done)
 - Phase 4: Meta tools, semantic search, rate limiting, billing, documentation site
 

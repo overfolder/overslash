@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gg.id, gg.group_id, gg.service_instance_id,\n                si.name AS service_name,\n                gg.access_level, gg.auto_approve_reads, gg.created_at\n         FROM group_grants gg\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE gg.group_id = $1\n         ORDER BY si.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "group_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "service_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "service_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "access_level",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "auto_approve_reads",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "db5bfa3e897d589cb867ce510924551ec382d62f73d99a8249f58e983d4735cd"
+}

@@ -1,0 +1,320 @@
+use sqlx::PgPool;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+// ── Row types ────────────────────────────────────────────────────────
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct GroupRow {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub allow_raw_http: bool,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+impl_org_owned!(GroupRow);
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct GroupGrantRow {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub service_instance_id: Uuid,
+    pub access_level: String,
+    pub auto_approve_reads: bool,
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct GroupGrantDetailRow {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub service_instance_id: Uuid,
+    pub service_name: String,
+    pub access_level: String,
+    pub auto_approve_reads: bool,
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct IdentityGroupRow {
+    pub identity_id: Uuid,
+    pub group_id: Uuid,
+    pub assigned_at: OffsetDateTime,
+}
+
+/// A grant with service name, used for ceiling checks.
+#[derive(Debug, sqlx::FromRow)]
+pub struct UserCeilingGrantRow {
+    pub service_instance_id: Uuid,
+    pub service_name: String,
+    pub access_level: String,
+    pub auto_approve_reads: bool,
+}
+
+/// Aggregated ceiling data for a user.
+pub struct UserCeiling {
+    pub allow_raw_http: bool,
+    pub grants: Vec<UserCeilingGrantRow>,
+}
+
+// ── Group CRUD ───────────────────────────────────────────────────────
+
+pub async fn create(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+    description: &str,
+    allow_raw_http: bool,
+) -> Result<GroupRow, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "INSERT INTO groups (org_id, name, description, allow_raw_http)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, org_id, name, description, allow_raw_http, created_at, updated_at",
+        org_id,
+        name,
+        description,
+        allow_raw_http,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<GroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "SELECT id, org_id, name, description, allow_raw_http, created_at, updated_at
+         FROM groups WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<GroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "SELECT id, org_id, name, description, allow_raw_http, created_at, updated_at
+         FROM groups WHERE org_id = $1 ORDER BY name",
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn update(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+    name: &str,
+    description: &str,
+    allow_raw_http: bool,
+) -> Result<Option<GroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "UPDATE groups SET name = $3, description = $4, allow_raw_http = $5, updated_at = now()
+         WHERE id = $1 AND org_id = $2
+         RETURNING id, org_id, name, description, allow_raw_http, created_at, updated_at",
+        id,
+        org_id,
+        name,
+        description,
+        allow_raw_http,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn delete(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM groups WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// ── Grants ───────────────────────────────────────────────────────────
+
+pub async fn add_grant(
+    pool: &PgPool,
+    group_id: Uuid,
+    service_instance_id: Uuid,
+    access_level: &str,
+    auto_approve_reads: bool,
+) -> Result<GroupGrantRow, sqlx::Error> {
+    sqlx::query_as!(
+        GroupGrantRow,
+        "INSERT INTO group_grants (group_id, service_instance_id, access_level, auto_approve_reads)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, group_id, service_instance_id, access_level, auto_approve_reads, created_at",
+        group_id,
+        service_instance_id,
+        access_level,
+        auto_approve_reads,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn list_grants(
+    pool: &PgPool,
+    group_id: Uuid,
+) -> Result<Vec<GroupGrantDetailRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupGrantDetailRow,
+        "SELECT gg.id, gg.group_id, gg.service_instance_id,
+                si.name AS service_name,
+                gg.access_level, gg.auto_approve_reads, gg.created_at
+         FROM group_grants gg
+         JOIN service_instances si ON si.id = gg.service_instance_id
+         WHERE gg.group_id = $1
+         ORDER BY si.name",
+        group_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn remove_grant(
+    pool: &PgPool,
+    grant_id: Uuid,
+    group_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM group_grants WHERE id = $1 AND group_id = $2",
+        grant_id,
+        group_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// ── Identity ↔ Group membership ──────────────────────────────────────
+
+pub async fn assign_identity(
+    pool: &PgPool,
+    identity_id: Uuid,
+    group_id: Uuid,
+) -> Result<IdentityGroupRow, sqlx::Error> {
+    sqlx::query_as!(
+        IdentityGroupRow,
+        "INSERT INTO identity_groups (identity_id, group_id)
+         VALUES ($1, $2)
+         RETURNING identity_id, group_id, assigned_at",
+        identity_id,
+        group_id,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn unassign_identity(
+    pool: &PgPool,
+    identity_id: Uuid,
+    group_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM identity_groups WHERE identity_id = $1 AND group_id = $2",
+        identity_id,
+        group_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn list_groups_for_identity(
+    pool: &PgPool,
+    identity_id: Uuid,
+) -> Result<Vec<GroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.created_at, g.updated_at
+         FROM groups g
+         JOIN identity_groups ig ON ig.group_id = g.id
+         WHERE ig.identity_id = $1
+         ORDER BY g.name",
+        identity_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_identity_ids_in_group(
+    pool: &PgPool,
+    group_id: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT identity_id FROM identity_groups WHERE group_id = $1",
+        group_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.identity_id).collect())
+}
+
+// ── Ceiling queries (hot path) ───────────────────────────────────────
+
+/// Get the aggregated group ceiling for a user.
+/// Returns all grants across all groups the user belongs to, with service names,
+/// plus the OR of `allow_raw_http` across groups.
+pub async fn get_ceiling_for_user(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+) -> Result<UserCeiling, sqlx::Error> {
+    // Check if the user has allow_raw_http on any group
+    let raw_http_row = sqlx::query!(
+        "SELECT COALESCE(bool_or(g.allow_raw_http), false) AS allow_raw_http
+         FROM groups g
+         JOIN identity_groups ig ON ig.group_id = g.id
+         WHERE ig.identity_id = $1",
+        user_identity_id,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let allow_raw_http = raw_http_row.allow_raw_http.unwrap_or(false);
+
+    // Get all grants across all groups
+    let grants = sqlx::query_as!(
+        UserCeilingGrantRow,
+        "SELECT gg.service_instance_id, si.name AS service_name,
+                gg.access_level, gg.auto_approve_reads
+         FROM group_grants gg
+         JOIN identity_groups ig ON ig.group_id = gg.group_id
+         JOIN service_instances si ON si.id = gg.service_instance_id
+         WHERE ig.identity_id = $1",
+        user_identity_id,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(UserCeiling {
+        allow_raw_http,
+        grants,
+    })
+}
+
+/// Get service instance IDs visible to a user through their group memberships.
+pub async fn get_visible_service_ids(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT DISTINCT gg.service_instance_id
+         FROM group_grants gg
+         JOIN identity_groups ig ON ig.group_id = gg.group_id
+         WHERE ig.identity_id = $1",
+        user_identity_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.service_instance_id).collect())
+}

@@ -199,17 +199,25 @@ Permissions are enforced in two layers:
 
 **Layer 1: Groups (coarse-grained ceiling, org-admin managed)**
 
-Groups define which services are available and at what access level. They constrain users, and agents inherit their owner-user's group ceiling. A request that exceeds the group ceiling is denied outright — no approval can override it.
+Groups define which services are available and at what access level. They constrain users, and agents inherit their owner-user's group ceiling. A request that exceeds the group ceiling is denied outright — no approval can override it. Groups also control **service visibility**: if a user isn't in any group granting access to a service, that service is hidden from service listings and the API Explorer.
+
+Group grants reference **org-level service instances** directly (via FK), paired with a structured **access level**:
 
 Group examples:
-- "Engineering": `github:ANY:*`, `slack:*:*`, `stripe:*:*`
-- "Admin": adds `http:ANY:*`, `secret:*:*`
-- "Read-only": `github:GET:*`, `slack:GET:*`
+- "Engineering": github (write), slack (write), stripe (read)
+- "Admin": github (admin), slack (admin), stripe (admin), + raw HTTP access
+- "Read-only": github (read), slack (read)
 
-Three tiers of trust emerge naturally:
-1. **`{service}:*:*`** — any action on a known service. Safest (in the future, groups may distinguish registry-only access from raw HTTP verb access for finer control).
-2. **`{service}:ANY:*`** — arbitrary API calls against known services. Mid trust.
-3. **`http:ANY:*`** — full HTTP proxy with secret injection. Highest trust.
+Access levels map to the `Risk` enum:
+- **read** — non-mutating actions only (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP)
+- **write** — read + mutating actions (`risk: write`, + POST/PUT/PATCH)
+- **admin** — full access including destructive actions (`risk: delete`, + DELETE)
+
+Raw HTTP access (Mode A) is gated by a separate `allow_raw_http` boolean on the group — it is not a service instance.
+
+User-owned service instances bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
+
+When a user has no group assignments, no ceiling is enforced (permissive). Orgs opt into enforcement by creating groups and assigning users.
 
 **Auto-approve reads:** Each service grant in a group can optionally enable `auto_approve_reads`. When set, non-mutating requests (actions where `risk: read`, or GET/HEAD/OPTIONS for raw HTTP) from agents automatically create permission keys without requiring user approval. Mutating requests (`risk: write` or `delete`) still go through normal approval flow. This is configured per-service per-group — org-admins decide which services have sensitive read operations (financial data, PII) vs ones where reads are safe (listing PRs, checking calendar events).
 
@@ -524,7 +532,7 @@ This lets users override org defaults with their own credentials (e.g., personal
 | Context | Format | Example | Why |
 |---------|--------|---------|-----|
 | Permission keys | unqualified | `github:create_pull_request:*` | Follows resolution, no pinning to a specific scope |
-| Group grants | unqualified | `github:ANY:*` | Same |
+| Group grants | FK to service instance | github (write) | Direct reference to org-level service + access level |
 | Audit log | fully qualified | `org/github:create_pull_request:overfolder/app` | Forensic record — must show exactly which instance and credentials were used |
 | Approval display | scope-qualified | `user/github` or `org/github` | User needs to know which credentials the agent will use (`user/` is sufficient — the user knows who they are) |
 | API requests | unqualified (default) | `github` | Resolution applies; `org/github` available to bypass shadow |
@@ -534,8 +542,9 @@ This lets users override org defaults with their own credentials (e.g., personal
 - `google-calendar:list_events:*`
 
 **Groups grant access to org services (instances)**:
-- Engineering group gets: `github:ANY:*`, `slack:*:*`
-- User services bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
+- Engineering group gets: github (write), slack (write)
+- Service discovery is group-gated: `GET /v1/services` returns org-level services only if the calling user (or agent's owner-user) belongs to a group that grants access to that service.
+- User-owned services are always visible to their creator and bypass the group ceiling, but their agents still need permission keys via approvals.
 
 **Service lifecycle:** **Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing remembered approvals are preserved.
 

@@ -211,6 +211,36 @@ pub async fn list_available(
     .await
 }
 
+/// List services visible to a user, filtered by group membership.
+/// User-owned services are always visible. Org-level services are filtered
+/// by the `visible_service_ids` set (derived from group grants).
+/// If `visible_service_ids` is `None`, no group filtering is applied (backward compat).
+pub async fn list_available_with_groups(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+    visible_service_ids: Option<&[Uuid]>,
+) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
+    match visible_service_ids {
+        Some(ids) => {
+            sqlx::query_as!(
+                ServiceInstanceRow,
+                "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+                 template_id, connection_id, secret_name, status, created_at, updated_at \
+                 FROM service_instances \
+                 WHERE org_id = $1 AND (owner_identity_id = $2 OR id = ANY($3)) \
+                 ORDER BY name",
+                org_id,
+                identity_id,
+                ids,
+            )
+            .fetch_all(pool)
+            .await
+        }
+        None => list_available(pool, org_id, identity_id).await,
+    }
+}
+
 pub async fn update_status(
     pool: &PgPool,
     id: Uuid,

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod byoc_credentials;
 pub mod connections;
 pub mod enrollment;
+pub mod groups;
 pub mod health;
 pub mod identities;
 pub mod orgs;

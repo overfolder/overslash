@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict eUBKUfsme4a5ZJnryHmiNPxeGPf0fKXCN8N1fSZOWgdXIMDdXxLPyuQQ32RJSaN
+\restrict yhv4djHfpuYFjXaihguQOdWqQS5HhCbNfVWir0MudESrakBDj3tPmzPq3x6Urza
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -229,26 +229,7 @@ CREATE TABLE public.oauth_providers (
     extra_auth_params jsonb DEFAULT '{}'::jsonb NOT NULL,
     is_builtin boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL,
-    issuer_url text,
-    jwks_uri text
-);
-
-
---
--- Name: org_idp_configs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.org_idp_configs (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    org_id uuid NOT NULL,
-    provider_key text NOT NULL,
-    encrypted_client_id bytea NOT NULL,
-    encrypted_client_secret bytea NOT NULL,
-    enabled boolean DEFAULT true NOT NULL,
-    allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL
 );
 
 
@@ -540,22 +521,6 @@ ALTER TABLE ONLY public.oauth_providers
 
 
 --
--- Name: org_idp_configs org_idp_configs_org_id_provider_key_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_idp_configs
-    ADD CONSTRAINT org_idp_configs_org_id_provider_key_key UNIQUE (org_id, provider_key);
-
-
---
--- Name: org_idp_configs org_idp_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_idp_configs
-    ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
-
-
---
 -- Name: orgs orgs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -804,20 +769,6 @@ CREATE INDEX idx_identity_groups_group ON public.identity_groups USING btree (gr
 --
 
 CREATE INDEX idx_identity_groups_identity ON public.identity_groups USING btree (identity_id);
-
-
---
--- Name: idx_org_idp_configs_domains; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_org_idp_configs_domains ON public.org_idp_configs USING gin (allowed_email_domains);
-
-
---
--- Name: idx_org_idp_configs_org; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_org_idp_configs_org ON public.org_idp_configs USING btree (org_id);
 
 
 --
@@ -1097,22 +1048,6 @@ ALTER TABLE ONLY public.identity_groups
 
 
 --
--- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_idp_configs
-    ADD CONSTRAINT org_idp_configs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
-
-
---
--- Name: org_idp_configs org_idp_configs_provider_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.org_idp_configs
-    ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
-
-
---
 -- Name: pending_enrollments pending_enrollments_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1244,5 +1179,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict eUBKUfsme4a5ZJnryHmiNPxeGPf0fKXCN8N1fSZOWgdXIMDdXxLPyuQQ32RJSaN
+\unrestrict yhv4djHfpuYFjXaihguQOdWqQS5HhCbNfVWir0MudESrakBDj3tPmzPq3x6Urza
 

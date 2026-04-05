@@ -89,6 +89,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::byoc_credentials::router())
         .merge(routes::auth::router())
         .merge(routes::enrollment::router())
+        .merge(routes::groups::router())
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

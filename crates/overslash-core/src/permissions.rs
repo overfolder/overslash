@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::service::Risk;
 use crate::types::{PermissionEffect, PermissionRule};
 
 /// A derived permission key from an action request.
@@ -292,6 +294,126 @@ pub fn check_permissions(rules: &[PermissionRule], keys: &[PermissionKey]) -> Pe
     }
 }
 
+// ── Layer 1: Group Ceiling ───────────────────────────────────────────
+
+/// Access level hierarchy for group grants.
+/// Maps to the existing `Risk` enum: read < write < admin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessLevel {
+    Read,
+    Write,
+    Admin,
+}
+
+impl AccessLevel {
+    /// Does this access level permit the given risk?
+    pub fn permits_risk(self, risk: Risk) -> bool {
+        match self {
+            AccessLevel::Admin => true,
+            AccessLevel::Write => matches!(risk, Risk::Read | Risk::Write),
+            AccessLevel::Read => matches!(risk, Risk::Read),
+        }
+    }
+
+    /// Parse from a string. Returns `None` for invalid values.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(AccessLevel::Read),
+            "write" => Some(AccessLevel::Write),
+            "admin" => Some(AccessLevel::Admin),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for AccessLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AccessLevel::Read => write!(f, "read"),
+            AccessLevel::Write => write!(f, "write"),
+            AccessLevel::Admin => write!(f, "admin"),
+        }
+    }
+}
+
+/// A resolved group grant for ceiling checking.
+#[derive(Debug, Clone)]
+pub struct CeilingGrant {
+    pub service_name: String,
+    pub access_level: AccessLevel,
+    pub auto_approve_reads: bool,
+}
+
+/// Result of a group ceiling check.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GroupCeilingResult {
+    /// All keys are within the group ceiling.
+    WithinCeiling,
+    /// Within ceiling AND auto-approve-reads applies (non-mutating + flag set).
+    WithinCeilingAutoApprove,
+    /// Exceeds ceiling — denied, not approvable.
+    ExceedsCeiling(String),
+    /// Identity has no groups assigned — no ceiling enforced (permissive).
+    NoGroups,
+}
+
+/// Check if a request is within the group ceiling.
+///
+/// - `service_name`: the resolved service name (e.g., "github") or "http" for raw HTTP (Mode A)
+/// - `risk`: the action's risk level
+/// - `grants`: all grants from the owner-user's groups
+/// - `allow_raw_http`: OR of `allow_raw_http` across the user's groups
+/// - `has_groups`: whether the user has any group assignments
+pub fn check_group_ceiling(
+    service_name: &str,
+    risk: Risk,
+    grants: &[CeilingGrant],
+    allow_raw_http: bool,
+    has_groups: bool,
+) -> GroupCeilingResult {
+    if !has_groups {
+        return GroupCeilingResult::NoGroups;
+    }
+
+    // Mode A raw HTTP — gated by the allow_raw_http flag, not by service grants
+    if service_name == "http" {
+        return if allow_raw_http {
+            GroupCeilingResult::WithinCeiling
+        } else {
+            GroupCeilingResult::ExceedsCeiling("raw HTTP access not allowed by group".into())
+        };
+    }
+
+    // Find matching grant(s) for this service across all groups
+    let matching: Vec<&CeilingGrant> = grants
+        .iter()
+        .filter(|g| g.service_name == service_name)
+        .collect();
+
+    if matching.is_empty() {
+        return GroupCeilingResult::ExceedsCeiling(format!(
+            "service '{}' not granted by any group",
+            service_name
+        ));
+    }
+
+    // Check if any matching grant permits this risk level (take the most permissive)
+    let permitted = matching.iter().any(|g| g.access_level.permits_risk(risk));
+    if !permitted {
+        return GroupCeilingResult::ExceedsCeiling(format!(
+            "access level insufficient for {} on '{}'",
+            risk, service_name
+        ));
+    }
+
+    // Auto-approve: if risk is read AND any matching grant has auto_approve_reads
+    if !risk.is_mutating() && matching.iter().any(|g| g.auto_approve_reads) {
+        return GroupCeilingResult::WithinCeilingAutoApprove;
+    }
+
+    GroupCeilingResult::WithinCeiling
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +683,145 @@ mod tests {
             check_permissions(&rules, &keys),
             PermissionResult::Denied(_)
         ));
+    }
+
+    // ── Group Ceiling tests ──────────────────────────────────────────
+
+    fn grant(service: &str, level: AccessLevel, auto_read: bool) -> CeilingGrant {
+        CeilingGrant {
+            service_name: service.to_string(),
+            access_level: level,
+            auto_approve_reads: auto_read,
+        }
+    }
+
+    #[test]
+    fn ceiling_no_groups_is_permissive() {
+        assert_eq!(
+            check_group_ceiling("github", Risk::Write, &[], false, false),
+            GroupCeilingResult::NoGroups,
+        );
+    }
+
+    #[test]
+    fn ceiling_read_allowed_by_read_grant() {
+        let grants = vec![grant("github", AccessLevel::Read, false)];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Read, &grants, false, true),
+            GroupCeilingResult::WithinCeiling,
+        );
+    }
+
+    #[test]
+    fn ceiling_write_denied_by_read_grant() {
+        let grants = vec![grant("github", AccessLevel::Read, false)];
+        assert!(matches!(
+            check_group_ceiling("github", Risk::Write, &grants, false, true),
+            GroupCeilingResult::ExceedsCeiling(_),
+        ));
+    }
+
+    #[test]
+    fn ceiling_write_allowed_by_write_grant() {
+        let grants = vec![grant("github", AccessLevel::Write, false)];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Write, &grants, false, true),
+            GroupCeilingResult::WithinCeiling,
+        );
+    }
+
+    #[test]
+    fn ceiling_delete_denied_by_write_grant() {
+        let grants = vec![grant("github", AccessLevel::Write, false)];
+        assert!(matches!(
+            check_group_ceiling("github", Risk::Delete, &grants, false, true),
+            GroupCeilingResult::ExceedsCeiling(_),
+        ));
+    }
+
+    #[test]
+    fn ceiling_delete_allowed_by_admin_grant() {
+        let grants = vec![grant("github", AccessLevel::Admin, false)];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Delete, &grants, false, true),
+            GroupCeilingResult::WithinCeiling,
+        );
+    }
+
+    #[test]
+    fn ceiling_service_not_granted() {
+        let grants = vec![grant("slack", AccessLevel::Write, false)];
+        assert!(matches!(
+            check_group_ceiling("github", Risk::Read, &grants, false, true),
+            GroupCeilingResult::ExceedsCeiling(_),
+        ));
+    }
+
+    #[test]
+    fn ceiling_raw_http_allowed() {
+        assert_eq!(
+            check_group_ceiling("http", Risk::Write, &[], true, true),
+            GroupCeilingResult::WithinCeiling,
+        );
+    }
+
+    #[test]
+    fn ceiling_raw_http_denied() {
+        assert!(matches!(
+            check_group_ceiling("http", Risk::Write, &[], false, true),
+            GroupCeilingResult::ExceedsCeiling(_),
+        ));
+    }
+
+    #[test]
+    fn ceiling_auto_approve_reads() {
+        let grants = vec![grant("github", AccessLevel::Write, true)];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Read, &grants, false, true),
+            GroupCeilingResult::WithinCeilingAutoApprove,
+        );
+    }
+
+    #[test]
+    fn ceiling_auto_approve_reads_not_for_writes() {
+        let grants = vec![grant("github", AccessLevel::Write, true)];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Write, &grants, false, true),
+            GroupCeilingResult::WithinCeiling,
+        );
+    }
+
+    #[test]
+    fn ceiling_most_permissive_grant_wins() {
+        // Two groups: one with read, one with admin
+        let grants = vec![
+            grant("github", AccessLevel::Read, false),
+            grant("github", AccessLevel::Admin, false),
+        ];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Delete, &grants, false, true),
+            GroupCeilingResult::WithinCeiling,
+        );
+    }
+
+    #[test]
+    fn ceiling_auto_approve_from_any_grant() {
+        // One grant without auto_approve, one with
+        let grants = vec![
+            grant("github", AccessLevel::Write, false),
+            grant("github", AccessLevel::Read, true),
+        ];
+        assert_eq!(
+            check_group_ceiling("github", Risk::Read, &grants, false, true),
+            GroupCeilingResult::WithinCeilingAutoApprove,
+        );
+    }
+
+    #[test]
+    fn access_level_parse() {
+        assert_eq!(AccessLevel::parse("read"), Some(AccessLevel::Read));
+        assert_eq!(AccessLevel::parse("write"), Some(AccessLevel::Write));
+        assert_eq!(AccessLevel::parse("admin"), Some(AccessLevel::Admin));
+        assert_eq!(AccessLevel::parse("invalid"), None);
     }
 }

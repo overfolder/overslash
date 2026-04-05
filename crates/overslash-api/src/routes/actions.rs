@@ -20,9 +20,12 @@ use crate::{
 };
 use overslash_core::{
     crypto,
-    permissions::{PermissionKey, PermissionResult, check_permissions},
+    permissions::{GroupCeilingResult, PermissionKey, PermissionResult, check_permissions},
     secret_injection::inject_secrets,
-    types::{ActionRequest, ActionResult, InjectAs, PermissionEffect, PermissionRule, SecretRef},
+    types::{
+        ActionRequest, ActionResult, InjectAs, PermissionEffect, PermissionRule, SecretRef,
+        service::Risk,
+    },
 };
 
 pub fn router() -> Router<AppState> {
@@ -80,6 +83,10 @@ struct ResolvedMeta {
     auth_injected: bool,
     /// Present only for Mode C — carries info needed to derive service-action permission keys.
     service_scope: Option<ServiceScope>,
+    /// Risk level of the action (Mode C only, from the action definition).
+    risk: Option<Risk>,
+    /// Owner identity ID of the resolved service instance (for user-owned service bypass).
+    service_instance_owner: Option<Uuid>,
 }
 
 struct ServiceScope {
@@ -98,6 +105,13 @@ async fn execute_action(
         .identity_id
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
 
+    // Resolve the identity to determine kind and owner for ceiling check
+    let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    let ceiling_user_id = crate::services::group_ceiling::ceiling_user_id_from_identity(&identity)?;
+
     // Resolve the request to a concrete ActionRequest
     let (action_req, meta) = resolve_request(&state, &auth, identity_id, &req).await?;
 
@@ -112,10 +126,74 @@ async fn execute_action(
         PermissionKey::from_http(&action_req.method, &action_req.url)
     };
 
+    // ── Layer 1: Group ceiling check ─────────────────────────────────
+    let mut auto_approved = false;
+
+    // Determine service name and risk for ceiling check
+    let ceiling_service = if let Some(ref scope) = meta.service_scope {
+        scope.service_key.clone()
+    } else {
+        "http".to_string()
+    };
+    let ceiling_risk = if let Some(risk) = meta.risk {
+        risk
+    } else {
+        Risk::from_http_method(&action_req.method)
+    };
+
+    // User-owned service instances bypass the ceiling for the creator
+    // (matches if the service owner is the calling identity or the ceiling user)
+    let is_user_owned_service = meta.service_instance_owner.is_some()
+        && (meta.service_instance_owner == Some(ceiling_user_id)
+            || meta.service_instance_owner == Some(identity_id));
+
+    if !is_user_owned_service {
+        let ceiling =
+            crate::services::group_ceiling::load_ceiling(&state.db, ceiling_user_id).await?;
+
+        if ceiling.has_groups {
+            match crate::services::group_ceiling::check_ceiling(
+                &ceiling,
+                &ceiling_service,
+                ceiling_risk,
+            ) {
+                GroupCeilingResult::ExceedsCeiling(reason) => {
+                    return Ok((
+                        StatusCode::FORBIDDEN,
+                        Json(ExecuteResponse::Denied { reason }),
+                    )
+                        .into_response());
+                }
+                GroupCeilingResult::WithinCeilingAutoApprove if identity.kind != "user" => {
+                    // Auto-create permission rules for the agent
+                    for key in &perm_keys {
+                        overslash_db::repos::permission_rule::create(
+                            &state.db,
+                            auth.org_id,
+                            identity_id,
+                            &key.0,
+                            "allow",
+                            None,
+                        )
+                        .await?;
+                    }
+                    auto_approved = true;
+                }
+                GroupCeilingResult::WithinCeiling
+                | GroupCeilingResult::WithinCeilingAutoApprove
+                | GroupCeilingResult::NoGroups => {}
+            }
+        }
+        // has_groups == false → NoGroups → permissive (no ceiling enforced)
+    }
+
+    // ── Layer 2: Permission key check (agents/sub-agents only) ───────
     let needs_gate =
         !action_req.secrets.is_empty() || req.connection.is_some() || meta.auth_injected;
 
-    if needs_gate {
+    // Users are gated by groups only — they are their own approvers.
+    // Agents need permission key check unless auto-approved above.
+    if identity.kind != "user" && needs_gate && !auto_approved {
         let rule_rows =
             overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?;
 
@@ -396,6 +474,8 @@ async fn resolve_request(
                 description: Some(format!("OAuth request via {provider_key} connection")),
                 auth_injected: true,
                 service_scope: None,
+                risk: None,
+                service_instance_owner: None,
             },
         ));
     }
@@ -550,6 +630,9 @@ async fn resolve_request(
         );
         let description = format!("{interpolated} ({})", svc.display_name);
 
+        let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
+        let action_risk = action.risk;
+
         return Ok((
             ActionRequest {
                 method: action.method.clone(),
@@ -566,6 +649,8 @@ async fn resolve_request(
                     action_key: action_key.clone(),
                     scope_param: action.scope_param.clone(),
                 }),
+                risk: Some(action_risk),
+                service_instance_owner: instance_owner,
             },
         ));
     }
@@ -599,6 +684,8 @@ async fn resolve_request(
             description: Some(description),
             auth_injected: false,
             service_scope: None,
+            risk: None,
+            service_instance_owner: None,
         },
     ))
 }
