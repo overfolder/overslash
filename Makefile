@@ -1,6 +1,6 @@
 .PHONY: local local-down dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
-       infra-shutdown infra-resume
+       infra-shutdown infra-resume env-setup worktree-clean
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -8,26 +8,37 @@ TOFU_DIR := infra
 ENV ?= dev
 TF_VAR_FILE := $(TOFU_DIR)/env/$(ENV).tfvars
 
+# Load .env.local overrides if present (worktree isolation)
+-include .env.local
+export
+
+# Compose project flag (set by .env.local in worktrees, empty in main repo)
+COMPOSE_PROJECT := $(if $(COMPOSE_PROJECT_NAME),--project-name $(COMPOSE_PROJECT_NAME),)
+
 # Colors
 GREEN := \033[0;32m
 RED := \033[0;31m
 NC := \033[0m
 
+# Detect worktree and write .env.local (no-op in main repo)
+env-setup:
+	@bash bin/worktree-env.sh
+
 # Start local infra (postgres only)
-local:
-	$(COMPOSE) -f docker/docker-compose.dev.yml up -d postgres
+local: env-setup
+	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml up -d postgres
 
 # Stop local infra
 local-down:
-	$(COMPOSE) -f docker/docker-compose.dev.yml down
+	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml down
 
 # Start all dev services (postgres + api with cargo-watch + dashboard)
-dev:
-	$(COMPOSE) -f docker/docker-compose.dev.yml up --build
+dev: env-setup
+	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml up --build
 
 # Start only the API (postgres + api)
-dev-api:
-	$(COMPOSE) -f docker/docker-compose.dev.yml up --build postgres api
+dev-api: env-setup
+	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml up --build postgres api
 
 # Start only the dashboard dev server (no container)
 dev-dashboard:
@@ -35,7 +46,15 @@ dev-dashboard:
 
 # Stop services
 down:
-	$(COMPOSE) -f docker/docker-compose.dev.yml down
+	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml down
+
+# Remove worktree containers and volumes
+worktree-clean:
+	@if [ -n "$(COMPOSE_PROJECT_NAME)" ]; then \
+		$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml down -v; \
+	else \
+		echo "Not in a worktree — nothing to clean."; \
+	fi
 
 # Run all tests
 test:
