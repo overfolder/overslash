@@ -7,12 +7,66 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Helper: bootstrap org+identity+key, return (base_url, client, org_id, identity_id, api_key).
-async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String) {
+/// Helper: bootstrap org+identity+key, return (base_url, client, org_id, identity_id, api_key, admin_key).
+/// The api_key is agent-bound (write ACL). The admin_key is org-level (admin ACL, no identity).
+/// Also creates a user_admin_key: user-bound with admin ACL (user added to Admins group).
+async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String, String) {
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
-    (base, client, org_id, identity_id, api_key)
+    let (org_id, identity_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Find the user identity (parent of the agent)
+    let identities: Vec<Value> = client
+        .get(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = identities.iter().find(|i| i["kind"] == "user").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Add user to Admins group (find it first)
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_group_id = groups.iter().find(|g| g["name"] == "Admins").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .post(format!("{base}/v1/groups/{admins_group_id}/members"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"identity_id": user_id}))
+        .send()
+        .await
+        .unwrap();
+
+    // Create a user-bound API key (now with admin ACL since user is in Admins)
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"org_id": org_id, "identity_id": user_id, "name": "user-admin-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_admin_key = key_resp["key"].as_str().unwrap().to_string();
+
+    (base, client, org_id, identity_id, api_key, user_admin_key)
 }
 
 // -- Template Tests --
@@ -20,7 +74,7 @@ async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String) {
 #[tokio::test]
 async fn test_list_templates_empty_registry() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, _admin_key) = setup(pool).await;
 
     let resp: Vec<Value> = client
         .get(format!("{base}/v1/templates"))
@@ -39,12 +93,12 @@ async fn test_list_templates_empty_registry() {
 #[tokio::test]
 async fn test_create_and_get_org_template() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     // Create an org-level template
     let create_resp = client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "my-internal-api",
             "display_name": "My Internal API",
@@ -104,11 +158,11 @@ async fn test_create_and_get_org_template() {
 #[tokio::test]
 async fn test_create_user_template() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     let resp = client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "my-personal-api",
             "display_name": "Personal API",
@@ -128,11 +182,11 @@ async fn test_create_user_template() {
 #[tokio::test]
 async fn test_search_templates() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "searchable-api",
             "display_name": "Searchable API",
@@ -161,11 +215,11 @@ async fn test_search_templates() {
 #[tokio::test]
 async fn test_delete_template() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     let create_resp: Value = client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "deletable-api",
             "display_name": "Deletable API",
@@ -183,7 +237,7 @@ async fn test_delete_template() {
 
     let del_resp = client
         .delete(format!("{base}/v1/templates/{id}/manage"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .send()
         .await
         .unwrap();
@@ -203,12 +257,12 @@ async fn test_delete_template() {
 #[tokio::test]
 async fn test_create_service_instance() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     // Create template first
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "test-svc",
             "display_name": "Test Service",
@@ -242,11 +296,11 @@ async fn test_create_service_instance() {
 #[tokio::test]
 async fn test_list_service_instances() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "list-svc",
             "display_name": "Listable Service",
@@ -281,12 +335,12 @@ async fn test_list_service_instances() {
 #[tokio::test]
 async fn test_service_instance_lifecycle() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     // Create template
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "lifecycle-svc",
             "display_name": "Lifecycle Service",
@@ -370,11 +424,11 @@ async fn test_service_instance_lifecycle() {
 #[tokio::test]
 async fn test_service_name_defaults_to_template_key() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "auto-name-svc",
             "display_name": "Auto Named",
@@ -402,11 +456,11 @@ async fn test_service_name_defaults_to_template_key() {
 #[tokio::test]
 async fn test_duplicate_instance_name_conflict() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "dup-svc",
             "display_name": "Dup Service",
@@ -439,11 +493,11 @@ async fn test_duplicate_instance_name_conflict() {
 #[tokio::test]
 async fn test_template_actions_via_service() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "actions-svc",
             "display_name": "Actions Service",
@@ -494,11 +548,11 @@ async fn test_template_actions_via_service() {
 #[tokio::test]
 async fn test_template_actions_listing() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
 
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "key": "tmpl-actions",
             "display_name": "Template Actions",

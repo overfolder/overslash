@@ -161,6 +161,122 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
     }
 }
 
+// ── Org ACL extractors ──────────────────────────────────────────────
+//
+// ACL is enforced via group grants on the "overslash" service instance.
+// These extractors resolve the caller's highest access level for the
+// overslash service and reject if insufficient.
+
+use overslash_core::permissions::AccessLevel;
+
+/// Resolved ACL level for the overslash platform service.
+#[derive(Debug, Clone)]
+pub struct OrgAcl {
+    pub org_id: Uuid,
+    pub identity_id: Option<Uuid>,
+    pub access_level: AccessLevel,
+}
+
+impl FromRequestParts<AppState> for OrgAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
+
+        // Org-level API keys (no identity) are treated as admin
+        let Some(identity_id) = auth.identity_id else {
+            return Ok(OrgAcl {
+                org_id: auth.org_id,
+                identity_id: None,
+                access_level: AccessLevel::Admin,
+            });
+        };
+
+        // Resolve the ceiling user (agents use their owner's groups)
+        let ceiling_user_id =
+            crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
+
+        // Get all grants across groups for this user
+        let ceiling =
+            overslash_db::repos::group::get_ceiling_for_user(&state.db, ceiling_user_id).await?;
+
+        // Find the highest access level for the overslash service
+        let access_level = ceiling
+            .grants
+            .iter()
+            .filter(|g| g.template_key == "overslash")
+            .filter_map(|g| AccessLevel::parse(&g.access_level))
+            .max()
+            .unwrap_or(AccessLevel::Read);
+
+        Ok(OrgAcl {
+            org_id: auth.org_id,
+            identity_id: Some(identity_id),
+            access_level,
+        })
+    }
+}
+
+/// Requires at least write-level ACL access to the overslash platform.
+#[derive(Debug, Clone)]
+pub struct WriteAcl(pub OrgAcl);
+
+impl FromRequestParts<AppState> for WriteAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let acl = OrgAcl::from_request_parts(parts, state).await?;
+        if acl.access_level < AccessLevel::Write {
+            return Err(AppError::Forbidden("write access required".into()));
+        }
+        Ok(WriteAcl(acl))
+    }
+}
+
+/// Requires admin-level ACL access to the overslash platform.
+#[derive(Debug, Clone)]
+pub struct AdminAcl(pub OrgAcl);
+
+impl FromRequestParts<AppState> for AdminAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let acl = OrgAcl::from_request_parts(parts, state).await?;
+        if acl.access_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
+        Ok(AdminAcl(acl))
+    }
+}
+
+/// Optional ACL extractor — returns `None` if no auth is present instead of rejecting.
+/// Used for endpoints that allow unauthenticated bootstrap but require ACL otherwise.
+#[derive(Debug, Clone)]
+pub struct OptionalOrgAcl(pub Option<OrgAcl>);
+
+impl FromRequestParts<AppState> for OptionalOrgAcl {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        match OrgAcl::from_request_parts(parts, state).await {
+            Ok(acl) => Ok(OptionalOrgAcl(Some(acl))),
+            Err(_) => Ok(OptionalOrgAcl(None)),
+        }
+    }
+}
+
 fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     for pair in cookie_header.split(';') {

@@ -18,7 +18,7 @@ use overslash_db::repos::{
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, UserOrKeyAuth},
+    extractors::{AdminAcl, ClientIp},
     services::jwt,
 };
 
@@ -68,10 +68,11 @@ struct EnrollmentTokenResponse {
 
 async fn create_enrollment_token(
     State(state): State<AppState>,
-    auth: UserOrKeyAuth,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Json(req): Json<CreateEnrollmentTokenRequest>,
 ) -> Result<Json<EnrollmentTokenResponse>> {
+    let auth = acl;
     // Verify identity exists and belongs to this org
     let ident = identity::get_by_id(&state.db, req.identity_id).await?;
     let ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
@@ -123,8 +124,9 @@ async fn create_enrollment_token(
 
 async fn list_enrollment_tokens(
     State(state): State<AppState>,
-    auth: UserOrKeyAuth,
+    AdminAcl(acl): AdminAcl,
 ) -> Result<Json<Vec<serde_json::Value>>> {
+    let auth = acl;
     let rows = enrollment_token::list_by_org(&state.db, auth.org_id).await?;
     let items: Vec<_> = rows
         .into_iter()
@@ -143,10 +145,11 @@ async fn list_enrollment_tokens(
 
 async fn revoke_enrollment_token(
     State(state): State<AppState>,
-    auth: UserOrKeyAuth,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
+    let auth = acl;
     let revoked = enrollment_token::revoke(&state.db, id, auth.org_id).await?;
     if !revoked {
         return Err(AppError::NotFound("token not found or already used".into()));

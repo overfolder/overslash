@@ -12,7 +12,7 @@ use overslash_db::repos::group;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp},
     ownership::require_org_owned,
 };
 
@@ -77,6 +77,7 @@ struct GroupResponse {
     name: String,
     description: String,
     allow_raw_http: bool,
+    is_system: bool,
     created_at: String,
     updated_at: String,
 }
@@ -89,6 +90,7 @@ impl From<group::GroupRow> for GroupResponse {
             name: r.name,
             description: r.description,
             allow_raw_http: r.allow_raw_http,
+            is_system: r.is_system,
             created_at: r.created_at.to_string(),
             updated_at: r.updated_at.to_string(),
         }
@@ -117,10 +119,11 @@ struct MemberResponse {
 
 async fn create_group(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Json(req): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupResponse>> {
+    let auth = acl;
     let row = group::create(
         &state.db,
         auth.org_id,
@@ -176,11 +179,12 @@ async fn get_group(
 
 async fn update_group(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateGroupRequest>,
 ) -> Result<Json<GroupResponse>> {
+    let auth = acl;
     let row = group::update(
         &state.db,
         id,
@@ -221,10 +225,17 @@ async fn update_group(
 
 async fn delete_group(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
+    // Prevent deletion of system groups (Everyone, Admins)
+    let grp = require_org_owned(group::get_by_id(&state.db, id).await?, auth.org_id, "group")?;
+    if grp.is_system {
+        return Err(AppError::BadRequest("cannot delete system group".into()));
+    }
+
     let deleted = group::delete(&state.db, id, auth.org_id).await?;
 
     if deleted {
@@ -251,11 +262,12 @@ async fn delete_group(
 
 async fn add_grant(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(group_id): Path<Uuid>,
     Json(req): Json<AddGrantRequest>,
 ) -> Result<Json<GroupGrantResponse>> {
+    let auth = acl;
     // Validate access_level
     if !matches!(req.access_level.as_str(), "read" | "write" | "admin") {
         return Err(AppError::BadRequest(format!(
@@ -363,10 +375,11 @@ async fn list_grants(
 
 async fn remove_grant(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path((group_id, grant_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     // Verify group belongs to org
     require_org_owned(
         group::get_by_id(&state.db, group_id).await?,
@@ -400,11 +413,12 @@ async fn remove_grant(
 
 async fn assign_identity(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(group_id): Path<Uuid>,
     Json(req): Json<AssignIdentityRequest>,
 ) -> Result<Json<MemberResponse>> {
+    let auth = acl;
     // Verify group belongs to org
     let grp = require_org_owned(
         group::get_by_id(&state.db, group_id).await?,
@@ -480,16 +494,27 @@ async fn list_members(
 
 async fn unassign_identity(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path((group_id, identity_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     // Verify group belongs to org
-    require_org_owned(
+    let grp = require_org_owned(
         group::get_by_id(&state.db, group_id).await?,
         auth.org_id,
         "group",
     )?;
+
+    // Prevent removing the last member from the Admins system group
+    if grp.is_system && grp.name == "Admins" {
+        let count = group::count_members_in_group(&state.db, group_id).await?;
+        if count <= 1 {
+            return Err(AppError::BadRequest(
+                "cannot remove the last member from the Admins group".into(),
+            ));
+        }
+    }
 
     let deleted = group::unassign_identity(&state.db, identity_id, group_id).await?;
 

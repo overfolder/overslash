@@ -12,7 +12,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AuthContext, ClientIp, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -85,10 +85,11 @@ async fn validate_parent(
 
 async fn create_identity(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Json(req): Json<CreateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
+    let auth = acl;
     let kind_str = req.kind.as_str();
 
     let row = match req.kind {
@@ -161,6 +162,16 @@ async fn create_identity(
             .await?
         }
     };
+
+    // Auto-join new users to the Everyone group
+    if row.kind == "user" {
+        let _ = overslash_db::repos::org_bootstrap::add_to_everyone_group(
+            &state.db,
+            auth.org_id,
+            row.id,
+        )
+        .await;
+    }
 
     let _ = audit::log(
         &state.db,

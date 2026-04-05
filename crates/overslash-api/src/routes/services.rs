@@ -11,7 +11,7 @@ use overslash_db::repos::service_instance::{self, CreateServiceInstance, UpdateS
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AdminAcl, AuthContext, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -59,6 +59,7 @@ struct ServiceInstanceDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_name: Option<String>,
     status: String,
+    is_system: bool,
     created_at: String,
     updated_at: String,
 }
@@ -145,9 +146,10 @@ async fn get_service(
 /// Create a new service instance from a template.
 async fn create_service(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     Json(req): Json<CreateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
+    let auth = acl;
     let name = req.name.as_deref().unwrap_or(&req.template_key);
 
     // Determine if user-level or org-level
@@ -201,15 +203,18 @@ async fn create_service(
 /// Update a service instance by id.
 async fn update_service(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
     // Multi-tenancy guard — refuse to mutate rows belonging to other orgs.
-    service_instance::get_by_id(&state.db, id)
+    let existing = service_instance::get_by_id(&state.db, id)
         .await?
-        .filter(|r| r.org_id == auth.org_id)
+        .filter(|r| r.org_id == acl.org_id)
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    if existing.is_system {
+        return Err(AppError::BadRequest("cannot modify system service".into()));
+    }
 
     let input = UpdateServiceInstance {
         name: req.name.as_deref(),
@@ -226,15 +231,18 @@ async fn update_service(
 /// Update service instance lifecycle status.
 async fn update_service_status(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateStatusRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
     // Multi-tenancy guard.
-    service_instance::get_by_id(&state.db, id)
+    let existing = service_instance::get_by_id(&state.db, id)
         .await?
-        .filter(|r| r.org_id == auth.org_id)
+        .filter(|r| r.org_id == acl.org_id)
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    if existing.is_system {
+        return Err(AppError::BadRequest("cannot modify system service".into()));
+    }
 
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
@@ -252,22 +260,28 @@ async fn update_service_status(
 /// Delete a service instance.
 async fn delete_service(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     // Resolve by name to get the id, then delete.
     // Parse as UUID first (for /v1/services/{id} style), otherwise resolve by name.
-    let id = if let Ok(uuid) = name.parse::<Uuid>() {
-        uuid
+    let instance = if let Ok(uuid) = name.parse::<Uuid>() {
+        service_instance::get_by_id(&state.db, uuid)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
-        let row =
-            service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
-                .await?
-                .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
-        row.id
+        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
 
-    let deleted = service_instance::delete(&state.db, id).await?;
+    // Prevent deletion of system services (overslash)
+    if instance.is_system {
+        return Err(AppError::BadRequest("cannot delete system service".into()));
+    }
+
+    let deleted = service_instance::delete(&state.db, instance.id).await?;
     if !deleted {
         return Err(AppError::NotFound("service instance not found".into()));
     }
@@ -318,6 +332,7 @@ fn row_to_detail(row: service_instance::ServiceInstanceRow) -> ServiceInstanceDe
         connection_id: row.connection_id,
         secret_name: row.secret_name,
         status: row.status,
+        is_system: row.is_system,
         created_at: row
             .created_at
             .format(&time::format_description::well_known::Rfc3339)

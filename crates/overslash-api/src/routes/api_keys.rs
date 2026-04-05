@@ -4,7 +4,12 @@ use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
 
-use crate::{AppState, error::Result, extractors::ClientIp};
+use crate::{
+    AppState,
+    error::{AppError, Result},
+    extractors::{ClientIp, OptionalOrgAcl},
+};
+use overslash_core::permissions::AccessLevel;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/api-keys", post(create_api_key))
@@ -25,11 +30,28 @@ struct CreateApiKeyResponse {
     name: String,
 }
 
+/// Create an API key. Requires admin-level ACL access.
+/// Exception: if no API keys exist for the org yet (bootstrap), allows unauthenticated creation.
 async fn create_api_key(
     State(state): State<AppState>,
+    OptionalOrgAcl(acl): OptionalOrgAcl,
     ip: ClientIp,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
+    match acl {
+        Some(acl) if acl.access_level >= AccessLevel::Admin => {} // authorized
+        Some(_) => return Err(AppError::Forbidden("admin access required".into())),
+        None => {
+            // No auth provided — allow only if this is the org's first API key (bootstrap)
+            let count = overslash_db::repos::api_key::count_by_org(&state.db, req.org_id).await?;
+            if count > 0 {
+                return Err(AppError::Unauthorized(
+                    "missing authorization header".into(),
+                ));
+            }
+        }
+    }
+
     let (raw_key, key_hash, key_prefix) = generate_api_key()?;
 
     let row = overslash_db::repos::api_key::create(

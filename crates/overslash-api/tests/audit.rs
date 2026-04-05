@@ -108,11 +108,11 @@ fn filter(org_id: Uuid) -> AuditFilter {
 async fn setup_with_perm(pool: PgPool, pattern: &str) -> (String, String, Uuid, Uuid, Client) {
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": pattern}))
         .send()
         .await
@@ -701,7 +701,7 @@ async fn test_audit_api_filter_by_action() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
 
     // Store a secret → secret.put audit entry
     client
@@ -725,7 +725,7 @@ async fn test_audit_api_filter_by_resource_type() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
 
     // Store a secret → resource_type=secret
     client
@@ -747,15 +747,15 @@ async fn test_audit_api_org_isolation() {
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
 
-    let (_org_a, ident_a, key_a) = bootstrap_org_identity(&base, &client).await;
-    let (_org_b, _ident_b, key_b) = bootstrap_org_identity(&base, &client).await;
+    let (_org_a, ident_a, key_a, admin_key_a) = bootstrap_org_identity(&base, &client).await;
+    let (_org_b, _ident_b, key_b, _) = bootstrap_org_identity(&base, &client).await;
 
     let mock_addr = start_mock().await;
 
     // Grant permission + execute action only on org A
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key_a).0, auth(&key_a).1)
+        .header(auth(&admin_key_a).0, auth(&admin_key_a).1)
         .json(&json!({"identity_id": ident_a, "action_pattern": "http:**"}))
         .send()
         .await
@@ -841,7 +841,7 @@ async fn test_audit_approval_created() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
     let mock_addr = start_mock().await;
 
     // Store secret, no permission → triggers approval
@@ -891,7 +891,7 @@ async fn test_audit_approval_resolved() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
     let mock_addr = start_mock().await;
 
     // Create an approval
@@ -942,7 +942,7 @@ async fn test_audit_secret_put() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
 
     client
         .put(format!("{base}/v1/secrets/my_key"))
@@ -964,7 +964,7 @@ async fn test_audit_secret_deleted() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     client
         .put(format!("{base}/v1/secrets/to_delete"))
@@ -976,7 +976,7 @@ async fn test_audit_secret_deleted() {
 
     client
         .delete(format!("{base}/v1/secrets/to_delete"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -996,11 +996,11 @@ async fn test_audit_permission_rule_created() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
@@ -1017,11 +1017,11 @@ async fn test_audit_permission_rule_deleted() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
@@ -1031,7 +1031,7 @@ async fn test_audit_permission_rule_deleted() {
 
     client
         .delete(format!("{base}/v1/permissions/{perm_id}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1051,11 +1051,11 @@ async fn test_audit_webhook_created() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     client
         .post(format!("{base}/v1/webhooks"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"url": "https://example.com/hook", "events": ["approval.resolved"]}))
         .send()
         .await
@@ -1072,11 +1072,11 @@ async fn test_audit_webhook_deleted() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/webhooks"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"url": "https://example.com/hook", "events": ["approval.resolved"]}))
         .send()
         .await
@@ -1086,7 +1086,7 @@ async fn test_audit_webhook_deleted() {
 
     client
         .delete(format!("{base}/v1/webhooks/{wh_id}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1106,11 +1106,11 @@ async fn test_audit_byoc_credential_created() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"provider": "google", "client_id": "cid", "client_secret": "cs"}))
         .send()
         .await
@@ -1132,11 +1132,11 @@ async fn test_audit_byoc_credential_deleted() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"provider": "github", "client_id": "c", "client_secret": "s"}))
         .send()
         .await
@@ -1146,7 +1146,7 @@ async fn test_audit_byoc_credential_deleted() {
 
     client
         .delete(format!("{base}/v1/byoc-credentials/{cred_id}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1161,12 +1161,12 @@ async fn test_audit_byoc_delete_nonexistent_no_entry() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let fake_id = Uuid::new_v4();
     client
         .delete(format!("{base}/v1/byoc-credentials/{fake_id}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1184,13 +1184,13 @@ async fn test_audit_noop_deletes_no_entries() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Delete non-existent webhook
     let fake = Uuid::new_v4();
     client
         .delete(format!("{base}/v1/webhooks/{fake}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1198,7 +1198,7 @@ async fn test_audit_noop_deletes_no_entries() {
     // Delete non-existent permission
     client
         .delete(format!("{base}/v1/permissions/{fake}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1206,7 +1206,7 @@ async fn test_audit_noop_deletes_no_entries() {
     // Delete non-existent secret
     client
         .delete(format!("{base}/v1/secrets/nope"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
@@ -1235,13 +1235,13 @@ async fn test_audit_mixed_events() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
     let mock_addr = start_mock().await;
 
     // BYOC credential
     client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"provider": "spotify", "client_id": "c", "client_secret": "s"}))
         .send()
         .await
@@ -1259,7 +1259,7 @@ async fn test_audit_mixed_events() {
     // Permission + execute
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await

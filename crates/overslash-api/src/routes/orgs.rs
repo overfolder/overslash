@@ -30,6 +30,9 @@ async fn create_org(
 ) -> Result<Json<OrgResponse>> {
     let org = overslash_db::repos::org::create(&state.db, &req.name, &req.slug).await?;
 
+    // Bootstrap system assets: overslash service, Everyone + Admins groups, grants
+    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, None).await?;
+
     let _ = audit::log(
         &state.db,
         &AuditEntry {

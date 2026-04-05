@@ -352,10 +352,21 @@ async fn me(
     let claims = jwt::verify(&jwt_secret, &token)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
+    // Resolve the user's ACL level from group grants
+    let ceiling = overslash_db::repos::group::get_ceiling_for_user(&state.db, claims.sub).await?;
+    let acl_level = ceiling
+        .grants
+        .iter()
+        .filter(|g| g.template_key == "overslash")
+        .filter_map(|g| overslash_core::permissions::AccessLevel::parse(&g.access_level))
+        .max()
+        .map(|l| l.to_string());
+
     Ok(axum::Json(json!({
         "identity_id": claims.sub,
         "org_id": claims.org,
         "email": claims.email,
+        "acl_level": acl_level,
     })))
 }
 
@@ -410,6 +421,13 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                         json!({"dev": true}),
                     )
                     .await?;
+                    // Bootstrap system assets and add dev user as admin
+                    let _ = overslash_db::repos::org_bootstrap::bootstrap_org(
+                        &state.db,
+                        new_org.id,
+                        Some(new_identity.id),
+                    )
+                    .await;
                     (new_org.id, new_identity.id)
                 }
                 Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
@@ -683,6 +701,13 @@ async fn find_or_provision_user(
         .await
         {
             Ok(new_identity) => {
+                // Auto-join the Everyone group
+                let _ = overslash_db::repos::org_bootstrap::add_to_everyone_group(
+                    &state.db,
+                    matched_config.org_id,
+                    new_identity.id,
+                )
+                .await;
                 return Ok((
                     matched_config.org_id,
                     new_identity.id,
@@ -727,7 +752,16 @@ async fn find_or_provision_user(
     )
     .await
     {
-        Ok(new_identity) => Ok((new_org.id, new_identity.id, userinfo.email.clone())),
+        Ok(new_identity) => {
+            // Bootstrap system assets and add creator as admin
+            let _ = overslash_db::repos::org_bootstrap::bootstrap_org(
+                &state.db,
+                new_org.id,
+                Some(new_identity.id),
+            )
+            .await;
+            Ok((new_org.id, new_identity.id, userinfo.email.clone()))
+        }
         Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
             let existing = identity::find_by_email(&state.db, &userinfo.email)
                 .await?

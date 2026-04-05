@@ -453,7 +453,7 @@ async fn org_idp_config_crud_lifecycle() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _identity_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     // Create: configure Google IdP for the org
     let create_resp = client
@@ -584,7 +584,7 @@ async fn org_idp_config_rejects_duplicate_provider() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _identity_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let body = json!({
         "provider_key": "google",
@@ -787,7 +787,7 @@ async fn create_custom_oidc_idp_via_discovery() {
 
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _identity_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     // The mock serves /.well-known/openid-configuration
     // Note: issuer validation requires HTTPS, but our mock is HTTP.
@@ -828,7 +828,7 @@ async fn discover_preview_endpoint_rejects_http() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _identity_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/org-idp-configs/discover"))
@@ -866,7 +866,7 @@ async fn login_with_db_credentials_resolves_org_idp_config() {
     // Create org + API key via the API
     let (addr, admin_client) = common::start_api(pool.clone()).await;
     let admin_base = format!("http://{addr}");
-    let (org_id, _identity_id, api_key) =
+    let (org_id, _identity_id, api_key, _) =
         common::bootstrap_org_identity(&admin_base, &admin_client).await;
 
     // Get the org slug from DB
@@ -943,7 +943,7 @@ async fn login_with_db_creds_fails_when_disabled() {
 
     let (addr, admin_client) = common::start_api(pool.clone()).await;
     let admin_base = format!("http://{addr}");
-    let (org_id, _, api_key) = common::bootstrap_org_identity(&admin_base, &admin_client).await;
+    let (org_id, _, api_key, _) = common::bootstrap_org_identity(&admin_base, &admin_client).await;
 
     let org_slug: String = sqlx::query_scalar("SELECT slug FROM orgs WHERE id = $1")
         .bind(org_id)
@@ -1032,7 +1032,7 @@ async fn update_idp_config_rejects_env_configured_provider() {
     // Create org with DB config first (no env creds)
     let (addr, admin_client) = common::start_api(pool.clone()).await;
     let admin_base = format!("http://{addr}");
-    let (_, _, api_key) = common::bootstrap_org_identity(&admin_base, &admin_client).await;
+    let (_, _, api_key, _) = common::bootstrap_org_identity(&admin_base, &admin_client).await;
 
     let create_resp: Value = admin_client
         .post(format!("{admin_base}/v1/org-idp-configs"))
@@ -1105,7 +1105,7 @@ async fn domain_provisioning_filters_by_provider_key() {
     // Create an org with domain match for "github" provider only
     let (addr, admin_client) = common::start_api(pool.clone()).await;
     let admin_base = format!("http://{addr}");
-    let (target_org_id, _, api_key) =
+    let (target_org_id, _, api_key, _) =
         common::bootstrap_org_identity(&admin_base, &admin_client).await;
 
     // Configure GitHub IdP with domain "example.com"
@@ -1168,7 +1168,7 @@ async fn list_providers_includes_db_configured_for_org() {
 
     let (addr, admin_client) = common::start_api(pool.clone()).await;
     let admin_base = format!("http://{addr}");
-    let (org_id, _, api_key) = common::bootstrap_org_identity(&admin_base, &admin_client).await;
+    let (org_id, _, api_key, _) = common::bootstrap_org_identity(&admin_base, &admin_client).await;
 
     let org_slug: String = sqlx::query_scalar("SELECT slug FROM orgs WHERE id = $1")
         .bind(org_id)

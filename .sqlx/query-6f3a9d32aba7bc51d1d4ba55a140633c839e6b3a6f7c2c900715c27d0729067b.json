@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, status, created_at, updated_at FROM service_instances WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY name",
+  "query": "SELECT id, org_id, owner_identity_id, name, template_source, template_key, template_id, connection_id, secret_name, status, is_system, created_at, updated_at FROM service_instances WHERE org_id = $1 AND (owner_identity_id = $2 OR id = ANY($3)) ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -55,11 +55,16 @@
       },
       {
         "ordinal": 10,
+        "name": "is_system",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -67,7 +72,8 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -82,8 +88,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "db5e23cf2d5681e21d8aef82e84535e7e7eac3c3e7e4209eb5cef5029dc0da36"
+  "hash": "6f3a9d32aba7bc51d1d4ba55a140633c839e6b3a6f7c2c900715c27d0729067b"
 }

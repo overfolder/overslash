@@ -11,6 +11,7 @@ pub struct GroupRow {
     pub name: String,
     pub description: String,
     pub allow_raw_http: bool,
+    pub is_system: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -50,6 +51,7 @@ pub struct IdentityGroupRow {
 pub struct UserCeilingGrantRow {
     pub service_instance_id: Uuid,
     pub service_name: String,
+    pub template_key: String,
     pub access_level: String,
     pub auto_approve_reads: bool,
 }
@@ -73,7 +75,7 @@ pub async fn create(
         GroupRow,
         "INSERT INTO groups (org_id, name, description, allow_raw_http)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, org_id, name, description, allow_raw_http, created_at, updated_at",
+         RETURNING id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at",
         org_id,
         name,
         description,
@@ -86,7 +88,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, created_at, updated_at
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at
          FROM groups WHERE id = $1",
         id,
     )
@@ -97,7 +99,7 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<GroupRow>, sqlx
 pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, created_at, updated_at
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at
          FROM groups WHERE org_id = $1 ORDER BY name",
         org_id,
     )
@@ -117,7 +119,7 @@ pub async fn update(
         GroupRow,
         "UPDATE groups SET name = $3, description = $4, allow_raw_http = $5, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, name, description, allow_raw_http, created_at, updated_at",
+         RETURNING id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at",
         id,
         org_id,
         name,
@@ -236,7 +238,7 @@ pub async fn list_groups_for_identity(
 ) -> Result<Vec<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.created_at, g.updated_at
+        "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.is_system, g.created_at, g.updated_at
          FROM groups g
          JOIN identity_groups ig ON ig.group_id = g.id
          WHERE ig.identity_id = $1
@@ -258,6 +260,31 @@ pub async fn list_identity_ids_in_group(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|r| r.identity_id).collect())
+}
+
+pub async fn count_members_in_group(pool: &PgPool, group_id: Uuid) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT COUNT(*) AS count FROM identity_groups WHERE group_id = $1",
+        group_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.count.unwrap_or(0))
+}
+
+/// Find the system group named "Everyone" for an org.
+pub async fn find_everyone_group(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Option<GroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at
+         FROM groups WHERE org_id = $1 AND name = 'Everyone' AND is_system = true",
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 // ── Ceiling queries (hot path) ───────────────────────────────────────
@@ -286,7 +313,7 @@ pub async fn get_ceiling_for_user(
     let grants = sqlx::query_as!(
         UserCeilingGrantRow,
         "SELECT gg.service_instance_id, si.name AS service_name,
-                gg.access_level, gg.auto_approve_reads
+                si.template_key, gg.access_level, gg.auto_approve_reads
          FROM group_grants gg
          JOIN identity_groups ig ON ig.group_id = gg.group_id
          JOIN service_instances si ON si.id = gg.service_instance_id

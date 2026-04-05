@@ -542,8 +542,9 @@ pub async fn start_mock() -> SocketAddr {
     addr
 }
 
-/// Bootstrap org + identity + identity-bound API key. Returns (org_id, identity_id, api_key).
-pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String) {
+/// Bootstrap org + identity + identity-bound API key.
+/// Returns (org_id, identity_id, agent_api_key, org_admin_api_key).
+pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String, String) {
     let org: Value = client
         .post(format!("{base}/v1/orgs"))
         .json(&json!({"name": "TestOrg", "slug": format!("test-{}", Uuid::new_v4())}))
@@ -592,9 +593,10 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
-    // Identity-bound key
+    // Identity-bound key (requires admin auth now that org has keys)
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
         .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent-key"}))
         .send()
         .await
@@ -604,7 +606,7 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let api_key = key_resp["key"].as_str().unwrap().to_string();
 
-    (org_id, ident_id, api_key)
+    (org_id, ident_id, api_key, org_api_key)
 }
 
 pub fn auth(key: &str) -> (&'static str, String) {

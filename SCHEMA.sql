@@ -2,6 +2,7 @@
 -- PostgreSQL database dump
 --
 
+\restrict jnj6XoUTQaa7LbL7azrHYczC1n0btUDI5x0fedW7BGeBXBuUAZ9o991Pn9wmW9k
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -174,7 +175,8 @@ CREATE TABLE public.groups (
     description text DEFAULT ''::text NOT NULL,
     allow_raw_http boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_system boolean DEFAULT false NOT NULL
 );
 
 
@@ -196,6 +198,7 @@ CREATE TABLE public.identities (
     depth integer DEFAULT 0 NOT NULL,
     owner_id uuid,
     inherit_permissions boolean DEFAULT false NOT NULL,
+    expires_at timestamp with time zone,
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
 
@@ -260,7 +263,8 @@ CREATE TABLE public.orgs (
     name text NOT NULL,
     slug text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    allow_user_templates boolean DEFAULT true NOT NULL
 );
 
 
@@ -370,6 +374,7 @@ CREATE TABLE public.service_instances (
     status text DEFAULT 'active'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_system boolean DEFAULT false NOT NULL,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
@@ -787,6 +792,13 @@ CREATE INDEX idx_groups_org ON public.groups USING btree (org_id);
 --
 
 CREATE INDEX idx_identities_email ON public.identities USING btree (email) WHERE (email IS NOT NULL);
+
+
+--
+-- Name: idx_identities_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_expires ON public.identities USING btree (expires_at) WHERE (expires_at IS NOT NULL);
 
 
 --
@@ -1328,4 +1340,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
+\unrestrict jnj6XoUTQaa7LbL7azrHYczC1n0btUDI5x0fedW7BGeBXBuUAZ9o991Pn9wmW9k
 

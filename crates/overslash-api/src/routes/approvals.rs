@@ -14,7 +14,7 @@ use overslash_core::types::service::Risk;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AuthContext, ClientIp, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -111,11 +111,12 @@ struct ResolveRequest {
 
 async fn resolve_approval(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
+    let auth = acl;
     let (status, remember) = match req.resolution.as_str() {
         "allow" => ("allowed", false),
         "deny" => ("denied", false),
