@@ -1,0 +1,221 @@
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::delete,
+};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::rate_limit;
+
+use crate::{
+    AppState,
+    error::{AppError, Result},
+    extractors::{AuthContext, ClientIp},
+};
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/v1/rate-limits",
+            axum::routing::put(upsert_rate_limit).get(list_rate_limits),
+        )
+        .route("/v1/rate-limits/{id}", delete(delete_rate_limit))
+}
+
+// ── Request / Response types ────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RateLimitScope {
+    Org,
+    Group,
+    User,
+    IdentityCap,
+}
+
+impl RateLimitScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Org => "org",
+            Self::Group => "group",
+            Self::User => "user",
+            Self::IdentityCap => "identity_cap",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct UpsertRateLimitRequest {
+    scope: RateLimitScope,
+    identity_id: Option<Uuid>,
+    group_id: Option<Uuid>,
+    max_requests: i32,
+    window_seconds: i32,
+}
+
+#[derive(Serialize)]
+struct RateLimitResponse {
+    id: Uuid,
+    org_id: Uuid,
+    scope: String,
+    identity_id: Option<Uuid>,
+    group_id: Option<Uuid>,
+    max_requests: i32,
+    window_seconds: i32,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<rate_limit::RateLimitRow> for RateLimitResponse {
+    fn from(r: rate_limit::RateLimitRow) -> Self {
+        Self {
+            id: r.id,
+            org_id: r.org_id,
+            scope: r.scope,
+            identity_id: r.identity_id,
+            group_id: r.group_id,
+            max_requests: r.max_requests,
+            window_seconds: r.window_seconds,
+            created_at: r
+                .created_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            updated_at: r
+                .updated_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+// ── Handlers ────────────────────────────────────────────────────────
+
+async fn upsert_rate_limit(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    ip: ClientIp,
+    Json(req): Json<UpsertRateLimitRequest>,
+) -> Result<Json<RateLimitResponse>> {
+    // Validate required fields per scope
+    match req.scope {
+        RateLimitScope::Org => {
+            if req.identity_id.is_some() || req.group_id.is_some() {
+                return Err(AppError::BadRequest(
+                    "org scope must not have identity_id or group_id".into(),
+                ));
+            }
+        }
+        RateLimitScope::Group => {
+            if req.group_id.is_none() {
+                return Err(AppError::BadRequest("group scope requires group_id".into()));
+            }
+            if req.identity_id.is_some() {
+                return Err(AppError::BadRequest(
+                    "group scope must not have identity_id".into(),
+                ));
+            }
+        }
+        RateLimitScope::User | RateLimitScope::IdentityCap => {
+            if req.identity_id.is_none() {
+                return Err(AppError::BadRequest(format!(
+                    "{} scope requires identity_id",
+                    req.scope.as_str()
+                )));
+            }
+            if req.group_id.is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "{} scope must not have group_id",
+                    req.scope.as_str()
+                )));
+            }
+        }
+    }
+
+    if req.max_requests <= 0 {
+        return Err(AppError::BadRequest("max_requests must be positive".into()));
+    }
+    if req.window_seconds <= 0 {
+        return Err(AppError::BadRequest(
+            "window_seconds must be positive".into(),
+        ));
+    }
+
+    let scope_str = req.scope.as_str();
+
+    let row = rate_limit::upsert(
+        &state.db,
+        auth.org_id,
+        scope_str,
+        req.identity_id,
+        req.group_id,
+        req.max_requests,
+        req.window_seconds,
+    )
+    .await?;
+
+    // Audit
+    audit::log(
+        &state.db,
+        &AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "rate_limit.upsert",
+            resource_type: Some("rate_limit"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "scope": scope_str,
+                "identity_id": req.identity_id,
+                "group_id": req.group_id,
+                "max_requests": req.max_requests,
+                "window_seconds": req.window_seconds,
+            }),
+            ip_address: ip.0.as_deref(),
+            description: Some(&format!(
+                "Set {} rate limit: {} requests per {}s",
+                scope_str, req.max_requests, req.window_seconds
+            )),
+        },
+    )
+    .await?;
+
+    Ok(Json(row.into()))
+}
+
+async fn list_rate_limits(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Vec<RateLimitResponse>>> {
+    let rows = rate_limit::list_by_org(&state.db, auth.org_id).await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+async fn delete_rate_limit(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>> {
+    let deleted = rate_limit::delete(&state.db, id, auth.org_id).await?;
+    if !deleted {
+        return Err(AppError::NotFound("rate limit config not found".into()));
+    }
+
+    audit::log(
+        &state.db,
+        &AuditEntry {
+            org_id: auth.org_id,
+            identity_id: auth.identity_id,
+            action: "rate_limit.delete",
+            resource_type: Some("rate_limit"),
+            resource_id: Some(id),
+            detail: serde_json::json!({}),
+            ip_address: ip.0.as_deref(),
+            description: Some("Deleted rate limit config"),
+        },
+    )
+    .await?;
+
+    Ok(Json(serde_json::json!({ "deleted": true })))
+}

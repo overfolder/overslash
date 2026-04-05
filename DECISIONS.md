@@ -45,3 +45,9 @@ Settled architectural decisions. Don't re-litigate without new information.
 **Date**: 2026-03
 **Decision**: `inherit_permissions` is a live pointer, not a copy. Child dynamically has parent's current + future rules.
 **Rationale**: Static copies create drift. Live pointers mean granting a user a new permission automatically flows to their agents. See SPEC.md for full design.
+
+## D8: Two-tier rate limiting (User bucket + identity caps)
+
+**Date**: 2026-04
+**Decision**: Rate limits use two counters per request: a User-level bucket (shared by all agents under that user) and optional per-identity caps. Not per-agent buckets alone.
+**Rationale**: Per-agent-only limits are easily circumvented by spawning sub-agents. The User bucket ensures a hard ceiling regardless of agent topology. Identity caps are a convenience for isolating misconfigured agents from consuming the entire User budget. See SPEC.md §13.

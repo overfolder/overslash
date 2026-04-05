@@ -32,6 +32,9 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     // Build the app with the test pool directly
@@ -40,6 +43,14 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -741,6 +752,9 @@ async fn test_service_registry_api() {
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -758,6 +772,14 @@ async fn test_service_registry_api() {
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(registry),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -1632,6 +1654,9 @@ async fn start_api_with_registry(
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     let state = overslash_api::AppState {
@@ -1639,6 +1664,14 @@ async fn start_api_with_registry(
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(registry),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()

@@ -126,6 +126,9 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     // Build the app with the test pool directly
@@ -134,6 +137,14 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -155,6 +166,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::rate_limits::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -185,6 +197,9 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     let state = overslash_api::AppState {
@@ -192,6 +207,14 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -213,6 +236,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::rate_limits::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -246,6 +270,9 @@ pub async fn start_api_with_auth_providers(
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     let state = overslash_api::AppState {
@@ -256,6 +283,14 @@ pub async fn start_api_with_auth_providers(
             .build()
             .unwrap(),
         registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -616,6 +651,9 @@ pub async fn start_api_with_registry(
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     let state = overslash_api::AppState {
@@ -623,6 +661,14 @@ pub async fn start_api_with_registry(
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(registry),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -644,6 +690,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::rate_limits::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -671,6 +718,9 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         dev_auth_enabled: false,
         max_response_body_bytes: max_bytes,
         dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
     };
 
     let state = overslash_api::AppState {
@@ -678,6 +728,14 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
     };
 
     let app = axum::Router::new()
@@ -699,6 +757,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::rate_limits::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

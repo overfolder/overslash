@@ -28,6 +28,7 @@ pub mod org;
 pub mod org_idp_config;
 pub mod pending_enrollment;
 pub mod permission_rule;
+pub mod rate_limit;
 pub mod secret;
 pub mod service_instance;
 pub mod service_template;
