@@ -120,8 +120,9 @@ async fn provider_login(
         .org
         .as_deref()
         .filter(|s| {
-            s.chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
         })
         .unwrap_or("none");
     let org_cookie = format!(
