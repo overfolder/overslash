@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, created_at\n         FROM oauth_providers ORDER BY display_name",
+  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at\n         FROM oauth_providers WHERE key = $1",
   "describe": {
     "columns": [
       {
@@ -65,12 +65,24 @@
       },
       {
         "ordinal": 12,
+        "name": "issuer_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "jwks_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       false,
@@ -85,8 +97,10 @@
       false,
       false,
       false,
+      true,
+      true,
       false
     ]
   },
-  "hash": "a27f95199b953e3345c7e08eb930cd11c9c66dc826c0340e7384535c7a516cf0"
+  "hash": "1806fc254add2bd07767ef389204ff4d514cf59bc364b188eda6d358f12b826c"
 }

@@ -3,5 +3,6 @@ pub mod group_ceiling;
 pub mod http_executor;
 pub mod jwt;
 pub mod oauth;
+pub mod oidc_discovery;
 pub mod param_resolver;
 pub mod webhook_dispatcher;

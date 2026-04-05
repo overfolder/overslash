@@ -1,5 +1,7 @@
 //! X.com (Twitter) OAuth integration tests — callback, BYOC, token refresh, PKCE.
 //! Includes a real API test (env-gated) that posts a tweet and deletes it.
+// Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
+#![allow(clippy::disallowed_methods)]
 
 mod common;
 

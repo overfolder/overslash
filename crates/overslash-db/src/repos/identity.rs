@@ -181,6 +181,25 @@ pub async fn get_names_by_ids(
     Ok(rows.into_iter().map(|r| (r.id, r.name)).collect())
 }
 
+/// Update an identity's profile (name, metadata) on subsequent login.
+pub async fn update_profile(
+    pool: &PgPool,
+    id: Uuid,
+    name: &str,
+    metadata: serde_json::Value,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
+    sqlx::query_as!(
+        IdentityRow,
+        "UPDATE identities SET name = $2, metadata = $3, updated_at = now() WHERE id = $1
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, created_at, updated_at",
+        id,
+        name,
+        metadata,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM identities WHERE id = $1", id)
         .execute(pool)

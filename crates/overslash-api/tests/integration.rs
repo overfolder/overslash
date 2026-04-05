@@ -1,4 +1,6 @@
 //! Integration tests: full API flows against real Postgres + in-process mock target.
+// Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
+#![allow(clippy::disallowed_methods)]
 
 mod common;
 
@@ -24,6 +26,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
@@ -731,6 +735,8 @@ async fn test_service_registry_api() {
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
@@ -1620,6 +1626,8 @@ async fn start_api_with_registry(
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,

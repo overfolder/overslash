@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -14,62 +14,33 @@ use crate::{
     error::AppError,
     services::{jwt, oauth},
 };
-use overslash_db::repos::{identity, oauth_provider, org};
+use overslash_core::crypto;
+use overslash_db::repos::{identity, oauth_provider, org, org_idp_config};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/auth/google/login", get(google_login))
-        .route("/auth/google/callback", get(google_callback))
+        // Generic provider auth
+        .route("/auth/login/{provider_key}", get(provider_login))
+        .route("/auth/callback/{provider_key}", get(provider_callback))
+        .route("/auth/providers", get(list_auth_providers))
+        // Backward compat — Google callback must remain a real handler (not redirect)
+        // because existing Google OAuth apps have this URL registered as redirect_uri
+        .route("/auth/google/login", get(google_login_compat))
+        .route("/auth/google/callback", get(google_callback_compat))
+        // Session endpoints
         .route("/auth/me", get(me))
         .route("/auth/me/identity", get(me_identity))
         .route("/auth/dev/token", get(dev_token))
 }
 
-/// Initiate Google OAuth login flow.
-async fn google_login(State(state): State<AppState>) -> Result<Response, AppError> {
-    let (client_id, _) = google_credentials(&state)?;
+// ---------------------------------------------------------------------------
+// Query params
+// ---------------------------------------------------------------------------
 
-    let provider = oauth_provider::get_by_key(&state.db, "google")
-        .await?
-        .ok_or_else(|| AppError::Internal("google oauth provider not configured".into()))?;
-
-    let pkce = oauth::generate_pkce();
-
-    // State contains only the CSRF nonce — verifier goes in a cookie
-    let nonce = Uuid::new_v4().to_string();
-    let state_param = format!("login:{nonce}");
-
-    let redirect_uri = format!("{}/auth/google/callback", state.config.public_url);
-    let scopes = vec![
-        "openid".to_string(),
-        "email".to_string(),
-        "profile".to_string(),
-    ];
-
-    let auth_url = oauth::build_auth_url(
-        &provider,
-        &client_id,
-        &redirect_uri,
-        &scopes,
-        &state_param,
-        Some(&pkce.challenge),
-    );
-
-    // Set CSRF nonce cookie + PKCE verifier cookie (HttpOnly, never exposed in URL)
-    let nonce_cookie = format!(
-        "oss_auth_nonce={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        nonce
-    );
-    let verifier_cookie = format!(
-        "oss_auth_verifier={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        pkce.verifier
-    );
-
-    let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
-    headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
-
-    Ok((headers, Redirect::to(&auth_url)).into_response())
+#[derive(Deserialize)]
+struct LoginQuery {
+    /// Org slug — required for enterprise SSO, optional for social providers.
+    org: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,38 +49,140 @@ struct CallbackQuery {
     state: String,
 }
 
-/// Handle Google OAuth callback — exchange code, find-or-create user, set session.
-async fn google_callback(
+#[derive(Deserialize)]
+struct ProvidersQuery {
+    org: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Normalized user info (provider-agnostic)
+// ---------------------------------------------------------------------------
+
+struct NormalizedUserInfo {
+    provider_key: String,
+    external_id: String,
+    email: String,
+    name: Option<String>,
+    picture: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Generic provider login
+// ---------------------------------------------------------------------------
+
+async fn provider_login(
     State(state): State<AppState>,
+    Path(provider_key): Path<String>,
+    Query(query): Query<LoginQuery>,
+) -> Result<Response, AppError> {
+    let provider = oauth_provider::get_by_key(&state.db, &provider_key)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
+
+    let (client_id, _client_secret) =
+        resolve_auth_credentials(&state, &provider_key, query.org.as_deref()).await?;
+
+    let pkce = if provider.supports_pkce {
+        Some(oauth::generate_pkce())
+    } else {
+        None
+    };
+
+    let nonce = Uuid::new_v4().to_string();
+    let state_param = format!("login:{provider_key}:{nonce}");
+
+    let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
+
+    let scopes = scopes_for_provider(&provider_key);
+
+    let auth_url = oauth::build_auth_url(
+        &provider,
+        &client_id,
+        &redirect_uri,
+        &scopes,
+        &state_param,
+        pkce.as_ref().map(|p| p.challenge.as_str()),
+    );
+
+    let nonce_cookie = format!(
+        "oss_auth_nonce={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
+        nonce
+    );
+    let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
+    let verifier_cookie = format!(
+        "oss_auth_verifier={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
+        verifier_value
+    );
+    // Persist org slug across the OAuth redirect so the callback can resolve
+    // DB-stored credentials. Value is "none" when org context isn't needed
+    // (env-var social providers). Sanitize to prevent header injection.
+    let org_slug_value = query
+        .org
+        .as_deref()
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+        .unwrap_or("none");
+    let org_cookie = format!(
+        "oss_auth_org={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
+        org_slug_value
+    );
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
+    headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
+    headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
+
+    Ok((headers, Redirect::to(&auth_url)).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Generic provider callback
+// ---------------------------------------------------------------------------
+
+async fn provider_callback(
+    State(state): State<AppState>,
+    Path(provider_key): Path<String>,
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let (client_id, client_secret) = google_credentials(&state)?;
+    // Parse state: "login:<provider_key>:<nonce>"
+    let state_parts: Vec<&str> = params.state.splitn(3, ':').collect();
+    if state_parts.len() != 3 || state_parts[0] != "login" {
+        return Err(AppError::BadRequest("invalid state parameter".into()));
+    }
+    let state_provider = state_parts[1];
+    let nonce = state_parts[2];
 
-    // Parse state: "login:<nonce>"
-    let nonce = params
-        .state
-        .strip_prefix("login:")
-        .ok_or_else(|| AppError::BadRequest("invalid state parameter".into()))?;
+    if state_provider != provider_key {
+        return Err(AppError::BadRequest("provider mismatch in state".into()));
+    }
 
-    // Verify CSRF nonce from cookie
+    // Verify CSRF nonce
     let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
         .ok_or_else(|| AppError::BadRequest("missing auth nonce cookie".into()))?;
     if cookie_nonce != nonce {
         return Err(AppError::BadRequest("nonce mismatch".into()));
     }
 
-    // Retrieve PKCE verifier from cookie (never exposed in URL)
-    let code_verifier = extract_cookie(&headers, "oss_auth_verifier")
-        .ok_or_else(|| AppError::BadRequest("missing auth verifier cookie".into()))?;
-
-    let provider = oauth_provider::get_by_key(&state.db, "google")
+    let provider = oauth_provider::get_by_key(&state.db, &provider_key)
         .await?
-        .ok_or_else(|| AppError::Internal("google oauth provider not configured".into()))?;
+        .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
-    let redirect_uri = format!("{}/auth/google/callback", state.config.public_url);
+    // Recover org slug from cookie (set during provider_login)
+    let org_slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
 
-    // Exchange authorization code for tokens
+    let (client_id, client_secret) =
+        resolve_auth_credentials(&state, &provider_key, org_slug.as_deref()).await?;
+
+    // PKCE verifier (may be "none" if provider doesn't support PKCE)
+    let code_verifier = extract_cookie(&headers, "oss_auth_verifier");
+    let verifier_ref = code_verifier.as_deref().filter(|v| *v != "none");
+
+    let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
+
     let tokens = oauth::exchange_code(
         &state.http_client,
         &provider,
@@ -117,31 +190,24 @@ async fn google_callback(
         &client_secret,
         &params.code,
         &redirect_uri,
-        Some(&code_verifier),
+        verifier_ref,
     )
     .await
     .map_err(|e| AppError::Internal(format!("token exchange failed: {e}")))?;
 
-    // Fetch user info from Google
-    let userinfo_url = provider
-        .userinfo_endpoint
-        .as_deref()
-        .ok_or_else(|| AppError::Internal("google provider missing userinfo endpoint".into()))?;
+    // Fetch user info (provider-specific)
+    let userinfo = fetch_userinfo(
+        &state.http_client,
+        &provider,
+        &provider_key,
+        &tokens.access_token,
+    )
+    .await?;
 
-    let userinfo: GoogleUserInfo = state
-        .http_client
-        .get(userinfo_url)
-        .bearer_auth(&tokens.access_token)
-        .send()
-        .await?
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("failed to fetch userinfo: {e}")))?;
+    // Find or provision user + update profile
+    let (org_id, identity_id, email) = find_or_provision_user(&state, &userinfo).await?;
 
-    // Find or create org + identity
-    let (org_id, identity_id, email) = find_or_create_user(&state, &userinfo).await?;
-
-    // Mint JWT (7-day expiry)
+    // Mint JWT
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let claims = jwt::Claims {
@@ -154,23 +220,119 @@ async fn google_callback(
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
 
-    // Set session cookie + clear nonce cookie
+    // Set session cookie + clear auth cookies
     let session_cookie = format!(
         "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800",
         token
     );
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
+    let clear_org = "oss_auth_org=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
+    resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
 
     Ok((resp_headers, Redirect::to(&state.config.dashboard_url)).into_response())
 }
 
-/// Return current session user info from JWT cookie.
+// ---------------------------------------------------------------------------
+// Backward-compat Google routes
+// ---------------------------------------------------------------------------
+
+async fn google_login_compat(
+    state: State<AppState>,
+    query: Query<LoginQuery>,
+) -> Result<Response, AppError> {
+    provider_login(state, Path("google".to_string()), query).await
+}
+
+async fn google_callback_compat(
+    state: State<AppState>,
+    Query(mut params): Query<CallbackQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    // Handle old state format "login:<nonce>" from in-flight sessions
+    // started before this deployment. Convert to new format "login:google:<nonce>".
+    if params.state.starts_with("login:") {
+        let parts: Vec<&str> = params.state.splitn(3, ':').collect();
+        if parts.len() == 2 {
+            params.state = format!("login:google:{}", parts[1]);
+        }
+    }
+    provider_callback(state, Path("google".to_string()), Query(params), headers).await
+}
+
+// ---------------------------------------------------------------------------
+// List available auth providers (for login page)
+// ---------------------------------------------------------------------------
+
+async fn list_auth_providers(
+    State(state): State<AppState>,
+    Query(query): Query<ProvidersQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut providers = Vec::new();
+
+    // Always include env-var-configured social providers
+    if state.config.google_auth_client_id.is_some()
+        && state.config.google_auth_client_secret.is_some()
+    {
+        providers.push(json!({
+            "key": "google",
+            "display_name": "Google",
+            "source": "env",
+        }));
+    }
+    if state.config.github_auth_client_id.is_some()
+        && state.config.github_auth_client_secret.is_some()
+    {
+        providers.push(json!({
+            "key": "github",
+            "display_name": "GitHub",
+            "source": "env",
+        }));
+    }
+
+    // If org slug provided, also include DB-configured IdPs for that org
+    if let Some(slug) = &query.org {
+        if let Some(org_row) = org::get_by_slug(&state.db, slug).await? {
+            let configs = org_idp_config::list_enabled_by_org(&state.db, org_row.id).await?;
+            for config in configs {
+                // Skip if already added from env vars
+                if providers.iter().any(|p| p["key"] == config.provider_key) {
+                    continue;
+                }
+                let display_name = oauth_provider::get_by_key(&state.db, &config.provider_key)
+                    .await?
+                    .map(|p| p.display_name)
+                    .unwrap_or_else(|| config.provider_key.clone());
+                providers.push(json!({
+                    "key": config.provider_key,
+                    "display_name": display_name,
+                    "source": "db",
+                }));
+            }
+        }
+    }
+
+    // Dev login indicator
+    if state.config.dev_auth_enabled {
+        providers.push(json!({
+            "key": "dev",
+            "display_name": "Dev Login",
+            "source": "env",
+        }));
+    }
+
+    Ok(axum::Json(json!({ "providers": providers })))
+}
+
+// ---------------------------------------------------------------------------
+// Session endpoints (unchanged)
+// ---------------------------------------------------------------------------
+
 async fn me(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -189,8 +351,6 @@ async fn me(
     })))
 }
 
-/// Return identity details for the current session user (cookie auth).
-/// Used by the dashboard profile page.
 async fn me_identity(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -202,7 +362,6 @@ async fn me_identity(
     let claims = jwt::verify(&jwt_secret, &token)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
-    // Fetch the identity row for richer details (name, kind, external_id)
     let ident = identity::get_by_id(&state.db, claims.sub)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
@@ -217,13 +376,15 @@ async fn me_identity(
     })))
 }
 
-/// Dev-only: issue a JWT for a test user+org. Requires DEV_AUTH env var.
+// ---------------------------------------------------------------------------
+// Dev token (unchanged)
+// ---------------------------------------------------------------------------
+
 async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     if !state.config.dev_auth_enabled {
         return Err(AppError::NotFound("not found".into()));
     }
 
-    // Find or create a deterministic dev user
     let dev_email = "dev@overslash.local";
     let (org_id, identity_id) =
         if let Some(existing) = identity::find_by_email(&state.db, dev_email).await? {
@@ -244,7 +405,6 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                     (new_org.id, new_identity.id)
                 }
                 Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                    // Concurrent request already created it — retry lookup
                     let existing = identity::find_by_email(&state.db, dev_email)
                         .await?
                         .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
@@ -286,22 +446,288 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
     ))
 }
 
-// --- helpers ---
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-fn google_credentials(state: &AppState) -> Result<(String, String), AppError> {
-    let client_id = state
-        .config
-        .google_auth_client_id
-        .as_ref()
-        .ok_or_else(|| AppError::NotFound("google login not configured".into()))?
-        .clone();
-    let client_secret = state
-        .config
-        .google_auth_client_secret
-        .as_ref()
-        .ok_or_else(|| AppError::NotFound("google login not configured".into()))?
-        .clone();
-    Ok((client_id, client_secret))
+/// Resolve auth credentials for a provider. Precedence:
+/// 1. Environment variables (e.g. GOOGLE_AUTH_CLIENT_ID)
+/// 2. DB-stored org_idp_config (requires org context via slug)
+async fn resolve_auth_credentials(
+    state: &AppState,
+    provider_key: &str,
+    org_slug: Option<&str>,
+) -> Result<(String, String), AppError> {
+    // 1. Env vars take precedence
+    if let Some(creds) = state.config.env_auth_credentials(provider_key) {
+        return Ok(creds);
+    }
+
+    // 2. DB config — need org context
+    if let Some(slug) = org_slug {
+        let org_row = org::get_by_slug(&state.db, slug)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("org not found: {slug}")))?;
+
+        let config = org_idp_config::get_by_org_and_provider(&state.db, org_row.id, provider_key)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "provider {provider_key} not configured for org {slug}"
+                ))
+            })?;
+
+        if !config.enabled {
+            return Err(AppError::NotFound(format!(
+                "provider {provider_key} is disabled for org {slug}"
+            )));
+        }
+
+        let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+            .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
+        let client_id = String::from_utf8(
+            crypto::decrypt(&enc_key, &config.encrypted_client_id)
+                .map_err(|e| AppError::Internal(format!("decrypt client_id: {e}")))?,
+        )
+        .map_err(|_| AppError::Internal("invalid client_id utf-8".into()))?;
+        let client_secret = String::from_utf8(
+            crypto::decrypt(&enc_key, &config.encrypted_client_secret)
+                .map_err(|e| AppError::Internal(format!("decrypt client_secret: {e}")))?,
+        )
+        .map_err(|_| AppError::Internal("invalid client_secret utf-8".into()))?;
+
+        return Ok((client_id, client_secret));
+    }
+
+    Err(AppError::NotFound(format!(
+        "no credentials configured for provider {provider_key}"
+    )))
+}
+
+/// Return the appropriate scopes for a provider.
+fn scopes_for_provider(provider_key: &str) -> Vec<String> {
+    match provider_key {
+        "google" => vec![
+            "openid".to_string(),
+            "email".to_string(),
+            "profile".to_string(),
+        ],
+        "github" => vec!["read:user".to_string(), "user:email".to_string()],
+        // Generic OIDC providers — request standard scopes
+        _ => vec![
+            "openid".to_string(),
+            "email".to_string(),
+            "profile".to_string(),
+        ],
+    }
+}
+
+/// Fetch user info from the IdP, normalizing across providers.
+async fn fetch_userinfo(
+    http_client: &reqwest::Client,
+    provider: &oauth_provider::OAuthProviderRow,
+    provider_key: &str,
+    access_token: &str,
+) -> Result<NormalizedUserInfo, AppError> {
+    match provider_key {
+        "github" => fetch_github_userinfo(http_client, provider_key, access_token).await,
+        _ => fetch_oidc_userinfo(http_client, provider, provider_key, access_token).await,
+    }
+}
+
+/// Fetch user info from GitHub's API (non-OIDC).
+async fn fetch_github_userinfo(
+    http_client: &reqwest::Client,
+    provider_key: &str,
+    access_token: &str,
+) -> Result<NormalizedUserInfo, AppError> {
+    // GET /user for profile
+    let user: GitHubUser = http_client
+        .get("https://api.github.com/user")
+        .bearer_auth(access_token)
+        .header("User-Agent", "Overslash")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("github user fetch failed: {e}")))?;
+
+    // GET /user/emails for primary verified email
+    let emails: Vec<GitHubEmail> = http_client
+        .get("https://api.github.com/user/emails")
+        .bearer_auth(access_token)
+        .header("User-Agent", "Overslash")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("github emails fetch failed: {e}")))?;
+
+    let primary_email = emails
+        .iter()
+        .find(|e| e.primary && e.verified)
+        .or_else(|| emails.iter().find(|e| e.verified))
+        .map(|e| e.email.clone())
+        .ok_or_else(|| AppError::BadRequest("no verified email found on GitHub account".into()))?;
+
+    Ok(NormalizedUserInfo {
+        provider_key: provider_key.to_string(),
+        external_id: user.id.to_string(),
+        email: primary_email,
+        name: user.name.or(Some(user.login)),
+        picture: user.avatar_url,
+    })
+}
+
+/// Fetch user info from a standard OIDC userinfo endpoint.
+async fn fetch_oidc_userinfo(
+    http_client: &reqwest::Client,
+    provider: &oauth_provider::OAuthProviderRow,
+    provider_key: &str,
+    access_token: &str,
+) -> Result<NormalizedUserInfo, AppError> {
+    let userinfo_url = provider.userinfo_endpoint.as_deref().ok_or_else(|| {
+        AppError::Internal(format!("{provider_key} provider missing userinfo endpoint"))
+    })?;
+
+    let info: OidcUserInfo = http_client
+        .get(userinfo_url)
+        .bearer_auth(access_token)
+        .send()
+        .await?
+        .json()
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("failed to fetch userinfo from {provider_key}: {e}"))
+        })?;
+
+    let email = info
+        .email
+        .ok_or_else(|| AppError::BadRequest("IdP did not return an email address".into()))?;
+
+    Ok(NormalizedUserInfo {
+        provider_key: provider_key.to_string(),
+        external_id: info.sub,
+        email,
+        name: info.name,
+        picture: info.picture,
+    })
+}
+
+/// Find an existing user or provision a new one. On subsequent logins, updates
+/// the user's profile (name, avatar) from IdP claims.
+async fn find_or_provision_user(
+    state: &AppState,
+    userinfo: &NormalizedUserInfo,
+) -> Result<(Uuid, Uuid, String), AppError> {
+    // Check if identity already exists by email
+    if let Some(existing) = identity::find_by_email(&state.db, &userinfo.email).await? {
+        // Update profile on subsequent login
+        let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
+        let metadata = json!({
+            "provider": userinfo.provider_key,
+            "external_id": userinfo.external_id,
+            "name": userinfo.name,
+            "picture": userinfo.picture,
+        });
+        if let Err(e) =
+            identity::update_profile(&state.db, existing.id, display_name, metadata).await
+        {
+            tracing::warn!(identity_id = %existing.id, error = %e, "failed to update profile on login");
+        }
+        return Ok((existing.org_id, existing.id, userinfo.email.clone()));
+    }
+
+    // New user — try to match by email domain to an existing org
+    let email_domain = userinfo
+        .email
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+
+    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
+    let metadata = json!({
+        "provider": userinfo.provider_key,
+        "external_id": userinfo.external_id,
+        "name": userinfo.name,
+        "picture": userinfo.picture,
+    });
+
+    // Check if any org has this email domain configured for the same provider
+    let domain_matches = org_idp_config::find_by_email_domain(&state.db, &email_domain).await?;
+    let matched_config = domain_matches
+        .iter()
+        .find(|c| c.provider_key == userinfo.provider_key);
+    if let Some(matched_config) = matched_config {
+        // Provision user in the matched org
+        match identity::create_with_email(
+            &state.db,
+            matched_config.org_id,
+            display_name,
+            "user",
+            Some(&userinfo.external_id),
+            Some(&userinfo.email),
+            metadata,
+        )
+        .await
+        {
+            Ok(new_identity) => {
+                return Ok((
+                    matched_config.org_id,
+                    new_identity.id,
+                    userinfo.email.clone(),
+                ));
+            }
+            Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+                // Race — another request created this identity
+                let existing = identity::find_by_email(&state.db, &userinfo.email)
+                    .await?
+                    .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
+                return Ok((existing.org_id, existing.id, userinfo.email.clone()));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // No domain match — create new org + identity (default behavior)
+    let new_org = {
+        let mut attempts = 0;
+        loop {
+            let slug = generate_slug(&userinfo.email);
+            match org::create(&state.db, display_name, &slug).await {
+                Ok(o) => break o,
+                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() && attempts < 3 => {
+                    attempts += 1;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
+
+    match identity::create_with_email(
+        &state.db,
+        new_org.id,
+        display_name,
+        "user",
+        Some(&userinfo.external_id),
+        Some(&userinfo.email),
+        metadata,
+    )
+    .await
+    {
+        Ok(new_identity) => Ok((new_org.id, new_identity.id, userinfo.email.clone())),
+        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+            let existing = identity::find_by_email(&state.db, &userinfo.email)
+                .await?
+                .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
+            Ok((existing.org_id, existing.id, userinfo.email.clone()))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -319,70 +745,6 @@ fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
     hex::decode(signing_key).unwrap_or_else(|_| signing_key.as_bytes().to_vec())
 }
 
-#[derive(Deserialize)]
-struct GoogleUserInfo {
-    sub: String,
-    email: String,
-    name: Option<String>,
-    picture: Option<String>,
-}
-
-async fn find_or_create_user(
-    state: &AppState,
-    userinfo: &GoogleUserInfo,
-) -> Result<(Uuid, Uuid, String), AppError> {
-    // Check if identity already exists by email
-    if let Some(existing) = identity::find_by_email(&state.db, &userinfo.email).await? {
-        return Ok((existing.org_id, existing.id, userinfo.email.clone()));
-    }
-
-    // Create new org + identity. Retry slug generation on collision.
-    // If a concurrent request raced us on the identity email, retry the lookup.
-    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
-    let new_org = {
-        let mut attempts = 0;
-        loop {
-            let slug = generate_slug(&userinfo.email);
-            match org::create(&state.db, display_name, &slug).await {
-                Ok(o) => break o,
-                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() && attempts < 3 => {
-                    attempts += 1;
-                    continue;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-    };
-
-    let metadata = json!({
-        "google_sub": userinfo.sub,
-        "name": userinfo.name,
-        "picture": userinfo.picture,
-    });
-    match identity::create_with_email(
-        &state.db,
-        new_org.id,
-        display_name,
-        "user",
-        Some(&userinfo.sub),
-        Some(&userinfo.email),
-        metadata,
-    )
-    .await
-    {
-        Ok(new_identity) => Ok((new_org.id, new_identity.id, userinfo.email.clone())),
-        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-            // Another request won the race — use the identity they created.
-            // The orphaned org is harmless and can be cleaned up later.
-            let existing = identity::find_by_email(&state.db, &userinfo.email)
-                .await?
-                .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
-            Ok((existing.org_id, existing.id, userinfo.email.clone()))
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
 fn generate_slug(email: &str) -> String {
     let local = email.split('@').next().unwrap_or("user");
     let clean: String = local
@@ -391,4 +753,31 @@ fn generate_slug(email: &str) -> String {
         .collect();
     let suffix: u32 = rand::random::<u32>() % 10000;
     format!("{}-{:04}", clean.to_lowercase(), suffix)
+}
+
+// ---------------------------------------------------------------------------
+// Provider-specific response types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct GitHubUser {
+    id: u64,
+    login: String,
+    name: Option<String>,
+    avatar_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitHubEmail {
+    email: String,
+    primary: bool,
+    verified: bool,
+}
+
+#[derive(Deserialize)]
+struct OidcUserInfo {
+    sub: String,
+    email: Option<String>,
+    name: Option<String>,
+    picture: Option<String>,
 }

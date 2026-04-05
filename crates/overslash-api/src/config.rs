@@ -11,6 +11,8 @@ pub struct Config {
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
+    pub github_auth_client_id: Option<String>,
+    pub github_auth_client_secret: Option<String>,
     pub public_url: String,
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
@@ -37,6 +39,8 @@ impl Config {
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
+            github_auth_client_id: env::var("GITHUB_AUTH_CLIENT_ID").ok(),
+            github_auth_client_secret: env::var("GITHUB_AUTH_CLIENT_SECRET").ok(),
             public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
             max_response_body_bytes: env::var("MAX_RESPONSE_BODY_BYTES")
@@ -55,5 +59,23 @@ impl Config {
             .filter(|k| env::var(k).is_err())
             .copied()
             .collect()
+    }
+
+    /// Returns env-var-based auth credentials for a given provider key, if configured.
+    /// Env vars take precedence over DB-stored IdP configs.
+    pub fn env_auth_credentials(&self, provider_key: &str) -> Option<(String, String)> {
+        match provider_key {
+            "google" => self
+                .google_auth_client_id
+                .as_ref()
+                .zip(self.google_auth_client_secret.as_ref())
+                .map(|(a, b)| (a.clone(), b.clone())),
+            "github" => self
+                .github_auth_client_id
+                .as_ref()
+                .zip(self.github_auth_client_secret.as_ref())
+                .map(|(a, b)| (a.clone(), b.clone())),
+            _ => None,
+        }
     }
 }
