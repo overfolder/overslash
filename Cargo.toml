@@ -24,13 +24,3 @@ anyhow = "1"
 dotenvy = "0.15"
 rand = "0.9"
 jsonwebtoken = "9"
-
-# CI-optimized build profile: faster compilation at the cost of runtime speed.
-[profile.ci]
-inherits = "dev"
-debug = "line-tables-only"  # Enough for stack traces; llvm-cov uses instrumentation, not DWARF
-codegen-units = 256          # Maximize codegen parallelism
-incremental = false          # Useless in CI, wastes disk I/O
-
-[profile.ci.build-override]
-opt-level = 0
