@@ -5,6 +5,7 @@
 	import { page } from '$app/stores';
 	import { session } from '$lib/session';
 	import type { MeIdentity } from '$lib/session';
+	import { adminIdentity } from '$lib/stores';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -13,6 +14,7 @@
 	onMount(async () => {
 		try {
 			identity = await session.get<MeIdentity>('/auth/me/identity');
+			adminIdentity.set(identity);
 		} catch {
 			// Not authenticated — admin nav hidden
 		}

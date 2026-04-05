@@ -1,6 +1,7 @@
 <script lang="ts">
+	import '$lib/admin.css';
 	import { onMount } from 'svelte';
-	import { session, ApiError } from '$lib/session';
+	import { session, ApiError, formatApiError } from '$lib/session';
 	import type { TemplateSummary } from '$lib/types';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -58,7 +59,7 @@
 		try {
 			templates = await session.get<TemplateSummary[]>('/v1/templates');
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load templates';
+			error = formatApiError(e);
 		} finally {
 			loading = false;
 		}
@@ -75,7 +76,7 @@
 				`/v1/templates/search?q=${encodeURIComponent(q)}`
 			);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Search failed';
+			error = formatApiError(e);
 		} finally {
 			loading = false;
 		}
@@ -120,12 +121,8 @@
 		} catch (e) {
 			if (e instanceof SyntaxError) {
 				createError = 'Invalid JSON in auth or actions field';
-			} else if (e instanceof ApiError) {
-				createError = typeof e.body === 'object' && e.body !== null && 'error' in e.body
-					? String((e.body as { error: string }).error)
-					: `Error ${e.status}`;
 			} else {
-				createError = e instanceof Error ? e.message : 'Create failed';
+				createError = formatApiError(e);
 			}
 		} finally {
 			saving = false;
@@ -164,13 +161,7 @@
 			showEdit = false;
 			await load();
 		} catch (e) {
-			if (e instanceof ApiError) {
-				editError = typeof e.body === 'object' && e.body !== null && 'error' in e.body
-					? String((e.body as { error: string }).error)
-					: `Error ${e.status}`;
-			} else {
-				editError = e instanceof Error ? e.message : 'Update failed';
-			}
+			editError = formatApiError(e);
 		} finally {
 			saving = false;
 		}
@@ -188,7 +179,7 @@
 			showDelete = false;
 			await load();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Delete failed';
+			error = formatApiError(e);
 			showDelete = false;
 		}
 	}
@@ -200,7 +191,7 @@
 	<title>Templates - Overslash Admin</title>
 </svelte:head>
 
-<div class="page">
+<div class="admin-page">
 	<div class="page-header">
 		<h1>Templates</h1>
 		<button class="btn btn-primary" onclick={() => (showCreate = true)}>Create Template</button>
@@ -325,22 +316,6 @@
 </Modal>
 
 <style>
-	.page {
-		max-width: 1100px;
-	}
-
-	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 1.5rem;
-	}
-
-	h1 {
-		font-size: 1.75rem;
-		font-weight: 600;
-	}
-
 	.search-bar {
 		margin-bottom: 1rem;
 	}
@@ -358,136 +333,5 @@
 
 	.search-bar input::placeholder {
 		color: var(--color-text-muted);
-	}
-
-	.card {
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		overflow: hidden;
-	}
-
-	.error-msg {
-		background: rgba(239, 68, 68, 0.1);
-		border: 1px solid var(--color-danger);
-		color: var(--color-danger);
-		padding: 0.5rem 1rem;
-		border-radius: 6px;
-		margin-bottom: 1rem;
-		font-size: 0.9rem;
-	}
-
-	.row-actions {
-		display: flex;
-		gap: 0.5rem;
-	}
-
-	.btn-sm {
-		padding: 0.25rem 0.6rem;
-		font-size: 0.8rem;
-		border-radius: 4px;
-		border: none;
-		cursor: pointer;
-		background: var(--color-border);
-		color: var(--color-text);
-	}
-
-	.btn-sm:hover {
-		opacity: 0.8;
-	}
-
-	.btn-danger {
-		background: var(--color-danger);
-		color: white;
-	}
-
-	.read-only {
-		font-size: 0.8rem;
-		color: var(--color-text-muted);
-		font-style: italic;
-	}
-
-	.btn {
-		padding: 0.6rem 1.25rem;
-		border-radius: 6px;
-		font-size: 0.9rem;
-		font-weight: 500;
-		cursor: pointer;
-		border: none;
-		transition: background 0.15s, opacity 0.15s;
-	}
-
-	.btn-primary {
-		background: var(--color-primary);
-		color: white;
-	}
-
-	.btn-primary:hover {
-		background: var(--color-primary-hover);
-	}
-
-	.btn-primary:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-
-	.btn-secondary {
-		background: var(--color-border);
-		color: var(--color-text);
-	}
-
-	.form-group {
-		margin-bottom: 1rem;
-	}
-
-	.form-group label {
-		display: block;
-		font-size: 0.8rem;
-		font-weight: 500;
-		color: var(--color-text-muted);
-		margin-bottom: 0.3rem;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.form-group input,
-	.form-group textarea,
-	.form-group select {
-		width: 100%;
-		padding: 0.5rem 0.75rem;
-		background: var(--color-bg);
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		color: var(--color-text);
-		font-size: 0.9rem;
-		font-family: inherit;
-	}
-
-	.form-group textarea {
-		font-family: var(--font-mono);
-		font-size: 0.85rem;
-		resize: vertical;
-	}
-
-	.modal-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 0.75rem;
-		margin-top: 1.5rem;
-	}
-
-	.modal-error {
-		background: rgba(239, 68, 68, 0.1);
-		border: 1px solid var(--color-danger);
-		color: var(--color-danger);
-		padding: 0.5rem 0.75rem;
-		border-radius: 6px;
-		margin-bottom: 1rem;
-		font-size: 0.85rem;
-	}
-
-	.confirm-text {
-		color: var(--color-text-muted);
-		margin-bottom: 0.5rem;
 	}
 </style>

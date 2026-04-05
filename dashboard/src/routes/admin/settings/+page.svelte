@@ -1,6 +1,7 @@
 <script lang="ts">
+	import '$lib/admin.css';
 	import { onMount } from 'svelte';
-	import { session, ApiError } from '$lib/session';
+	import { session, ApiError, formatApiError } from '$lib/session';
 	import type { OrgDetail, IdpConfigResponse, IdentitySummary } from '$lib/types';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -75,7 +76,7 @@
 			idpConfigs = idps;
 			identities = ids;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load settings';
+			error = formatApiError(e);
 		} finally {
 			loading = false;
 		}
@@ -93,7 +94,7 @@
 			saveSuccess = true;
 			setTimeout(() => (saveSuccess = false), 3000);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Save failed';
+			error = formatApiError(e);
 		} finally {
 			saving = false;
 		}
@@ -118,9 +119,7 @@
 			idpForm = { provider_key: '', issuer_url: '', display_name: '', client_id: '', client_secret: '', enabled: true, allowed_email_domains: '' };
 			await load();
 		} catch (e) {
-			idpError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Failed');
+			idpError = formatApiError(e);
 		} finally {
 			idpSaving = false;
 		}
@@ -151,9 +150,7 @@
 			showEditIdp = false;
 			await load();
 		} catch (e) {
-			editIdpError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Failed');
+			editIdpError = formatApiError(e);
 		} finally {
 			idpSaving = false;
 		}
@@ -166,7 +163,7 @@
 			showDeleteIdp = false;
 			await load();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Delete failed';
+			error = formatApiError(e);
 			showDeleteIdp = false;
 		}
 	}
@@ -178,7 +175,7 @@
 	<title>Settings - Overslash Admin</title>
 </svelte:head>
 
-<div class="page">
+<div class="admin-page-narrow">
 	<h1>Settings</h1>
 
 	{#if loading}
@@ -192,7 +189,7 @@
 		{/if}
 
 		<!-- Card 1: Organization -->
-		<div class="card">
+		<div class="card card-padded card-spaced">
 			<h2>Organization</h2>
 			<div class="form-grid">
 				<div class="form-group">
@@ -215,7 +212,7 @@
 		</div>
 
 		<!-- Card 2: Policies -->
-		<div class="card">
+		<div class="card card-padded card-spaced">
 			<h2>Policies</h2>
 			<div class="toggle-row">
 				<label class="toggle-label">
@@ -232,7 +229,7 @@
 		</div>
 
 		<!-- Card 3: Identity Providers -->
-		<div class="card">
+		<div class="card card-padded card-spaced">
 			<div class="card-header">
 				<h2>Identity Providers</h2>
 				<button class="btn-sm" onclick={() => (showAddIdp = true)}>Add Provider</button>
@@ -266,7 +263,7 @@
 		</div>
 
 		<!-- Card 4: Members -->
-		<div class="card">
+		<div class="card card-padded card-spaced">
 			<h2>Members</h2>
 			<DataTable items={users} columns={memberColumns} emptyMessage="No users found.">
 				{#snippet cell({ item, column })}
@@ -363,20 +360,8 @@
 </Modal>
 
 <style>
-	.page { max-width: 900px; }
 	h1 { font-size: 1.75rem; font-weight: 600; margin-bottom: 1.5rem; }
-	.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
-	.card h2 { font-size: 1rem; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
-	.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-	.card-header h2 { margin-bottom: 0; }
-
-	.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-	.form-group { margin-bottom: 0; }
-	.form-group label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--color-text-muted); margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.04em; }
-	.form-group input, .form-group select { width: 100%; padding: 0.5rem 0.75rem; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text); font-size: 0.9rem; }
-	.form-group input:disabled { opacity: 0.5; cursor: not-allowed; }
 	.form-group input[type="password"] { font-family: var(--font-mono); }
-	.mono { font-family: var(--font-mono); font-size: 0.85rem; }
 
 	.toggle-row { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 1rem; }
 	.toggle-label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.95rem; cursor: pointer; }
@@ -384,28 +369,5 @@
 	.toggle-desc { font-size: 0.8rem; color: var(--color-text-muted); padding-left: 1.5rem; }
 	.save-row { display: flex; justify-content: flex-end; }
 
-	.checkbox-group label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; text-transform: none; letter-spacing: 0; color: var(--color-text); cursor: pointer; }
-	.checkbox-group input[type="checkbox"] { width: auto; accent-color: var(--color-primary); }
-
 	.loading-card { display: flex; align-items: center; gap: 0.75rem; padding: 2rem; color: var(--color-text-muted); }
-	.spinner { width: 18px; height: 18px; border: 2px solid var(--color-border); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 0.6s linear infinite; }
-	@keyframes spin { to { transform: rotate(360deg); } }
-
-	.error-msg { background: rgba(239,68,68,0.1); border: 1px solid var(--color-danger); color: var(--color-danger); padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
-	.success-msg { background: rgba(34,197,94,0.1); border: 1px solid var(--color-success); color: var(--color-success); padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
-	.muted { color: var(--color-text-muted); font-size: 0.85rem; }
-	.read-only { font-size: 0.8rem; color: var(--color-text-muted); font-style: italic; }
-
-	.row-actions { display: flex; gap: 0.5rem; }
-	.btn-sm { padding: 0.25rem 0.6rem; font-size: 0.8rem; border-radius: 4px; border: none; cursor: pointer; background: var(--color-border); color: var(--color-text); }
-	.btn-sm:hover { opacity: 0.8; }
-	.btn-danger { background: var(--color-danger); color: white; }
-	.btn { padding: 0.6rem 1.25rem; border-radius: 6px; font-size: 0.9rem; font-weight: 500; cursor: pointer; border: none; transition: background 0.15s, opacity 0.15s; }
-	.btn-primary { background: var(--color-primary); color: white; }
-	.btn-primary:hover { background: var(--color-primary-hover); }
-	.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-	.btn-secondary { background: var(--color-border); color: var(--color-text); }
-	.modal-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; }
-	.modal-error { background: rgba(239,68,68,0.1); border: 1px solid var(--color-danger); color: var(--color-danger); padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
-	.confirm-text { color: var(--color-text-muted); margin-bottom: 0.5rem; }
 </style>

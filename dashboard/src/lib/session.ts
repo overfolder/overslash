@@ -53,6 +53,17 @@ export const session = {
 	delete: <T>(path: string) => request<T>('DELETE', path)
 };
 
+/** Extract a human-readable error message from an API error or unknown exception. */
+export function formatApiError(e: unknown): string {
+	if (e instanceof ApiError) {
+		if (typeof e.body === 'object' && e.body !== null && 'error' in e.body) {
+			return String((e.body as { error: string }).error);
+		}
+		return `Error ${e.status}`;
+	}
+	return e instanceof Error ? e.message : 'Unknown error';
+}
+
 /** Response from GET /auth/me/identity — full identity details */
 export interface MeIdentity {
 	identity_id: string;

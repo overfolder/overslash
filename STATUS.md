@@ -92,12 +92,23 @@
 - Available providers endpoint — `GET /auth/providers?org=<slug>` for login page
 - Backward-compatible Google login routes preserved
 
+### Dashboard (SvelteKit)
+
+- Auth-gated admin sidebar with 5 management sections (visible to `kind=user` identities only)
+- **Templates management** — browse, search, create, edit, delete org templates; global templates shown read-only
+- **Services management** — CRUD for service instances, inline status changes (draft/active/archived)
+- **Groups management** — master-detail UI with member assignment and service grant management (access level + auto-approve reads)
+- **Webhooks management** — CRUD for webhook subscriptions + expandable delivery history with color-coded status codes
+- **Settings** — org name/slug editing, `allow_user_templates` policy toggle, IdP config management (env/db sources with badges), member list
+- Backend: `GET/PUT /v1/orgs/me` for org settings, `GET /v1/webhooks/{id}/deliveries` for delivery log, migration 022 (`allow_user_templates`)
+- Reusable components: DataTable, Modal, EmptyState, StatusBadge; shared admin CSS
+- Playwright screenshot script for CI proof-of-work
+
 ### Not Yet Built
 
-- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
-- Standalone pages: approval resolution, secret request, enrollment consent
+- Dashboard: org/agent hierarchy view, connected services, audit log viewer
+- Dashboard: standalone pages (approval resolution, secret request, enrollment consent)
 - `on_behalf_of` for agent-initiated connections
-- Three-tier template registry (org + user DB-backed CRUD)
 - Template validation endpoint + OpenAPI import
 - Org-level ACL (role-based access control for who can manage groups, services, etc.)
 - Phase 3: `inherit_permissions` resolution, permission chain walk, approval bubbling (parent/child + depth tracking done)

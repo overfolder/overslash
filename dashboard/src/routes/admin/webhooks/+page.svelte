@@ -1,6 +1,7 @@
 <script lang="ts">
+	import '$lib/admin.css';
 	import { onMount } from 'svelte';
-	import { session, ApiError } from '$lib/session';
+	import { session, ApiError, formatApiError } from '$lib/session';
 	import type { WebhookSummary, WebhookDelivery } from '$lib/types';
 	import DataTable from '$lib/components/DataTable.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -54,7 +55,7 @@
 		try {
 			webhooks = await session.get<WebhookSummary[]>('/v1/webhooks');
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load';
+			error = formatApiError(e);
 		} finally {
 			loading = false;
 		}
@@ -71,7 +72,7 @@
 		try {
 			deliveries = await session.get<WebhookDelivery[]>(`/v1/webhooks/${id}/deliveries`);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load deliveries';
+			error = formatApiError(e);
 		} finally {
 			loadingDeliveries = false;
 		}
@@ -97,9 +98,7 @@
 			createForm = { url: '', events: [] };
 			await load();
 		} catch (e) {
-			createError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Create failed');
+			createError = formatApiError(e);
 		} finally {
 			saving = false;
 		}
@@ -116,7 +115,7 @@
 			}
 			await load();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Delete failed';
+			error = formatApiError(e);
 			showDelete = false;
 		}
 	}
@@ -134,7 +133,7 @@
 	<title>Webhooks - Overslash Admin</title>
 </svelte:head>
 
-<div class="page">
+<div class="admin-page">
 	<div class="page-header">
 		<h1>Webhooks</h1>
 		<button class="btn btn-primary" onclick={() => (showCreate = true)}>Create Webhook</button>
@@ -237,38 +236,13 @@
 </Modal>
 
 <style>
-	.page { max-width: 1100px; }
-	.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-	h1 { font-size: 1.75rem; font-weight: 600; }
 	h2 { font-size: 1rem; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
-	.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
-	.error-msg { background: rgba(239,68,68,0.1); border: 1px solid var(--color-danger); color: var(--color-danger); padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
-	.mono { font-family: var(--font-mono); }
 	.url-cell { font-size: 0.85rem; }
 	.events-cell { font-size: 0.8rem; color: var(--color-text-muted); }
 
 	.delivery-panel { margin-top: 1.5rem; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 1.5rem; }
-	.loading-row { display: flex; align-items: center; gap: 0.75rem; padding: 1rem; color: var(--color-text-muted); }
-	.spinner { width: 16px; height: 16px; border: 2px solid var(--color-border); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 0.6s linear infinite; }
-	@keyframes spin { to { transform: rotate(360deg); } }
 
 	.event-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
 	.event-checkbox { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--color-text); cursor: pointer; }
 	.event-checkbox input { accent-color: var(--color-primary); }
-
-	.row-actions { display: flex; gap: 0.5rem; }
-	.btn-sm { padding: 0.25rem 0.6rem; font-size: 0.8rem; border-radius: 4px; border: none; cursor: pointer; background: var(--color-border); color: var(--color-text); }
-	.btn-sm:hover { opacity: 0.8; }
-	.btn-danger { background: var(--color-danger); color: white; }
-	.btn { padding: 0.6rem 1.25rem; border-radius: 6px; font-size: 0.9rem; font-weight: 500; cursor: pointer; border: none; transition: background 0.15s, opacity 0.15s; }
-	.btn-primary { background: var(--color-primary); color: white; }
-	.btn-primary:hover { background: var(--color-primary-hover); }
-	.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-	.btn-secondary { background: var(--color-border); color: var(--color-text); }
-	.form-group { margin-bottom: 1rem; }
-	.form-group label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--color-text-muted); margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.04em; }
-	.form-group input[type="url"] { width: 100%; padding: 0.5rem 0.75rem; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text); font-size: 0.9rem; }
-	.modal-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; }
-	.modal-error { background: rgba(239,68,68,0.1); border: 1px solid var(--color-danger); color: var(--color-danger); padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
-	.confirm-text { color: var(--color-text-muted); margin-bottom: 0.5rem; }
 </style>
