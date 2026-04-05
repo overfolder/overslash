@@ -97,12 +97,34 @@ struct UpdateStatusRequest {
 
 // -- Handlers --
 
-/// List service instances available to the caller (user's + org's).
+/// List service instances available to the caller (user's + org's), filtered by group membership.
 async fn list_services(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<ServiceInstanceSummary>>> {
-    let rows = service_instance::list_available(&state.db, auth.org_id, auth.identity_id).await?;
+    // Resolve the ceiling user (self for users, owner for agents)
+    let identity_id = auth
+        .identity_id
+        .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
+    let ceiling_user_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
+
+    // Check group-based visibility
+    let groups =
+        overslash_db::repos::group::list_groups_for_identity(&state.db, ceiling_user_id).await?;
+    let visible_ids = if groups.is_empty() {
+        None // no groups = permissive (backward compat)
+    } else {
+        Some(overslash_db::repos::group::get_visible_service_ids(&state.db, ceiling_user_id).await?)
+    };
+
+    let rows = service_instance::list_available_with_groups(
+        &state.db,
+        auth.org_id,
+        auth.identity_id,
+        visible_ids.as_deref(),
+    )
+    .await?;
 
     let services = rows.into_iter().map(row_to_summary).collect();
     Ok(Json(services))
