@@ -108,8 +108,10 @@ async fn create_idp_config(
 
         let display_name = req.display_name.as_deref().unwrap_or(issuer_url);
 
-        // Generate a stable key from the issuer URL
-        let key = slugify_issuer(issuer_url);
+        // Generate an org-scoped key from the issuer URL to prevent cross-org overwrites.
+        // Each org gets its own oauth_providers entry for custom OIDC providers.
+        let base_key = slugify_issuer(issuer_url);
+        let key = format!("{base_key}-{}", &auth.org_id.to_string()[..8]);
 
         let supports_pkce = doc
             .code_challenge_methods_supported
