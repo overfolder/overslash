@@ -117,6 +117,18 @@ pub struct ServiceAction {
     pub scope_param: Option<String>,
 }
 
+/// Describes how to resolve an opaque ID into a human-readable display name.
+///
+/// The resolver makes a GET request to the same service host (reusing existing auth)
+/// and extracts a value from the JSON response using a dot-path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamResolver {
+    /// GET endpoint path with `{param}` placeholders, e.g. `/calendar/v3/calendars/{calendarId}`.
+    pub get: String,
+    /// Dot-separated path into the JSON response, e.g. `summary` or `owner.login`.
+    pub pick: String,
+}
+
 /// A parameter for a service action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -130,6 +142,9 @@ pub struct ActionParam {
     pub enum_values: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
+    /// Optional resolver to convert an opaque ID into a human-readable name for descriptions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve: Option<ParamResolver>,
 }
 
 #[cfg(test)]

@@ -41,6 +41,9 @@ actions:
         required: true
         description: "Calendar identifier (use 'primary' for the main calendar)"
         default: primary
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}
+          pick: summary
       timeMin:
         type: string
         description: Lower bound (RFC3339 timestamp) for event start time
@@ -71,10 +74,16 @@ actions:
         type: string
         required: true
         description: Calendar identifier
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}
+          pick: summary
       eventId:
         type: string
         required: true
         description: Event identifier
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}/events/{eventId}
+          pick: summary
   create_event:
     method: POST
     path: /calendar/v3/calendars/{calendarId}/events
@@ -87,6 +96,9 @@ actions:
         required: true
         description: "Calendar identifier (use 'primary' for the main calendar)"
         default: primary
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}
+          pick: summary
       summary:
         type: string
         required: true
@@ -119,10 +131,16 @@ actions:
         type: string
         required: true
         description: Calendar identifier
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}
+          pick: summary
       eventId:
         type: string
         required: true
         description: Event identifier
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}/events/{eventId}
+          pick: summary
       summary:
         type: string
         description: Title of the event
@@ -152,7 +170,13 @@ actions:
         type: string
         required: true
         description: Calendar identifier
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}
+          pick: summary
       eventId:
         type: string
         required: true
         description: Event identifier
+        resolve:
+          get: /calendar/v3/calendars/{calendarId}/events/{eventId}
+          pick: summary

@@ -525,8 +525,25 @@ async fn resolve_request(
             .await
         };
 
-        let interpolated =
-            overslash_core::description::interpolate_description(&action.description, &req.params);
+        let resolver_base = if host.contains("://") {
+            host.to_string()
+        } else {
+            format!("https://{host}")
+        };
+        let resolved = crate::services::param_resolver::resolve_display_params(
+            &state.http_client,
+            &resolver_base,
+            &headers,
+            action,
+            &req.params,
+        )
+        .await;
+
+        let interpolated = overslash_core::description::interpolate_description_with_resolved(
+            &action.description,
+            &req.params,
+            &resolved,
+        );
         let description = format!("{interpolated} ({})", svc.display_name);
 
         return Ok((

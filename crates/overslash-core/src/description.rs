@@ -18,6 +18,31 @@ pub fn interpolate_description(
     substitute_placeholders(&after_optionals, params)
 }
 
+/// Like [`interpolate_description`], but first checks a `resolved` map of
+/// human-readable display names (e.g. resolved from API lookups). Resolved
+/// values are wrapped in single quotes for clarity.
+///
+/// Falls back to raw param values when a key is not in the resolved map.
+pub fn interpolate_description_with_resolved(
+    template: &str,
+    params: &HashMap<String, serde_json::Value>,
+    resolved: &HashMap<String, String>,
+) -> String {
+    // Build a merged params map where resolved values override raw ones
+    let mut display_params = params.clone();
+    for (key, display_name) in resolved {
+        display_params.insert(
+            key.clone(),
+            serde_json::Value::String(format!("'{display_name}'")),
+        );
+    }
+    // Pass 1: resolve [optional segments] — use original params for presence checks,
+    // but the display_params for substitution
+    let after_optionals = resolve_optional_segments(template, params);
+    // Pass 2: substitute with display-enriched values
+    substitute_placeholders(&after_optionals, &display_params)
+}
+
 /// Resolve `[...]` optional segments. Flat only — no nesting.
 fn resolve_optional_segments(
     template: &str,
@@ -93,7 +118,7 @@ fn is_value_present(value: Option<&serde_json::Value>) -> bool {
 
 /// Replace `{param}` placeholders with stringified values.
 /// Missing params are left as literal `{param}`.
-fn substitute_placeholders(text: &str, params: &HashMap<String, serde_json::Value>) -> String {
+pub fn substitute_placeholders(text: &str, params: &HashMap<String, serde_json::Value>) -> String {
     let mut result = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -258,6 +283,73 @@ mod tests {
         assert_eq!(
             interpolate_description("Base[ {a} and {b}]", &p),
             "Base 1 and 2"
+        );
+    }
+
+    // --- interpolate_description_with_resolved tests ---
+
+    fn resolved(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn resolved_values_replace_raw_ids() {
+        let p = params(&[
+            ("calendarId", json!("abc123")),
+            ("eventId", json!("evt456")),
+        ]);
+        let r = resolved(&[("calendarId", "Work"), ("eventId", "Team Standup")]);
+        assert_eq!(
+            interpolate_description_with_resolved(
+                "Delete event {eventId} on calendar {calendarId}",
+                &p,
+                &r,
+            ),
+            "Delete event 'Team Standup' on calendar 'Work'"
+        );
+    }
+
+    #[test]
+    fn partial_resolution_falls_back() {
+        let p = params(&[
+            ("calendarId", json!("abc123")),
+            ("eventId", json!("evt456")),
+        ]);
+        let r = resolved(&[("calendarId", "Work")]);
+        assert_eq!(
+            interpolate_description_with_resolved(
+                "Get event {eventId} on calendar {calendarId}",
+                &p,
+                &r,
+            ),
+            "Get event evt456 on calendar 'Work'"
+        );
+    }
+
+    #[test]
+    fn no_resolved_values_same_as_basic() {
+        let p = params(&[("repo", json!("overfolder/app"))]);
+        let r = resolved(&[]);
+        assert_eq!(
+            interpolate_description_with_resolved("List issues on {repo}", &p, &r,),
+            "List issues on overfolder/app"
+        );
+    }
+
+    #[test]
+    fn resolved_with_optional_segments() {
+        let p = params(&[("calendarId", json!("abc")), ("q", json!("meeting"))]);
+        let r = resolved(&[("calendarId", "Work")]);
+        assert_eq!(
+            interpolate_description_with_resolved(
+                "List events on {calendarId}[ matching '{q}']",
+                &p,
+                &r,
+            ),
+            "List events on 'Work' matching 'meeting'"
         );
     }
 }
