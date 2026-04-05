@@ -50,6 +50,20 @@ pub async fn list_by_identity(
     .await
 }
 
+pub async fn list_by_identities(
+    pool: &PgPool,
+    identity_ids: &[Uuid],
+) -> Result<Vec<PermissionRuleRow>, sqlx::Error> {
+    sqlx::query_as!(
+        PermissionRuleRow,
+        "SELECT id, org_id, identity_id, action_pattern, effect, expires_at, created_at
+         FROM permission_rules WHERE identity_id = ANY($1) AND (expires_at IS NULL OR expires_at > now()) ORDER BY created_at",
+        identity_ids,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn delete(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM permission_rules WHERE id = $1 AND org_id = $2",

@@ -60,7 +60,7 @@
 - Parent/child identity relationships with `parent_id`, `depth`, `owner_id` columns
 - `IdentityKind` expanded: `user`, `agent`, `sub_agent`
 - Hierarchy validation: users have no parent, agents require user parent, sub_agents require agent/sub_agent parent
-- `inherit_permissions` boolean stored (resolution logic not yet implemented)
+- `inherit_permissions` dynamic resolution: when set, identity inherits parent's permission rules at query time (live pointer, not copy); chain walks upward through continuous `inherit_permissions=true` ancestors
 - Ancestor chain query (recursive CTE) and children listing endpoints
 - Enrollment approval auto-assigns parent to approving user
 - `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
@@ -100,7 +100,7 @@
 - Three-tier template registry (org + user DB-backed CRUD)
 - Template validation endpoint + OpenAPI import
 - Org-level ACL (role-based access control for who can manage groups, services, etc.)
-- Phase 3: `inherit_permissions` resolution, permission chain walk, approval bubbling (parent/child + depth tracking done)
+- Phase 3: permission chain walk, approval bubbling (`inherit_permissions` resolution done; parent/child + depth tracking done)
 - Phase 4: Meta tools, semantic search, rate limiting, billing, documentation site
 
 ## What's Deployed

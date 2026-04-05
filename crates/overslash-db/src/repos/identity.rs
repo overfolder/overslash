@@ -200,6 +200,21 @@ pub async fn update_profile(
     .await
 }
 
+pub async fn set_inherit_permissions(
+    pool: &PgPool,
+    id: Uuid,
+    inherit: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE identities SET inherit_permissions = $2, updated_at = now() WHERE id = $1",
+        id,
+        inherit,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!("DELETE FROM identities WHERE id = $1", id)
         .execute(pool)
