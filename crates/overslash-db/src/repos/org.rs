@@ -31,3 +31,13 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::
     .fetch_optional(pool)
     .await
 }
+
+pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
+    sqlx::query_as!(
+        OrgRow,
+        "SELECT id, name, slug, created_at, updated_at FROM orgs WHERE slug = $1",
+        slug,
+    )
+    .fetch_optional(pool)
+    .await
+}

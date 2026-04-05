@@ -80,7 +80,11 @@ fn token_request(
     client_secret: &str,
     form: &[(&str, &str)],
 ) -> reqwest::RequestBuilder {
-    let req = http_client.post(&provider.token_endpoint);
+    // Always request JSON responses — required for GitHub (defaults to
+    // application/x-www-form-urlencoded), harmless for all other providers.
+    let req = http_client
+        .post(&provider.token_endpoint)
+        .header("Accept", "application/json");
     if provider.token_auth_method == "client_secret_basic" {
         req.basic_auth(client_id, Some(client_secret)).form(form)
     } else {

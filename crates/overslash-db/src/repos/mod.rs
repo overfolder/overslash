@@ -25,6 +25,7 @@ pub mod group;
 pub mod identity;
 pub mod oauth_provider;
 pub mod org;
+pub mod org_idp_config;
 pub mod pending_enrollment;
 pub mod permission_rule;
 pub mod secret;

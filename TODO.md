@@ -27,7 +27,8 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] Types: add template/service instance split (`ServiceTemplate` + `ServiceInstance`)
 - [ ] Types: add permission key types (`{service}:{action}:{arg}`)
 - [ ] Types: remove `approval_url` from `ExecuteResponse` (no self-auth approval URLs)
-- [ ] Login: extract from profile page to standalone `/login` page with logo, multi-IDP buttons, redirect-back-after-auth
+- [ ] Login: extract from profile page to standalone `/login` page with logo, multi-IdP buttons (uses `GET /auth/providers`), redirect-back-after-auth
+- [ ] IdP config: admin settings page for managing org IdP configs (uses `/v1/org-idp-configs` CRUD API)
 - [ ] Stores: remove `executionMode` (A/B/C), `connections` store; update to unified model
 
 **Medium priority:**
@@ -137,4 +138,5 @@ Existing dashboard code predates the unified permission model and template/servi
 - CI pipeline with coverage reporting and real OAuth provider tests
 - All spec–code misalignments resolved (PRs #29–#40): risk enum, identity hierarchy, template/instance split, approval resolve fields, scope_param, description interpolation, suggested tiers, category removed from spec
 - sqlx compile-time query checking enforced across all repos (PR #39)
+- Multi-provider OIDC authentication: generic provider routes, OIDC Discovery, GitHub social login, per-org IdP config, env var precedence, email domain matching, profile sync
 - Code quality: CTE cycle protection (PR #38), identity_response From impl (PR #37), org ownership check helper

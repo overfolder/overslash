@@ -79,9 +79,22 @@
 - Approval resolution validates `remember_keys` against group ceiling
 - Backward compatible: no groups assigned = no ceiling enforced (permissive)
 
+### Multi-Provider OIDC Authentication
+
+- Generic OIDC provider support — `/auth/login/{provider_key}` and `/auth/callback/{provider_key}` replacing Google-specific routes
+- OIDC Discovery — auto-discover IdP endpoints from `.well-known/openid-configuration` with SSRF protection
+- GitHub social login — GitHub userinfo + email API integration
+- Per-org IdP configuration — `org_idp_configs` table (CRUD API at `/v1/org-idp-configs`)
+- Env var vs DB precedence — env vars (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`) take precedence over DB config
+- Multiple IdPs per org simultaneously
+- User provisioning by email domain matching (configurable per IdP config)
+- Profile update on subsequent logins (name, avatar synced from IdP claims)
+- Available providers endpoint — `GET /auth/providers?org=<slug>` for login page
+- Backward-compatible Google login routes preserved
+
 ### Not Yet Built
 
-- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management
+- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
 - Standalone pages: approval resolution, secret request, enrollment consent
 - `on_behalf_of` for agent-initiated connections
 - Three-tier template registry (org + user DB-backed CRUD)
