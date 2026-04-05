@@ -59,6 +59,217 @@ No confirmation needed (immediate + toast feedback):
 - Toggle `inherit_permissions`
 - Edit agent name, service name
 
+## Design System
+
+Visual foundation for all Overslash UI. Modern SaaS minimal aesthetic — clean, neutral, one accent color. Designed for a developer/admin audience.
+
+### Colors
+
+**Neutral palette** (backgrounds, text, borders):
+
+| Token | Usage |
+|-------|-------|
+| Neutral/50 | Page background (light) |
+| Neutral/100 | Card hover, subtle backgrounds |
+| Neutral/200 | Borders, dividers, input strokes |
+| Neutral/300 | Disabled icons, placeholder shapes |
+| Neutral/400 | Placeholder text, secondary icons |
+| Neutral/500 | Secondary text, labels |
+| Neutral/600 | Nav text (inactive), form labels |
+| Neutral/700 | Body text, primary readable content |
+| Neutral/800 | — |
+| Neutral/900 | Headings, high-emphasis text, code editor background |
+
+**Primary palette** (indigo — actions, active states, links):
+
+| Token | Usage |
+|-------|-------|
+| Primary/50 | Active nav item background, selected row highlight |
+| Primary/100 | Hover states on primary backgrounds |
+| Primary/500 | Primary buttons, active indicators, links |
+| Primary/600 | Primary button hover |
+| Primary/700 | Primary button pressed |
+
+**Dark mode mapping** — in dark mode, the neutral scale inverts. Backgrounds become dark, text becomes light. Primary and semantic colors remain the same hue but adjust lightness for contrast:
+
+| Light token | Dark mode value | Notes |
+|-------------|----------------|-------|
+| Neutral/50 (page bg) | #111213 | Dark page background |
+| Neutral/100 | #1a1b1e | Card hover, subtle backgrounds |
+| Neutral/200 (borders) | #2a2b2f | Borders, dividers — subtle on dark |
+| Neutral/300 | #3a3b40 | Disabled icons |
+| Neutral/400 | #6b6d73 | Placeholder text (unchanged) |
+| Neutral/500 | #8b8d92 | Secondary text (slightly lighter) |
+| Neutral/600 | #b0b2b8 | Nav text, form labels |
+| Neutral/700 | #d4d5d9 | Body text |
+| Neutral/900 (headings) | #f0f1f2 | High-emphasis text |
+| White (card bg) | #1a1b1e | Card/panel backgrounds |
+| Primary/50 (highlights) | rgba(99,90,217,0.15) | Active state backgrounds |
+| Code editor bg | #0d0e10 | Slightly darker than page bg |
+
+Primary and semantic colors (indigo, green, yellow, red, orange) keep their mid-range values — they already have sufficient contrast on dark backgrounds. Badge backgrounds use the same 12% opacity approach, which works naturally on dark surfaces.
+
+**Semantic colors**:
+
+| Token | Usage |
+|-------|-------|
+| Success/500 | Active status, connected, 2xx results, valid indicators |
+| Warning/500 | Pending status, needs-setup, write-risk badges, reconnecting bar |
+| Error/500 | Error status, 4xx/5xx results, deny/delete/revoke actions, offline bar |
+| Orange/500 | Dev login button, `env` badge |
+
+### Typography
+
+Font: **Inter** for all UI text. **Roboto Mono** for code, permission keys, SPIFFE paths, and YAML.
+
+| Style | Size / Weight | Usage |
+|-------|---------------|-------|
+| Heading/H1 | 28px Bold | Page titles (rare — mainly Design System page) |
+| Heading/H2 | 22px Semi Bold | Section headings |
+| Heading/H3 | 18px Semi Bold | Card titles, sidebar logo |
+| Body/Large | 16px Regular | Page titles in top bar, section labels |
+| Body/Default | 14px Regular | Standard body text, table cells, form values |
+| Body/Medium | 14px Medium | Emphasized body text, button labels, nav items |
+| Body/Small | 12px Regular | Timestamps, footnotes, validation messages |
+| Label/Default | 13px Medium | Form labels, info row labels, filter chips |
+| Label/Small | 11px Medium | Badge text, admin section label |
+| Code/Default | 13px Roboto Mono Regular | Permission keys, SPIFFE paths, API paths |
+
+### Buttons
+
+**Primary**: Indigo background, white text. Main actions (Save, Create, Allow & Remember, Provide, Approve & Enroll, Execute).
+
+**Secondary**: White background, neutral-700 text, neutral-200 border. Secondary actions (Cancel, Allow Once, filter chips).
+
+**Danger**: Error-red background, white text. Destructive primary actions (used sparingly — most destructive actions use text-only danger style).
+
+**Danger text**: White background, error-red text, neutral-200 border. Deny, Revoke, Delete links.
+
+**Ghost**: White background, primary text, no border. Tertiary actions (links styled as buttons).
+
+**Small buttons**: Same variants at reduced padding (6px vertical, 12px horizontal, 12px font). Used in approval cards, table row actions.
+
+### Badges
+
+Rounded pill shape (border-radius 12px), small padding (4px vertical, 10px horizontal), 12px medium text.
+
+**Status badges** (semi-transparent background at 12% opacity):
+- `Active` — success green
+- `Idle` — neutral-200 solid background, neutral-500 text
+- `Error` — error red
+- `Pending` — warning yellow
+
+**Origin badges** (solid neutral-100 background):
+- `user-created`, `self-enrolled` — neutral-500 text
+
+**Access level badges** (semi-transparent):
+- `read` — success green
+- `write` — warning yellow
+- `admin` — error red
+
+**Special badges**:
+- `env` — solid orange background, white text. Indicates config from environment variable (read-only).
+
+**HTTP method badges** (used in Template Editor, API Explorer):
+- `GET` — success green solid background, white bold text
+- `POST` — warning yellow solid background, white bold text
+- `PUT`, `PATCH`, `DELETE` — same pattern with appropriate semantic color
+
+### Status Indicators
+
+Small filled circles (8px diameter) used in the agent tree and detail headers:
+- **Active** (success green): recent successful action
+- **Idle** (neutral-400): no recent activity
+- **Error** (error red): recent failed action
+- **Connected** (success green): service connection status
+- **Needs setup** (warning yellow): service awaiting credential setup
+
+### Form Controls
+
+**Text input**: White background, neutral-200 border, 8px corner radius, 10px vertical / 14px horizontal padding. Placeholder text in neutral-400.
+
+**Password input**: Same as text input with masked characters. "Show" toggle link (primary color) on the right side.
+
+**Dropdown**: Same as text input with "▾" indicator on the right side. Dropdown menus have white background, neutral-200 border, 8px corner radius, drop shadow, with items that highlight in primary-50 on hover/selection.
+
+**Toggle**: 40x22px pill shape. On = primary fill with white knob right. Off = neutral-300 fill with white knob left.
+
+**Checkbox**: 18x18px rounded square (4px radius). Checked = primary fill with white "✓". Unchecked = white fill with neutral-300 border.
+
+**Radio buttons**: 16px circle. Selected = primary fill with 6px white inner circle. Unselected = white fill with neutral-300 border.
+
+### Refresh Control
+
+A split button used in the Audit Log (and reusable elsewhere). Two parts joined with no gap:
+
+- **Left**: refresh icon (↻), triggers immediate refresh on click
+- **Right**: dropdown arrow (▾), opens interval picker
+
+The two halves share a continuous border — left half has rounded left corners, right half has rounded right corners, joined seamlessly.
+
+**States**:
+
+- **Default (idle)**: White background, neutral-200 border, neutral-600 icon. Click left half to refresh once. Click right half to open interval picker.
+- **Auto-refresh active**: Primary-50 background, primary border, primary icon. The icon is followed by the selected interval label (e.g., "15s"). Below the button, a thin progress bar (3px tall) shows the cycle position — neutral-200 track with primary fill that animates from 0% to 100% over the interval, then resets on each refresh.
+- **Dropdown open**: Shows a dropdown menu below with interval options: Off, 5s, 15s, 1m, 5m, 30m. Active interval has primary-50 highlight and a "✓" checkmark.
+
+### Toasts
+
+Bottom-right positioned, auto-dismiss after 5s for success, sticky for errors.
+
+White background with drop shadow. Left edge has a small semantic-colored dot (8px circle). Close button ("✕") on the right.
+
+- **Success toast**: success-green dot. "Secret stored successfully."
+- **Error toast**: error-red dot. "Failed to revoke API key." Sticky until dismissed.
+
+### Cards
+
+**Section card**: White background, neutral-200 border, 12px corner radius, 24px padding. Used for grouped content (Identity, API Keys, Secrets, Settings sections in User Profile; Groups detail in Org Dashboard).
+
+**Approval card**: Neutral-50 (BG) background, neutral-200 border, 10px corner radius, 16px padding. Contains: action description (medium weight), permission key (monospace, neutral-400), timestamp, and action buttons row.
+
+**Standalone page card**: White background, 16px corner radius, 32-40px padding, drop shadow (rgba(0,0,0,0.08), y:4, blur:24). Centered on a neutral-50 page background. Used for Secret Request, Approval, Enrollment consent pages.
+
+### Tables
+
+Used throughout for lists of users, services, secrets, audit events, etc.
+
+**Header row**: Neutral-50 background, 8px corner radius, semi-bold 12px text in neutral-400. Acts as column labels.
+
+**Data rows**: White background, neutral-100 bottom border (1px), regular 13px text in neutral-700. Consistent column widths defined per table.
+
+**Table card**: Entire table wrapped in a white card with neutral-200 border and 12px corner radius. Header row sits at the top inside the card.
+
+### Connection Status Bars
+
+Thin full-width bars at the top of the page for connectivity state. Semi-transparent semantic background (15% opacity), medium 12px text.
+
+- **Reconnecting**: Warning yellow. "Reconnecting..."
+- **Connected**: Success green. "Connected" (auto-dismiss after 3s)
+- **Offline**: Error red. "No connection." Persistent until reconnected.
+
+### Navigation
+
+**Sidebar** (desktop): collapsible, two states.
+
+**Expanded** (240px): neutral-50 background, neutral-200 right border. Contains:
+- Logo ("Overs/ash") at top (bold 18px)
+- Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
+- "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
+- User avatar (32px circle) + name at the bottom.
+- Collapse button (chevron «) at the bottom or top-right of the sidebar.
+
+**Collapsed** (64px): same background and border. Contains:
+- Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
+- Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
+- "ADMIN" label hidden. Admin nav items still show as icon-only.
+- User avatar only (no name), centered.
+- Expand button (chevron ») to restore.
+
+**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). Notification bell + badge on right.
+
+**Notification badge**: Error-red circle (16px) overlapping the bell icon, with white bold count text.
+
 ## Mobile Layout
 
 Breakpoint: 768px. Below = mobile layout, above = desktop.
@@ -787,6 +998,23 @@ Org-admins see additional capabilities:
 
 A dedicated nav item. Filterable, searchable event stream — newest first, paginated.
 
+### Infinite Scroll
+
+The audit log uses **infinite scroll** over a paginated API (cursor-based). No page numbers or "Load more" button — new events load automatically as the user scrolls near the bottom.
+
+**Scroll trigger**: when the viewport is within 200px of the last loaded row, the next page is fetched.
+
+**States**:
+
+- **Loading more**: 3 skeleton rows appear below the last loaded row, with a centered "Loading more..." label and small spinner. Existing data stays visible and interactive above.
+- **End of list**: a centered "No more events" label in neutral-400, with subtle top padding. Marks the end — no more skeleton loading.
+- **Load error**: replaces skeleton rows with "Failed to load more events" text and a `[Retry]` button. The user can retry or scroll up to existing data. Does not lose loaded events.
+- **Initial load**: full skeleton screen (4-5 skeleton rows matching the table layout) before any data is available.
+
+**Filter changes**: when filters are updated, the list resets — clears all loaded data, shows the initial skeleton, and fetches page 1 with the new filters. The scroll position resets to top.
+
+**Auto-refresh interaction**: when auto-refresh fires, new events are **prepended** to the top of the list. If the user has scrolled down, a floating pill appears at the top: "↑ 3 new events" — clicking it scrolls to top. If the user is already at the top, new rows animate in with a brief highlight.
+
 ### Event row
 
 Each row shows enough to scan without clicking:
@@ -835,7 +1063,7 @@ Identities, approvals, and services referenced in the detail are **clickable lin
 
 ### Refresh
 
-A **refresh button** that reloads the current page of results. The button has a **side dropdown** to enable auto-refresh at a chosen interval: 5s, 15s, 1m, 5m, 30m. When auto-refresh is active, the button shows the selected interval and a visual indicator.
+Uses the **Refresh Control** (see Design System). The refresh icon button reloads the current page of results. The adjoined dropdown enables auto-refresh at a chosen interval. When auto-refresh is active, a progress bar below the button visualizes the cycle countdown.
 
 ### Export
 
