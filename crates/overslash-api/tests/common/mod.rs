@@ -19,7 +19,7 @@ static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
 ///
 /// On first call, creates a template DB and runs all migrations (~500ms).
 /// Subsequent calls clone the template (~80ms) instead of re-migrating (~500ms each).
-/// Test databases are cleaned up when the pool is closed (background task).
+/// Stale test databases from previous runs are cleaned up during template init.
 pub async fn test_pool() -> PgPool {
     let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
