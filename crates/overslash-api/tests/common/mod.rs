@@ -150,6 +150,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .with_state(state);
@@ -207,6 +208,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .with_state(state);
@@ -216,6 +218,74 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())
+}
+
+/// Start API with configurable auth providers for OIDC/OAuth testing.
+/// `public_url` is used as the base for callback redirect_uri construction.
+pub async fn start_api_with_auth_providers(
+    pool: PgPool,
+    google_creds: Option<(String, String)>,
+    github_creds: Option<(String, String)>,
+    public_url: &str,
+) -> (String, Client) {
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: google_creds.as_ref().map(|(id, _)| id.clone()),
+        google_auth_client_secret: google_creds.map(|(_, s)| s),
+        github_auth_client_id: github_creds.as_ref().map(|(id, _)| id.clone()),
+        github_auth_client_secret: github_creds.map(|(_, s)| s),
+        public_url: public_url.to_string(),
+        dev_auth_enabled: true,
+        max_response_body_bytes: 5_242_880,
+        dashboard_url: "/".into(),
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap(),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::permissions::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::audit::router())
+        .merge(overslash_api::routes::webhooks::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::enrollment::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // Non-redirecting client so tests can inspect 303 responses
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    (format!("http://{addr}"), client)
 }
 
 /// Start the mock target in-process on a random port.
@@ -346,6 +416,41 @@ pub async fn start_mock() -> SocketAddr {
         ([("content-type", "application/pdf")], data).into_response()
     }
 
+    // Mock OIDC userinfo endpoint — returns a standard OIDC claims set.
+    // The access token encodes the user identity: "mock_access_<code>".
+    async fn oidc_userinfo(headers: HeaderMap) -> Json<Value> {
+        let token = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or("unknown");
+        Json(json!({
+            "sub": format!("oidc-sub-{token}"),
+            "email": "testuser@example.com",
+            "name": "Test User",
+            "picture": "https://example.com/avatar.png",
+        }))
+    }
+
+    // Mock GitHub user endpoint
+    async fn github_user(headers: HeaderMap) -> Json<Value> {
+        let _token = headers.get("authorization");
+        Json(json!({
+            "id": 12345,
+            "login": "testuser",
+            "name": "Test GitHub User",
+            "avatar_url": "https://github.com/avatar.png",
+        }))
+    }
+
+    // Mock GitHub user emails endpoint
+    async fn github_user_emails() -> Json<Value> {
+        Json(json!([
+            { "email": "testuser@example.com", "primary": true, "verified": true },
+            { "email": "other@example.com", "primary": false, "verified": true },
+        ]))
+    }
+
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
         .route("/echo", post(echo))
@@ -355,6 +460,9 @@ pub async fn start_mock() -> SocketAddr {
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
         .route("/oauth/token", post(oauth_token))
+        .route("/oidc/userinfo", get(oidc_userinfo))
+        .route("/github/user", get(github_user))
+        .route("/github/user/emails", get(github_user_emails))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -497,6 +605,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .with_state(state);
@@ -551,6 +660,9 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::enrollment::router())
+        .merge(overslash_api::routes::groups::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
