@@ -451,6 +451,35 @@ pub async fn start_mock() -> SocketAddr {
         ]))
     }
 
+    // Mock OIDC Discovery endpoint — returns a well-known config document.
+    // The issuer is dynamically constructed from the Host header so tests can
+    // use the mock server's address and pass issuer validation.
+    async fn oidc_discovery(headers: HeaderMap) -> Json<Value> {
+        let host = headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("localhost");
+        let base = format!("http://{host}");
+        Json(json!({
+            "issuer": base,
+            "authorization_endpoint": format!("{base}/oauth/authorize"),
+            "token_endpoint": format!("{base}/oauth/token"),
+            "userinfo_endpoint": format!("{base}/oidc/userinfo"),
+            "jwks_uri": format!("{base}/oidc/jwks"),
+            "scopes_supported": ["openid", "email", "profile", "offline_access"],
+            "response_types_supported": ["code"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+        }))
+    }
+
+    // Mock GitHub user endpoint with no verified emails (edge case)
+    async fn github_user_emails_none_verified() -> Json<Value> {
+        Json(json!([
+            { "email": "unverified@example.com", "primary": true, "verified": false },
+        ]))
+    }
+
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
         .route("/echo", post(echo))
@@ -461,8 +490,13 @@ pub async fn start_mock() -> SocketAddr {
         .route("/webhooks/received", get(list_webhooks))
         .route("/oauth/token", post(oauth_token))
         .route("/oidc/userinfo", get(oidc_userinfo))
+        .route("/.well-known/openid-configuration", get(oidc_discovery))
         .route("/github/user", get(github_user))
         .route("/github/user/emails", get(github_user_emails))
+        .route(
+            "/github/user/emails-none-verified",
+            get(github_user_emails_none_verified),
+        )
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
