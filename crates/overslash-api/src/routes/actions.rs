@@ -194,8 +194,36 @@ async fn execute_action(
     // Users are gated by groups only — they are their own approvers.
     // Agents need permission key check unless auto-approved above.
     if identity.kind != "user" && needs_gate && !auto_approved {
-        let rule_rows =
-            overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?;
+        // ── Resolve effective rules (own + inherited from ancestors) ──
+        let rule_rows = if identity.inherit_permissions {
+            // Walk ancestor chain to collect inherited rules.
+            // get_ancestor_chain returns depth ASC (root first), including self.
+            let chain =
+                overslash_db::repos::identity::get_ancestor_chain(&state.db, identity_id).await?;
+
+            // Collect identity IDs whose rules apply: always include self,
+            // then walk upward adding each parent reached via inherit_permissions=true.
+            let mut rule_identity_ids = vec![identity_id];
+            // Chain is root-first; reverse to walk from self upward.
+            let chain_rev: Vec<_> = chain.into_iter().rev().collect();
+            // chain_rev[0] is self; walk from index 0 upward
+            for i in 0..chain_rev.len() {
+                if chain_rev[i].inherit_permissions {
+                    // This identity inherits from its parent (next in chain_rev)
+                    if let Some(next) = chain_rev.get(i + 1) {
+                        rule_identity_ids.push(next.id);
+                    }
+                } else if i > 0 {
+                    // Chain of inheritance broken; stop walking
+                    break;
+                }
+            }
+
+            overslash_db::repos::permission_rule::list_by_identities(&state.db, &rule_identity_ids)
+                .await?
+        } else {
+            overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?
+        };
 
         let rules: Vec<PermissionRule> = rule_rows
             .into_iter()
