@@ -1,5 +1,7 @@
 //! Audit log integration tests: covers the DB repo layer, the query API endpoint,
 //! filtering capabilities, and every code path that emits an audit entry.
+// Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
+#![allow(clippy::disallowed_methods)]
 
 mod common;
 
@@ -1215,7 +1217,7 @@ async fn test_audit_noop_deletes_no_entries() {
         .filter(|e| {
             e["action"]
                 .as_str()
-                .map_or(false, |a| a.ends_with(".deleted"))
+                .is_some_and(|a| a.ends_with(".deleted"))
         })
         .collect();
     assert!(

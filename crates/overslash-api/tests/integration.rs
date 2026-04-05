@@ -1,4 +1,6 @@
 //! Integration tests: full API flows against real Postgres + in-process mock target.
+// Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
+#![allow(clippy::disallowed_methods)]
 
 mod common;
 

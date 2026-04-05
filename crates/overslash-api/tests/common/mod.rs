@@ -1,5 +1,7 @@
 //! Shared test helpers for integration tests.
 #![allow(dead_code)]
+// Test setup requires dynamic SQL for updating provider endpoints, creating template DBs, etc.
+#![allow(clippy::disallowed_methods)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

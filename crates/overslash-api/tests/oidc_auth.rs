@@ -1,3 +1,5 @@
+// Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
+#![allow(clippy::disallowed_methods)]
 //! Integration tests for multi-provider OIDC authentication.
 //!
 //! Tests cover: generic provider login/callback flow, GitHub login, per-org IdP
@@ -8,9 +10,7 @@
 
 mod common;
 
-use reqwest::Client;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Auth provider login flow
@@ -453,7 +453,7 @@ async fn org_idp_config_crud_lifecycle() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, _identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _identity_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
 
     // Create: configure Google IdP for the org
     let create_resp = client
