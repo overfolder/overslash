@@ -119,7 +119,10 @@ async fn provider_login(
     let org_slug_value = query
         .org
         .as_deref()
-        .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '-'))
+        .filter(|s| {
+            s.chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        })
         .unwrap_or("none");
     let org_cookie = format!(
         "oss_auth_org={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
