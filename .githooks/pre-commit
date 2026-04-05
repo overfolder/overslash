@@ -3,6 +3,30 @@ set -e
 
 echo "Running pre-commit checks..."
 
+# Resolve DATABASE_URL (from env or .env file) with fallback to dev port 55432
+DB_URL="${DATABASE_URL:-}"
+if [ -z "$DB_URL" ] && [ -f .env ]; then
+    DB_URL=$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2-)
+fi
+DB_URL="${DB_URL:-postgres://overslash:overslash@localhost:55432/overslash}"
+
+# Extract host and port from DATABASE_URL
+DB_HOST=$(echo "$DB_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
+DB_PORT=$(echo "$DB_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-55432}"
+
+DB_REACHABLE=false
+if pg_isready -h "$DB_HOST" -p "$DB_PORT" -U overslash -q 2>/dev/null; then
+    DB_REACHABLE=true
+fi
+
+# Use sqlx offline cache when the database is not reachable
+if [ -z "$SQLX_OFFLINE" ] && [ "$DB_REACHABLE" = "false" ]; then
+    echo "  DB not reachable, using SQLX_OFFLINE=true"
+    export SQLX_OFFLINE=true
+fi
+
 echo "  cargo fmt --check"
 cargo fmt --check || {
     echo "ERROR: Code not formatted. Run 'cargo fmt' first."
@@ -15,29 +39,20 @@ cargo clippy --workspace -- -D warnings || {
     exit 1
 }
 
-# Check sqlx offline cache is up to date
-echo "  cargo sqlx prepare --check"
-cargo sqlx prepare --workspace --check || {
-    echo "ERROR: sqlx offline cache is stale. Run 'make sqlx-prepare' and stage .sqlx/."
-    exit 1
-}
-
-# Check SCHEMA.sql is up to date (only if DB is reachable)
-# Resolve DATABASE_URL (from env or .env file) with fallback to dev port 55432
-DB_URL="${DATABASE_URL:-}"
-if [ -z "$DB_URL" ] && [ -f .env ]; then
-    DB_URL=$(grep -m1 '^DATABASE_URL=' .env | cut -d= -f2-)
+# Check sqlx offline cache is up to date (requires live DB)
+if [ "$SQLX_OFFLINE" = "true" ]; then
+    echo "  sqlx prepare --check skipped (DB not reachable)"
+else
+    echo "  cargo sqlx prepare --check"
+    cargo sqlx prepare --workspace --check || {
+        echo "ERROR: sqlx offline cache is stale. Run 'make sqlx-prepare' and stage .sqlx/."
+        exit 1
+    }
 fi
-DB_URL="${DB_URL:-postgres://overslash:overslash@localhost:55432/overslash}"
 
+# Check SCHEMA.sql is up to date (only if DB is reachable and migrations changed)
 if git diff --cached --name-only | grep -qE 'migrations/'; then
-    # Extract host and port from DATABASE_URL for pg_isready
-    DB_HOST=$(echo "$DB_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-    DB_PORT=$(echo "$DB_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
-    DB_HOST="${DB_HOST:-localhost}"
-    DB_PORT="${DB_PORT:-55432}"
-
-    if pg_isready -h "$DB_HOST" -p "$DB_PORT" -U overslash -q 2>/dev/null; then
+    if [ "$DB_REACHABLE" = "true" ]; then
         echo "  schema check (migrations changed)"
         TMPSCHEMA=$(mktemp)
         pg_dump --schema-only --no-owner --no-acl --schema=public \

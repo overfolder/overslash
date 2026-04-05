@@ -26,6 +26,7 @@ services:
       DATABASE_URL: postgres://overslash:overslash@postgres:5432/overslash
       HOST: 0.0.0.0
       RUSTUP_TOOLCHAIN: stable
+      SQLX_OFFLINE: "true"
     ports:
       - "3000:3000"
     volumes:
@@ -35,7 +36,6 @@ services:
       - ../tests/mock-target/src:/app/tests/mock-target/src:ro
       - ../services:/app/services:ro
       - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/app/target
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,5 +58,4 @@ services:
 volumes:
   pgdata:
   cargo-cache:
-  target-cache:
   dashboard-node-modules:
