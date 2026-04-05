@@ -115,8 +115,12 @@ async fn provider_login(
     );
     // Persist org slug across the OAuth redirect so the callback can resolve
     // DB-stored credentials. Value is "none" when org context isn't needed
-    // (env-var social providers).
-    let org_slug_value = query.org.as_deref().unwrap_or("none");
+    // (env-var social providers). Sanitize to prevent header injection.
+    let org_slug_value = query
+        .org
+        .as_deref()
+        .filter(|s| s.chars().all(|c| c.is_alphanumeric() || c == '-'))
+        .unwrap_or("none");
     let org_cookie = format!(
         "oss_auth_org={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
         org_slug_value
