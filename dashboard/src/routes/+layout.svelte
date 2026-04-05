@@ -1,8 +1,30 @@
 <script lang="ts">
 	import '../app.css';
 	import type { Snippet } from 'svelte';
+	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import { session } from '$lib/session';
+	import type { MeIdentity } from '$lib/session';
 
 	let { children }: { children: Snippet } = $props();
+
+	let identity: MeIdentity | null = $state(null);
+
+	onMount(async () => {
+		try {
+			identity = await session.get<MeIdentity>('/auth/me/identity');
+		} catch {
+			// Not authenticated — admin nav hidden
+		}
+	});
+
+	const adminLinks = [
+		{ href: '/admin/templates', label: 'Templates', icon: '\u2630' },
+		{ href: '/admin/services', label: 'Services', icon: '\u26A1' },
+		{ href: '/admin/groups', label: 'Groups', icon: '\u2691' },
+		{ href: '/admin/webhooks', label: 'Webhooks', icon: '\u21C4' },
+		{ href: '/admin/settings', label: 'Settings', icon: '\u2699' }
+	];
 </script>
 
 <div class="app">
@@ -12,11 +34,28 @@
 			<span class="logo-text">overslash</span>
 		</div>
 		<div class="nav-links">
-			<a href="/profile" class="nav-item">
+			<a href="/profile" class="nav-item" class:active={$page.url.pathname === '/profile'}>
 				<span class="nav-icon">&#x1D56;</span>
 				Profile
 			</a>
 		</div>
+		{#if identity?.kind === 'user'}
+			<div class="nav-section">
+				<span class="nav-section-label">Admin</span>
+				<div class="nav-links">
+					{#each adminLinks as link}
+						<a
+							href={link.href}
+							class="nav-item"
+							class:active={$page.url.pathname.startsWith(link.href)}
+						>
+							<span class="nav-icon">{link.icon}</span>
+							{link.label}
+						</a>
+					{/each}
+				</div>
+			</div>
+		{/if}
 	</nav>
 	<main class="content">
 		{@render children()}
@@ -59,6 +98,21 @@
 		color: var(--color-text);
 	}
 
+	.nav-section {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.nav-section-label {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		color: var(--color-text-muted);
+		padding: 0 0.75rem;
+	}
+
 	.nav-links {
 		display: flex;
 		flex-direction: column;
@@ -79,6 +133,11 @@
 	.nav-item:hover {
 		background: var(--color-border);
 		color: var(--color-text);
+	}
+
+	.nav-item.active {
+		background: rgba(99, 102, 241, 0.15);
+		color: var(--color-primary);
 	}
 
 	.nav-icon {

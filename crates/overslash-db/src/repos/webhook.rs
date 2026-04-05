@@ -164,6 +164,24 @@ pub struct PendingDeliveryRow {
     pub secret: String,
 }
 
+pub async fn list_deliveries_by_subscription(
+    pool: &PgPool,
+    subscription_id: Uuid,
+    limit: i64,
+) -> Result<Vec<WebhookDeliveryRow>, sqlx::Error> {
+    sqlx::query_as!(
+        WebhookDeliveryRow,
+        "SELECT id, subscription_id, event, payload, status_code, response_body, attempts, next_retry_at, delivered_at, created_at
+         FROM webhook_deliveries WHERE subscription_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2",
+        subscription_id,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn get_pending_deliveries(
     pool: &PgPool,
     limit: i64,
