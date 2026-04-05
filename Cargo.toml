@@ -25,7 +25,7 @@ dotenvy = "0.15"
 rand = "0.9"
 jsonwebtoken = "9"
 
-# Fast dev builds: minimal debug info, no LTO, single codegen unit
+# Fast dev builds: minimal debug info
 [profile.dev]
 debug = "line-tables-only"
 
