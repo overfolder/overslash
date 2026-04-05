@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
+use axum::response::IntoResponse;
 use axum::{extract::State, http::Request, middleware::Next, response::Response};
 use dashmap::DashMap;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -14,6 +16,8 @@ struct CachedIdentity {
     identity_id: Option<Uuid>,
     /// The owning user's identity ID. For users, this is the same as identity_id.
     owner_user_id: Option<Uuid>,
+    /// Key expiry time (None = never expires). Used to skip rate limiting for expired keys.
+    expires_at: Option<OffsetDateTime>,
     fetched_at: Instant,
 }
 
@@ -148,6 +152,7 @@ fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String> {
 
 /// Resolve (org_id, identity_id, owner_user_id) from the API key prefix.
 /// Uses a lightweight cache to avoid DB lookups on every request.
+/// Returns None for expired keys to avoid consuming rate limit budget.
 async fn resolve_identity(
     state: &AppState,
     prefix: &str,
@@ -155,6 +160,12 @@ async fn resolve_identity(
     // Check cache
     if let Some(entry) = PREFIX_CACHE.entries.get(prefix) {
         if entry.fetched_at.elapsed() < PREFIX_CACHE.ttl {
+            // Skip expired keys — don't consume rate limit budget for invalid requests
+            if let Some(expires_at) = entry.expires_at {
+                if expires_at < OffsetDateTime::now_utc() {
+                    return None;
+                }
+            }
             return Some((entry.org_id, entry.identity_id, entry.owner_user_id));
         }
     }
@@ -164,6 +175,13 @@ async fn resolve_identity(
         .await
         .ok()
         .flatten()?;
+
+    // Skip expired keys
+    if let Some(expires_at) = key_row.expires_at {
+        if expires_at < OffsetDateTime::now_utc() {
+            return None;
+        }
+    }
 
     // Resolve owner_user_id from the identity
     let owner_user_id = if let Some(identity_id) = key_row.identity_id {
@@ -187,11 +205,10 @@ async fn resolve_identity(
             org_id: key_row.org_id,
             identity_id: key_row.identity_id,
             owner_user_id,
+            expires_at: key_row.expires_at,
             fetched_at: Instant::now(),
         },
     );
 
     Some((key_row.org_id, key_row.identity_id, owner_user_id))
 }
-
-use axum::response::IntoResponse;
