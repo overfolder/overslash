@@ -1,6 +1,7 @@
 <script lang="ts">
+	import '$lib/admin.css';
 	import { onMount } from 'svelte';
-	import { session, ApiError } from '$lib/session';
+	import { session, ApiError, formatApiError } from '$lib/session';
 	import type {
 		GroupResponse, GroupGrantResponse, IdentitySummary, ServiceInstanceSummary
 	} from '$lib/types';
@@ -73,7 +74,7 @@
 			identities = ids;
 			services = svcs;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load';
+			error = formatApiError(e);
 		} finally {
 			loading = false;
 		}
@@ -90,7 +91,7 @@
 			grants = gr;
 			memberIds = mIds;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load group details';
+			error = formatApiError(e);
 		} finally {
 			loadingDetail = false;
 		}
@@ -114,9 +115,7 @@
 			createForm = { name: '', description: '', allow_raw_http: false };
 			await load();
 		} catch (e) {
-			createError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Create failed');
+			createError = formatApiError(e);
 		} finally { saving = false; }
 	}
 
@@ -139,9 +138,7 @@
 			const updated = groups.find((g) => g.id === selectedGroup!.id);
 			if (updated) await selectGroup(updated);
 		} catch (e) {
-			editError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Update failed');
+			editError = formatApiError(e);
 		} finally { saving = false; }
 	}
 
@@ -155,7 +152,7 @@
 			memberIds = [];
 			await load();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Delete failed';
+			error = formatApiError(e);
 			showDeleteGroup = false;
 		}
 	}
@@ -170,9 +167,7 @@
 			addMemberId = '';
 			await selectGroup(selectedGroup);
 		} catch (e) {
-			addMemberError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Failed');
+			addMemberError = formatApiError(e);
 		}
 	}
 
@@ -182,7 +177,7 @@
 			await session.delete(`/v1/groups/${selectedGroup.id}/members/${identityId}`);
 			await selectGroup(selectedGroup);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Remove failed';
+			error = formatApiError(e);
 		}
 	}
 
@@ -200,9 +195,7 @@
 			grantForm = { service_instance_id: '', access_level: 'read', auto_approve_reads: false };
 			await selectGroup(selectedGroup);
 		} catch (e) {
-			grantError = e instanceof ApiError
-				? (typeof e.body === 'object' && e.body !== null && 'error' in e.body ? String((e.body as {error:string}).error) : `Error ${e.status}`)
-				: (e instanceof Error ? e.message : 'Failed');
+			grantError = formatApiError(e);
 		}
 	}
 
@@ -212,7 +205,7 @@
 			await session.delete(`/v1/groups/${selectedGroup.id}/grants/${grantId}`);
 			await selectGroup(selectedGroup);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Remove failed';
+			error = formatApiError(e);
 		}
 	}
 
@@ -223,7 +216,7 @@
 	<title>Groups - Overslash Admin</title>
 </svelte:head>
 
-<div class="page">
+<div class="admin-page">
 	<div class="page-header">
 		<h1>Groups</h1>
 		<button class="btn btn-primary" onclick={() => (showCreate = true)}>Create Group</button>
@@ -428,12 +421,6 @@
 </Modal>
 
 <style>
-	.page { max-width: 1100px; }
-	.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-	h1 { font-size: 1.75rem; font-weight: 600; }
-	.card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
-	.error-msg { background: rgba(239,68,68,0.1); border: 1px solid var(--color-danger); color: var(--color-danger); padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
-
 	.link-btn { background: none; border: none; color: var(--color-primary); cursor: pointer; font-size: 0.9rem; padding: 0; text-align: left; }
 	.link-btn:hover { color: var(--color-primary-hover); text-decoration: underline; }
 
@@ -447,27 +434,4 @@
 
 	.member-list { display: flex; flex-direction: column; gap: 0.5rem; }
 	.member-row { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0.75rem; background: var(--color-bg); border-radius: 6px; font-size: 0.9rem; }
-	.muted { color: var(--color-text-muted); font-size: 0.9rem; }
-
-	.loading-row { display: flex; align-items: center; gap: 0.75rem; padding: 1rem; color: var(--color-text-muted); }
-	.spinner { width: 16px; height: 16px; border: 2px solid var(--color-border); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 0.6s linear infinite; }
-	@keyframes spin { to { transform: rotate(360deg); } }
-
-	.row-actions { display: flex; gap: 0.5rem; }
-	.btn-sm { padding: 0.25rem 0.6rem; font-size: 0.8rem; border-radius: 4px; border: none; cursor: pointer; background: var(--color-border); color: var(--color-text); }
-	.btn-sm:hover { opacity: 0.8; }
-	.btn-danger { background: var(--color-danger); color: white; }
-	.btn { padding: 0.6rem 1.25rem; border-radius: 6px; font-size: 0.9rem; font-weight: 500; cursor: pointer; border: none; transition: background 0.15s, opacity 0.15s; }
-	.btn-primary { background: var(--color-primary); color: white; }
-	.btn-primary:hover { background: var(--color-primary-hover); }
-	.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-	.btn-secondary { background: var(--color-border); color: var(--color-text); }
-	.form-group { margin-bottom: 1rem; }
-	.form-group label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--color-text-muted); margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.04em; }
-	.form-group input[type="text"], .form-group select { width: 100%; padding: 0.5rem 0.75rem; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-text); font-size: 0.9rem; }
-	.checkbox-group label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; text-transform: none; letter-spacing: 0; color: var(--color-text); cursor: pointer; }
-	.checkbox-group input[type="checkbox"] { width: auto; accent-color: var(--color-primary); }
-	.modal-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; }
-	.modal-error { background: rgba(239,68,68,0.1); border: 1px solid var(--color-danger); color: var(--color-danger); padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
-	.confirm-text { color: var(--color-text-muted); margin-bottom: 0.5rem; }
 </style>

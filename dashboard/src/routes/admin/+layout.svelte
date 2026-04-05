@@ -4,6 +4,8 @@
 	import { goto } from '$app/navigation';
 	import { session, ApiError } from '$lib/session';
 	import type { MeIdentity } from '$lib/session';
+	import { adminIdentity } from '$lib/stores';
+	import { get } from 'svelte/store';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -12,18 +14,19 @@
 
 	onMount(async () => {
 		try {
-			const me = await session.get<MeIdentity>('/auth/me/identity');
+			// Reuse identity from root layout if already fetched
+			let me = get(adminIdentity);
+			if (!me) {
+				me = await session.get<MeIdentity>('/auth/me/identity');
+				adminIdentity.set(me);
+			}
 			if (me.kind !== 'user') {
 				goto('/profile');
 				return;
 			}
 			authorized = true;
 		} catch (e) {
-			if (e instanceof ApiError && e.status === 401) {
-				goto('/profile');
-			} else {
-				goto('/profile');
-			}
+			goto('/profile');
 		} finally {
 			checking = false;
 		}

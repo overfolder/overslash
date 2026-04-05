@@ -20,6 +20,9 @@ function persistedWritable(key: string, initial: string) {
   return store;
 }
 
+/** Shared identity for admin auth guard — avoids duplicate /auth/me/identity fetches. */
+export const adminIdentity = writable<import('./session').MeIdentity | null>(null);
+
 export const apiKey = persistedWritable('ovs_api_key', '');
 export const services = writable<ServiceSummary[]>([]);
 export const selectedServiceKey = writable<string | null>(null);
