@@ -3,12 +3,12 @@
 mod common;
 
 use serde_json::Value;
-use sqlx::PgPool;
 
 // --- Dev token endpoint ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn dev_token_returns_jwt_when_enabled(pool: PgPool) {
+#[tokio::test]
+async fn dev_token_returns_jwt_when_enabled() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp = client
@@ -39,8 +39,9 @@ async fn dev_token_returns_jwt_when_enabled(pool: PgPool) {
     assert!(body["token"].is_string());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn dev_token_returns_404_when_disabled(pool: PgPool) {
+#[tokio::test]
+async fn dev_token_returns_404_when_disabled() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
 
@@ -53,8 +54,9 @@ async fn dev_token_returns_404_when_disabled(pool: PgPool) {
     assert_eq!(resp.status(), 404);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn dev_token_is_idempotent(pool: PgPool) {
+#[tokio::test]
+async fn dev_token_is_idempotent() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp1: Value = client
@@ -82,8 +84,9 @@ async fn dev_token_is_idempotent(pool: PgPool) {
 
 // --- /auth/me endpoint ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn me_returns_user_with_valid_session(pool: PgPool) {
+#[tokio::test]
+async fn me_returns_user_with_valid_session() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     // Get a dev token
@@ -112,8 +115,9 @@ async fn me_returns_user_with_valid_session(pool: PgPool) {
     assert_eq!(body["identity_id"], token_resp["identity_id"]);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn me_returns_401_without_cookie(pool: PgPool) {
+#[tokio::test]
+async fn me_returns_401_without_cookie() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp = client.get(format!("{base}/auth/me")).send().await.unwrap();
@@ -121,8 +125,9 @@ async fn me_returns_401_without_cookie(pool: PgPool) {
     assert_eq!(resp.status(), 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn me_returns_401_with_invalid_token(pool: PgPool) {
+#[tokio::test]
+async fn me_returns_401_with_invalid_token() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp = client
@@ -137,8 +142,9 @@ async fn me_returns_401_with_invalid_token(pool: PgPool) {
 
 // --- Google login (without credentials) ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn google_login_returns_404_when_not_configured(pool: PgPool) {
+#[tokio::test]
+async fn google_login_returns_404_when_not_configured() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp = client

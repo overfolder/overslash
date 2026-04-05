@@ -122,8 +122,9 @@ async fn setup_with_perm(pool: PgPool, pattern: &str) -> (String, String, Uuid, 
 // DB repo layer: audit::log + query_filtered
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_insert_and_query(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_insert_and_query() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     overslash_db::repos::audit::log(
@@ -154,8 +155,9 @@ async fn test_audit_log_insert_and_query(pool: PgPool) {
     assert_eq!(row.detail["key"], "value");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_with_identity_and_resource(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_with_identity_and_resource() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
     let identity_id = insert_identity(&pool, org_id).await;
     let resource_id = Uuid::new_v4();
@@ -184,8 +186,9 @@ async fn test_audit_log_with_identity_and_resource(pool: PgPool) {
     assert_eq!(rows[0].resource_type.as_deref(), Some("secret"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_with_ip_address(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_with_ip_address() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     overslash_db::repos::audit::log(
@@ -209,8 +212,9 @@ async fn test_audit_log_with_ip_address(pool: PgPool) {
     assert_eq!(rows[0].ip_address.as_deref(), Some("192.168.1.42"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_ordering_desc(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_ordering_desc() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     for action in &["first", "second", "third"] {
@@ -229,8 +233,9 @@ async fn test_audit_log_ordering_desc(pool: PgPool) {
     assert_eq!(rows[2].action, "first");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_pagination(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_pagination() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     for i in 0..5 {
@@ -268,8 +273,9 @@ async fn test_audit_log_pagination(pool: PgPool) {
     assert!(empty.is_empty());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_org_isolation(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_org_isolation() {
+    let pool = common::test_pool().await;
     let org_a = insert_org(&pool).await;
     let org_b = insert_org(&pool).await;
 
@@ -299,8 +305,9 @@ async fn test_audit_log_org_isolation(pool: PgPool) {
     assert_eq!(rows_b[0].action, "b.action");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_empty_org(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_empty_org() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
     let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
         .await
@@ -308,8 +315,9 @@ async fn test_audit_log_empty_org(pool: PgPool) {
     assert!(rows.is_empty());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_identity_set_null_on_delete(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_identity_set_null_on_delete() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
     let identity_id = insert_identity(&pool, org_id).await;
 
@@ -343,8 +351,9 @@ async fn test_audit_log_identity_set_null_on_delete(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_log_cascade_on_org_delete(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_log_cascade_on_org_delete() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     overslash_db::repos::audit::log(
@@ -369,8 +378,9 @@ async fn test_audit_log_cascade_on_org_delete(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_detail_json_structure(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_detail_json_structure() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     let complex_detail = json!({
@@ -405,8 +415,9 @@ async fn test_audit_detail_json_structure(pool: PgPool) {
 // DB repo layer: query_filtered filters
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_query_filtered_by_action(pool: PgPool) {
+#[tokio::test]
+async fn test_query_filtered_by_action() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     overslash_db::repos::audit::log(
@@ -432,8 +443,9 @@ async fn test_query_filtered_by_action(pool: PgPool) {
     assert_eq!(rows[0].action, "secret.put");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_query_filtered_by_resource_type(pool: PgPool) {
+#[tokio::test]
+async fn test_query_filtered_by_resource_type() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     overslash_db::repos::audit::log(
@@ -459,8 +471,9 @@ async fn test_query_filtered_by_resource_type(pool: PgPool) {
     assert_eq!(rows[0].action, "b.created");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_query_filtered_by_identity_id(pool: PgPool) {
+#[tokio::test]
+async fn test_query_filtered_by_identity_id() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
     let id_a = insert_identity(&pool, org_id).await;
     let id_b = insert_identity(&pool, org_id).await;
@@ -488,8 +501,9 @@ async fn test_query_filtered_by_identity_id(pool: PgPool) {
     assert_eq!(rows[0].action, "from_a");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_query_filtered_by_time_range(pool: PgPool) {
+#[tokio::test]
+async fn test_query_filtered_by_time_range() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
     // Insert with explicit timestamps via raw SQL to avoid timing issues
@@ -538,8 +552,9 @@ async fn test_query_filtered_by_time_range(pool: PgPool) {
     assert_eq!(rows2[0].action, "early");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_query_filtered_combined_filters(pool: PgPool) {
+#[tokio::test]
+async fn test_query_filtered_combined_filters() {
+    let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
     let id_a = insert_identity(&pool, org_id).await;
 
@@ -592,8 +607,9 @@ async fn test_query_filtered_combined_filters(pool: PgPool) {
 // API endpoint: GET /v1/audit
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_requires_auth(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_api_requires_auth() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let resp = client
         .get(format!("http://{addr}/v1/audit"))
@@ -603,8 +619,9 @@ async fn test_audit_api_requires_auth(pool: PgPool) {
     assert_eq!(resp.status(), 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_response_shape(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_api_response_shape() {
+    let pool = common::test_pool().await;
     let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
     let mock_addr = start_mock().await;
 
@@ -632,8 +649,9 @@ async fn test_audit_api_response_shape(pool: PgPool) {
     assert!(entry.get("ip_address").is_some());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_pagination(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_api_pagination() {
+    let pool = common::test_pool().await;
     let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
     let mock_addr = start_mock().await;
 
@@ -672,8 +690,9 @@ async fn test_audit_api_pagination(pool: PgPool) {
     assert!(!p1_ids.contains(&page2[0]["id"].as_str().unwrap()));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_filter_by_action(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_api_filter_by_action() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -695,8 +714,9 @@ async fn test_audit_api_filter_by_action(pool: PgPool) {
     assert_eq!(filtered[0]["action"], "secret.put");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_filter_by_resource_type(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_api_filter_by_resource_type() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -715,8 +735,9 @@ async fn test_audit_api_filter_by_resource_type(pool: PgPool) {
     assert_eq!(filtered[0]["resource_type"], "secret");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_api_org_isolation(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_api_org_isolation() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
 
@@ -753,8 +774,9 @@ async fn test_audit_api_org_isolation(pool: PgPool) {
 // Audit events: action.executed
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_action_executed(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_action_executed() {
+    let pool = common::test_pool().await;
     let (base, key, _org_id, ident_id, client) = setup_with_perm(pool, "http:**").await;
     let mock_addr = start_mock().await;
 
@@ -789,8 +811,9 @@ async fn test_audit_action_executed(pool: PgPool) {
 // Audit events: approval.created
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_approval_created(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_approval_created() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -833,8 +856,9 @@ async fn test_audit_approval_created(pool: PgPool) {
 // Audit events: approval.resolved
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_approval_resolved(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_approval_resolved() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -883,8 +907,9 @@ async fn test_audit_approval_resolved(pool: PgPool) {
 // Audit events: secret.put + secret.deleted
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_secret_put(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_secret_put() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -904,8 +929,9 @@ async fn test_audit_secret_put(pool: PgPool) {
     assert!(entries[0]["detail"]["version"].is_number());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_secret_deleted(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_secret_deleted() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -935,8 +961,9 @@ async fn test_audit_secret_deleted(pool: PgPool) {
 // Audit events: permission_rule.created + permission_rule.deleted
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_permission_rule_created(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_permission_rule_created() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -955,8 +982,9 @@ async fn test_audit_permission_rule_created(pool: PgPool) {
     assert_eq!(entries[0]["detail"]["action_pattern"], "http:**");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_permission_rule_deleted(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_permission_rule_deleted() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -988,8 +1016,9 @@ async fn test_audit_permission_rule_deleted(pool: PgPool) {
 // Audit events: webhook.created + webhook.deleted
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_webhook_created(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_webhook_created() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -1008,8 +1037,9 @@ async fn test_audit_webhook_created(pool: PgPool) {
     assert_eq!(entries[0]["detail"]["url"], "https://example.com/hook");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_webhook_deleted(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_webhook_deleted() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -1041,8 +1071,9 @@ async fn test_audit_webhook_deleted(pool: PgPool) {
 // Audit events: byoc_credential.created + byoc_credential.deleted
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_byoc_credential_created(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_byoc_credential_created() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -1066,8 +1097,9 @@ async fn test_audit_byoc_credential_created(pool: PgPool) {
     assert_eq!(entries[0]["detail"]["provider"], "google");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_byoc_credential_deleted(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_byoc_credential_deleted() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -1094,8 +1126,9 @@ async fn test_audit_byoc_credential_deleted(pool: PgPool) {
     assert_eq!(entries[0]["resource_id"].as_str().unwrap(), cred_id);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_byoc_delete_nonexistent_no_entry(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_byoc_delete_nonexistent_no_entry() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -1116,8 +1149,9 @@ async fn test_audit_byoc_delete_nonexistent_no_entry(pool: PgPool) {
 // Audit events: no-op deletes should not produce entries
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_noop_deletes_no_entries(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_noop_deletes_no_entries() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _ident_id, key) = bootstrap_org_identity(&base, &client).await;
@@ -1166,8 +1200,9 @@ async fn test_audit_noop_deletes_no_entries(pool: PgPool) {
 // Combined flow: mixed events + ordering
 // ===========================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_mixed_events(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_mixed_events() {
+    let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;

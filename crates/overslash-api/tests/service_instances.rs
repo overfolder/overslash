@@ -17,8 +17,9 @@ async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String) {
 
 // -- Template Tests --
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_list_templates_empty_registry(pool: PgPool) {
+#[tokio::test]
+async fn test_list_templates_empty_registry() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     let resp: Vec<Value> = client
@@ -35,8 +36,9 @@ async fn test_list_templates_empty_registry(pool: PgPool) {
     assert!(resp.is_empty());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_and_get_org_template(pool: PgPool) {
+#[tokio::test]
+async fn test_create_and_get_org_template() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     // Create an org-level template
@@ -99,8 +101,9 @@ async fn test_create_and_get_org_template(pool: PgPool) {
     assert!(list.iter().any(|t| t["key"] == "my-internal-api"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_user_template(pool: PgPool) {
+#[tokio::test]
+async fn test_create_user_template() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     let resp = client
@@ -122,8 +125,9 @@ async fn test_create_user_template(pool: PgPool) {
     assert_eq!(template["tier"], "user");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_search_templates(pool: PgPool) {
+#[tokio::test]
+async fn test_search_templates() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     client
@@ -154,8 +158,9 @@ async fn test_search_templates(pool: PgPool) {
     assert!(results.iter().any(|t| t["key"] == "searchable-api"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_delete_template(pool: PgPool) {
+#[tokio::test]
+async fn test_delete_template() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     let create_resp: Value = client
@@ -195,8 +200,9 @@ async fn test_delete_template(pool: PgPool) {
 
 // -- Service Instance Tests --
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_service_instance(pool: PgPool) {
+#[tokio::test]
+async fn test_create_service_instance() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     // Create template first
@@ -233,8 +239,9 @@ async fn test_create_service_instance(pool: PgPool) {
     assert!(instance["id"].is_string());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_list_service_instances(pool: PgPool) {
+#[tokio::test]
+async fn test_list_service_instances() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     client
@@ -271,8 +278,9 @@ async fn test_list_service_instances(pool: PgPool) {
     assert!(list.iter().any(|i| i["name"] == "list-svc"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_service_instance_lifecycle(pool: PgPool) {
+#[tokio::test]
+async fn test_service_instance_lifecycle() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     // Create template
@@ -359,8 +367,9 @@ async fn test_service_instance_lifecycle(pool: PgPool) {
     assert_eq!(get_resp.status(), 404);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_service_name_defaults_to_template_key(pool: PgPool) {
+#[tokio::test]
+async fn test_service_name_defaults_to_template_key() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     client
@@ -390,8 +399,9 @@ async fn test_service_name_defaults_to_template_key(pool: PgPool) {
     assert_eq!(instance["name"], "auto-name-svc");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_duplicate_instance_name_conflict(pool: PgPool) {
+#[tokio::test]
+async fn test_duplicate_instance_name_conflict() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     client
@@ -426,8 +436,9 @@ async fn test_duplicate_instance_name_conflict(pool: PgPool) {
     assert_eq!(second.status(), 409);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_template_actions_via_service(pool: PgPool) {
+#[tokio::test]
+async fn test_template_actions_via_service() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     client
@@ -480,8 +491,9 @@ async fn test_template_actions_via_service(pool: PgPool) {
     assert!(actions.iter().any(|a| a["key"] == "create_item"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_template_actions_listing(pool: PgPool) {
+#[tokio::test]
+async fn test_template_actions_listing() {
+    let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key) = setup(pool).await;
 
     client
