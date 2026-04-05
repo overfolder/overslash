@@ -7,6 +7,9 @@
 .env.local
 .env.*.local
 
+# Local cargo config (mold linker — install: apt install mold clang)
+.cargo/
+
 # Editors
 *.swp
 *.swo

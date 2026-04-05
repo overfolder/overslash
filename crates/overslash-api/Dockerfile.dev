@@ -5,9 +5,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev clang mold && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-watch --locked
 
-# Copy workspace manifests and cargo config for dependency resolution
+# Copy workspace manifests for dependency resolution
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .cargo .cargo
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
 COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
