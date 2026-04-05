@@ -1,0 +1,176 @@
+/*
+ * Overslash Design Tokens
+ *
+ * Generated from the Design System (Figma).
+ * See UI_SPEC.md § Design System for full documentation.
+ * Figma: https://www.figma.com/design/g385jjr9vo48bWqZq2yKCi
+ */
+
+:root {
+	/* ── Neutral palette ── */
+	--neutral-50: #fafafa;
+	--neutral-100: #f5f5f7;
+	--neutral-200: #e8e8ee;
+	--neutral-300: #d1d4d9;
+	--neutral-400: #a3a6b0;
+	--neutral-500: #737580;
+	--neutral-600: #545761;
+	--neutral-700: #383a42;
+	--neutral-800: #26282e;
+	--neutral-900: #17191c;
+
+	/* ── Primary palette (indigo) ── */
+	--primary-50: #ededff;
+	--primary-100: #e0dffc;
+	--primary-500: #6359d9;
+	--primary-600: #4f45c2;
+	--primary-700: #4238a8;
+
+	/* ── Semantic ── */
+	--success-500: #21b86b;
+	--warning-500: #ebb01e;
+	--error-500: #e63836;
+	--orange-500: #eb8c26;
+
+	/* ── Backgrounds ── */
+	--color-bg: var(--neutral-50);
+	--color-surface: #ffffff;
+	--color-sidebar: #f8f8fa;
+	--color-border: var(--neutral-200);
+	--color-border-subtle: var(--neutral-100);
+
+	/* ── Text ── */
+	--color-text-heading: var(--neutral-900);
+	--color-text: var(--neutral-700);
+	--color-text-secondary: var(--neutral-500);
+	--color-text-muted: var(--neutral-400);
+	--color-text-placeholder: var(--neutral-400);
+
+	/* ── Interactive ── */
+	--color-primary: var(--primary-500);
+	--color-primary-hover: var(--primary-600);
+	--color-primary-active: var(--primary-700);
+	--color-primary-bg: var(--primary-50);
+	--color-danger: var(--error-500);
+	--color-success: var(--success-500);
+	--color-warning: var(--warning-500);
+
+	/* ── Typography ── */
+	--font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	--font-mono: 'Roboto Mono', 'JetBrains Mono', 'Fira Code', monospace;
+
+	--text-h1: 700 28px/36px var(--font-sans);
+	--text-h2: 600 22px/28px var(--font-sans);
+	--text-h3: 600 18px/24px var(--font-sans);
+	--text-body-lg: 400 16px/24px var(--font-sans);
+	--text-body: 400 14px/20px var(--font-sans);
+	--text-body-medium: 500 14px/20px var(--font-sans);
+	--text-body-sm: 400 12px/16px var(--font-sans);
+	--text-label: 500 13px/18px var(--font-sans);
+	--text-label-sm: 500 11px/14px var(--font-sans);
+	--text-code: 400 13px/18px var(--font-mono);
+
+	/* ── Spacing ── */
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-5: 20px;
+	--space-6: 24px;
+	--space-8: 32px;
+	--space-10: 40px;
+	--space-12: 48px;
+	--space-16: 64px;
+
+	/* ── Radii ── */
+	--radius-sm: 4px;
+	--radius-md: 8px;
+	--radius-lg: 12px;
+	--radius-xl: 16px;
+	--radius-pill: 9999px;
+
+	/* ── Shadows ── */
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+	--shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.08);
+	--shadow-xl: 0 8px 32px rgba(0, 0, 0, 0.15);
+
+	/* ── Sidebar ── */
+	--sidebar-width-expanded: 240px;
+	--sidebar-width-collapsed: 64px;
+
+	/* ── Top bar ── */
+	--topbar-height: 56px;
+
+	/* ── Badges (background opacity) ── */
+	--badge-opacity: 0.12;
+}
+
+/* ── Dark mode ── */
+[data-theme='dark'] {
+	--neutral-50: #111213;
+	--neutral-100: #1a1b1e;
+	--neutral-200: #2a2b2f;
+	--neutral-300: #3a3b40;
+	--neutral-400: #6b6d73;
+	--neutral-500: #8b8d92;
+	--neutral-600: #b0b2b8;
+	--neutral-700: #d4d5d9;
+	--neutral-800: #e0e1e4;
+	--neutral-900: #f0f1f2;
+
+	--primary-50: rgba(99, 90, 217, 0.15);
+
+	--color-bg: #111213;
+	--color-surface: #1a1b1e;
+	--color-sidebar: #151618;
+	--color-border: #2a2b2f;
+	--color-border-subtle: #1f2023;
+
+	--color-text-heading: #f0f1f2;
+	--color-text: #d4d5d9;
+	--color-text-secondary: #8b8d92;
+	--color-text-muted: #6b6d73;
+	--color-text-placeholder: #6b6d73;
+
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+	--shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.3);
+	--shadow-xl: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+	--badge-opacity: 0.15;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		--neutral-50: #111213;
+		--neutral-100: #1a1b1e;
+		--neutral-200: #2a2b2f;
+		--neutral-300: #3a3b40;
+		--neutral-400: #6b6d73;
+		--neutral-500: #8b8d92;
+		--neutral-600: #b0b2b8;
+		--neutral-700: #d4d5d9;
+		--neutral-800: #e0e1e4;
+		--neutral-900: #f0f1f2;
+
+		--primary-50: rgba(99, 90, 217, 0.15);
+
+		--color-bg: #111213;
+		--color-surface: #1a1b1e;
+		--color-sidebar: #151618;
+		--color-border: #2a2b2f;
+		--color-border-subtle: #1f2023;
+
+		--color-text-heading: #f0f1f2;
+		--color-text: #d4d5d9;
+		--color-text-secondary: #8b8d92;
+		--color-text-muted: #6b6d73;
+		--color-text-placeholder: #6b6d73;
+
+		--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+		--shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.3);
+		--shadow-xl: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+		--badge-opacity: 0.15;
+	}
+}
