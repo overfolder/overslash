@@ -28,11 +28,11 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] Types: add permission key types (`{service}:{action}:{arg}`)
 - [ ] Types: remove `approval_url` from `ExecuteResponse` (no self-auth approval URLs)
 - [ ] Login: extract from profile page to standalone `/login` page with logo, multi-IdP buttons (uses `GET /auth/providers`), redirect-back-after-auth
-- [ ] IdP config: admin settings page for managing org IdP configs (uses `/v1/org-idp-configs` CRUD API)
+- [x] IdP config: admin settings page for managing org IdP configs (uses `/v1/org-idp-configs` CRUD API)
 - [ ] Stores: remove `executionMode` (A/B/C), `connections` store; update to unified model
 
 **Medium priority:**
-- [ ] Layout: add nav items (Dashboard, Services, API Explorer, Audit Log, Org Dashboard)
+- [x] Layout: add nav items (Dashboard, Services, API Explorer, Audit Log, Org Dashboard)
 - [ ] Layout: collapsible sidebar (labels+icons expanded, icons-only collapsed)
 - [ ] Layout: notification bell in top bar with badge count
 - [ ] Layout: profile avatar at bottom of sidebar (not a nav item)

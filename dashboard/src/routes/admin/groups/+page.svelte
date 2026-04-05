@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '$lib/admin.css';
 	import { onMount } from 'svelte';
-	import { session, ApiError, formatApiError } from '$lib/session';
+	import { session, formatApiError } from '$lib/session';
 	import type {
 		GroupResponse, GroupGrantResponse, IdentitySummary, ServiceInstanceSummary
 	} from '$lib/types';

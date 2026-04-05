@@ -101,7 +101,7 @@
 - **Webhooks management** — CRUD for webhook subscriptions + expandable delivery history with color-coded status codes
 - **Settings** — org name/slug editing, `allow_user_templates` policy toggle, IdP config management (env/db sources with badges), member list
 - Backend: `GET/PUT /v1/orgs/me` for org settings, `GET /v1/webhooks/{id}/deliveries` for delivery log, migration 022 (`allow_user_templates`)
-- Reusable components: DataTable, Modal, EmptyState, StatusBadge; shared admin CSS
+- Reusable components: DataTable, Modal, StatusBadge; shared admin CSS
 - Playwright screenshot script for CI proof-of-work
 
 ### Not Yet Built
@@ -109,6 +109,7 @@
 - Dashboard: org/agent hierarchy view, connected services, audit log viewer
 - Dashboard: standalone pages (approval resolution, secret request, enrollment consent)
 - `on_behalf_of` for agent-initiated connections
+- Three-tier template registry — user-level template CRUD (third tier; org-level done)
 - Template validation endpoint + OpenAPI import
 - Org-level ACL (role-based access control for who can manage groups, services, etc.)
 - Phase 3: permission chain walk, approval bubbling (`inherit_permissions` resolution done; parent/child + depth tracking done)
