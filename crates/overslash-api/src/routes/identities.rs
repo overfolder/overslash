@@ -176,6 +176,7 @@ async fn create_identity(
                 "parent_id": row.parent_id,
                 "depth": row.depth,
             }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )

@@ -93,6 +93,7 @@ async fn create_byoc(
             resource_type: Some("byoc_credential"),
             resource_id: Some(row.id),
             detail: serde_json::json!({ "provider": req.provider }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -147,6 +148,7 @@ async fn delete_byoc(
                 resource_type: Some("byoc_credential"),
                 resource_id: Some(id),
                 detail: serde_json::json!({}),
+                description: None,
                 ip_address: ip.0.as_deref(),
             },
         )

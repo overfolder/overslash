@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, action, resource_type, resource_id, detail, ip_address, created_at\n         FROM audit_log\n         WHERE org_id = $1\n           AND ($2::text IS NULL OR action = $2)\n           AND ($3::text IS NULL OR resource_type = $3)\n           AND ($4::uuid IS NULL OR identity_id = $4)\n           AND ($5::timestamptz IS NULL OR created_at >= $5)\n           AND ($6::timestamptz IS NULL OR created_at <= $6)\n         ORDER BY created_at DESC\n         LIMIT $7 OFFSET $8",
+  "query": "SELECT id, org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, created_at\n         FROM audit_log\n         WHERE org_id = $1\n           AND ($2::text IS NULL OR action = $2)\n           AND ($3::text IS NULL OR resource_type = $3)\n           AND ($4::uuid IS NULL OR identity_id = $4)\n           AND ($5::timestamptz IS NULL OR created_at >= $5)\n           AND ($6::timestamptz IS NULL OR created_at <= $6)\n         ORDER BY created_at DESC\n         LIMIT $7 OFFSET $8",
   "describe": {
     "columns": [
       {
@@ -40,11 +40,16 @@
       },
       {
         "ordinal": 7,
-        "name": "ip_address",
+        "name": "description",
         "type_info": "Text"
       },
       {
         "ordinal": 8,
+        "name": "ip_address",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -70,8 +75,9 @@
       true,
       false,
       true,
+      true,
       false
     ]
   },
-  "hash": "bcf1d5a23cfac70f56621d47c3180042525d97ed6544cfed4909b2e7f24c4521"
+  "hash": "71b47403215d548e95b71731e9e483ff60b0fed253ba196b9f9f48e17a0289ca"
 }

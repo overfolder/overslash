@@ -212,6 +212,7 @@ async fn oauth_callback(
             resource_type: Some("connection"),
             resource_id: Some(conn.id),
             detail: serde_json::json!({ "provider": provider_key }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -279,6 +280,7 @@ async fn delete_connection(
                 resource_type: Some("connection"),
                 resource_id: Some(id),
                 detail: serde_json::json!({}),
+                description: None,
                 ip_address: ip.0.as_deref(),
             },
         )

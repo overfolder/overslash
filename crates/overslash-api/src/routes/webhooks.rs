@@ -64,6 +64,7 @@ async fn create_webhook(
             resource_type: Some("webhook"),
             resource_id: Some(row.id),
             detail: serde_json::json!({ "url": &row.url, "events": &row.events }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -113,6 +114,7 @@ async fn delete_webhook(
                 resource_type: Some("webhook"),
                 resource_id: Some(id),
                 detail: serde_json::json!({}),
+                description: None,
                 ip_address: ip.0.as_deref(),
             },
         )

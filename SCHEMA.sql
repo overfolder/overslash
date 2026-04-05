@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict wHJCgrL3s2NrYuTr54CG2Lzr6cwjPfyKaoCKqfLIXY6o7lS69q3KV4LgnSN6nBw
+\restrict eUBKUfsme4a5ZJnryHmiNPxeGPf0fKXCN8N1fSZOWgdXIMDdXxLPyuQQ32RJSaN
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -90,7 +90,8 @@ CREATE TABLE public.audit_log (
     resource_id uuid,
     detail jsonb DEFAULT '{}'::jsonb NOT NULL,
     ip_address text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    description text
 );
 
 
@@ -132,6 +133,53 @@ CREATE TABLE public.connections (
 
 
 --
+-- Name: enrollment_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.enrollment_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    token_hash text NOT NULL,
+    token_prefix character varying(16) NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    used_at timestamp with time zone,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: group_grants; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.group_grants (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    group_id uuid NOT NULL,
+    service_instance_id uuid NOT NULL,
+    access_level text NOT NULL,
+    auto_approve_reads boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT group_grants_access_level_check CHECK ((access_level = ANY (ARRAY['read'::text, 'write'::text, 'admin'::text])))
+);
+
+
+--
+-- Name: groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.groups (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    name text NOT NULL,
+    description text DEFAULT ''::text NOT NULL,
+    allow_raw_http boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: identities; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -145,7 +193,22 @@ CREATE TABLE public.identities (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     email text,
-    CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text])))
+    parent_id uuid,
+    depth integer DEFAULT 0 NOT NULL,
+    owner_id uuid,
+    inherit_permissions boolean DEFAULT false NOT NULL,
+    CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
+);
+
+
+--
+-- Name: identity_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_groups (
+    identity_id uuid NOT NULL,
+    group_id uuid NOT NULL,
+    assigned_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -166,7 +229,26 @@ CREATE TABLE public.oauth_providers (
     extra_auth_params jsonb DEFAULT '{}'::jsonb NOT NULL,
     is_builtin boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL
+    token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL,
+    issuer_url text,
+    jwks_uri text
+);
+
+
+--
+-- Name: org_idp_configs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_idp_configs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    provider_key text NOT NULL,
+    encrypted_client_id bytea NOT NULL,
+    encrypted_client_secret bytea NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -184,6 +266,32 @@ CREATE TABLE public.orgs (
 
 
 --
+-- Name: pending_enrollments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.pending_enrollments (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    suggested_name text NOT NULL,
+    platform text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    approval_token text NOT NULL,
+    poll_token_hash text NOT NULL,
+    poll_token_prefix character varying(16) NOT NULL,
+    org_id uuid,
+    identity_id uuid,
+    api_key_hash text,
+    api_key_prefix character varying(16),
+    approved_by uuid,
+    final_name text,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    resolved_at timestamp with time zone,
+    CONSTRAINT pending_enrollments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'denied'::text, 'expired'::text])))
+);
+
+
+--
 -- Name: permission_rules; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -194,6 +302,7 @@ CREATE TABLE public.permission_rules (
     action_pattern text NOT NULL,
     effect text DEFAULT 'allow'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone,
     CONSTRAINT permission_rules_effect_check CHECK ((effect = ANY (ARRAY['allow'::text, 'deny'::text])))
 );
 
@@ -222,6 +331,48 @@ CREATE TABLE public.secrets (
     name text NOT NULL,
     current_version integer DEFAULT 1 NOT NULL,
     deleted_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: service_instances; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_instances (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    owner_identity_id uuid,
+    name text NOT NULL,
+    template_source text NOT NULL,
+    template_key text NOT NULL,
+    template_id uuid,
+    connection_id uuid,
+    secret_name text,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
+    CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
+);
+
+
+--
+-- Name: service_templates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_templates (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    owner_identity_id uuid,
+    key text NOT NULL,
+    display_name text NOT NULL,
+    description text DEFAULT ''::text NOT NULL,
+    category text DEFAULT ''::text NOT NULL,
+    hosts text[] DEFAULT '{}'::text[] NOT NULL,
+    auth jsonb DEFAULT '[]'::jsonb NOT NULL,
+    actions jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -317,6 +468,46 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: enrollment_tokens enrollment_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enrollment_tokens
+    ADD CONSTRAINT enrollment_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: group_grants group_grants_group_id_service_instance_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_grants
+    ADD CONSTRAINT group_grants_group_id_service_instance_id_key UNIQUE (group_id, service_instance_id);
+
+
+--
+-- Name: group_grants group_grants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_grants
+    ADD CONSTRAINT group_grants_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: groups groups_org_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.groups
+    ADD CONSTRAINT groups_org_id_name_key UNIQUE (org_id, name);
+
+
+--
+-- Name: groups groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.groups
+    ADD CONSTRAINT groups_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: identities identities_org_id_external_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -333,11 +524,35 @@ ALTER TABLE ONLY public.identities
 
 
 --
+-- Name: identity_groups identity_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_groups
+    ADD CONSTRAINT identity_groups_pkey PRIMARY KEY (identity_id, group_id);
+
+
+--
 -- Name: oauth_providers oauth_providers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.oauth_providers
     ADD CONSTRAINT oauth_providers_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: org_idp_configs org_idp_configs_org_id_provider_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_idp_configs
+    ADD CONSTRAINT org_idp_configs_org_id_provider_key_key UNIQUE (org_id, provider_key);
+
+
+--
+-- Name: org_idp_configs org_idp_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_idp_configs
+    ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
 
 
 --
@@ -354,6 +569,22 @@ ALTER TABLE ONLY public.orgs
 
 ALTER TABLE ONLY public.orgs
     ADD CONSTRAINT orgs_slug_key UNIQUE (slug);
+
+
+--
+-- Name: pending_enrollments pending_enrollments_approval_token_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_enrollments
+    ADD CONSTRAINT pending_enrollments_approval_token_key UNIQUE (approval_token);
+
+
+--
+-- Name: pending_enrollments pending_enrollments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_enrollments
+    ADD CONSTRAINT pending_enrollments_pkey PRIMARY KEY (id);
 
 
 --
@@ -394,6 +625,22 @@ ALTER TABLE ONLY public.secrets
 
 ALTER TABLE ONLY public.secrets
     ADD CONSTRAINT secrets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: service_instances service_instances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_instances
+    ADD CONSTRAINT service_instances_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: service_templates service_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_templates
+    ADD CONSTRAINT service_templates_pkey PRIMARY KEY (id);
 
 
 --
@@ -483,6 +730,34 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
+-- Name: idx_enrollment_tokens_prefix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_enrollment_tokens_prefix ON public.enrollment_tokens USING btree (token_prefix);
+
+
+--
+-- Name: idx_group_grants_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_group_grants_group ON public.group_grants USING btree (group_id);
+
+
+--
+-- Name: idx_group_grants_service; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_group_grants_service ON public.group_grants USING btree (service_instance_id);
+
+
+--
+-- Name: idx_groups_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_groups_org ON public.groups USING btree (org_id);
+
+
+--
 -- Name: idx_identities_email; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -497,10 +772,66 @@ CREATE INDEX idx_identities_org ON public.identities USING btree (org_id);
 
 
 --
+-- Name: idx_identities_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_owner ON public.identities USING btree (owner_id) WHERE (owner_id IS NOT NULL);
+
+
+--
+-- Name: idx_identities_parent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_parent ON public.identities USING btree (parent_id) WHERE (parent_id IS NOT NULL);
+
+
+--
 -- Name: idx_identities_user_email; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_identities_user_email ON public.identities USING btree (email) WHERE ((kind = 'user'::text) AND (email IS NOT NULL));
+
+
+--
+-- Name: idx_identity_groups_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identity_groups_group ON public.identity_groups USING btree (group_id);
+
+
+--
+-- Name: idx_identity_groups_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identity_groups_identity ON public.identity_groups USING btree (identity_id);
+
+
+--
+-- Name: idx_org_idp_configs_domains; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_idp_configs_domains ON public.org_idp_configs USING gin (allowed_email_domains);
+
+
+--
+-- Name: idx_org_idp_configs_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_idp_configs_org ON public.org_idp_configs USING btree (org_id);
+
+
+--
+-- Name: idx_pending_enrollments_poll_prefix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_pending_enrollments_poll_prefix ON public.pending_enrollments USING btree (poll_token_prefix);
+
+
+--
+-- Name: idx_pending_enrollments_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_enrollments_status ON public.pending_enrollments USING btree (status) WHERE (status = 'pending'::text);
 
 
 --
@@ -515,6 +846,55 @@ CREATE INDEX idx_permission_rules_identity ON public.permission_rules USING btre
 --
 
 CREATE INDEX idx_secret_versions_secret ON public.secret_versions USING btree (secret_id);
+
+
+--
+-- Name: idx_service_instances_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_instances_org ON public.service_instances USING btree (org_id);
+
+
+--
+-- Name: idx_service_instances_org_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_service_instances_org_name ON public.service_instances USING btree (org_id, name) WHERE (owner_identity_id IS NULL);
+
+
+--
+-- Name: idx_service_instances_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_instances_owner ON public.service_instances USING btree (owner_identity_id);
+
+
+--
+-- Name: idx_service_instances_user_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_service_instances_user_name ON public.service_instances USING btree (org_id, owner_identity_id, name) WHERE (owner_identity_id IS NOT NULL);
+
+
+--
+-- Name: idx_service_templates_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_templates_org ON public.service_templates USING btree (org_id);
+
+
+--
+-- Name: idx_service_templates_org_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_service_templates_org_key ON public.service_templates USING btree (org_id, key) WHERE (owner_identity_id IS NULL);
+
+
+--
+-- Name: idx_service_templates_user_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates USING btree (org_id, owner_identity_id, key) WHERE (owner_identity_id IS NOT NULL);
 
 
 --
@@ -629,11 +1009,131 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: enrollment_tokens enrollment_tokens_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enrollment_tokens
+    ADD CONSTRAINT enrollment_tokens_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.identities(id);
+
+
+--
+-- Name: enrollment_tokens enrollment_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enrollment_tokens
+    ADD CONSTRAINT enrollment_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: enrollment_tokens enrollment_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enrollment_tokens
+    ADD CONSTRAINT enrollment_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: group_grants group_grants_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_grants
+    ADD CONSTRAINT group_grants_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: group_grants group_grants_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_grants
+    ADD CONSTRAINT group_grants_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: groups groups_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.groups
+    ADD CONSTRAINT groups_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: identities identities_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identities identities_owner_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identities
+    ADD CONSTRAINT identities_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: identities identities_parent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identities
+    ADD CONSTRAINT identities_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_groups identity_groups_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_groups
+    ADD CONSTRAINT identity_groups_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_groups identity_groups_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_groups
+    ADD CONSTRAINT identity_groups_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_idp_configs
+    ADD CONSTRAINT org_idp_configs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_idp_configs org_idp_configs_provider_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_idp_configs
+    ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: pending_enrollments pending_enrollments_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_enrollments
+    ADD CONSTRAINT pending_enrollments_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.identities(id);
+
+
+--
+-- Name: pending_enrollments pending_enrollments_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_enrollments
+    ADD CONSTRAINT pending_enrollments_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id);
+
+
+--
+-- Name: pending_enrollments pending_enrollments_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_enrollments
+    ADD CONSTRAINT pending_enrollments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id);
 
 
 --
@@ -677,6 +1177,54 @@ ALTER TABLE ONLY public.secrets
 
 
 --
+-- Name: service_instances service_instances_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_instances
+    ADD CONSTRAINT service_instances_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.connections(id) ON DELETE SET NULL;
+
+
+--
+-- Name: service_instances service_instances_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_instances
+    ADD CONSTRAINT service_instances_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: service_instances service_instances_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_instances
+    ADD CONSTRAINT service_instances_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: service_instances service_instances_template_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_instances
+    ADD CONSTRAINT service_instances_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.service_templates(id) ON DELETE SET NULL;
+
+
+--
+-- Name: service_templates service_templates_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_templates
+    ADD CONSTRAINT service_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: service_templates service_templates_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_templates
+    ADD CONSTRAINT service_templates_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: webhook_deliveries webhook_deliveries_subscription_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -696,5 +1244,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict wHJCgrL3s2NrYuTr54CG2Lzr6cwjPfyKaoCKqfLIXY6o7lS69q3KV4LgnSN6nBw
+\unrestrict eUBKUfsme4a5ZJnryHmiNPxeGPf0fKXCN8N1fSZOWgdXIMDdXxLPyuQQ32RJSaN
 

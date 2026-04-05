@@ -106,6 +106,7 @@ async fn create_enrollment_token(
             resource_type: Some("enrollment_token"),
             resource_id: Some(row.id),
             detail: json!({ "identity_id": req.identity_id, "token_prefix": &prefix }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -160,6 +161,7 @@ async fn revoke_enrollment_token(
             resource_type: Some("enrollment_token"),
             resource_id: Some(id),
             detail: json!({}),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -227,6 +229,7 @@ async fn enroll_with_token(
             resource_type: Some("identity"),
             resource_id: Some(token_row.identity_id),
             detail: json!({ "method": "token", "token_prefix": prefix }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -288,6 +291,7 @@ async fn initiate_enrollment(
             resource_type: Some("pending_enrollment"),
             resource_id: Some(row.id),
             detail: json!({ "name": &req.name, "platform": &req.platform }),
+            description: None,
             ip_address: ip.0.as_deref(),
         },
     )
@@ -503,6 +507,7 @@ async fn resolve_enrollment(
                         "agent_name": agent_name,
                         "agent_identity_id": new_identity.id,
                     }),
+                    description: None,
                     ip_address: ip.0.as_deref(),
                 },
             )
@@ -526,6 +531,7 @@ async fn resolve_enrollment(
                     resource_type: Some("pending_enrollment"),
                     resource_id: Some(row.id),
                     detail: json!({ "suggested_name": &row.suggested_name }),
+                    description: None,
                     ip_address: ip.0.as_deref(),
                 },
             )

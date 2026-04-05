@@ -112,7 +112,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] Semantic search for service/action discovery
 - [ ] Rate limiting per identity
 - [ ] Org billing / usage metering
-- [ ] Human-readable audit descriptions for Mode C (resolve IDs to names via response parsing)
+- [x] Human-readable audit descriptions — interpolated descriptions for Mode C, method+URL for Mode A, identity name resolution in audit responses
 - [ ] Dashboard: org settings, webhook management, bulk permission operations
 - [ ] Global service registry contribution workflow (community PRs)
 - [ ] Documentation site

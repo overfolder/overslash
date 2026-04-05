@@ -170,6 +170,7 @@ async fn execute_action(
                         resource_type: Some("approval"),
                         resource_id: Some(approval.id),
                         detail: serde_json::json!({ "summary": summary }),
+                        description: Some(&summary),
                         ip_address: ip.0.as_deref(),
                     },
                 )
@@ -241,14 +242,17 @@ async fn execute_action(
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
                 action: "action.streamed",
-                resource_type: None,
+                resource_type: req.service.as_deref(),
                 resource_id: None,
                 detail: serde_json::json!({
                     "method": action_req.method,
                     "url": action_req.url,
                     "status_code": upstream_status.as_u16(),
                     "content_length": content_length,
+                    "service": req.service,
+                    "action": req.action,
                 }),
+                description: meta.description.as_deref(),
                 ip_address: ip.0.as_deref(),
             },
         )
@@ -314,10 +318,10 @@ async fn execute_action(
                 "url": action_req.url,
                 "status_code": result.status_code,
                 "duration_ms": result.duration_ms,
-                "description": meta.description,
                 "service": req.service,
                 "action": req.action,
             }),
+            description: meta.description.as_deref(),
             ip_address: ip.0.as_deref(),
         },
     )
@@ -575,6 +579,14 @@ async fn resolve_request(
         .clone()
         .ok_or_else(|| AppError::BadRequest("'url' required for raw HTTP mode".into()))?;
 
+    let description = {
+        let display_url = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .unwrap_or(&url);
+        format!("{method} {display_url}")
+    };
+
     Ok((
         ActionRequest {
             method,
@@ -584,7 +596,7 @@ async fn resolve_request(
             secrets: req.secrets.clone(),
         },
         ResolvedMeta {
-            description: None,
+            description: Some(description),
             auth_injected: false,
             service_scope: None,
         },

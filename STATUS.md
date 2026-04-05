@@ -37,6 +37,7 @@
 - Service+action execution (registry-resolved, auth auto-resolved)
 - `scope_param` on service actions — permission keys use specific args from action params
 - Description interpolation — `{param}` substitution and `[optional segments]` in action descriptions
+- Human-readable audit descriptions — interpolated descriptions for Mode C, `METHOD host/path` for Mode A, `identity_name` resolved in audit responses
 - Suggested tiers + derived_keys on approval payloads (2-4 broadening levels)
 - Approval resolution API aligned with spec (`resolution` + `remember_keys` + `ttl`)
 - X.com OAuth with PKCE support
