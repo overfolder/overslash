@@ -88,12 +88,19 @@ fn validate_issuer_url(issuer_url: &str) -> Result<(), OidcDiscoveryError> {
         .strip_prefix("https://")
         .ok_or_else(|| OidcDiscoveryError::InvalidUrl("issuer URL must use HTTPS".into()))?;
 
-    // Extract host (before first / or :)
-    let host = without_scheme
-        .split('/')
-        .next()
-        .and_then(|h| h.split(':').next())
-        .unwrap_or("");
+    // Extract host, handling IPv6 bracket notation (e.g., [::1]:8080)
+    let authority = without_scheme.split('/').next().unwrap_or("");
+    let host = if authority.starts_with('[') {
+        // IPv6: extract content between brackets
+        authority
+            .split(']')
+            .next()
+            .map(|s| s.trim_start_matches('['))
+            .unwrap_or("")
+    } else {
+        // IPv4 or hostname: strip port
+        authority.split(':').next().unwrap_or("")
+    };
 
     if host.is_empty() {
         return Err(OidcDiscoveryError::InvalidUrl("missing host".into()));
@@ -125,7 +132,11 @@ fn is_private_ip(ip: IpAddr) -> bool {
             let o = v4.octets();
             o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
         }
-        IpAddr::V6(_) => false,
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // ULA: fc00::/7
+            (s[0] & 0xfe00) == 0xfc00
+        }
     }
 }
 
@@ -135,6 +146,10 @@ fn is_link_local(ip: IpAddr) -> bool {
             let o = v4.octets();
             o[0] == 169 && o[1] == 254
         }
-        IpAddr::V6(_) => false,
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // fe80::/10
+            (s[0] & 0xffc0) == 0xfe80
+        }
     }
 }

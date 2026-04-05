@@ -243,10 +243,18 @@ async fn google_login_compat(
 
 async fn google_callback_compat(
     state: State<AppState>,
-    query: Query<CallbackQuery>,
+    Query(mut params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    provider_callback(state, Path("google".to_string()), query, headers).await
+    // Handle old state format "login:<nonce>" from in-flight sessions
+    // started before this deployment. Convert to new format "login:google:<nonce>".
+    if params.state.starts_with("login:") {
+        let parts: Vec<&str> = params.state.splitn(3, ':').collect();
+        if parts.len() == 2 {
+            params.state = format!("login:google:{}", parts[1]);
+        }
+    }
+    provider_callback(state, Path("google".to_string()), Query(params), headers).await
 }
 
 // ---------------------------------------------------------------------------
@@ -640,9 +648,12 @@ async fn find_or_provision_user(
         "picture": userinfo.picture,
     });
 
-    // Check if any org has this email domain configured
+    // Check if any org has this email domain configured for the same provider
     let domain_matches = org_idp_config::find_by_email_domain(&state.db, &email_domain).await?;
-    if let Some(matched_config) = domain_matches.first() {
+    let matched_config = domain_matches
+        .iter()
+        .find(|c| c.provider_key == userinfo.provider_key);
+    if let Some(matched_config) = matched_config {
         // Provision user in the matched org
         match identity::create_with_email(
             &state.db,
