@@ -92,6 +92,19 @@ async fn update_org_me(
     ip: ClientIp,
     Json(req): Json<UpdateOrgRequest>,
 ) -> Result<Json<OrgResponse>> {
+    // Only org-level keys (no identity) or user-kind identities may update org settings.
+    // Identity-bound agent/sub_agent keys are rejected.
+    if let Some(identity_id) = auth.identity_id {
+        let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        if identity.kind != "user" {
+            return Err(AppError::Forbidden(
+                "only users or org-level keys can update org settings".into(),
+            ));
+        }
+    }
+
     let org = overslash_db::repos::org::update(
         &state.db,
         auth.org_id,
