@@ -1,5 +1,7 @@
 //! Integration tests: full API flows against real Postgres + in-process mock target.
 
+mod common;
+
 use std::net::SocketAddr;
 
 use std::sync::Arc;
@@ -244,8 +246,9 @@ fn auth(key: &str) -> (&'static str, String) {
 // Tests
 // ============================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_health(pool: PgPool) {
+#[tokio::test]
+async fn test_health() {
+    let pool = common::test_pool().await;
     let (api_addr, client) = start_api(pool).await;
     let resp: Value = client
         .get(format!("http://{api_addr}/health"))
@@ -258,8 +261,9 @@ async fn test_health(pool: PgPool) {
     assert_eq!(resp["status"], "ok");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_happy_path_execute_with_permission(pool: PgPool) {
+#[tokio::test]
+async fn test_happy_path_execute_with_permission() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, ident_id) = setup(pool).await;
     let client = Client::new();
@@ -309,8 +313,9 @@ async fn test_happy_path_execute_with_permission(pool: PgPool) {
     assert_eq!(echo_body["headers"]["x-token"], "tok_secret-value-123");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approval_flow(pool: PgPool) {
+#[tokio::test]
+async fn test_approval_flow() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -355,8 +360,9 @@ async fn test_approval_flow(pool: PgPool) {
     assert_eq!(resolved["status"], "allowed");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_allow_remember_creates_rule(pool: PgPool) {
+#[tokio::test]
+async fn test_allow_remember_creates_rule() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -412,8 +418,9 @@ async fn test_allow_remember_creates_rule(pool: PgPool) {
     assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_resolve_rejects_invalid_remember_keys(pool: PgPool) {
+#[tokio::test]
+async fn test_resolve_rejects_invalid_remember_keys() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -457,8 +464,9 @@ async fn test_resolve_rejects_invalid_remember_keys(pool: PgPool) {
     assert_eq!(resp.status(), 400);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_resolve_rejects_invalid_ttl(pool: PgPool) {
+#[tokio::test]
+async fn test_resolve_rejects_invalid_ttl() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -502,8 +510,9 @@ async fn test_resolve_rejects_invalid_ttl(pool: PgPool) {
     assert_eq!(resp.status(), 400);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_secret_versioning(pool: PgPool) {
+#[tokio::test]
+async fn test_secret_versioning() {
+    let pool = common::test_pool().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
 
@@ -546,8 +555,9 @@ async fn test_secret_versioning(pool: PgPool) {
     assert_eq!(r["current_version"], 2);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_deny_keeps_gating(pool: PgPool) {
+#[tokio::test]
+async fn test_deny_keeps_gating() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -601,8 +611,9 @@ async fn test_deny_keeps_gating(pool: PgPool) {
     assert_eq!(resp.status(), 202);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_unauthenticated_request_no_gate(pool: PgPool) {
+#[tokio::test]
+async fn test_unauthenticated_request_no_gate() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -624,8 +635,9 @@ async fn test_unauthenticated_request_no_gate(pool: PgPool) {
     assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_audit_trail(pool: PgPool) {
+#[tokio::test]
+async fn test_audit_trail() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, ident_id) = setup(pool).await;
     let client = Client::new();
@@ -662,8 +674,9 @@ async fn test_audit_trail(pool: PgPool) {
     assert!(entries.iter().any(|e| e["action"] == "action.executed"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_mode_c_service_action(pool: PgPool) {
+#[tokio::test]
+async fn test_mode_c_service_action() {
+    let pool = common::test_pool().await;
     // This test uses a mock that happens to match a custom "service" definition.
     // We test Mode C by pointing the service host at our mock target.
     let mock_addr = start_mock().await;
@@ -704,8 +717,9 @@ async fn test_mode_c_service_action(pool: PgPool) {
     assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_service_registry_api(pool: PgPool) {
+#[tokio::test]
+async fn test_service_registry_api() {
+    let pool = common::test_pool().await;
     // Start API with real service registry loaded
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
@@ -837,8 +851,9 @@ async fn test_service_registry_api(pool: PgPool) {
 // Webhook Tests
 // ============================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_webhook_dispatch_on_approval_resolve(pool: PgPool) {
+#[tokio::test]
+async fn test_webhook_dispatch_on_approval_resolve() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -927,8 +942,9 @@ async fn test_webhook_dispatch_on_approval_resolve(pool: PgPool) {
 // OAuth Tests
 // ============================================================================
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_callback_exchanges_code_and_stores_connection() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
 
     // Set env vars for OAuth client credentials (the callback route reads these)
@@ -1040,8 +1056,9 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection(pool: PgPool) 
     assert_eq!(conns[0]["provider_key"], "github");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_resolve_access_token_refreshes_when_expired(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_resolve_access_token_refreshes_when_expired() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
 
     // Point github provider at mock token endpoint
@@ -1114,8 +1131,9 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired(pool: PgPool) {
     assert!(updated_conn.token_expires_at.unwrap() > time::OffsetDateTime::now_utc());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_resolve_access_token_returns_valid_without_refresh(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
+    let pool = common::test_pool().await;
     let enc_key_hex = "ab".repeat(32);
     let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
 
@@ -1233,8 +1251,9 @@ async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, Str
 
 // --- Test 1: BYOC CRUD API ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_byoc_credential_crud(pool: PgPool) {
+#[tokio::test]
+async fn test_byoc_credential_crud() {
+    let pool = common::test_pool().await;
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
@@ -1335,8 +1354,9 @@ async fn test_byoc_credential_crud(pool: PgPool) {
 
 // --- Test 2: Org-level BYOC credential used in OAuth callback ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_callback_with_org_byoc_credential(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_callback_with_org_byoc_credential() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
 
     sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
@@ -1397,8 +1417,9 @@ async fn test_oauth_callback_with_org_byoc_credential(pool: PgPool) {
 
 // --- Test 3: Identity-level BYOC takes priority over org-level ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_callback_identity_byoc_takes_priority(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_callback_identity_byoc_takes_priority() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
 
     sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
@@ -1472,8 +1493,9 @@ async fn test_oauth_callback_identity_byoc_takes_priority(pool: PgPool) {
 
 // --- Test 4: Pinned BYOC credential via state parameter ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_callback_pinned_byoc_credential(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_callback_pinned_byoc_credential() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
 
     sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'github'")
@@ -1533,8 +1555,9 @@ async fn test_oauth_callback_pinned_byoc_credential(pool: PgPool) {
 // --- Test 5: No BYOC credentials and no env vars → error ---
 // Uses "spotify" provider which has no env vars set (only github has them in tests)
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_callback_fails_without_credentials(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_callback_fails_without_credentials() {
+    let pool = common::test_pool().await;
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (org_id, ident_id, _api_key) = bootstrap_org_identity(&base, &client).await;
@@ -1634,8 +1657,9 @@ async fn start_api_with_registry(
     (format!("http://{addr}"), Client::new())
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_google_calendar_three_modes(pool: PgPool) {
+#[tokio::test]
+async fn test_google_calendar_three_modes() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let mock_host = format!("http://{mock_addr}");
 
@@ -1865,8 +1889,9 @@ async fn test_google_calendar_three_modes(pool: PgPool) {
 // ============================================================================
 
 #[ignore] // Write test: creates/deletes real calendar events. Run with --ignored.
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_google_calendar_real_byoc(pool: PgPool) {
+#[tokio::test]
+async fn test_google_calendar_real_byoc() {
+    let pool = common::test_pool().await;
     // Skip if required env vars are not set
     let refresh_token = match std::env::var("GOOGLE_TEST_REFRESH_TOKEN") {
         Ok(t) if !t.is_empty() => t,
@@ -2173,8 +2198,9 @@ async fn test_google_calendar_real_byoc(pool: PgPool) {
 // ============================================================================
 
 #[ignore] // Write test: sends real email via Resend. Run with --ignored.
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_e2e_resend_send_email(pool: PgPool) {
+#[tokio::test]
+async fn test_e2e_resend_send_email() {
+    let pool = common::test_pool().await;
     let resend_api_key = match std::env::var("RESEND_API_KEY") {
         Ok(k) if !k.is_empty() => k,
         _ => {
@@ -2244,8 +2270,9 @@ async fn test_e2e_resend_send_email(pool: PgPool) {
 
 // ── derived_keys / suggested_tiers tests ──────────────────────────────
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approval_response_includes_derived_keys_and_tiers(pool: PgPool) {
+#[tokio::test]
+async fn test_approval_response_includes_derived_keys_and_tiers() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -2315,8 +2342,9 @@ async fn test_approval_response_includes_derived_keys_and_tiers(pool: PgPool) {
     assert!(approval["permission_keys"].is_array());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_resolve_with_broader_remember_keys_succeeds(pool: PgPool) {
+#[tokio::test]
+async fn test_resolve_with_broader_remember_keys_succeeds() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();
@@ -2391,8 +2419,9 @@ async fn test_resolve_with_broader_remember_keys_succeeds(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_resolve_with_unrelated_broader_keys_still_fails(pool: PgPool) {
+#[tokio::test]
+async fn test_resolve_with_unrelated_broader_keys_still_fails() {
+    let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id) = setup(pool).await;
     let client = Client::new();

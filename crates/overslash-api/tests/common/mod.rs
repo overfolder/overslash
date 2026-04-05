@@ -9,7 +9,102 @@ use reqwest::Client;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
+
+/// Lazily-created template database name. Migrations run once; each test clones it.
+static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
+
+/// Returns a fresh `PgPool` backed by a clone of the migrated template database.
+///
+/// On first call, creates a template DB and runs all migrations (~500ms).
+/// Subsequent calls clone the template (~80ms) instead of re-migrating (~500ms each).
+/// Stale test databases from previous runs are cleaned up during template init.
+pub async fn test_pool() -> PgPool {
+    let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    // Create the template database exactly once (async-safe).
+    let template_name = TEMPLATE_DB
+        .get_or_init(|| async {
+            let template = "overslash_test_template";
+            let admin_pool = PgPool::connect(&base_url).await.unwrap();
+
+            // Clean up stale test databases from previous runs.
+            // Only drop databases with zero active connections to avoid
+            // interfering with parallel test binaries.
+            let stale_dbs: Vec<(String,)> = sqlx::query_as(
+                "SELECT datname FROM pg_database d \
+                 WHERE datname LIKE 'test_%' \
+                 AND NOT EXISTS ( \
+                     SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname \
+                 )"
+            )
+            .fetch_all(&admin_pool)
+            .await
+            .unwrap_or_default();
+            for (db_name,) in &stale_dbs {
+                sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\""))
+                    .execute(&admin_pool)
+                    .await
+                    .ok();
+            }
+
+            // Terminate existing connections to the template DB so we can drop it
+            sqlx::query(&format!(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{template}'"
+            ))
+            .execute(&admin_pool)
+            .await
+            .ok();
+
+            sqlx::query(&format!("DROP DATABASE IF EXISTS {template}"))
+                .execute(&admin_pool)
+                .await
+                .unwrap();
+            sqlx::query(&format!("CREATE DATABASE {template}"))
+                .execute(&admin_pool)
+                .await
+                .unwrap();
+
+            // Connect to template DB and run all migrations
+            let tpl_url = replace_db_name(&base_url, template);
+            let tpl_pool = PgPool::connect(&tpl_url).await.unwrap();
+            overslash_db::MIGRATOR.run(&tpl_pool).await.unwrap();
+            tpl_pool.close().await;
+
+            admin_pool.close().await;
+            template.to_string()
+        })
+        .await;
+
+    // Clone template for this test
+    let test_db = format!("test_{}", Uuid::new_v4().simple());
+    let admin_pool = PgPool::connect(&base_url).await.unwrap();
+    sqlx::query(&format!(
+        "CREATE DATABASE {test_db} TEMPLATE {template_name}"
+    ))
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    admin_pool.close().await;
+
+    let test_url = replace_db_name(&base_url, &test_db);
+    PgPool::connect(&test_url).await.unwrap()
+}
+
+/// Replace the database name in a Postgres URL.
+/// Handles both `postgres://user:pass@host:port/dbname` and with query params.
+fn replace_db_name(url: &str, new_db: &str) -> String {
+    // Find the last '/' before any '?' query string
+    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    let last_slash = base.rfind('/').expect("invalid DATABASE_URL: no /");
+    let mut result = format!("{}/{}", &base[..last_slash], new_db);
+    if !query.is_empty() {
+        result.push('?');
+        result.push_str(query);
+    }
+    result
+}
 
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {

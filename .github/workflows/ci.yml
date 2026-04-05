@@ -8,10 +8,34 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
-  check:
-    name: Check
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Ban sqlx::test (use common::test_pool instead)
+        run: |
+          if grep -rn 'sqlx::test' crates/*/tests/; then
+            echo "::error::Found sqlx::test usage. Use #[tokio::test] + common::test_pool() instead."
+            exit 1
+          fi
+
+  sqlx-check:
+    name: SQLx Verify
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -27,25 +51,25 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     env:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
-
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v4
         with:
-          components: rustfmt, clippy, llvm-tools-preview
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+          path: |
+            ~/.cargo/bin/sqlx
+            ~/.cargo/bin/cargo-sqlx
+          key: sqlx-cli-${{ runner.os }}-0.8
 
       - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
         run: cargo install sqlx-cli --no-default-features --features postgres --locked
 
       - name: Run migrations
@@ -54,11 +78,52 @@ jobs:
       - name: Verify sqlx offline cache
         run: cargo sqlx prepare --workspace --check
 
-      - name: Format check
-        run: cargo fmt --check
+  test:
+    name: Test + Coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: overslash
+          POSTGRES_PASSWORD: overslash
+          POSTGRES_DB: overslash
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+      - name: Cache sqlx-cli
+        id: cache-sqlx
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/sqlx
+            ~/.cargo/bin/cargo-sqlx
+          key: sqlx-cli-${{ runner.os }}-0.8
+
+      - name: Install sqlx-cli
+        if: steps.cache-sqlx.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+
+      - name: Run migrations
+        run: cargo sqlx migrate run --source crates/overslash-db/migrations
 
       - name: Tests with coverage
         run: cargo llvm-cov clean --workspace && cargo llvm-cov --workspace --lcov --output-path lcov.info
@@ -68,12 +133,12 @@ jobs:
           # Run manually with: cargo test -- --ignored
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: overfolder/overslash
           fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Coverage summary
         run: cargo llvm-cov --workspace --summary-only --no-run

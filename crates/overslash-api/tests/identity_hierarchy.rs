@@ -3,10 +3,10 @@
 mod common;
 
 use serde_json::{Value, json};
-use sqlx::PgPool;
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_user_identity(pool: PgPool) {
+#[tokio::test]
+async fn test_create_user_identity() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -52,8 +52,9 @@ async fn test_create_user_identity(pool: PgPool) {
     assert_eq!(user["inherit_permissions"], false);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_agent_with_user_parent(pool: PgPool) {
+#[tokio::test]
+async fn test_create_agent_with_user_parent() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -109,8 +110,9 @@ async fn test_create_agent_with_user_parent(pool: PgPool) {
     assert_eq!(agent["owner_id"], user_id);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_agent_without_parent_fails(pool: PgPool) {
+#[tokio::test]
+async fn test_create_agent_without_parent_fails() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -147,8 +149,9 @@ async fn test_create_agent_without_parent_fails(pool: PgPool) {
     assert_eq!(resp.status(), 400);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_agent_with_nonexistent_parent_fails(pool: PgPool) {
+#[tokio::test]
+async fn test_create_agent_with_nonexistent_parent_fails() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -185,8 +188,9 @@ async fn test_create_agent_with_nonexistent_parent_fails(pool: PgPool) {
     assert_eq!(resp.status(), 404);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_agent_with_agent_parent_fails(pool: PgPool) {
+#[tokio::test]
+async fn test_create_agent_with_agent_parent_fails() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -248,8 +252,9 @@ async fn test_create_agent_with_agent_parent_fails(pool: PgPool) {
     assert_eq!(resp.status(), 400);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_sub_agent(pool: PgPool) {
+#[tokio::test]
+async fn test_create_sub_agent() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -317,8 +322,9 @@ async fn test_create_sub_agent(pool: PgPool) {
     assert_eq!(sub["owner_id"], user_id); // owner propagates from agent
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_sub_agent_with_user_parent_fails(pool: PgPool) {
+#[tokio::test]
+async fn test_create_sub_agent_with_user_parent_fails() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -367,8 +373,9 @@ async fn test_create_sub_agent_with_user_parent_fails(pool: PgPool) {
     assert_eq!(resp.status(), 400);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_user_with_parent_fails(pool: PgPool) {
+#[tokio::test]
+async fn test_create_user_with_parent_fails() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -417,8 +424,9 @@ async fn test_create_user_with_parent_fails(pool: PgPool) {
     assert_eq!(resp.status(), 400);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_ancestor_chain(pool: PgPool) {
+#[tokio::test]
+async fn test_ancestor_chain() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -500,8 +508,9 @@ async fn test_ancestor_chain(pool: PgPool) {
     assert_eq!(chain[2]["depth"], 2);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_list_children(pool: PgPool) {
+#[tokio::test]
+async fn test_list_children() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 
@@ -576,8 +585,9 @@ async fn test_list_children(pool: PgPool) {
     assert!(children.iter().all(|c| c["kind"] == "agent"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_delete_parent_cascades_children(pool: PgPool) {
+#[tokio::test]
+async fn test_delete_parent_cascades_children() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{base}");
 
@@ -658,8 +668,9 @@ async fn test_delete_parent_cascades_children(pool: PgPool) {
     assert_eq!(all[0]["kind"], "user");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_nested_sub_agents(pool: PgPool) {
+#[tokio::test]
+async fn test_nested_sub_agents() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
 

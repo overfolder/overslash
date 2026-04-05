@@ -4,13 +4,13 @@
 mod common;
 
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 // --- Test 1: Callback exchanges code and stores connection ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_x_callback_stores_connection(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_x_callback_stores_connection() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
     unsafe {
@@ -62,8 +62,9 @@ async fn test_oauth_x_callback_stores_connection(pool: PgPool) {
 
 // --- Test 2: Callback with BYOC credential ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_x_callback_with_byoc(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_x_callback_with_byoc() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
     sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'x'")
@@ -123,8 +124,9 @@ async fn test_oauth_x_callback_with_byoc(pool: PgPool) {
 
 // --- Test 3: Token refresh for expired X connection ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_x_token_refresh(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_x_token_refresh() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
     sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'x'")
@@ -191,8 +193,9 @@ async fn test_oauth_x_token_refresh(pool: PgPool) {
 
 // --- Test 4: PKCE parameters in auth URL ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_x_pkce_in_auth_url(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_x_pkce_in_auth_url() {
+    let pool = common::test_pool().await;
     unsafe {
         std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
         std::env::set_var("OAUTH_X_CLIENT_ID", "x_pkce_client");
@@ -243,8 +246,9 @@ async fn test_oauth_x_pkce_in_auth_url(pool: PgPool) {
 // ============================================================================
 
 #[ignore] // Write test: posts/deletes real tweet on X.com. Run with --ignored.
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_x_real_post_and_delete(pool: PgPool) {
+#[tokio::test]
+async fn test_x_real_post_and_delete() {
+    let pool = common::test_pool().await;
     // Skip if required env vars are not set
     let refresh_token = match std::env::var("X_TEST_REFRESH_TOKEN") {
         Ok(t) if !t.is_empty() => t,
@@ -413,8 +417,9 @@ async fn test_x_real_post_and_delete(pool: PgPool) {
 
 // --- Test 5: Non-PKCE provider (github) auth URL has no PKCE params ---
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_oauth_github_no_pkce_in_auth_url(pool: PgPool) {
+#[tokio::test]
+async fn test_oauth_github_no_pkce_in_auth_url() {
+    let pool = common::test_pool().await;
     unsafe {
         std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
         std::env::set_var("OAUTH_GITHUB_CLIENT_ID", "gh_client");

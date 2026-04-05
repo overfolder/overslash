@@ -3,7 +3,6 @@
 mod common;
 
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 // ─── Helpers ───────────────────────────────────────────────────────────
@@ -91,8 +90,9 @@ async fn create_token(
 
 // ─── Flow 1: Enrollment Token Tests ────────────────────────────────────
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_create_enrollment_token(pool: PgPool) {
+#[tokio::test]
+async fn test_create_enrollment_token() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -105,8 +105,9 @@ async fn test_create_enrollment_token(pool: PgPool) {
     assert!(body["expires_at"].is_string());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enroll_with_valid_token(pool: PgPool) {
+#[tokio::test]
+async fn test_enroll_with_valid_token() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -143,8 +144,9 @@ async fn test_enroll_with_valid_token(pool: PgPool) {
     assert_eq!(identities_resp.status(), 200);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enroll_token_single_use(pool: PgPool) {
+#[tokio::test]
+async fn test_enroll_token_single_use() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -171,8 +173,9 @@ async fn test_enroll_token_single_use(pool: PgPool) {
     assert!(resp2.status() == 401 || resp2.status() == 409);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enroll_token_expired(pool: PgPool) {
+#[tokio::test]
+async fn test_enroll_token_expired() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -202,8 +205,9 @@ async fn test_enroll_token_expired(pool: PgPool) {
     assert_eq!(resp.status(), 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enroll_token_invalid(pool: PgPool) {
+#[tokio::test]
+async fn test_enroll_token_invalid() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
 
@@ -216,8 +220,9 @@ async fn test_enroll_token_invalid(pool: PgPool) {
     assert_eq!(resp.status(), 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_list_and_revoke_enrollment_tokens(pool: PgPool) {
+#[tokio::test]
+async fn test_list_and_revoke_enrollment_tokens() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -261,8 +266,9 @@ async fn test_list_and_revoke_enrollment_tokens(pool: PgPool) {
     assert_eq!(list.len(), 1);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enrollment_token_requires_auth(pool: PgPool) {
+#[tokio::test]
+async fn test_enrollment_token_requires_auth() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
 
@@ -275,8 +281,9 @@ async fn test_enrollment_token_requires_auth(pool: PgPool) {
     assert_eq!(resp.status(), 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enrollment_token_rejects_user_identity(pool: PgPool) {
+#[tokio::test]
+async fn test_enrollment_token_rejects_user_identity() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, _agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -307,8 +314,9 @@ async fn test_enrollment_token_rejects_user_identity(pool: PgPool) {
 
 // ─── Flow 2: Agent-Initiated Enrollment Tests ──────────────────────────
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_initiate_enrollment(pool: PgPool) {
+#[tokio::test]
+async fn test_initiate_enrollment() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp: Value = client
@@ -332,8 +340,9 @@ async fn test_initiate_enrollment(pool: PgPool) {
     assert!(resp["expires_at"].is_string());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_poll_pending(pool: PgPool) {
+#[tokio::test]
+async fn test_poll_pending() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let init: Value = client
@@ -360,8 +369,9 @@ async fn test_poll_pending(pool: PgPool) {
     assert_eq!(status["status"], "pending");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approve_enrollment(pool: PgPool) {
+#[tokio::test]
+async fn test_approve_enrollment() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     // Agent initiates
@@ -420,8 +430,9 @@ async fn test_approve_enrollment(pool: PgPool) {
     assert_eq!(identities_resp.status(), 200);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approve_with_name_override(pool: PgPool) {
+#[tokio::test]
+async fn test_approve_with_name_override() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let init: Value = client
@@ -477,8 +488,9 @@ async fn test_approve_with_name_override(pool: PgPool) {
     assert_eq!(agent["name"], "renamed-claw");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approve_keeps_suggested_name(pool: PgPool) {
+#[tokio::test]
+async fn test_approve_keeps_suggested_name() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let init: Value = client
@@ -532,8 +544,9 @@ async fn test_approve_keeps_suggested_name(pool: PgPool) {
     assert_eq!(agent["name"], "keep-this-name");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_deny_enrollment(pool: PgPool) {
+#[tokio::test]
+async fn test_deny_enrollment() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let init: Value = client
@@ -576,8 +589,9 @@ async fn test_deny_enrollment(pool: PgPool) {
     assert!(status.get("api_key").is_none() || status["api_key"].is_null());
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_poll_invalid_token(pool: PgPool) {
+#[tokio::test]
+async fn test_poll_invalid_token() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let resp = client
@@ -591,8 +605,9 @@ async fn test_poll_invalid_token(pool: PgPool) {
     assert!(resp.status() == 404 || resp.status() == 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approve_requires_session(pool: PgPool) {
+#[tokio::test]
+async fn test_approve_requires_session() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let init: Value = client
@@ -617,8 +632,9 @@ async fn test_approve_requires_session(pool: PgPool) {
     assert_eq!(resp.status(), 401);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_approve_sets_org_from_session(pool: PgPool) {
+#[tokio::test]
+async fn test_approve_sets_org_from_session() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     // Dev token creates user in "Dev Org"
@@ -669,8 +685,9 @@ async fn test_approve_sets_org_from_session(pool: PgPool) {
 
 // ─── Dual Auth Tests ───────────────────────────────────────────────────
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_token_crud_with_api_key(pool: PgPool) {
+#[tokio::test]
+async fn test_token_crud_with_api_key() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -698,8 +715,9 @@ async fn test_token_crud_with_api_key(pool: PgPool) {
     assert_eq!(list.len(), 1);
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_token_crud_with_session(pool: PgPool) {
+#[tokio::test]
+async fn test_token_crud_with_session() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let session = dev_session_token(&base, &client).await;
@@ -777,8 +795,9 @@ async fn test_token_crud_with_session(pool: PgPool) {
 
 // ─── Audit Trail Tests ─────────────────────────────────────────────────
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_enrollment_token_audit(pool: PgPool) {
+#[tokio::test]
+async fn test_enrollment_token_audit() {
+    let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let (_org_id, agent_id, api_key) = setup_org_with_agent(&base, &client).await;
@@ -810,8 +829,9 @@ async fn test_enrollment_token_audit(pool: PgPool) {
     assert!(events.contains(&"enrollment.completed"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_agent_initiated_audit(pool: PgPool) {
+#[tokio::test]
+async fn test_agent_initiated_audit() {
+    let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
 
     let init: Value = client

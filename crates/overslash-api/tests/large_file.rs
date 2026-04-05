@@ -3,10 +3,10 @@
 mod common;
 
 use serde_json::json;
-use sqlx::PgPool;
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_response_too_large(pool: PgPool) {
+#[tokio::test]
+async fn test_response_too_large() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
     // Use a small body limit (1 KB) so we can test without allocating huge buffers
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
@@ -37,8 +37,9 @@ async fn test_response_too_large(pool: PgPool) {
     assert!(body["hint"].as_str().unwrap().contains("prefer_stream"));
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_prefer_stream_large_file(pool: PgPool) {
+#[tokio::test]
+async fn test_prefer_stream_large_file() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
     // Use a small body limit — streaming should bypass it
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
@@ -70,8 +71,9 @@ async fn test_prefer_stream_large_file(pool: PgPool) {
     assert!(bytes.iter().all(|&b| b == 0xAB), "all bytes should be 0xAB");
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_prefer_stream_with_auth(pool: PgPool) {
+#[tokio::test]
+async fn test_prefer_stream_with_auth() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");
@@ -130,8 +132,9 @@ async fn test_prefer_stream_with_auth(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_google_drive_redirect_stream(pool: PgPool) {
+#[tokio::test]
+async fn test_google_drive_redirect_stream() {
+    let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");

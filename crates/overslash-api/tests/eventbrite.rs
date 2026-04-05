@@ -9,12 +9,12 @@
 mod common;
 
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use uuid::Uuid;
 
 #[ignore] // E2E test: hits real Eventbrite API. Run with --ignored.
-#[sqlx::test(migrator = "overslash_db::MIGRATOR")]
-async fn test_eventbrite_e2e(pool: PgPool) {
+#[tokio::test]
+async fn test_eventbrite_e2e() {
+    let pool = common::test_pool().await;
     // --- Guard: skip if credentials not set ---
     let access_token = match std::env::var("OAUTH_EVENTBRITE_PRIVATE_TOKEN") {
         Ok(t) if !t.is_empty() => t,
