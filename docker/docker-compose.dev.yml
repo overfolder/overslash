@@ -27,8 +27,6 @@ services:
       HOST: 0.0.0.0
       RUSTUP_TOOLCHAIN: stable
       SQLX_OFFLINE: "true"
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     ports:
       - "3000:3000"
     volumes:
@@ -38,7 +36,6 @@ services:
       - ../tests/mock-target/src:/app/tests/mock-target/src:ro
       - ../services:/app/services:ro
       - cargo-cache:/usr/local/cargo/registry
-      - target-cache:/app/target
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,5 +58,4 @@ services:
 volumes:
   pgdata:
   cargo-cache:
-  target-cache:
   dashboard-node-modules:
