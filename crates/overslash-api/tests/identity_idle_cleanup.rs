@@ -69,6 +69,32 @@ async fn setup_hierarchy(
     (org_id, api_key, agent_id)
 }
 
+/// Create an api key bound to an identity, authenticated with the org admin key.
+/// (Master gated key creation behind ACL admin in the org-acl PR.)
+async fn make_sub_key(
+    client: &reqwest::Client,
+    base: &str,
+    admin_key: &str,
+    org_id: &str,
+    identity_id: Uuid,
+    name: &str,
+) -> Value {
+    client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "org_id": org_id,
+            "identity_id": identity_id,
+            "name": name,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
 async fn make_subagent(
     client: &reqwest::Client,
     base: &str,
@@ -129,15 +155,7 @@ async fn test_authenticated_request_touches_last_active_at() {
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
     // Mint a key bound to the sub-agent
-    let sub_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "sub-key"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "sub-key").await;
     let sub_key_str = sub_key["key"].as_str().unwrap().to_string();
 
     // Push last_active_at into the past so we can detect a fresh touch
@@ -217,15 +235,7 @@ async fn test_archive_revokes_api_keys_and_expires_approvals() {
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
     // Mint API key
-    let sub_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "k"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
     let key_prefix = sub_key["key_prefix"].as_str().unwrap().to_string();
 
     // Create a pending approval bound to the sub-agent
@@ -294,15 +304,7 @@ async fn test_archived_identity_auth_rejected_with_403() {
     let sub = make_subagent(&client, &base, &admin_key, &agent_id, "doomed").await;
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
-    let sub_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "k"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
     let sub_key_str = sub_key["key"].as_str().unwrap().to_string();
 
     // Force idle and run the actual archive pass — this is the realistic path.
@@ -498,15 +500,7 @@ async fn test_purged_identity_orphan_key_does_not_authenticate() {
     let sub = make_subagent(&client, &base, &admin_key, &agent_id, "doomed").await;
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
-    let sub_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "k"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
     let key_str = sub_key["key"].as_str().unwrap().to_string();
 
     // Archive then purge (force retention to 0 days via tiny interval)
@@ -569,15 +563,7 @@ async fn test_archived_identity_takes_precedence_over_key_expiry() {
     let sub = make_subagent(&client, &base, &admin_key, &agent_id, "doomed").await;
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
-    let sub_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "k"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
     let key_id: Uuid = sub_key["id"].as_str().unwrap().parse().unwrap();
     let key_str = sub_key["key"].as_str().unwrap().to_string();
 
@@ -622,15 +608,7 @@ async fn test_manually_revoked_key_returns_401_not_403() {
     let sub = make_subagent(&client, &base, &admin_key, &agent_id, "alive").await;
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
-    let sub_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "k"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
     let key_id: Uuid = sub_key["id"].as_str().unwrap().parse().unwrap();
     let key_str = sub_key["key"].as_str().unwrap().to_string();
 
@@ -735,27 +713,11 @@ async fn test_restore_resurrects_api_keys_but_not_manual_revokes() {
     let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
 
     // Auto-revoked key
-    let auto_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "auto"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let auto_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "auto").await;
     let auto_prefix = auto_key["key_prefix"].as_str().unwrap().to_string();
 
     // Manually-revoked key (should NOT be resurrected)
-    let manual_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "manual"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let manual_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "manual").await;
     let manual_id: Uuid = manual_key["id"].as_str().unwrap().parse().unwrap();
     let manual_prefix = manual_key["key_prefix"].as_str().unwrap().to_string();
     overslash_db::repos::api_key::revoke(&pool, manual_id)
