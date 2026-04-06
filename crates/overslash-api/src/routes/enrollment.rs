@@ -369,18 +369,21 @@ async fn get_enrollment_approval(
         .await?
         .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
 
-    if row.status != "pending" {
+    // Check expiration before status: a row may have already been marked
+    // 'expired' by the cleanup job, and an unmarked-but-time-expired row
+    // should also surface as 410 GONE rather than the generic resolved body.
+    if row.status == "expired" || row.expires_at < time::OffsetDateTime::now_utc() {
         return Ok((
-            StatusCode::OK,
-            Json(json!({ "status": row.status, "message": "enrollment already resolved" })),
+            StatusCode::GONE,
+            Json(json!({ "status": "expired", "message": "enrollment has expired" })),
         )
             .into_response());
     }
 
-    if row.expires_at < time::OffsetDateTime::now_utc() {
+    if row.status != "pending" {
         return Ok((
-            StatusCode::GONE,
-            Json(json!({ "status": "expired", "message": "enrollment has expired" })),
+            StatusCode::OK,
+            Json(json!({ "status": row.status, "message": "enrollment already resolved" })),
         )
             .into_response());
     }
