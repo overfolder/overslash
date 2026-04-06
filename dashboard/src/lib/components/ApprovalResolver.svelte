@@ -66,7 +66,7 @@
 		return diff < 0 ? `${unit} ago` : `in ${unit}`;
 	}
 
-	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember') {
+	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {
 		submitting = true;
 		error = null;
 		try {
@@ -179,6 +179,14 @@
 				onclick={() => resolve('allow_remember')}
 			>
 				Allow &amp; Remember
+			</button>
+			<button
+				class="btn btn-bubble"
+				disabled={submitting}
+				title="Hand this approval off to the next ancestor in the chain"
+				onclick={() => resolve('bubble_up')}
+			>
+				Bubble up
 			</button>
 			<button class="btn btn-deny" disabled={submitting} onclick={() => resolve('deny')}>
 				Deny
@@ -332,6 +340,11 @@
 		background: #fff;
 		color: #d14343;
 		border-color: #d14343;
+	}
+	.btn-bubble {
+		background: #fff;
+		color: var(--color-text);
+		border-color: var(--color-border);
 	}
 	.banner {
 		padding: 0.75rem 1rem;
