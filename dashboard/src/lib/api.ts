@@ -28,7 +28,7 @@ async function request<T>(apiKey: string, method: string, path: string, body?: u
   });
   const text = await res.text();
   if (!res.ok) throw new ApiError(res.status, text);
-  return text ? JSON.parse(text) : undefined;
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export async function listServices(apiKey: string): Promise<ServiceSummary[]> {

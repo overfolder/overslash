@@ -72,4 +72,17 @@ if git diff --cached --name-only | grep -qE 'migrations/'; then
     fi
 fi
 
+# Dashboard checks (only if dashboard/ files are staged)
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '^dashboard/'; then
+    echo "  dashboard/ changes detected, running svelte-check"
+    if [ ! -d dashboard/node_modules ]; then
+        echo "ERROR: dashboard/node_modules missing. Run 'cd dashboard && npm install' first."
+        exit 1
+    fi
+    (cd dashboard && npm run check) || {
+        echo "ERROR: dashboard svelte-check failed."
+        exit 1
+    }
+fi
+
 echo "Pre-commit checks passed."
