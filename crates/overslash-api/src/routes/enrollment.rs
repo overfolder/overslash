@@ -404,11 +404,28 @@ async fn get_enrollment_approval(
 
     // Bind the enrollment to this viewer's org on first authenticated view.
     // After this, only sessions in the same org can see/resolve it; everyone
-    // else gets a 404. This prevents a leaked approval URL from being
-    // claimed by a user in an unintended org.
-    let row = pending_enrollment::claim_for_org(&state.db, row.id, session.org)
-        .await?
-        .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
+    // else gets a 404. If the row was resolved by a concurrent request
+    // between the read above and the claim, surface the new status instead
+    // of a misleading 404.
+    let row = match pending_enrollment::claim_for_org(&state.db, row.id, session.org).await? {
+        Some(r) => r,
+        None => {
+            let fresh = pending_enrollment::find_by_approval_token(&state.db, &approval_token)
+                .await?
+                .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
+            if fresh.status != "pending" {
+                return Ok((
+                    StatusCode::OK,
+                    Json(json!({
+                        "status": fresh.status,
+                        "message": "enrollment already resolved",
+                    })),
+                )
+                    .into_response());
+            }
+            return Err(AppError::NotFound("enrollment not found".into()));
+        }
+    };
 
     Ok((
         StatusCode::OK,
