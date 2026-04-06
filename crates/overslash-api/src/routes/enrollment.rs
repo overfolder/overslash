@@ -502,6 +502,16 @@ async fn resolve_enrollment(
                     })?
             };
 
+            // Refuse to graft a new agent onto an archived parent — it would
+            // be born into a disabled subtree and block the parent from being
+            // purged. Mirrors the check in POST /v1/identities::create_identity.
+            if parent.archived_at.is_some() {
+                return Err(AppError::BadRequest(
+                    "cannot enroll under an archived parent identity; restore the parent first"
+                        .into(),
+                ));
+            }
+
             // Owner inherits the parent's ownership chain: if the parent is a user,
             // the user IS the owner; otherwise the new agent shares the parent's owner_id.
             let owner_id = if parent.kind == "user" {
