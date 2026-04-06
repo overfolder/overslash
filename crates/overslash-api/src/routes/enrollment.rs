@@ -481,25 +481,31 @@ async fn resolve_enrollment(
         .await?
         .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
 
-    if row.status != "pending" {
-        return Err(AppError::Conflict("enrollment already resolved".into()));
+    // Check expiry first so an expired row surfaces with the dedicated
+    // 'expired' error instead of the generic 'already resolved' message.
+    if row.status == "expired" || row.expires_at < time::OffsetDateTime::now_utc() {
+        return Err(AppError::Gone("enrollment has expired".into()));
     }
 
-    if row.expires_at < time::OffsetDateTime::now_utc() {
-        return Err(AppError::Conflict("enrollment has expired".into()));
+    if row.status != "pending" {
+        return Err(AppError::Conflict("enrollment already resolved".into()));
     }
 
     // Atomically claim the enrollment for this caller's org. This succeeds if
     // the enrollment is unclaimed OR already claimed by the same org. If it
     // returns None we re-fetch to disambiguate: a concurrent resolve from
-    // another request that flipped status from 'pending' returns 409, while
-    // a different-org claim still returns 404 (don't reveal existence).
+    // another request flipping status returns the right code (410 expired
+    // vs 409 resolved), while a different-org claim still returns 404 (don't
+    // reveal existence).
     let row = match pending_enrollment::claim_for_org(&state.db, row.id, session.org).await? {
         Some(r) => r,
         None => {
             let fresh = pending_enrollment::find_by_approval_token(&state.db, &approval_token)
                 .await?
                 .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
+            if fresh.status == "expired" || fresh.expires_at < time::OffsetDateTime::now_utc() {
+                return Err(AppError::Gone("enrollment has expired".into()));
+            }
             if fresh.status != "pending" {
                 return Err(AppError::Conflict("enrollment already resolved".into()));
             }
