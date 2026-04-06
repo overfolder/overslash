@@ -42,9 +42,21 @@ async fn create_api_key(
         Some(acl) if acl.access_level >= AccessLevel::Admin => {} // authorized
         Some(_) => return Err(AppError::Forbidden("admin access required".into())),
         None => {
-            // No auth provided — allow only if this is the org's first API key (bootstrap)
-            let count = overslash_db::repos::api_key::count_by_org(&state.db, req.org_id).await?;
-            if count > 0 {
+            // No auth provided — allow only as a true bootstrap: no existing keys
+            // AND no existing identities for this org. Once any identity is created
+            // (e.g., via OAuth signup), the bootstrap window is closed and all
+            // future key creation must be authenticated.
+            let key_count =
+                overslash_db::repos::api_key::count_by_org(&state.db, req.org_id).await?;
+            let identity_count =
+                overslash_db::repos::identity::count_by_org(&state.db, req.org_id).await?;
+            if key_count > 0 || identity_count > 0 {
+                return Err(AppError::Unauthorized(
+                    "missing authorization header".into(),
+                ));
+            }
+            // Also reject identity-bound bootstrap keys — bootstrap is org-level only.
+            if req.identity_id.is_some() {
                 return Err(AppError::Unauthorized(
                     "missing authorization header".into(),
                 ));

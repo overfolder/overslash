@@ -258,22 +258,32 @@ impl FromRequestParts<AppState> for AdminAcl {
     }
 }
 
-/// Optional ACL extractor — returns `None` if no auth is present instead of rejecting.
-/// Used for endpoints that allow unauthenticated bootstrap but require ACL otherwise.
+/// Optional ACL extractor for endpoints that allow unauthenticated bootstrap.
+/// Returns `Ok(Some(acl))` if valid auth was provided, `Ok(None)` only when
+/// NO auth was provided at all, and `Err` if auth was provided but invalid.
+/// This prevents an attacker from bypassing auth by sending a bad token.
 #[derive(Debug, Clone)]
 pub struct OptionalOrgAcl(pub Option<OrgAcl>);
 
 impl FromRequestParts<AppState> for OptionalOrgAcl {
-    type Rejection = std::convert::Infallible;
+    type Rejection = AppError;
 
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        match OrgAcl::from_request_parts(parts, state).await {
-            Ok(acl) => Ok(OptionalOrgAcl(Some(acl))),
-            Err(_) => Ok(OptionalOrgAcl(None)),
+        // Check if any auth was provided (Authorization header OR session cookie)
+        let has_auth_header = parts.headers.get("authorization").is_some();
+        let has_session_cookie = extract_cookie(&parts.headers, "oss_session").is_some();
+
+        if !has_auth_header && !has_session_cookie {
+            // Truly unauthenticated — bootstrap path
+            return Ok(OptionalOrgAcl(None));
         }
+
+        // Auth was provided — require it to be valid
+        let acl = OrgAcl::from_request_parts(parts, state).await?;
+        Ok(OptionalOrgAcl(Some(acl)))
     }
 }
 

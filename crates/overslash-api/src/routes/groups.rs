@@ -185,6 +185,14 @@ async fn update_group(
     Json(req): Json<UpdateGroupRequest>,
 ) -> Result<Json<GroupResponse>> {
     let auth = acl;
+    // Prevent renaming or modifying system groups (Everyone, Admins).
+    // Renaming would break the new-user auto-join and last-admin protection
+    // which look up groups by name.
+    let existing = require_org_owned(group::get_by_id(&state.db, id).await?, auth.org_id, "group")?;
+    if existing.is_system {
+        return Err(AppError::BadRequest("cannot modify system group".into()));
+    }
+
     let row = group::update(
         &state.db,
         id,
@@ -381,11 +389,19 @@ async fn remove_grant(
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Verify group belongs to org
-    require_org_owned(
+    let grp = require_org_owned(
         group::get_by_id(&state.db, group_id).await?,
         auth.org_id,
         "group",
     )?;
+
+    // Prevent removing grants from system groups — would break ACL enforcement
+    // (e.g., removing the Admins → overslash grant locks out all admins)
+    if grp.is_system {
+        return Err(AppError::BadRequest(
+            "cannot remove grants from system groups".into(),
+        ));
+    }
 
     let deleted = group::remove_grant(&state.db, grant_id, group_id).await?;
 
