@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT i.archived_at,\n                  o.subagent_archive_retention_days\n           FROM identities i JOIN orgs o ON i.org_id = o.id\n           WHERE i.id = $1",
+  "query": "SELECT i.archived_at, i.parent_id,\n                  o.subagent_archive_retention_days\n           FROM identities i JOIN orgs o ON i.org_id = o.id\n           WHERE i.id = $1\n           FOR UPDATE OF i",
   "describe": {
     "columns": [
       {
@@ -10,6 +10,11 @@
       },
       {
         "ordinal": 1,
+        "name": "parent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
         "name": "subagent_archive_retention_days",
         "type_info": "Int4"
       }
@@ -21,8 +26,9 @@
     },
     "nullable": [
       true,
+      true,
       false
     ]
   },
-  "hash": "dc619455fb2202d2c8877805d703cf29984a587533cfd612e7e8ad779a719e05"
+  "hash": "843d817eb5cc70008e7e849217d9153f0611f19e6155f0fd60cfbff0092ad3b3"
 }

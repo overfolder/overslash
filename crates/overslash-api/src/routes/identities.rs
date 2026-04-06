@@ -259,26 +259,16 @@ async fn restore_identity(
     // Restore mints fresh state (un-archives identity, resurrects API keys),
     // so it requires write-level ACL on the overslash service — read-only
     // users must not be able to revive archived identities.
+    //
+    // Org-scope and kind checks happen here for clear error messages, but the
+    // parent-archived guard runs INSIDE the repo transaction (with FOR UPDATE
+    // row locks) to close the TOCTOU race against archive_idle_subagents.
     let existing = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
     let existing = crate::ownership::require_org_owned(existing, acl.org_id, "identity")?;
     if existing.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "only sub_agent identities can be restored".into(),
         ));
-    }
-    // If the parent is itself archived, restoring this child would create a
-    // live child under an archived parent, blocking the parent's purge forever.
-    // The user must restore the parent first.
-    if let Some(parent_id) = existing.parent_id {
-        if let Some(parent) = overslash_db::repos::identity::get_by_id(&state.db, parent_id).await?
-        {
-            if parent.archived_at.is_some() {
-                return Err(AppError::Conflict(
-                    "cannot restore identity while parent is archived; restore the parent first"
-                        .into(),
-                ));
-            }
-        }
     }
 
     match overslash_db::repos::identity::restore(&state.db, id).await? {
@@ -311,6 +301,9 @@ async fn restore_identity(
         RestoreOutcome::NotArchived => Err(AppError::BadRequest("identity is not archived".into())),
         RestoreOutcome::PastRetention => Err(AppError::Conflict(
             "identity is past its retention window and cannot be restored".into(),
+        )),
+        RestoreOutcome::ParentArchived => Err(AppError::Conflict(
+            "cannot restore identity while parent is archived; restore the parent first".into(),
         )),
         RestoreOutcome::NotFound => Err(AppError::NotFound("identity not found".into())),
     }

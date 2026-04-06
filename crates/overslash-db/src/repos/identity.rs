@@ -349,21 +349,33 @@ pub enum RestoreOutcome {
     /// Identity exists, was archived, but is past its retention window —
     /// either already purged or about to be. Cannot restore.
     PastRetention,
+    /// The identity's parent is itself archived. Restoring would create a live
+    /// child under an archived parent and block the parent's purge forever.
+    ParentArchived,
     /// Identity does not exist (or wrong org).
     NotFound,
 }
 
 /// Restore an archived sub-agent and resurrect its auto-revoked API keys.
-/// Only works if the identity is still within the org's retention window.
+/// Only works if the identity is still within the org's retention window AND
+/// its parent is not itself archived.
+///
+/// All checks happen inside a single transaction with `FOR UPDATE` row locks
+/// on the identity AND its parent (if any), so:
+///   - a concurrent purge can't delete the row mid-restore, and
+///   - a concurrent archive can't archive the parent between our check and
+///     our UPDATE (TOCTOU race).
 pub async fn restore(pool: &PgPool, id: Uuid) -> Result<RestoreOutcome, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
-    // Look up the identity + its org's retention window in a single read
+    // Lock the identity row + read its retention window. FOR UPDATE prevents
+    // a concurrent purge from deleting it while we decide.
     let row = sqlx::query!(
-        r#"SELECT i.archived_at,
+        r#"SELECT i.archived_at, i.parent_id,
                   o.subagent_archive_retention_days
            FROM identities i JOIN orgs o ON i.org_id = o.id
-           WHERE i.id = $1"#,
+           WHERE i.id = $1
+           FOR UPDATE OF i"#,
         id,
     )
     .fetch_optional(&mut *tx)
@@ -383,6 +395,22 @@ pub async fn restore(pool: &PgPool, id: Uuid) -> Result<RestoreOutcome, sqlx::Er
     if OffsetDateTime::now_utc() - archived_at > retention {
         tx.commit().await?;
         return Ok(RestoreOutcome::PastRetention);
+    }
+
+    // Lock the parent row (if any) and verify it's not archived. The lock
+    // blocks a concurrent archive_idle_subagents pass from sneaking in between
+    // this check and our UPDATE below.
+    if let Some(parent_id) = row.parent_id {
+        let parent = sqlx::query_scalar!(
+            "SELECT archived_at FROM identities WHERE id = $1 FOR UPDATE",
+            parent_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(Some(_parent_archived_at)) = parent {
+            tx.commit().await?;
+            return Ok(RestoreOutcome::ParentArchived);
+        }
     }
 
     // Unarchive
