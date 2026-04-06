@@ -41,6 +41,14 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 - **Split integration tests by provider.** Provider-specific tests (OAuth flows, service actions) go in their own file under `crates/overslash-api/tests/` (e.g., `oauth_x.rs`, `google_calendar.rs`). Shared helpers live in `tests/common/mod.rs`. The main `integration.rs` keeps core/generic tests only.
 - **Use `--test-threads=4`** (or similar) when running the full suite locally to avoid Postgres connection pool exhaustion.
 
+## Worktree Isolation
+
+When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` automatically detects the worktree context and spins up an isolated Postgres on a unique port. No manual configuration needed.
+
+- `make local` — detects worktree, writes `.env.local`, starts isolated Postgres
+- `make worktree-clean` — tears down the worktree's containers and volumes
+- Main repo behavior is unchanged (port 55432)
+
 ## Rules
 
 1. **SPEC.md is the target. STATUS.md is reality.** Never confuse aspiration with current state.
