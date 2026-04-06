@@ -92,11 +92,12 @@ async fn list_approvals(
 
 async fn get_approval(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
     let row = overslash_db::repos::approval::get_by_id(&state.db, id)
         .await?
+        .filter(|r| r.org_id == auth.org_id)
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
     Ok(Json(build_response(&state.db, row).await?))
 }
@@ -121,6 +122,13 @@ async fn resolve_approval(
         "allow_remember" => ("allowed", true),
         other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
+
+    // Multi-tenancy guard: refuse to act on approvals belonging to other orgs.
+    // We return 404 (not 403) to avoid leaking the existence of foreign approval ids.
+    overslash_db::repos::approval::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
     let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
     if remember {
