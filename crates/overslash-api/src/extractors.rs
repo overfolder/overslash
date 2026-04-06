@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use axum::{extract::FromRequestParts, http::request::Parts};
+use overslash_db::{AgentScope, OrgScope, SystemScope, UserScope};
 use uuid::Uuid;
 
 use crate::{AppState, error::AppError, services::jwt};
@@ -286,6 +287,36 @@ impl FromRequestParts<AppState> for OptionalOrgAcl {
         Ok(OptionalOrgAcl(Some(acl)))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Capability scopes.
+//
+// Currently only `OrgScope` has an Axum extractor; the other scope types
+// (`UserScope`, `AgentScope`) exist for downstream code to build against
+// and will gain extractors as handlers begin consuming them.
+// `SystemScope` is intentionally not extractable from a request — it is
+// minted by background workers via `SystemScope::new_internal(db)`.
+// ---------------------------------------------------------------------------
+
+/// Axum extractor that mints an `OrgScope` from a verified API key or
+/// session cookie. Any authenticated caller in any role can produce one.
+impl FromRequestParts<AppState> for OrgScope {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
+        Ok(OrgScope::new(auth.org_id, state.db.clone()))
+    }
+}
+
+// Compile-time probe to ensure every scope type stays importable from
+// `overslash-db` even before its extractor exists. Remove names from this
+// signature as real extractors are added.
+#[allow(dead_code)]
+fn _scope_types_exist(_: UserScope, _: AgentScope, _: SystemScope) {}
 
 fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
