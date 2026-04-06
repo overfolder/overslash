@@ -206,6 +206,27 @@ impl RateLimitConfigCache {
         }
     }
 
+    /// Drop all cache entries scoped to an org. Used when a rate limit config
+    /// is upserted/deleted so changes take effect immediately.
+    ///
+    /// Group/org-default changes can affect any user, so we conservatively
+    /// invalidate everything for the org rather than tracking which user_ids
+    /// belong to which group.
+    pub fn invalidate_org(&self, org_id: Uuid) {
+        self.user_budget.retain(|(o, _), _| *o != org_id);
+        self.identity_cap.retain(|(o, _), _| *o != org_id);
+    }
+
+    /// Drop the cached identity cap entry for a specific identity.
+    pub fn invalidate_identity_cap(&self, org_id: Uuid, identity_id: Uuid) {
+        self.identity_cap.remove(&(org_id, identity_id));
+    }
+
+    /// Drop the cached user budget entry for a specific user.
+    pub fn invalidate_user_budget(&self, org_id: Uuid, user_id: Uuid) {
+        self.user_budget.remove(&(org_id, user_id));
+    }
+
     /// Resolve the User bucket config. Uses cache, falls back to DB resolution chain.
     pub async fn resolve_user_budget(
         &self,

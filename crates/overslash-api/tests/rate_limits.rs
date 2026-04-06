@@ -967,3 +967,211 @@ fn test_extract_osk_prefix_non_ascii_header() {
     let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
     assert!(prefix.is_none());
 }
+
+#[tokio::test]
+async fn test_cache_invalidation_user_budget() {
+    use overslash_api::services::rate_limit::RateLimitConfigCache;
+
+    let pool = common::test_pool().await;
+    let (_addr, _client) = common::start_api(pool.clone()).await;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("o")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let user_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'user')")
+        .bind(user_id)
+        .bind(org_id)
+        .bind("u")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 100, 60)
+        .await
+        .unwrap();
+
+    let cache = RateLimitConfigCache::new(Duration::from_secs(300));
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
+        dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 9999,
+        default_rate_window_secs: 60,
+    };
+
+    // Prime the cache
+    let r1 = cache
+        .resolve_user_budget(&pool, &config, org_id, user_id)
+        .await;
+    assert_eq!(r1.max_requests, 100);
+
+    // Update the limit in DB
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 555, 60)
+        .await
+        .unwrap();
+
+    // Without invalidation, cache still returns the stale value
+    let r2 = cache
+        .resolve_user_budget(&pool, &config, org_id, user_id)
+        .await;
+    assert_eq!(r2.max_requests, 100, "stale cache hit");
+
+    // Invalidate, then re-resolve
+    cache.invalidate_user_budget(org_id, user_id);
+    let r3 = cache
+        .resolve_user_budget(&pool, &config, org_id, user_id)
+        .await;
+    assert_eq!(r3.max_requests, 555, "fresh value after invalidation");
+}
+
+#[tokio::test]
+async fn test_cache_invalidation_identity_cap() {
+    use overslash_api::services::rate_limit::RateLimitConfigCache;
+
+    let pool = common::test_pool().await;
+    let (_addr, _client) = common::start_api(pool.clone()).await;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("o")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'agent')")
+        .bind(id)
+        .bind(org_id)
+        .bind("a")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cache = RateLimitConfigCache::new(Duration::from_secs(300));
+
+    // No cap → cached as None
+    assert!(
+        cache
+            .resolve_identity_cap(&pool, org_id, id)
+            .await
+            .is_none()
+    );
+
+    // Set a cap
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "identity_cap", Some(id), None, 7, 60)
+        .await
+        .unwrap();
+
+    // Cache still returns None (stale)
+    assert!(
+        cache
+            .resolve_identity_cap(&pool, org_id, id)
+            .await
+            .is_none()
+    );
+
+    // Invalidate → fresh value
+    cache.invalidate_identity_cap(org_id, id);
+    let cap = cache
+        .resolve_identity_cap(&pool, org_id, id)
+        .await
+        .expect("cap should exist after invalidation");
+    assert_eq!(cap.max_requests, 7);
+}
+
+#[tokio::test]
+async fn test_cache_invalidation_org_flushes_all() {
+    use overslash_api::services::rate_limit::RateLimitConfigCache;
+
+    let pool = common::test_pool().await;
+    let (_addr, _client) = common::start_api(pool.clone()).await;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("o")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let user_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'user')")
+        .bind(user_id)
+        .bind(org_id)
+        .bind("u")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 100, 60)
+        .await
+        .unwrap();
+
+    let cache = RateLimitConfigCache::new(Duration::from_secs(300));
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
+        dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 9999,
+        default_rate_window_secs: 60,
+    };
+
+    let r1 = cache
+        .resolve_user_budget(&pool, &config, org_id, user_id)
+        .await;
+    assert_eq!(r1.max_requests, 100);
+
+    // Update the org default
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 999, 60)
+        .await
+        .unwrap();
+
+    // Stale cache hit
+    let r2 = cache
+        .resolve_user_budget(&pool, &config, org_id, user_id)
+        .await;
+    assert_eq!(r2.max_requests, 100);
+
+    // invalidate_org flushes everything for the org
+    cache.invalidate_org(org_id);
+    let r3 = cache
+        .resolve_user_budget(&pool, &config, org_id, user_id)
+        .await;
+    assert_eq!(r3.max_requests, 999);
+}

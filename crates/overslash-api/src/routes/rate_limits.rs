@@ -90,6 +90,31 @@ impl From<rate_limit::RateLimitRow> for RateLimitResponse {
     }
 }
 
+/// Invalidate cached config entries so updates take effect immediately.
+fn invalidate_cache_for(
+    state: &AppState,
+    scope: &RateLimitScope,
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+) {
+    match scope {
+        // Org defaults and group defaults can affect any user → flush the whole org
+        RateLimitScope::Org | RateLimitScope::Group => {
+            state.rate_limit_cache.invalidate_org(org_id);
+        }
+        RateLimitScope::User => {
+            if let Some(id) = identity_id {
+                state.rate_limit_cache.invalidate_user_budget(org_id, id);
+            }
+        }
+        RateLimitScope::IdentityCap => {
+            if let Some(id) = identity_id {
+                state.rate_limit_cache.invalidate_identity_cap(org_id, id);
+            }
+        }
+    }
+}
+
 // ── Handlers ────────────────────────────────────────────────────────
 
 async fn upsert_rate_limit(
@@ -155,6 +180,10 @@ async fn upsert_rate_limit(
     )
     .await?;
 
+    // Invalidate cached configs so the new value takes effect immediately
+    // (rather than waiting up to 30s for the cache TTL).
+    invalidate_cache_for(&state, &req.scope, auth.org_id, req.identity_id);
+
     // Audit
     audit::log(
         &state.db,
@@ -201,6 +230,10 @@ async fn delete_rate_limit(
     if !deleted {
         return Err(AppError::NotFound("rate limit config not found".into()));
     }
+
+    // Invalidate everything for the org. We don't know the scope of the deleted row
+    // (we'd need to fetch it first), so the safest course is to flush the org's cache.
+    state.rate_limit_cache.invalidate_org(auth.org_id);
 
     audit::log(
         &state.db,
