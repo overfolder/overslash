@@ -87,6 +87,23 @@ pub async fn walk(
         return Ok(ChainWalkResult::Allowed);
     };
 
+    // Even after finding a gap, a deny rule on any non-inheriting ancestor
+    // above the gap must still block the request -- a parent's deny is not
+    // approvable.
+    if gap_idx >= 1 {
+        let mut k = gap_idx - 1;
+        while k >= 1 {
+            let ident = &chain[k];
+            if !ident.inherit_permissions {
+                let rules = load_rules(pool, ident.id).await?;
+                if let PermissionResult::Denied(reason) = check_permissions(&rules, perm_keys) {
+                    return Ok(ChainWalkResult::Denied(reason));
+                }
+            }
+            k -= 1;
+        }
+    }
+
     let gap_identity_id = chain[gap_idx].id;
     let rule_placement_id = compute_rule_placement(&chain);
     let initial_resolver_id = if force_user_resolver {

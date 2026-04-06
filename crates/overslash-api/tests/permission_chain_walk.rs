@@ -432,6 +432,41 @@ async fn deny_rule_in_chain_short_circuits() {
     assert_eq!(resp.status(), 403);
 }
 
+// ── Test: deny rule above the gap still blocks (cannot be approved) ─
+
+#[tokio::test]
+async fn deny_rule_above_gap_short_circuits() {
+    // U → Chief(deny POST) → Marketing(no rules) → Researcher(inherit).
+    // Researcher hits a gap at Marketing, but Chief has a deny rule that
+    // applies to the same key. The walk MUST keep going past the gap and
+    // honor the deny -- otherwise we'd create an approval for an action
+    // that should be unconditionally rejected.
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let chief_id = create_identity(&base, &org_key, "chief", "agent", Some(user_id)).await;
+    let marketing_id =
+        create_identity(&base, &org_key, "marketing", "sub_agent", Some(chief_id)).await;
+    let researcher_id = create_identity(
+        &base,
+        &org_key,
+        "researcher",
+        "sub_agent",
+        Some(marketing_id),
+    )
+    .await;
+    let researcher_key = create_api_key(&base, org_id, researcher_id, "rk").await;
+    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+        .await
+        .unwrap();
+
+    add_rule(&base, &org_key, chief_id, "http:POST:**", "deny").await;
+
+    let resp = execute(&base, &researcher_key, mock_addr).await;
+    assert_eq!(resp.status(), 403);
+}
+
 // ── Test 8: a sibling agent cannot resolve someone else's approval ──
 
 #[tokio::test]
