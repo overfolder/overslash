@@ -1,7 +1,6 @@
 <script lang="ts">
 	import '../app.css';
 	import type { Snippet } from 'svelte';
-	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { session, type MeIdentity } from '$lib/session';
@@ -27,11 +26,13 @@
 		}
 	});
 
-	onMount(() => {
-		if (!isLogin) startNotificationPolling();
-	});
-	onDestroy(() => {
-		stopNotificationPolling();
+	$effect(() => {
+		if (isLogin) {
+			stopNotificationPolling();
+		} else {
+			startNotificationPolling();
+		}
+		return () => stopNotificationPolling();
 	});
 
 	async function signOut() {
