@@ -459,13 +459,12 @@ async fn resolve_enrollment(
         return Err(AppError::Conflict("enrollment has expired".into()));
     }
 
-    // If the enrollment has been claimed by another org via a prior GET,
-    // refuse: only the org that "viewed" first may resolve it.
-    if let Some(claimed) = row.org_id {
-        if claimed != session.org {
-            return Err(AppError::NotFound("enrollment not found".into()));
-        }
-    }
+    // Atomically claim the enrollment for this caller's org. This succeeds if
+    // the enrollment is unclaimed OR already claimed by the same org. A POST
+    // from a different org (whether or not GET was called first) gets 404.
+    let row = pending_enrollment::claim_for_org(&state.db, row.id, session.org)
+        .await?
+        .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
 
     match req.decision.as_str() {
         "approve" => {
