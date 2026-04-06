@@ -444,7 +444,7 @@ async fn bubble_up_at_top_returns_conflict() {
 
     let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
     let agent_id = create_identity(&base, &org_key, "bot", "agent", Some(user_id)).await;
-    let agent_key = create_api_key(&base, org_id, agent_id, "ak").await;
+    let agent_key = create_api_key(&base, &org_key, org_id, agent_id, "ak").await;
 
     let approval_id: String = execute(&base, &agent_key, mock_addr)
         .await
@@ -489,7 +489,7 @@ async fn deny_rule_above_gap_short_circuits() {
         Some(marketing_id),
     )
     .await;
-    let researcher_key = create_api_key(&base, org_id, researcher_id, "rk").await;
+    let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
     overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
         .await
         .unwrap();
@@ -604,4 +604,90 @@ async fn force_user_resolver_when_auto_bubble_zero() {
         .unwrap();
     // With auto_bubble_secs=0, resolver bypasses agents and goes to user directly.
     assert_eq!(appr["current_resolver_identity_id"], json!(user_id));
+}
+
+// ── Test: identity-bound key for the resolver (or its ancestor) can resolve
+
+#[tokio::test]
+async fn current_resolver_identity_key_can_resolve() {
+    // Chief is the current_resolver. Chief's own identity-bound API key must
+    // be allowed to resolve. The user (Chief's ancestor) must also be allowed
+    // via their identity-bound key. This exercises the positive path of
+    // is_self_or_ancestor that the org-admin tests bypass entirely.
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let user_key = create_api_key(&base, &org_key, org_id, user_id, "uk").await;
+    let chief_id = create_identity(&base, &org_key, "chief", "agent", Some(user_id)).await;
+    let chief_key = create_api_key(&base, &org_key, org_id, chief_id, "ck").await;
+    let marketing_id =
+        create_identity(&base, &org_key, "marketing", "sub_agent", Some(chief_id)).await;
+    let researcher_id = create_identity(
+        &base,
+        &org_key,
+        "researcher",
+        "sub_agent",
+        Some(marketing_id),
+    )
+    .await;
+    let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
+    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+        .await
+        .unwrap();
+
+    // Chief covers everything → resolver search lands on Chief.
+    add_rule(
+        &base,
+        &org_key,
+        chief_id,
+        &format!("http:**:{mock_addr}/**"),
+        "allow",
+    )
+    .await;
+
+    // First approval: Chief resolves with their own identity key.
+    let approval_id: String = execute(&base, &researcher_key, mock_addr)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header("Authorization", format!("Bearer {chief_key}"))
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "chief should be allowed to resolve as the current resolver"
+    );
+
+    // Second approval: same chain, but the user (Chief's ancestor) resolves
+    // with their own identity key. is_self_or_ancestor should permit this.
+    let approval_id2: String = execute(&base, &researcher_key, mock_addr)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{approval_id2}/resolve"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "user (ancestor) should be allowed to resolve"
+    );
 }
