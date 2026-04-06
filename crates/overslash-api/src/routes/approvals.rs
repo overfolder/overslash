@@ -138,7 +138,18 @@ async fn resolve_approval(
     // Org-level (no identity_id) keys belong to org admins and are allowed for
     // backward compatibility with the test/admin flows. Identity-bound keys
     // must match the current resolver or be one of its ancestors.
+    //
+    // SPEC §5: "The requesting agent itself — never. An agent cannot resolve
+    // its own approval requests." This catches edge cases (e.g. an orphaned
+    // non-user identity ending up as its own resolver after the chain walk
+    // falls back) where is_self_or_ancestor would otherwise pass the same id
+    // against itself.
     if let Some(caller_identity) = auth.identity_id {
+        if caller_identity == approval_pre.identity_id {
+            return Err(AppError::Forbidden(
+                "agents cannot resolve their own approval requests".into(),
+            ));
+        }
         let allowed = crate::services::permission_chain::is_self_or_ancestor(
             &state.db,
             caller_identity,

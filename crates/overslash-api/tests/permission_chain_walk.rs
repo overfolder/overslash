@@ -831,3 +831,67 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
         "resolve should accept matching expected_resolver"
     );
 }
+
+// ── Test: requester cannot resolve its own approval, even when the
+//         chain walk's orphan path makes them their own resolver.
+
+#[tokio::test]
+async fn requester_cannot_resolve_own_approval_orphan() {
+    // Build an orphan agent (no parent) and create an approval where the
+    // current_resolver is the orphan itself — the degenerate state that
+    // walk()'s orphan path could reach. SPEC §5 says the requester can NEVER
+    // resolve its own approval, regardless of how it ended up as resolver.
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, _mock_addr) = bootstrap(pool.clone()).await;
+
+    let orphan_id = Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO identities (id, org_id, name, kind, depth, owner_id)
+         VALUES ($1, $2, 'orphan-bot', 'agent', 1, $1)",
+        orphan_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let orphan_key = create_api_key(&base, &org_key, org_id, orphan_id, "ok").await;
+
+    // Manually create an approval where requester == current_resolver.
+    let token = format!("tok_{}", Uuid::new_v4());
+    let approval = overslash_db::repos::approval::create(
+        &pool,
+        &overslash_db::repos::approval::CreateApproval {
+            org_id,
+            identity_id: orphan_id,
+            current_resolver_identity_id: orphan_id,
+            action_summary: "self-resolve attempt",
+            action_detail: None,
+            permission_keys: &["http:GET:example.com/x".to_string()],
+            token: &token,
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Orphan's own identity-bound key tries to allow it → 403, even though
+    // is_self_or_ancestor(orphan, orphan) is technically true.
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{}/resolve", approval.id))
+        .header("Authorization", format!("Bearer {orphan_key}"))
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Same for bubble_up — agents can't bubble their own approvals either.
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{}/resolve", approval.id))
+        .header("Authorization", format!("Bearer {orphan_key}"))
+        .json(&json!({"resolution": "bubble_up"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
