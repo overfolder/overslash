@@ -11,7 +11,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AuthContext, ClientIp, WriteAcl},
     services::{client_credentials, oauth},
 };
 use overslash_core::crypto;
@@ -45,9 +45,10 @@ struct InitiateConnectionResponse {
 
 async fn initiate_connection(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     Json(req): Json<InitiateConnectionRequest>,
 ) -> Result<Json<InitiateConnectionResponse>> {
+    let auth = acl;
     let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, &req.provider)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", req.provider)))?;
@@ -258,10 +259,11 @@ async fn list_connections(
 
 async fn delete_connection(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     // Scope delete: if identity-bound key, must own the connection.
     // Org-level keys can delete any connection in the org.
     let deleted = if let Some(identity_id) = auth.identity_id {

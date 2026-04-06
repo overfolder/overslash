@@ -29,7 +29,7 @@ async fn test_oauth_x_callback_stores_connection() {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     // State with dummy verifier segment (mock doesn't validate PKCE)
     let state_param = format!("{org_id}:{ident_id}:x:_:_");
@@ -77,12 +77,13 @@ async fn test_oauth_x_callback_with_byoc() {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC credential for X
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "x",
             "client_id": "x_byoc_client_id",
@@ -206,7 +207,7 @@ async fn test_oauth_x_pkce_in_auth_url() {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let resp: Value = client
         .post(format!("{base}/v1/connections"))
@@ -266,12 +267,12 @@ async fn test_x_real_post_and_delete() {
 
     // Start API with real service registry
     let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
-    let (org_id, ident_id, key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
     // Store BYOC credential
     let byoc_resp: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header(common::auth(&key).0, common::auth(&key).1)
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
         .json(&json!({
             "provider": "x",
             "client_id": client_id,
@@ -341,7 +342,7 @@ async fn test_x_real_post_and_delete() {
     // Create broad permission rule
     client
         .post(format!("{base}/v1/permissions"))
-        .header(common::auth(&key).0, common::auth(&key).1)
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
@@ -430,7 +431,7 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let resp: Value = client
         .post(format!("{base}/v1/connections"))

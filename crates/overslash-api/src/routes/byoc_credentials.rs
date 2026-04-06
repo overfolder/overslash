@@ -11,7 +11,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp},
 };
 use overslash_core::crypto;
 
@@ -42,10 +42,11 @@ struct ByocCredentialResponse {
 
 async fn create_byoc(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Json(req): Json<CreateByocRequest>,
 ) -> Result<Json<ByocCredentialResponse>> {
+    let auth = acl;
     // Validate provider exists
     overslash_db::repos::oauth_provider::get_by_key(&state.db, &req.provider)
         .await?
@@ -131,10 +132,11 @@ async fn list_byoc(
 
 async fn delete_byoc(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     let deleted =
         overslash_db::repos::byoc_credential::delete_by_org(&state.db, id, auth.org_id).await?;
 

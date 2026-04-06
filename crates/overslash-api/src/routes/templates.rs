@@ -12,7 +12,7 @@ use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateS
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AdminAcl, AuthContext},
 };
 
 pub fn router() -> Router<AppState> {
@@ -257,9 +257,10 @@ async fn list_template_actions(
 /// Create a new org or user template.
 async fn create_template(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     Json(req): Json<CreateTemplateRequest>,
 ) -> Result<Json<TemplateDetail>> {
+    let auth = acl;
     let owner_identity_id = if req.user_level {
         Some(auth.identity_id.ok_or_else(|| {
             AppError::BadRequest("user-level templates require an identity-bound API key".into())
@@ -321,10 +322,16 @@ async fn create_template(
 /// Update a DB-stored template by id.
 async fn update_template(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTemplateRequest>,
 ) -> Result<Json<TemplateDetail>> {
+    // Multi-tenancy guard.
+    service_template::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == acl.org_id)
+        .ok_or_else(|| AppError::NotFound("template not found".into()))?;
+
     let input = UpdateServiceTemplate {
         display_name: req.display_name.as_deref(),
         description: req.description.as_deref(),
@@ -349,9 +356,15 @@ async fn update_template(
 /// Delete a DB-stored template by id (cannot delete global templates).
 async fn delete_template(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    // Multi-tenancy guard.
+    service_template::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == acl.org_id)
+        .ok_or_else(|| AppError::NotFound("template not found".into()))?;
+
     let deleted = service_template::delete(&state.db, id).await?;
     if !deleted {
         return Err(AppError::NotFound("template not found".into()));

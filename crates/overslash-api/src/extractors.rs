@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use axum::{extract::FromRequestParts, http::request::Parts};
+use overslash_db::{AgentScope, OrgScope, SystemScope, UserScope};
 use uuid::Uuid;
 
 use crate::{AppState, error::AppError, services::jwt};
@@ -160,6 +161,162 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
         })
     }
 }
+
+// ── Org ACL extractors ──────────────────────────────────────────────
+//
+// ACL is enforced via group grants on the "overslash" service instance.
+// These extractors resolve the caller's highest access level for the
+// overslash service and reject if insufficient.
+
+use overslash_core::permissions::AccessLevel;
+
+/// Resolved ACL level for the overslash platform service.
+#[derive(Debug, Clone)]
+pub struct OrgAcl {
+    pub org_id: Uuid,
+    pub identity_id: Option<Uuid>,
+    pub access_level: AccessLevel,
+}
+
+impl FromRequestParts<AppState> for OrgAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
+
+        // Org-level API keys (no identity) are treated as admin
+        let Some(identity_id) = auth.identity_id else {
+            return Ok(OrgAcl {
+                org_id: auth.org_id,
+                identity_id: None,
+                access_level: AccessLevel::Admin,
+            });
+        };
+
+        // Resolve the ceiling user (agents use their owner's groups)
+        let ceiling_user_id =
+            crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
+
+        // Get all grants across groups for this user
+        let ceiling =
+            overslash_db::repos::group::get_ceiling_for_user(&state.db, ceiling_user_id).await?;
+
+        // Find the highest access level for the overslash service
+        let access_level = ceiling
+            .grants
+            .iter()
+            .filter(|g| g.template_key == "overslash")
+            .filter_map(|g| AccessLevel::parse(&g.access_level))
+            .max()
+            .unwrap_or(AccessLevel::Read);
+
+        Ok(OrgAcl {
+            org_id: auth.org_id,
+            identity_id: Some(identity_id),
+            access_level,
+        })
+    }
+}
+
+/// Requires at least write-level ACL access to the overslash platform.
+#[derive(Debug, Clone)]
+pub struct WriteAcl(pub OrgAcl);
+
+impl FromRequestParts<AppState> for WriteAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let acl = OrgAcl::from_request_parts(parts, state).await?;
+        if acl.access_level < AccessLevel::Write {
+            return Err(AppError::Forbidden("write access required".into()));
+        }
+        Ok(WriteAcl(acl))
+    }
+}
+
+/// Requires admin-level ACL access to the overslash platform.
+#[derive(Debug, Clone)]
+pub struct AdminAcl(pub OrgAcl);
+
+impl FromRequestParts<AppState> for AdminAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let acl = OrgAcl::from_request_parts(parts, state).await?;
+        if acl.access_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
+        Ok(AdminAcl(acl))
+    }
+}
+
+/// Optional ACL extractor for endpoints that allow unauthenticated bootstrap.
+/// Returns `Ok(Some(acl))` if valid auth was provided, `Ok(None)` only when
+/// NO auth was provided at all, and `Err` if auth was provided but invalid.
+/// This prevents an attacker from bypassing auth by sending a bad token.
+#[derive(Debug, Clone)]
+pub struct OptionalOrgAcl(pub Option<OrgAcl>);
+
+impl FromRequestParts<AppState> for OptionalOrgAcl {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // Check if any auth was provided (Authorization header OR session cookie)
+        let has_auth_header = parts.headers.get("authorization").is_some();
+        let has_session_cookie = extract_cookie(&parts.headers, "oss_session").is_some();
+
+        if !has_auth_header && !has_session_cookie {
+            // Truly unauthenticated — bootstrap path
+            return Ok(OptionalOrgAcl(None));
+        }
+
+        // Auth was provided — require it to be valid
+        let acl = OrgAcl::from_request_parts(parts, state).await?;
+        Ok(OptionalOrgAcl(Some(acl)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Capability scopes.
+//
+// Currently only `OrgScope` has an Axum extractor; the other scope types
+// (`UserScope`, `AgentScope`) exist for downstream code to build against
+// and will gain extractors as handlers begin consuming them.
+// `SystemScope` is intentionally not extractable from a request — it is
+// minted by background workers via `SystemScope::new_internal(db)`.
+// ---------------------------------------------------------------------------
+
+/// Axum extractor that mints an `OrgScope` from a verified API key or
+/// session cookie. Any authenticated caller in any role can produce one.
+impl FromRequestParts<AppState> for OrgScope {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
+        Ok(OrgScope::new(auth.org_id, state.db.clone()))
+    }
+}
+
+// Compile-time probe to ensure every scope type stays importable from
+// `overslash-db` even before its extractor exists. Remove names from this
+// signature as real extractors are added.
+#[allow(dead_code)]
+fn _scope_types_exist(_: UserScope, _: AgentScope, _: SystemScope) {}
 
 fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;

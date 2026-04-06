@@ -183,8 +183,8 @@ async fn start_mock() -> SocketAddr {
     addr
 }
 
-/// Helper: create org + identity + api key, return (api_base_url, api_key, org_id, identity_id)
-async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid) {
+/// Helper: create org + identity + api key, return (api_base_url, agent_key, org_id, identity_id, admin_key)
+async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid, String) {
     let (api_addr, client) = start_api(pool).await;
     let base = format!("http://{api_addr}");
 
@@ -241,6 +241,7 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid) {
     // Create identity-bound API key
     let agent_key: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {raw_key}"))
         .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent"}))
         .send()
         .await
@@ -250,7 +251,7 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid) {
         .unwrap();
     let agent_raw = agent_key["key"].as_str().unwrap().to_string();
 
-    (base, agent_raw, org_id, ident_id)
+    (base, agent_raw, org_id, ident_id, raw_key)
 }
 
 fn auth(key: &str) -> (&'static str, String) {
@@ -280,7 +281,7 @@ async fn test_health() {
 async fn test_happy_path_execute_with_permission() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, ident_id) = setup(pool).await;
+    let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Store secret
@@ -296,7 +297,7 @@ async fn test_happy_path_execute_with_permission() {
     // Create permission rule
     let resp = client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "identity_id": ident_id,
             "action_pattern": "http:**",
@@ -332,7 +333,7 @@ async fn test_happy_path_execute_with_permission() {
 async fn test_approval_flow() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Store secret
@@ -379,7 +380,7 @@ async fn test_approval_flow() {
 async fn test_allow_remember_creates_rule() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -437,7 +438,7 @@ async fn test_allow_remember_creates_rule() {
 async fn test_resolve_rejects_invalid_remember_keys() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -483,7 +484,7 @@ async fn test_resolve_rejects_invalid_remember_keys() {
 async fn test_resolve_rejects_invalid_ttl() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -528,7 +529,7 @@ async fn test_resolve_rejects_invalid_ttl() {
 #[tokio::test]
 async fn test_secret_versioning() {
     let pool = common::test_pool().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     // v1
@@ -574,7 +575,7 @@ async fn test_secret_versioning() {
 async fn test_deny_keeps_gating() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -630,7 +631,7 @@ async fn test_deny_keeps_gating() {
 async fn test_unauthenticated_request_no_gate() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Execute without secrets — should go through without permission check
@@ -654,13 +655,13 @@ async fn test_unauthenticated_request_no_gate() {
 async fn test_audit_trail() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, ident_id) = setup(pool).await;
+    let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Create permission + execute an action
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
@@ -695,7 +696,7 @@ async fn test_mode_c_service_action() {
     // This test uses a mock that happens to match a custom "service" definition.
     // We test Mode C by pointing the service host at our mock target.
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, ident_id) = setup(pool).await;
+    let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Store a secret matching the service's default_secret_name
@@ -710,7 +711,7 @@ async fn test_mode_c_service_action() {
     // Create a broad permission rule
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
@@ -883,13 +884,13 @@ async fn test_service_registry_api() {
 async fn test_webhook_dispatch_on_approval_resolve() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Create webhook subscription for approval.resolved events
     let _wh: Value = client
         .post(format!("{base}/v1/webhooks"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "url": format!("http://{mock_addr}/webhooks/receive"),
             "events": ["approval.resolved"]
@@ -1062,6 +1063,7 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection() {
     // Verify connection is listed
     let agent_key: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent"}))
         .send()
         .await
@@ -1213,69 +1215,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
 // BYOC Credential Tests
 // ============================================================================
 
-/// Helper: bootstrap org + identity + identity-bound API key. Returns (org_id, identity_id, api_key).
-async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String) {
-    let org: Value = client
-        .post(format!("{base}/v1/orgs"))
-        .json(&json!({"name": "ByocOrg", "slug": format!("byoc-{}", Uuid::new_v4())}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-
-    // Org-level key (needed to create identity)
-    let org_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_api_key = org_key["key"].as_str().unwrap().to_string();
-
-    let user: Value = client
-        .post(format!("{base}/v1/identities"))
-        .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-user", "kind": "user"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let user_id = user["id"].as_str().unwrap();
-
-    let ident: Value = client
-        .post(format!("{base}/v1/identities"))
-        .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
-
-    // Identity-bound key
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent-key"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key_resp["key"].as_str().unwrap().to_string();
-
-    (org_id, ident_id, api_key)
-}
+use common::bootstrap_org_identity;
 
 // --- Test 1: BYOC CRUD API ---
 
@@ -1284,12 +1224,12 @@ async fn test_byoc_credential_crud() {
     let pool = common::test_pool().await;
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC credential
     let created: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "org_gh_client",
@@ -1313,7 +1253,7 @@ async fn test_byoc_credential_crud() {
     // Create identity-level BYOC credential
     let created_ident: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "ident_gh_client",
@@ -1343,7 +1283,7 @@ async fn test_byoc_credential_crud() {
     // Duplicate org-level should fail with 409
     let dup_resp = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "dup",
@@ -1358,7 +1298,7 @@ async fn test_byoc_credential_crud() {
     let del_id = created["id"].as_str().unwrap();
     let del: Value = client
         .delete(format!("{base}/v1/byoc-credentials/{del_id}"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .send()
         .await
         .unwrap()
@@ -1395,12 +1335,12 @@ async fn test_oauth_callback_with_org_byoc_credential() {
 
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC credential (no identity_id)
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "org_byoc_client_id",
@@ -1458,12 +1398,12 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
 
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC
     client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "org_client",
@@ -1476,7 +1416,7 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
     // Create identity-level BYOC — should win
     let ident_byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "ident_client",
@@ -1534,12 +1474,12 @@ async fn test_oauth_callback_pinned_byoc_credential() {
 
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC for github
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "provider": "github",
             "client_id": "pinned_client",
@@ -1588,7 +1528,7 @@ async fn test_oauth_callback_fails_without_credentials() {
     let pool = common::test_pool().await;
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, _api_key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, _api_key, _) = bootstrap_org_identity(&base, &client).await;
 
     // Use "spotify" provider — no BYOC credentials exist, and no OAUTH_SPOTIFY_* env vars set.
     // Even if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set by another test,
@@ -1716,19 +1656,19 @@ async fn test_google_calendar_three_modes() {
         start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host.clone()))).await;
 
     // Bootstrap org + identity + API key
-    let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Create broad permission rules: http:** for Mode A/B, google_calendar:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
         .unwrap();
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
         .send()
         .await
@@ -1950,12 +1890,12 @@ async fn test_google_calendar_real_byoc() {
     let (base, client) = start_api_with_registry(pool.clone(), None).await;
 
     // Bootstrap org + identity + API key
-    let (org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Store BYOC credential via API (production path)
     let byoc_resp: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "provider": "google",
             "client_id": client_id,
@@ -2018,14 +1958,14 @@ async fn test_google_calendar_real_byoc() {
     // Create broad permission rules: http:** for raw HTTP, google_calendar:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
         .unwrap();
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
         .send()
         .await
@@ -2252,7 +2192,7 @@ async fn test_e2e_resend_send_email() {
 
     // Use start_api_with_registry (no host override — hits real Resend)
     let (base, client) = start_api_with_registry(pool, None).await;
-    let (_org_id, ident_id, key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Store the real Resend API key (matches default_secret_name in resend.yaml)
     client
@@ -2266,14 +2206,14 @@ async fn test_e2e_resend_send_email() {
     // Create permission rules: http:** for raw HTTP, resend:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
         .unwrap();
     client
         .post(format!("{base}/v1/permissions"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "resend:*:*"}))
         .send()
         .await
@@ -2315,7 +2255,7 @@ async fn test_e2e_resend_send_email() {
 async fn test_approval_response_includes_derived_keys_and_tiers() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Store a secret so the execute triggers gating
@@ -2387,7 +2327,7 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
 async fn test_resolve_with_broader_remember_keys_succeeds() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -2464,7 +2404,7 @@ async fn test_resolve_with_broader_remember_keys_succeeds() {
 async fn test_resolve_with_unrelated_broader_keys_still_fails() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
     let client = Client::new();
 
     client

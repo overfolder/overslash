@@ -1,0 +1,55 @@
+key: overslash
+display_name: Overslash Platform
+description: Administrative access to the Overslash platform
+category: platform
+hosts: []
+auth: []
+actions:
+  manage_members:
+    description: "Manage org member roles and group assignments"
+    risk: delete
+  manage_groups:
+    description: "Create, update, and delete groups and grants"
+    risk: delete
+  manage_secrets:
+    description: "Create and update secrets"
+    risk: write
+  delete_secrets:
+    description: "Delete secrets permanently"
+    risk: delete
+  manage_templates:
+    description: "Create and manage service templates"
+    risk: delete
+  manage_webhooks:
+    description: "Create, update, and delete webhooks"
+    risk: delete
+  manage_enrollment:
+    description: "Create and manage enrollment tokens"
+    risk: delete
+  create_agents:
+    description: "Create agent and sub-agent identities"
+    risk: write
+  create_users:
+    description: "Create user identities"
+    risk: delete
+  manage_connections:
+    description: "Create and delete OAuth connections"
+    risk: write
+  manage_byoc:
+    description: "Manage bring-your-own-credential configurations"
+    risk: delete
+  resolve_approvals:
+    description: "Resolve pending approval requests"
+    risk: write
+  manage_services:
+    description: "Create service instances"
+    risk: write
+  delete_services:
+    description: "Delete and manage service instance lifecycle"
+    risk: delete
+  manage_permissions:
+    description: "Create and delete permission rules"
+    risk: delete
+  manage_api_keys:
+    description: "Create API keys"
+    risk: delete

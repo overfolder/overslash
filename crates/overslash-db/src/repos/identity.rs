@@ -116,6 +116,16 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<IdentityRow>, s
     .await
 }
 
+pub async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT COUNT(*) AS count FROM identities WHERE org_id = $1",
+        org_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.count.unwrap_or(0))
+}
+
 pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,

@@ -298,7 +298,7 @@ pub fn check_permissions(rules: &[PermissionRule], keys: &[PermissionKey]) -> Pe
 
 /// Access level hierarchy for group grants.
 /// Maps to the existing `Risk` enum: read < write < admin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AccessLevel {
     Read,
     Write,

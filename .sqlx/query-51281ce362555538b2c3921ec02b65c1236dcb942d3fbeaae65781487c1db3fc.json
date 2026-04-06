@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO service_instances (org_id, name, template_source, template_key, status, is_system)\n         VALUES ($1, 'overslash', 'global', 'overslash', 'active', true)\n         ON CONFLICT (org_id, name) WHERE owner_identity_id IS NULL DO NOTHING\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "51281ce362555538b2c3921ec02b65c1236dcb942d3fbeaae65781487c1db3fc"
+}

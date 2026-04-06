@@ -21,6 +21,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       infra: ${{ steps.filter.outputs.infra }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -37,6 +38,9 @@ jobs:
               - '.github/workflows/ci.yml'
             infra:
               - 'infra/**'
+              - '.github/workflows/ci.yml'
+            dashboard:
+              - 'dashboard/**'
               - '.github/workflows/ci.yml'
 
   lint:
@@ -204,10 +208,32 @@ jobs:
       - name: Validate
         run: tofu validate
 
+  dashboard:
+    name: Dashboard
+    needs: changes
+    if: needs.changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check (svelte-check)
+        run: npm run check
+      - name: Build
+        run: npm run build
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, sqlx-check, test, infra]
+    needs: [changes, lint, sqlx-check, test, infra, dashboard]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

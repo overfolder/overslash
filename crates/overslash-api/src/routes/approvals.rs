@@ -14,7 +14,7 @@ use overslash_core::types::service::Risk;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AuthContext, ClientIp, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -28,6 +28,10 @@ pub fn router() -> Router<AppState> {
 struct ApprovalResponse {
     id: Uuid,
     identity_id: Uuid,
+    /// SPIFFE-style hierarchical path of the requesting identity
+    /// (`spiffe://<org>/user/alice/agent/henry/...`). See
+    /// `crate::services::identity_path`.
+    identity_path: Option<String>,
     action_summary: String,
     permission_keys: Vec<String>,
     derived_keys: Vec<overslash_core::permissions::DerivedKey>,
@@ -38,13 +42,17 @@ struct ApprovalResponse {
     created_at: String,
 }
 
-impl From<overslash_db::repos::approval::ApprovalRow> for ApprovalResponse {
-    fn from(r: overslash_db::repos::approval::ApprovalRow) -> Self {
+impl ApprovalResponse {
+    fn from_row(
+        r: overslash_db::repos::approval::ApprovalRow,
+        identity_path: Option<String>,
+    ) -> Self {
         let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
         let suggested_tiers = overslash_core::permissions::suggest_tiers(&r.permission_keys);
         Self {
             id: r.id,
             identity_id: r.identity_id,
+            identity_path,
             action_summary: r.action_summary,
             permission_keys: r.permission_keys,
             derived_keys,
@@ -57,23 +65,41 @@ impl From<overslash_db::repos::approval::ApprovalRow> for ApprovalResponse {
     }
 }
 
+async fn build_response(
+    db: &sqlx::PgPool,
+    row: overslash_db::repos::approval::ApprovalRow,
+) -> Result<ApprovalResponse> {
+    let identity_path = crate::services::identity_path::build_for_identity(db, row.identity_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
+            None
+        });
+    Ok(ApprovalResponse::from_row(row, identity_path))
+}
+
 async fn list_approvals(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<ApprovalResponse>>> {
     let rows = overslash_db::repos::approval::list_pending_by_org(&state.db, auth.org_id).await?;
-    Ok(Json(rows.into_iter().map(ApprovalResponse::from).collect()))
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(build_response(&state.db, row).await?);
+    }
+    Ok(Json(out))
 }
 
 async fn get_approval(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
     let row = overslash_db::repos::approval::get_by_id(&state.db, id)
         .await?
+        .filter(|r| r.org_id == auth.org_id)
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
-    Ok(Json(ApprovalResponse::from(row)))
+    Ok(Json(build_response(&state.db, row).await?))
 }
 
 #[derive(Deserialize)]
@@ -85,17 +111,25 @@ struct ResolveRequest {
 
 async fn resolve_approval(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
+    let auth = acl;
     let (status, remember) = match req.resolution.as_str() {
         "allow" => ("allowed", false),
         "deny" => ("denied", false),
         "allow_remember" => ("allowed", true),
         other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
+
+    // Multi-tenancy guard: refuse to act on approvals belonging to other orgs.
+    // We return 404 (not 403) to avoid leaking the existence of foreign approval ids.
+    overslash_db::repos::approval::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
     let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
     if remember {
@@ -236,5 +270,5 @@ async fn resolve_approval(
         });
     }
 
-    Ok(Json(ApprovalResponse::from(row)))
+    Ok(Json(build_response(&state.db, row).await?))
 }

@@ -11,7 +11,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::Result,
-    extractors::{AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -36,10 +36,11 @@ struct WebhookResponse {
 
 async fn create_webhook(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Json(req): Json<CreateWebhookRequest>,
 ) -> Result<Json<WebhookResponse>> {
+    let auth = acl;
     // Generate a signing secret for this subscription
     use rand::RngCore;
     let mut secret_bytes = [0u8; 32];
@@ -97,10 +98,11 @@ async fn list_webhooks(
 
 async fn delete_webhook(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     let deleted =
         overslash_db::repos::webhook::delete_subscription(&state.db, id, auth.org_id).await?;
 

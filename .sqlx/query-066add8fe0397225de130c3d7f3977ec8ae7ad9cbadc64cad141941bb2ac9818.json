@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT gg.service_instance_id, si.name AS service_name,\n                gg.access_level, gg.auto_approve_reads\n         FROM group_grants gg\n         JOIN identity_groups ig ON ig.group_id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE ig.identity_id = $1",
+  "query": "SELECT gg.service_instance_id, si.name AS service_name,\n                si.template_key, gg.access_level, gg.auto_approve_reads\n         FROM group_grants gg\n         JOIN identity_groups ig ON ig.group_id = gg.group_id\n         JOIN service_instances si ON si.id = gg.service_instance_id\n         WHERE ig.identity_id = $1",
   "describe": {
     "columns": [
       {
@@ -15,11 +15,16 @@
       },
       {
         "ordinal": 2,
-        "name": "access_level",
+        "name": "template_key",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
+        "name": "access_level",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
         "name": "auto_approve_reads",
         "type_info": "Bool"
       }
@@ -33,8 +38,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "9b0e92a9e25e4a1bdab9eedc7823c3c2c2f3620af100101fe36e3f5ed3dc1758"
+  "hash": "066add8fe0397225de130c3d7f3977ec8ae7ad9cbadc64cad141941bb2ac9818"
 }
