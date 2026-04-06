@@ -136,11 +136,15 @@ pub async fn resolve_identity(
     state: &AppState,
     prefix: &str,
 ) -> Option<(Uuid, Option<Uuid>, Option<Uuid>)> {
-    // Look up API key by prefix (no argon2 — just identification, filters revoked)
-    let key_row = overslash_db::repos::api_key::find_by_prefix(&state.db, prefix)
-        .await
-        .ok()
-        .flatten()?;
+    // Look up API key by prefix (no argon2 — just identification).
+    // Include archive-auto-revoked keys so an attacker hammering a stolen key
+    // belonging to an archived identity still gets rate-limited (the 403 reject
+    // still costs us DB lookups + argon2 in the auth extractor).
+    let key_row =
+        overslash_db::repos::api_key::find_by_prefix_including_archived(&state.db, prefix)
+            .await
+            .ok()
+            .flatten()?;
 
     // Skip expired keys to avoid consuming rate limit budget for invalid requests
     if let Some(expires_at) = key_row.expires_at {

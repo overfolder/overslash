@@ -597,6 +597,63 @@ async fn test_archived_identity_takes_precedence_over_key_expiry() {
 }
 
 #[tokio::test]
+async fn test_archived_identity_resolves_for_rate_limit_charging() {
+    // Sentry-flagged regression: the rate-limit middleware used find_by_prefix
+    // (which excludes auto-revoked keys), so requests bound to archived
+    // identities skipped rate limiting entirely — an attacker holding a stolen
+    // key for an archived identity could hammer the gateway uncharged.
+    //
+    // This test pins the contract used by the middleware: after archive,
+    // looking up the api_key by prefix with the inclusive variant must still
+    // return a row whose identity_id is set, so the bucket can be charged
+    // before auth eventually rejects with 403.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{base}");
+    let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "rl-archived").await;
+    let org_uuid: Uuid = org_id.parse().unwrap();
+
+    let sub = make_subagent(&client, &base, &admin_key, &agent_id, "doomed").await;
+    let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
+    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
+    let prefix = sub_key["key_prefix"].as_str().unwrap().to_string();
+
+    // Archive the sub-agent — auto-revokes its API key with reason='identity_archived'.
+    force_org_config(&pool, org_uuid, 60, 30).await;
+    sqlx::query("UPDATE identities SET last_active_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(sub_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    overslash_db::repos::identity::archive_idle_subagents(&pool)
+        .await
+        .unwrap();
+
+    // Pre-fix behavior: find_by_prefix filters out revoked keys → None.
+    // The middleware would then skip rate limiting entirely.
+    let exclusive = overslash_db::repos::api_key::find_by_prefix(&pool, &prefix)
+        .await
+        .unwrap();
+    assert!(
+        exclusive.is_none(),
+        "find_by_prefix must continue to hide revoked keys"
+    );
+
+    // Post-fix behavior: find_by_prefix_including_archived returns the row, so
+    // the rate-limit middleware can charge the bucket on the resolved identity.
+    let inclusive = overslash_db::repos::api_key::find_by_prefix_including_archived(&pool, &prefix)
+        .await
+        .unwrap()
+        .expect("auto-revoked key must be visible to the rate-limit lookup");
+    assert_eq!(inclusive.identity_id, Some(sub_id));
+    assert!(inclusive.revoked_at.is_some());
+    assert_eq!(
+        inclusive.revoked_reason.as_deref(),
+        Some("identity_archived")
+    );
+}
+
+#[tokio::test]
 async fn test_manually_revoked_key_returns_401_not_403() {
     // A manually-revoked key (revoked_reason IS NULL) on a healthy identity must
     // still return 401, not 403, because nothing about the identity is archived.
