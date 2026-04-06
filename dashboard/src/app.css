@@ -7,7 +7,15 @@
 }
 
 body {
-	font: var(--text-body);
+	/* Use longhands instead of the `font` shorthand. The shorthand would set an
+	   explicit computed `line-height: 20px` on body that descendants inherit
+	   verbatim — so a heading that overrides only `font-size` would keep the
+	   20px line box and clip/overlap. With longhands, only what we set is
+	   inherited; descendants compute their own line-height as needed. */
+	font-family: var(--font-sans);
+	font-size: 14px;
+	font-weight: 400;
+	line-height: 1.4; /* unitless: each descendant scales line-height with its own font-size */
 	background: var(--color-bg);
 	color: var(--color-text);
 }
