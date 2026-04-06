@@ -351,6 +351,167 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
 }
 
 #[tokio::test]
+async fn test_resolve_identity_cap_returns_none_when_unset() {
+    use overslash_api::services::rate_limit::RateLimitConfigCache;
+    use std::time::Duration;
+
+    let pool = common::test_pool().await;
+    let (_addr, _client) = common::start_api(pool.clone()).await;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let identity_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'agent')")
+        .bind(identity_id)
+        .bind(org_id)
+        .bind("test-agent")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cache = RateLimitConfigCache::new(Duration::from_secs(30));
+    let resolved = cache.resolve_identity_cap(&pool, org_id, identity_id).await;
+    assert!(resolved.is_none());
+}
+
+#[tokio::test]
+async fn test_resolve_identity_cap_returns_some_when_set() {
+    use overslash_api::services::rate_limit::RateLimitConfigCache;
+    use std::time::Duration;
+
+    let pool = common::test_pool().await;
+    let (_addr, _client) = common::start_api(pool.clone()).await;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let identity_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'agent')")
+        .bind(identity_id)
+        .bind(org_id)
+        .bind("test-agent")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    overslash_db::repos::rate_limit::upsert(
+        &pool,
+        org_id,
+        "identity_cap",
+        Some(identity_id),
+        None,
+        7,
+        60,
+    )
+    .await
+    .unwrap();
+
+    let cache = RateLimitConfigCache::new(Duration::from_secs(30));
+    let resolved = cache
+        .resolve_identity_cap(&pool, org_id, identity_id)
+        .await
+        .expect("identity cap should be set");
+    assert_eq!(resolved.max_requests, 7);
+    assert_eq!(resolved.window_seconds, 60);
+}
+
+#[tokio::test]
+async fn test_in_memory_store_separate_keys_independent() {
+    use overslash_api::services::rate_limit::{InMemoryRateLimitStore, RateLimitStore};
+
+    let store = InMemoryRateLimitStore::new();
+
+    // Saturate key A
+    for _ in 0..3 {
+        store.check_and_increment("a", 3, 60).await;
+    }
+    let a_blocked = store.check_and_increment("a", 3, 60).await;
+    assert!(!a_blocked.allowed);
+
+    // Key B is independent
+    let b_allowed = store.check_and_increment("b", 3, 60).await;
+    assert!(b_allowed.allowed);
+    assert_eq!(b_allowed.remaining, 2);
+}
+
+#[tokio::test]
+async fn test_in_memory_store_window_rolls_over() {
+    use overslash_api::services::rate_limit::{InMemoryRateLimitStore, RateLimitStore};
+
+    let store = InMemoryRateLimitStore::new();
+    // Burn through a 1-second window
+    for _ in 0..3 {
+        store.check_and_increment("rollover", 3, 1).await;
+    }
+    let blocked = store.check_and_increment("rollover", 3, 1).await;
+    assert!(!blocked.allowed);
+
+    // Wait for the window to elapse
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let allowed = store.check_and_increment("rollover", 3, 1).await;
+    assert!(allowed.allowed, "new window should reset the counter");
+}
+
+#[tokio::test]
+async fn test_get_most_permissive_for_groups_picks_highest_throughput() {
+    let pool = common::test_pool().await;
+    let (_addr, _client) = common::start_api(pool.clone()).await;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let g1 = Uuid::new_v4();
+    let g2 = Uuid::new_v4();
+    sqlx::query("INSERT INTO groups (id, org_id, name) VALUES ($1, $2, $3), ($4, $2, $5)")
+        .bind(g1)
+        .bind(org_id)
+        .bind("g1")
+        .bind(g2)
+        .bind("g2")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // g1: 200 / 3600s = 0.055/s
+    // g2: 100 / 60s   = 1.667/s   ← higher throughput, should win
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "group", None, Some(g1), 200, 3600)
+        .await
+        .unwrap();
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "group", None, Some(g2), 100, 60)
+        .await
+        .unwrap();
+
+    let row =
+        overslash_db::repos::rate_limit::get_most_permissive_for_groups(&pool, org_id, &[g1, g2])
+            .await
+            .unwrap()
+            .expect("should find a group limit");
+
+    assert_eq!(row.group_id, Some(g2));
+    assert_eq!(row.max_requests, 100);
+    assert_eq!(row.window_seconds, 60);
+}
+
+#[tokio::test]
 async fn test_resolve_user_budget_per_user_override_wins() {
     use overslash_api::services::rate_limit::RateLimitConfigCache;
     use std::time::Duration;
