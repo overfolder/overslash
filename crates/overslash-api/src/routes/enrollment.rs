@@ -512,6 +512,20 @@ async fn resolve_enrollment(
                 ));
             }
 
+            // The approving user may only graft new agents onto their own
+            // subtree: either themselves (a user parent) or an agent/sub_agent
+            // they own. Otherwise an org member could enroll an agent under
+            // another user's tree without their consent.
+            let parent_in_callers_subtree = match parent.kind.as_str() {
+                "user" => parent.id == session.sub,
+                _ => parent.owner_id == Some(session.sub),
+            };
+            if !parent_in_callers_subtree {
+                return Err(AppError::Forbidden(
+                    "parent must be the approving user or an identity they own".into(),
+                ));
+            }
+
             // Owner inherits the parent's ownership chain: if the parent is a user,
             // the user IS the owner; otherwise the new agent shares the parent's owner_id.
             let owner_id = if parent.kind == "user" {
