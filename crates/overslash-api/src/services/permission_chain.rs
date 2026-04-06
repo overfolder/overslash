@@ -89,18 +89,22 @@ pub async fn walk(
 
     // Even after finding a gap, a deny rule on any non-inheriting ancestor
     // above the gap must still block the request -- a parent's deny is not
-    // approvable.
+    // approvable. This sweep includes the user (index 0): the user level is
+    // normally gated by the group ceiling rather than rules, but if the user
+    // *does* carry an explicit deny rule it must still be honored as a
+    // defense-in-depth measure.
     if gap_idx >= 1 {
-        let mut k = gap_idx - 1;
-        while k >= 1 {
-            let ident = &chain[k];
-            if !ident.inherit_permissions {
-                let rules = load_rules(pool, ident.id).await?;
-                if let PermissionResult::Denied(reason) = check_permissions(&rules, perm_keys) {
-                    return Ok(ChainWalkResult::Denied(reason));
-                }
-            }
+        let mut k = gap_idx; // exclusive upper bound below
+        while k > 0 {
             k -= 1;
+            let ident = &chain[k];
+            if ident.inherit_permissions {
+                continue;
+            }
+            let rules = load_rules(pool, ident.id).await?;
+            if let PermissionResult::Denied(reason) = check_permissions(&rules, perm_keys) {
+                return Ok(ChainWalkResult::Denied(reason));
+            }
         }
     }
 

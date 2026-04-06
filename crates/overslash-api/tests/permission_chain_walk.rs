@@ -691,3 +691,24 @@ async fn current_resolver_identity_key_can_resolve() {
         "user (ancestor) should be allowed to resolve"
     );
 }
+
+// ── Test: deny rule on the user blocks even though the user level is
+//         normally gated by the group ceiling. Defense-in-depth.
+
+#[tokio::test]
+async fn user_level_deny_rule_blocks() {
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let agent_id = create_identity(&base, &org_key, "agent", "agent", Some(user_id)).await;
+    let agent_key = create_api_key(&base, &org_key, org_id, agent_id, "ak").await;
+
+    // Agent has no rules → gap at agent. User has an explicit deny rule
+    // covering POST. The chain walk must consult the user's deny even though
+    // index 0 is normally skipped.
+    add_rule(&base, &org_key, user_id, "http:POST:**", "deny").await;
+
+    let resp = execute(&base, &agent_key, mock_addr).await;
+    assert_eq!(resp.status(), 403);
+}
