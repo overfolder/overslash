@@ -245,6 +245,7 @@ async fn test_archive_revokes_api_keys_and_expires_approvals() {
         &overslash_db::repos::approval::CreateApproval {
             org_id: org_uuid,
             identity_id: sub_id,
+            current_resolver_identity_id: sub_id,
             action_summary: "test",
             action_detail: None,
             permission_keys: &[],

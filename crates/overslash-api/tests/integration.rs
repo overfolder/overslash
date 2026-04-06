@@ -183,7 +183,10 @@ async fn start_mock() -> SocketAddr {
     addr
 }
 
-/// Helper: create org + identity + api key, return (api_base_url, agent_key, org_id, identity_id, admin_key)
+/// Helper: create org + identity + api key.
+/// Returns (api_base_url, agent_key, org_id, identity_id, admin_key).
+/// `admin_key` is an org-scoped (no-identity) key suitable for resolving
+/// approvals — agents are not allowed to resolve their own.
 async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid, String) {
     let (api_addr, client) = start_api(pool).await;
     let base = format!("http://{api_addr}");
@@ -333,7 +336,7 @@ async fn test_happy_path_execute_with_permission() {
 async fn test_approval_flow() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     // Store secret
@@ -363,10 +366,10 @@ async fn test_approval_flow() {
     assert_eq!(body["status"], "pending_approval");
     let approval_id = body["approval_id"].as_str().unwrap();
 
-    // Resolve with allow
+    // Resolve with allow (admin key, not the agent's own)
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"resolution": "allow"}))
         .send()
         .await
@@ -380,7 +383,7 @@ async fn test_approval_flow() {
 async fn test_allow_remember_creates_rule() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -409,10 +412,10 @@ async fn test_allow_remember_creates_rule() {
         .unwrap()
         .to_string();
 
-    // Resolve with allow_remember
+    // Resolve with allow_remember (admin context)
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"resolution": "allow_remember"}))
         .send()
         .await
@@ -438,7 +441,7 @@ async fn test_allow_remember_creates_rule() {
 async fn test_resolve_rejects_invalid_remember_keys() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -469,7 +472,7 @@ async fn test_resolve_rejects_invalid_remember_keys() {
     // Resolve with remember_keys not in the approval's permission_keys → 400
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "resolution": "allow_remember",
             "remember_keys": ["admin:*:*"]
@@ -484,7 +487,7 @@ async fn test_resolve_rejects_invalid_remember_keys() {
 async fn test_resolve_rejects_invalid_ttl() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -515,7 +518,7 @@ async fn test_resolve_rejects_invalid_ttl() {
     // Resolve with invalid ttl → 400
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "resolution": "allow_remember",
             "ttl": "not_a_duration"
@@ -931,7 +934,7 @@ async fn test_webhook_dispatch_on_approval_resolve() {
     // Resolve approval — should trigger webhook
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"resolution": "allow"}))
         .send()
         .await
@@ -2327,7 +2330,7 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
 async fn test_resolve_with_broader_remember_keys_succeeds() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -2385,7 +2388,7 @@ async fn test_resolve_with_broader_remember_keys_succeeds() {
     // Resolve with the broadest suggested tier — should succeed
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "resolution": "allow_remember",
             "remember_keys": broadest_tier_keys
@@ -2404,7 +2407,7 @@ async fn test_resolve_with_broader_remember_keys_succeeds() {
 async fn test_resolve_with_unrelated_broader_keys_still_fails() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
-    let (base, key, _org_id, _ident_id, _admin_key) = setup(pool).await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
     client
@@ -2435,7 +2438,7 @@ async fn test_resolve_with_unrelated_broader_keys_still_fails() {
     // Resolve with an unrelated broader key — should still fail
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
             "resolution": "allow_remember",
             "remember_keys": ["slack:*:*"]

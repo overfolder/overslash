@@ -36,6 +36,37 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::
     .await
 }
 
+/// Read just the `approval_auto_bubble_secs` setting for an org.
+/// Returns `None` if the org doesn't exist.
+pub async fn get_approval_auto_bubble_secs(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<i32>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT approval_auto_bubble_secs FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.approval_auto_bubble_secs))
+}
+
+/// Update the `approval_auto_bubble_secs` setting for an org.
+pub async fn set_approval_auto_bubble_secs(
+    pool: &PgPool,
+    id: Uuid,
+    secs: i32,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET approval_auto_bubble_secs = $2, updated_at = now() WHERE id = $1",
+        id,
+        secs,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,

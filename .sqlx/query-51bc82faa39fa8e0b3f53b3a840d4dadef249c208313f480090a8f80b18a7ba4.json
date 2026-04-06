@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals WHERE org_id = $1 AND status = 'pending' ORDER BY created_at DESC",
+  "query": "UPDATE approvals\n            SET current_resolver_identity_id = $2,\n                resolver_assigned_at = now()\n          WHERE id = $1 AND status = 'pending'\n          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
   "describe": {
     "columns": [
       {
@@ -20,61 +20,74 @@
       },
       {
         "ordinal": 3,
+        "name": "current_resolver_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "resolver_assigned_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
         "name": "action_summary",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "action_detail",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "permission_keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "remember",
         "type_info": "Bool"
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "token",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
+      false,
+      false,
       false,
       false,
       false,
@@ -90,5 +103,5 @@
       false
     ]
   },
-  "hash": "45d215fc55e54a2d073bf93e3027e9fd46557b168ec3b5909c20601fa12cf724"
+  "hash": "51bc82faa39fa8e0b3f53b3a840d4dadef249c208313f480090a8f80b18a7ba4"
 }

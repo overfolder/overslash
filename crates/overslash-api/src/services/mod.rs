@@ -6,5 +6,6 @@ pub mod jwt;
 pub mod oauth;
 pub mod oidc_discovery;
 pub mod param_resolver;
+pub mod permission_chain;
 pub mod rate_limit;
 pub mod webhook_dispatcher;
