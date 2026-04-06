@@ -11,7 +11,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::Result,
-    extractors::{AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -45,10 +45,11 @@ struct PermissionResponse {
 
 async fn create_permission(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Json(req): Json<CreatePermissionRequest>,
 ) -> Result<Json<PermissionResponse>> {
+    let auth = acl;
     let row = overslash_db::repos::permission_rule::create(
         &state.db,
         auth.org_id,
@@ -110,10 +111,11 @@ async fn list_permissions(
 
 async fn delete_permission(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     let deleted = overslash_db::repos::permission_rule::delete(&state.db, id, auth.org_id).await?;
 
     if deleted {

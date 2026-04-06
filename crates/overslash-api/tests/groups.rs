@@ -79,9 +79,10 @@ async fn bootstrap() -> (String, String, Uuid, String) {
         .unwrap();
     let user_id: Uuid = user["id"].as_str().unwrap().parse().unwrap();
 
-    // User-bound API key
+    // User-bound API key (requires admin auth now that org has keys)
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
         .json(&json!({"org_id": org_id, "identity_id": user_id, "name": "user-key"}))
         .send()
         .await
@@ -126,7 +127,8 @@ async fn group_crud() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let groups: Vec<Value> = resp.json().await.unwrap();
-    assert_eq!(groups.len(), 1);
+    // 2 system groups (Everyone, Admins) + 1 test group = 3
+    assert_eq!(groups.len(), 3);
 
     // Get group
     let resp = client
@@ -173,7 +175,8 @@ async fn group_crud() {
         .await
         .unwrap();
     let groups: Vec<Value> = resp.json().await.unwrap();
-    assert_eq!(groups.len(), 0);
+    // Only system groups remain
+    assert_eq!(groups.len(), 2);
 }
 
 #[tokio::test]
@@ -325,15 +328,14 @@ async fn grants_require_org_level_service() {
     let grants: Vec<Value> = resp.json().await.unwrap();
     assert_eq!(grants.len(), 1);
 
-    // Create a user-level template + service
+    // Create an org-level template, then a user-level service from it
     client
         .post(format!("{base}/v1/templates"))
-        .header("Authorization", format!("Bearer {user_key}"))
+        .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({
             "key": "user-svc",
             "display_name": "User Service",
             "hosts": ["user.example.com"],
-            "user_level": true,
         }))
         .send()
         .await
@@ -400,7 +402,8 @@ async fn service_visibility_filtered_by_groups() {
     let svc1_id = create_org_service(&base, &client, &org_key, "svc-a").await;
     create_org_service(&base, &client, &org_key, "svc-b").await;
 
-    // Before groups: user sees all services (permissive)
+    // User is only in system groups (Everyone) which don't trigger filtering.
+    // Permissive mode applies — user sees all services.
     let resp = client
         .get(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {user_key}"))
@@ -408,9 +411,14 @@ async fn service_visibility_filtered_by_groups() {
         .await
         .unwrap();
     let services: Vec<Value> = resp.json().await.unwrap();
+    let before_names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
     assert!(
-        services.len() >= 2,
-        "should see all services without groups"
+        before_names.contains(&"svc-a"),
+        "permissive: should see svc-a when only in system groups"
+    );
+    assert!(
+        before_names.contains(&"svc-b"),
+        "permissive: should see svc-b when only in system groups"
     );
 
     // Create group with only svc-a granted

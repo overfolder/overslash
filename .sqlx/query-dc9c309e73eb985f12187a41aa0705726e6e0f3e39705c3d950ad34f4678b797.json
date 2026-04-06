@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO groups (org_id, name, description, is_system, allow_raw_http)\n         VALUES ($1, 'Everyone', 'All users in this organization', true, true)\n         ON CONFLICT (org_id, name) DO NOTHING\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dc9c309e73eb985f12187a41aa0705726e6e0f3e39705c3d950ad34f4678b797"
+}

@@ -71,6 +71,16 @@ pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<ApiKeyRow>, 
     .await
 }
 
+pub async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT COUNT(*) AS count FROM api_keys WHERE org_id = $1 AND revoked_at IS NULL",
+        org_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.count.unwrap_or(0))
+}
+
 pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",

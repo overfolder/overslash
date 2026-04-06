@@ -100,7 +100,9 @@ pub struct TokenInjection {
 /// An action within a service (maps to an HTTP request template).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceAction {
+    #[serde(default)]
     pub method: String,
+    #[serde(default)]
     pub path: String,
     pub description: String,
     #[serde(default)]

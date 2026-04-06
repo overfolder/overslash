@@ -14,9 +14,12 @@ pub struct ServiceInstanceRow {
     pub connection_id: Option<Uuid>,
     pub secret_name: Option<String>,
     pub status: String,
+    pub is_system: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
+
+crate::repos::impl_org_owned!(ServiceInstanceRow);
 
 pub struct CreateServiceInstance<'a> {
     pub org_id: Uuid,
@@ -46,7 +49,7 @@ pub async fn create(
          template_key, template_id, connection_id, secret_name, status) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at",
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at",
         input.org_id,
         input.owner_identity_id,
         input.name,
@@ -65,7 +68,7 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ServiceInstance
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances WHERE id = $1",
         id,
     )
@@ -83,7 +86,7 @@ pub async fn get_by_name(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND name = $3",
         org_id,
@@ -112,7 +115,7 @@ pub async fn resolve_by_name(
         return sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, status, created_at, updated_at \
+             template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
             org_id,
@@ -127,7 +130,7 @@ pub async fn resolve_by_name(
         let user_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-             template_id, connection_id, secret_name, status, created_at, updated_at \
+             template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
              FROM service_instances \
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
@@ -145,7 +148,7 @@ pub async fn resolve_by_name(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2 AND status = 'active'",
         org_id,
@@ -163,7 +166,7 @@ pub async fn list_by_org(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY name",
         org_id,
@@ -181,7 +184,7 @@ pub async fn list_by_user(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY name",
         org_id,
@@ -200,7 +203,7 @@ pub async fn list_available(
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances \
          WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) \
          ORDER BY name",
@@ -226,7 +229,7 @@ pub async fn list_available_with_groups(
             sqlx::query_as!(
                 ServiceInstanceRow,
                 "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
-                 template_id, connection_id, secret_name, status, created_at, updated_at \
+                 template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
                  FROM service_instances \
                  WHERE org_id = $1 AND (owner_identity_id = $2 OR id = ANY($3)) \
                  ORDER BY name",
@@ -251,7 +254,7 @@ pub async fn update_status(
         "UPDATE service_instances SET status = $2, updated_at = now() \
          WHERE id = $1 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at",
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at",
         id,
         status,
     )
@@ -279,7 +282,7 @@ pub async fn update(
          updated_at = now() \
          WHERE id = $1 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
-         template_id, connection_id, secret_name, status, created_at, updated_at",
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at",
         id,
         input.name,
         update_conn,

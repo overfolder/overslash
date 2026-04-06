@@ -8,9 +8,10 @@ use uuid::Uuid;
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 /// Bootstrap org + agent identity + org-level API key.
-/// Returns (org_id, agent_identity_id, org_api_key).
+/// Returns (org_id, agent_identity_id, org_admin_api_key).
 async fn setup_org_with_agent(base: &str, client: &reqwest::Client) -> (Uuid, Uuid, String) {
-    let (org_id, _agent_id, api_key) = common::bootstrap_org_identity(base, client).await;
+    let (org_id, _agent_id, _agent_key, api_key) =
+        common::bootstrap_org_identity(base, client).await;
 
     // bootstrap_org_identity already creates an agent identity and an identity-bound key.
     // But for enrollment tokens we need the org-level key (to create tokens) and the agent identity.
@@ -737,6 +738,7 @@ async fn test_token_crud_with_session() {
     // Create an org-level key
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("cookie", format!("oss_session={session}"))
         .json(&json!({ "org_id": org_id, "name": "admin" }))
         .send()
         .await

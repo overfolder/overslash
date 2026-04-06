@@ -10,7 +10,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
 };
 use overslash_core::crypto;
 
@@ -40,11 +40,12 @@ struct PutSecretResponse {
 
 async fn put_secret(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(name): Path<String>,
     Json(req): Json<PutSecretRequest>,
 ) -> Result<Json<PutSecretResponse>> {
+    let auth = acl;
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
 
@@ -110,10 +111,11 @@ async fn list_secrets(
 
 async fn delete_secret(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
+    let auth = acl;
     let deleted = overslash_db::repos::secret::soft_delete(&state.db, auth.org_id, &name).await?;
     if deleted {
         let _ = overslash_db::repos::audit::log(

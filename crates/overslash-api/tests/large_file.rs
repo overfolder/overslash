@@ -12,7 +12,7 @@ async fn test_response_too_large() {
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     // Request a 10 KB file — should exceed 1 KB limit
     let resp = client
@@ -45,7 +45,7 @@ async fn test_prefer_stream_large_file() {
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     // Request 100 KB with prefer_stream — should succeed even though limit is 1 KB
     let resp = client
@@ -78,7 +78,8 @@ async fn test_prefer_stream_with_auth() {
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
 
     // Create a secret
     client
@@ -92,7 +93,7 @@ async fn test_prefer_stream_with_auth() {
     // Create permission rule
     client
         .post(format!("{base}/v1/permissions"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "identity_id": ident_id,
             "action_pattern": "http:**",
@@ -139,7 +140,8 @@ async fn test_google_drive_redirect_stream() {
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, ident_id, api_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
 
     // Create a secret for the Authorization header
     client
@@ -153,7 +155,7 @@ async fn test_google_drive_redirect_stream() {
     // Create permission rule
     client
         .post(format!("{base}/v1/permissions"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
             "identity_id": ident_id,
             "action_pattern": "http:**",

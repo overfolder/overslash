@@ -39,12 +39,12 @@ async fn test_eventbrite_e2e() {
     let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
 
     // Bootstrap org + identity + API key
-    let (org_id, ident_id, key) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
     // Store BYOC credential via API
     let byoc_resp: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
-        .header(common::auth(&key).0, common::auth(&key).1)
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
         .json(&json!({
             "provider": "eventbrite",
             "client_id": client_id,
@@ -84,14 +84,14 @@ async fn test_eventbrite_e2e() {
     // Create broad permission rules: http:** for raw HTTP, eventbrite:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
-        .header(common::auth(&key).0, common::auth(&key).1)
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
         .send()
         .await
         .unwrap();
     client
         .post(format!("{base}/v1/permissions"))
-        .header(common::auth(&key).0, common::auth(&key).1)
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
         .json(&json!({"identity_id": ident_id, "action_pattern": "eventbrite:*:*"}))
         .send()
         .await

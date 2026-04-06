@@ -191,6 +191,7 @@ async fn chain_inheritance_through_multiple_levels() {
     // Sub-agent API key
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({"org_id": org_id, "identity_id": sub_id, "name": "sub-key"}))
         .send()
         .await
@@ -249,6 +250,7 @@ async fn chain_break_stops_inheritance() {
 
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({"org_id": org_id, "identity_id": sub_id, "name": "sub-key"}))
         .send()
         .await
@@ -382,6 +384,7 @@ async fn setup_with_pool(
 
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_api_key}"))
         .json(&json!({"org_id": org_id, "identity_id": agent_id, "name": "agent-key"}))
         .send()
         .await

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, name, description, allow_raw_http, created_at, updated_at\n         FROM groups WHERE id = $1",
+  "query": "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at\n         FROM groups WHERE org_id = $1 ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -30,11 +30,16 @@
       },
       {
         "ordinal": 5,
+        "name": "is_system",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -51,8 +56,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "403b619cb102762965ddaccdd653a72a3735a5e722f0f84943ac47e8fd42a9d4"
+  "hash": "5f8bc8eb5bfc2e884d47519f3e87d93ba0434675abf3624c917b74c910ee03f2"
 }
