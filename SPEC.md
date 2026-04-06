@@ -146,6 +146,8 @@ The enrollment token has a **fixed 15-minute TTL**. The agent identity appears i
 
 The consent URL is scoped to the org. Any authenticated user in the org with agent-creation permissions can approve — not just one specific user. After approval, the agent's token is exchanged for a permanent API key server-side. The agent, polling or via webhook, picks up the key.
 
+**Picking up the key.** The agent retrieves its permanent API key from `GET /v1/enrollment/{token}` (the same single-use token from the original request). Until consent, this returns `{ status: "awaiting_consent" }`. After consent it returns `{ status: "ready", api_key: "..." }` exactly once and invalidates the token. The approved-but-unclaimed state has its own **15-minute TTL** (separate from the 15-minute pre-approval TTL); if unclaimed, the enrolled identity is rolled back. Agents can use polling, SSE (§10 *Async event delivery*), or webhooks for the transition.
+
 Note: `inherit_permissions` is not offered during agent-initiated enrollment — the user configures this after enrollment if desired.
 
 ### Identity Reconfiguration
@@ -280,6 +282,26 @@ Approval and secret requests are **not notified immediately**. Only requests tha
 
 "Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Permission rules and remembered approvals are the same concept — "permission rules" is the storage format, "remembered approvals" is the user-facing term. Users can view and revoke them per identity via the dashboard.
 
+### User Identities Skip Layer 2
+
+Permission keys (Layer 2) are an **agent-only** concept. When a request is authenticated as a **user identity** — not an agent — only Layer 1 (group ceiling) applies. There is no approval flow, no permission key resolution, no "Allow & Remember" prompt: the user is their own approver, and any action within their group ceiling executes immediately.
+
+This rule is transport-agnostic. It holds for the dashboard, the API Explorer, an MCP session logged in as a user, a CLI calling the REST API directly with user credentials, or any other surface. **What matters is the identity type on the credential, not the channel.**
+
+A practical consequence: an MCP session establishes a *user* session, not an agent session. If a customer wants MCP usage gated by per-action approvals, they must instead enroll an agent identity for the MCP client and authenticate it with an agent API key — at which point Layer 2 kicks in.
+
+### Platform-Managed Notifications
+
+When a platform (Overfolder, OpenClaw, etc.) is mediating between Overslash and a user — surfacing approvals, secret requests, and OAuth handoffs in its own UX — Overslash's built-in notification machinery (bell badge, email, 1-minute delayed webhook) becomes redundant and can produce duplicate prompts.
+
+Each identity (or each org) can set `notifications.managed_by_platform = true`. When set:
+
+- The 1-minute delayed notification webhook is **suppressed** for that identity's approvals and secret requests
+- The bell badge and email notifications are **suppressed**
+- The platform is responsible for surfacing pending events via its own webhook subscription, polling, or SSE stream (§10 *Async event delivery*)
+
+This is a per-identity flag (so a single org can have both platform-mediated agents and direct-use agents) but typically set at agent-creation time by the platform's enrollment flow.
+
 ### Specificity Tiers
 
 When an approval is created, Overslash derives the most specific permission keys from the request and generates broader alternatives by progressively replacing segments with `*`. These are returned as structured data in the approval payload — no human-readable labels, so platforms can render them in any language or UI format.
@@ -391,6 +413,8 @@ OAuth client credentials can come from three sources:
 2. **Overslash system credentials** — managed by Overslash operators, used as defaults for global templates
 
 When a user creates a service from a template that uses OAuth, the connect flow walks them through the OAuth redirect. The resulting token is stored encrypted and bound to that service instance.
+
+**System credentials and verification.** Overslash system credentials are subject to the upstream IdP's app-verification process. For Google in particular, sensitive scopes (Calendar, basic Gmail/Drive) require Google brand verification, and restricted scopes (full Gmail/Drive) require an annual CASA assessment by an authorized lab. This is expensive, slow, and recurs yearly. For Google Workspace customers, **prefer per-org BYOC (bring-your-own client) credentials configured at the service-template level** — each Workspace admin creates their own GCP project, marks its OAuth consent screen as Internal, and provides client ID + secret to Overslash. Internal-tier clients require no Google verification regardless of scope. System credentials remain available as a default for low-stakes scopes and consumer accounts, but Workspace orgs should be onboarded via BYOC. (See [docs/design/google-workspace-oauth.md](docs/design/google-workspace-oauth.md) for the full analysis.)
 
 ---
 
@@ -508,6 +532,30 @@ actions:
 - **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. Without `scope_param`, the arg is `*`.
 - **`risk`** — enum: `read`, `write`, `delete`. Defaults to `read` when omitted. Informational for the UI and influences auto-approve-reads behavior (`read` → non-mutating, `write`/`delete` → mutating).
 
+### Secret-Token Templates
+
+Templates whose `auth.type` is `api_key` (or any other secret-token variant) declare two extra fields to make the secret-provide flow usable:
+
+```yaml
+key: linear
+display_name: Linear
+hosts: [api.linear.app]
+auth:
+  - type: api_key
+    instructions: "Paste your Linear personal API key. Find it at https://linear.app/settings/api"
+    injection: { as: header, header_name: Authorization, prefix: "Bearer " }
+    verify:
+      method: GET
+      path: /viewer
+      expect_status: 200
+```
+
+- **`instructions`** — a short human-facing string telling the user *where to get the secret* and *what kind of secret it is*. Rendered verbatim on the `/secrets/provide/...` page above the input field, and returned in the `create_service_from_template` response so the agent can mention it when surfacing the URL. Without this, users staring at a "paste secret here" page have no idea what's expected. **Required for secret-token templates.**
+
+- **`verify`** — an optional pre-flight HTTP probe fired immediately after the user submits the secret, before flipping the service to `active`. If the probe succeeds, the service goes `active`. If it fails (401, 403, network error), the service stays in `pending_credentials`, the error is shown on the same secret-provide page, and the user can paste a new value without restarting the flow (the row's JWT is re-issued in place). The annoying failure mode for secret services is "user typo'd the key, agent doesn't find out until hours later" — `verify` closes that gap. Opt-in per template because some upstream APIs charge for every request or rate-limit auth checks aggressively; for most APIs a `GET /viewer`-style probe is free and fast.
+
+**Multi-secret templates** (e.g., AWS access key ID + secret access key) declare multiple slots under the auth block; the secret-provide page renders one input per slot and submission is atomic.
+
 ### Services (Instances)
 
 A service is created by instantiating a template with a name and credentials:
@@ -554,7 +602,34 @@ This lets users override org defaults with their own credentials (e.g., personal
 - Service discovery is group-gated: `GET /v1/services` returns org-level services only if the calling user (or agent's owner-user) belongs to a group that grants access to that service.
 - User-owned services are always visible to their creator and bypass the group ceiling, but their agents still need permission keys via approvals.
 
-**Service lifecycle:** **Draft** → **Active** → **Archived**. Draft services can be tested in the API Explorer but not used by agents. Archived services are hidden from discovery but not deleted — existing remembered approvals are preserved.
+**Service lifecycle:** see *Service Lifecycle States* below.
+
+### Service Lifecycle States
+
+A service instance moves through a small state machine. The same machine applies whether credentials come via OAuth, secret token, or no credentials at all (shared/free APIs).
+
+| State | Meaning | Visible in `overslash_search`? | Cleanup |
+|---|---|---|---|
+| **`pending_credentials`** | Created, awaiting OAuth callback or secret submission via the credential flow URL | **No** — would pollute the catalog and let other agents try to use it | TTL: **15 minutes**, then deleted |
+| **`active`** | Ready to use; credentials stored and (optionally) verified | Yes | — |
+| **`error`** | OAuth denied, scopes insufficient, secret rejected, or credential verification failed in a non-recoverable way | **No** | TTL: **24 hours** for forensic visibility, then deleted |
+| **`archived`** | Soft-deleted, hidden from discovery; audit log + remembered approvals preserved | No | Manual restore or hard-delete by owner |
+
+There is intentionally **no `Draft` state**. A service is either configured-and-active or it is not. To test an active service before exposing it to agents, set the per-service flag `exposed_to_agents: false` — `overslash_search` filters it out for agent identities but the API Explorer can still execute against it as the owner-user.
+
+**`pending_credentials` is a single state with a `flow_kind: "oauth" | "secret"` discriminator** on the row. The lifecycle code has one path; only the credential-redemption surfaces (OAuth callback handler vs `/secrets/provide/...` page) differ.
+
+**Pending visibility:** the owner-user sees pending services in the dashboard with a "Connecting…" badge and a "Cancel" button (manual delete before TTL). The creating agent sees its own pending services via `overslash_auth(action="status")`. No other identity in the org sees them.
+
+**Executing against a pending service** returns `service_not_ready`, distinct from `not_authorized`. Agents should poll `status` (or subscribe via SSE) instead of retry-spamming `execute`.
+
+**Retrying a failed credential flow:** `overslash_auth(action="retry_credentials", service=...)` works on rows in `pending_credentials` (extends TTL, mints a fresh URL, invalidates the previous one) or `error` (flips back to `pending_credentials`, mints a fresh URL). The service ID and name are preserved across retries — the dashboard's "Connecting…" view stays continuous.
+
+**Concurrent flows on one row:** the OAuth `state` value or secret JWT is single-use. `retry_credentials` purges the previous one before minting a fresh one, preventing replay races where two browser tabs could finish a flow.
+
+**OAuth scope downgrade:** if the user grants only a subset of requested scopes, Overslash records the *actually granted* scopes on the service and flips to `active`. `overslash_search` returns the service's `actions` list filtered to the granted scopes — the agent sees a smaller surface than the template advertises and can decide what to do.
+
+**Name conflicts at create time:** if the owner already has a service (active *or* pending) with the requested name, `create_service_from_template` returns `409 conflict` with the existing service ID. No auto-suffixing — the agent loses track of names. The agent can pick a different name or call `retry_credentials` against the existing pending row.
 
 ### Creating a Service
 
@@ -564,6 +639,22 @@ This lets users override org defaults with their own credentials (e.g., personal
 4. Optionally assign to groups (org-admin only)
 
 For org services with OAuth (per-user tokens): the org-admin creates the service with the org's OAuth app credentials. Users in the assigned groups see the service and complete their individual OAuth flow to get their own token. The service is shared, but each user has their own credential.
+
+### Programmatic Service Creation (Agent-Led)
+
+The dashboard flow above has an exact REST counterpart: agents can instantiate templates without any human dashboard interaction. This is the path used by the meta tool `overslash_auth(action="create_service_from_template", ...)` (§10).
+
+Authority rules:
+- An **agent** can create services on behalf of its owner-user via `on_behalf_of` (§6 *Scoping*) — the resulting service is owned by the user, shared across all agents in that subtree.
+- An agent **cannot** create org-level services. Only org-admins (acting as users) can.
+- The calling identity must have the template visible to it (§9 *Tier visibility*).
+
+The creation call returns one of:
+- **OAuth-based template** → an OAuth start URL the user must visit. The service is created in a pending state pending the OAuth callback.
+- **Secret-based template** (API key, bearer token) → a signed secret-provide URL the user must visit. The service is created in a pending state pending secret provisioning. (See §11 *Standalone Pages*.)
+- **Shared/no-credential template** → the service is created `Active` immediately.
+
+Once the user has supplied credentials at the returned URL, the service flips to `Active` and the agent learns about it via polling, SSE (§10 *Async event delivery*), or webhook. From the agent's perspective, the entire onboarding of a new integration is: search → auth.create → surface URL to user → poll for active → execute. **No dashboard required.**
 
 ### OpenAPI Import
 
@@ -587,9 +678,63 @@ Three tools that let any LLM agent use Overslash:
 |------|---------|
 | `overslash_search` | Discover services and actions. Returns schemas + auth status. |
 | `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. |
-| `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities. |
+| `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. |
 
-The agent platform wraps these 3 tools and handles plumbing (receiving approval events via webhook/polling, surfacing them to the user, and calling the resolve API with user credentials).
+The agent platform wraps these 3 tools and handles plumbing (receiving approval events via webhook/polling/SSE, surfacing them to the user, and calling the resolve API with user credentials).
+
+### `overslash_search`
+
+Discovery returns a structured payload with two distinct kinds of hits:
+
+```json
+{
+  "services": [
+    { "name": "google-calendar", "scope": "user", "status": "active",
+      "template_key": "google-calendar",
+      "auth": { "type": "oauth", "provider": "google", "connected": true },
+      "actions": [ { "key": "list_events", "risk": "read", "params": { ... } }, ... ] }
+  ],
+  "templates": [
+    { "key": "linear", "tier": "global", "display_name": "Linear",
+      "auth": { "type": "api_key" },
+      "actions_summary": ["list_issues", "create_issue", ...],
+      "instantiable": true }
+  ]
+}
+```
+
+- **`services`** — service instances the calling identity can already use (gated by Layer 1 group ceiling and tier visibility).
+- **`templates`** — blueprints visible to the caller that have **no** corresponding instance yet, with `instantiable: true` if the caller has authority to create one (typically via `on_behalf_of` for an agent's owner-user). Templates are filtered by tier visibility (global / org / user with `allow_user_templates`).
+
+Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g., after `create_service_from_template` returns active).
+
+### `overslash_auth`
+
+Sub-actions, by category:
+
+| Category | Action | Purpose |
+|---|---|---|
+| **Service instantiation** | `create_service_from_template` | Create a service instance from a template. Params: `template`, `name`, `scope` (`user`/`org`), `on_behalf_of?`. Returns OAuth start URL, secret-provide URL, or `active` immediately. |
+| | `status` | Poll a pending service. Params: `service`. Returns the service's lifecycle state (`pending_credentials`, `active`, `error`, `archived`) along with `flow_kind` and `flow_url` when pending. See §9 *Service Lifecycle States*. |
+| | `retry_credentials` | Re-issue a fresh credential flow URL for a `pending_credentials` or `error` service. Invalidates any previous URL on the same row. |
+| **Secret management** | `list_secrets` | List secret names + version metadata visible to caller (never values). |
+| | `request_secret` | Request a new secret value from a user. Returns a signed `/secrets/provide/req_...` URL. |
+| **Sub-identities** | `create_subagent` | Create a sub-agent under the calling agent. Params: `name`, `inherit_permissions?`, `ttl?`. Returns API key once. |
+| **Auth introspection** | `whoami` | Return the calling identity's SPIFFE path, depth, owner-user, group memberships. |
+
+### Async Event Delivery
+
+Many flows are asynchronous from the agent's perspective: enrollment consent, OAuth callback, secret provisioning, approval resolution. Overslash supports **three transports** for the same underlying events. Callers pick whichever fits their environment:
+
+| Transport | Best for | Mechanism |
+|---|---|---|
+| **Polling** | Simple agents, no infra | Re-call the relevant `GET` endpoint (`/v1/enrollment/{token}`, `/v1/services/{id}`, `/v1/approvals/{id}`). Idempotent. |
+| **SSE** | Agents that can hold an HTTP connection | `GET /v1/events/stream?topics=...` opens a Server-Sent Events stream. Connection has a fixed **30-second timeout** — clients reconnect with `Last-Event-ID` to resume. The 30s ceiling keeps idle connections cheap, plays nicely with proxies, and forces clients to handle reconnection cleanly. Topics are scoped to the authenticated identity (e.g., `approvals`, `services`, `enrollment`). |
+| **Webhooks** | Platform integrations with their own infra | Configure a webhook endpoint per identity or per org; Overslash POSTs events with HMAC signature. |
+
+The same event payload is delivered regardless of transport. Agents may use any combination — e.g., SSE for liveness during a foreground task, webhooks for background events, polling as a fallback.
+
+When `notifications.managed_by_platform` is set (§5), Overslash's user-facing notifications (bell, email, 1-minute delayed webhook) are suppressed — but the event-stream transports above still fire normally, because the platform is the consumer.
 
 ---
 
@@ -620,7 +765,9 @@ Overslash provides built-in standalone pages for common user interactions. These
 Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, enrollment consent payloads. The built-in pages are a convenience, not a requirement.
 
 - **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
-- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority.
+- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required for the *user landing on the page* (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
+
+  **The API calls that generate these URLs always require an authenticated identity** — typically an enrolled agent acting `on_behalf_of` its owner-user, or a user acting through the dashboard. There is no path for an unenrolled or anonymous caller to issue a secret-provide URL. The "no login" property describes only the user-facing redemption step, not the issuance step.
 - **Enrollment consent** (`/enroll/consent/...`) — requires login. Agent-initiated enrollment approval with name editing and parent placement.
 
 ---
