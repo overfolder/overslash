@@ -413,6 +413,16 @@ async fn get_enrollment_approval(
             let fresh = pending_enrollment::find_by_approval_token(&state.db, &approval_token)
                 .await?
                 .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
+            if fresh.status == "expired" || fresh.expires_at < time::OffsetDateTime::now_utc() {
+                return Ok((
+                    StatusCode::GONE,
+                    Json(json!({
+                        "status": "expired",
+                        "message": "enrollment has expired",
+                    })),
+                )
+                    .into_response());
+            }
             if fresh.status != "pending" {
                 return Ok((
                     StatusCode::OK,
