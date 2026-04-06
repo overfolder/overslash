@@ -11,7 +11,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -126,12 +126,14 @@ struct PatchCleanupConfigRequest {
 
 async fn patch_subagent_cleanup_config(
     State(state): State<AppState>,
-    auth: AuthContext,
+    AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<PatchCleanupConfigRequest>,
 ) -> Result<Json<OrgResponse>> {
-    if id != auth.org_id {
+    // Org-level config is admin-only — read-only and write-only callers must
+    // not be able to widen idle timeouts or retention windows.
+    if id != acl.org_id {
         return Err(AppError::Forbidden(
             "cannot mutate another org's config".into(),
         ));
@@ -161,7 +163,7 @@ async fn patch_subagent_cleanup_config(
         &state.db,
         &AuditEntry {
             org_id: org.id,
-            identity_id: auth.identity_id,
+            identity_id: acl.identity_id,
             action: "org.subagent_cleanup_config.updated",
             resource_type: Some("org"),
             resource_id: Some(org.id),
