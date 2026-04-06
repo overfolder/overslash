@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::identity::RestoreOutcome;
 
 use crate::{
     AppState,
@@ -20,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/identities", post(create_identity).get(list_identities))
         .route("/v1/identities/{id}/children", get(list_children))
         .route("/v1/identities/{id}/chain", get(get_chain))
+        .route("/v1/identities/{id}/restore", post(restore_identity))
 }
 
 #[derive(Deserialize)]
@@ -41,6 +43,16 @@ struct IdentityResponse {
     depth: i32,
     owner_id: Option<Uuid>,
     inherit_permissions: bool,
+    last_active_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_reason: Option<String>,
+}
+
+fn fmt_rfc3339(t: time::OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
 }
 
 impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
@@ -55,6 +67,9 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             depth: r.depth,
             owner_id: r.owner_id,
             inherit_permissions: r.inherit_permissions,
+            last_active_at: fmt_rfc3339(r.last_active_at),
+            archived_at: r.archived_at.map(fmt_rfc3339),
+            archived_reason: r.archived_reason,
         }
     }
 }
@@ -78,6 +93,13 @@ async fn validate_parent(
         return Err(AppError::BadRequest(format!(
             "{child_kind} parent must be a {} identity",
             allowed.join(" or ")
+        )));
+    }
+    // Block creation under an archived parent: the child would be born into a
+    // disabled subtree AND would block the parent from ever being purged.
+    if parent.archived_at.is_some() {
+        return Err(AppError::BadRequest(format!(
+            "cannot create {child_kind} under an archived parent identity; restore the parent first"
         )));
     }
     Ok(parent)
@@ -220,4 +242,60 @@ async fn get_chain(
     let _ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
     let rows = overslash_db::repos::identity::get_ancestor_chain(&state.db, id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
+}
+
+#[derive(Serialize)]
+struct RestoreResponse {
+    identity: IdentityResponse,
+    api_keys_resurrected: u64,
+}
+
+async fn restore_identity(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RestoreResponse>> {
+    // Org-scope: confirm the identity belongs to the caller's org before restoring.
+    let existing = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
+    let existing = crate::ownership::require_org_owned(existing, auth.org_id, "identity")?;
+    if existing.kind != "sub_agent" {
+        return Err(AppError::BadRequest(
+            "only sub_agent identities can be restored".into(),
+        ));
+    }
+
+    match overslash_db::repos::identity::restore(&state.db, id).await? {
+        RestoreOutcome::Restored {
+            identity,
+            api_keys_resurrected,
+        } => {
+            let _ = audit::log(
+                &state.db,
+                &AuditEntry {
+                    org_id: auth.org_id,
+                    identity_id: auth.identity_id,
+                    action: "identity.restored",
+                    resource_type: Some("identity"),
+                    resource_id: Some(identity.id),
+                    detail: serde_json::json!({
+                        "name": &identity.name,
+                        "api_keys_resurrected": api_keys_resurrected,
+                    }),
+                    description: None,
+                    ip_address: ip.0.as_deref(),
+                },
+            )
+            .await;
+            Ok(Json(RestoreResponse {
+                identity: (*identity).into(),
+                api_keys_resurrected,
+            }))
+        }
+        RestoreOutcome::NotArchived => Err(AppError::BadRequest("identity is not archived".into())),
+        RestoreOutcome::PastRetention => Err(AppError::Conflict(
+            "identity is past its retention window and cannot be restored".into(),
+        )),
+        RestoreOutcome::NotFound => Err(AppError::NotFound("identity not found".into())),
+    }
 }

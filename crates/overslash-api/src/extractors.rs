@@ -87,10 +87,14 @@ impl FromRequestParts<AppState> for AuthContext {
             return Err(AppError::Unauthorized("key too short".into()));
         };
 
-        let key_row = overslash_db::repos::api_key::find_by_prefix(&state.db, prefix)
-            .await
-            .map_err(|e| AppError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| AppError::Unauthorized("invalid api key".into()))?;
+        // Use the variant that also returns keys auto-revoked because their
+        // identity was archived, so we can return 403 identity_archived instead
+        // of a misleading 401 invalid_api_key.
+        let key_row =
+            overslash_db::repos::api_key::find_by_prefix_including_archived(&state.db, prefix)
+                .await
+                .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| AppError::Unauthorized("invalid api key".into()))?;
 
         // Check expiry
         if let Some(expires_at) = key_row.expires_at {
@@ -110,7 +114,57 @@ impl FromRequestParts<AppState> for AuthContext {
         )
         .map_err(|_| AppError::Unauthorized("invalid api key".into()))?;
 
-        // Touch last_used (fire and forget)
+        // If the key is bound to an identity, check it's not archived (return
+        // a clear 403 instead of treating the key as invalid) and stamp
+        // last_active_at so the idle-cleanup loop doesn't reap it.
+        let mut identity_archive_error: Option<AppError> = None;
+        if let Some(identity_id) = key_row.identity_id {
+            let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
+                .await
+                .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+            if let Some(ident) = identity {
+                if let Some(archived_at) = ident.archived_at {
+                    let retention_days =
+                        overslash_db::repos::org::get_by_id(&state.db, ident.org_id)
+                            .await
+                            .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+                            .map(|o| o.subagent_archive_retention_days)
+                            .unwrap_or(0);
+                    let restorable_until =
+                        archived_at + time::Duration::days(retention_days as i64);
+                    identity_archive_error = Some(AppError::IdentityArchived {
+                        reason: ident.archived_reason.unwrap_or_else(|| "unknown".into()),
+                        restorable_until,
+                    });
+                } else if ident.kind == "sub_agent" {
+                    // Sub-agents only: keep idle-cleanup tracking current.
+                    let db_for_active = state.db.clone();
+                    tokio::spawn(async move {
+                        let _ = overslash_db::repos::identity::touch_last_active(
+                            &db_for_active,
+                            identity_id,
+                        )
+                        .await;
+                    });
+                }
+            }
+        }
+
+        // The "_including_archived" lookup intentionally returns auto-revoked
+        // keys so we can serve a clear 403. But after the identity is purged,
+        // api_keys.identity_id becomes NULL via FK SET NULL while revoked_at
+        // and revoked_reason remain. Such an orphan must NOT authenticate.
+        // Reject any revoked key here, surfacing the friendly 403 only when
+        // the identity is still around and archived.
+        if key_row.revoked_at.is_some() {
+            return Err(identity_archive_error
+                .unwrap_or_else(|| AppError::Unauthorized("invalid api key".into())));
+        }
+        if let Some(err) = identity_archive_error {
+            return Err(err);
+        }
+
+        // Touch api_key last_used (fire and forget)
         let db = state.db.clone();
         let key_id = key_row.id;
         tokio::spawn(async move {

@@ -73,6 +73,20 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Enrollment expiry error: {e}"),
                     _ => {}
                 }
+                match overslash_db::repos::identity::archive_idle_subagents(&db).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("Archived {n} idle sub-agent identities")
+                    }
+                    Err(e) => tracing::error!("Sub-agent archive error: {e}"),
+                    _ => {}
+                }
+                match overslash_db::repos::identity::purge_archived_subagents(&db).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("Purged {n} archived sub-agent identities")
+                    }
+                    Err(e) => tracing::error!("Sub-agent purge error: {e}"),
+                    _ => {}
+                }
             }
         });
 

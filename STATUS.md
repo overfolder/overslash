@@ -64,6 +64,7 @@
 - Ancestor chain query (recursive CTE) and children listing endpoints
 - Enrollment approval auto-assigns parent to approving user
 - `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
+- Sub-agent idle cleanup with two-phase archive — `last_active_at` touched per request, background loop (60s) archives idle sub-agents (revoking API keys with `revoked_reason='identity_archived'` and expiring pending approvals), then purges archived rows past the retention window. Parents wait for live children before archiving or purging. `POST /v1/identities/{id}/restore` un-archives within the window and resurrects auto-revoked API keys; manually-revoked keys are untouched. Archived identities return `403 identity_archived` from the auth middleware. Idle timeout (`subagent_idle_timeout_secs`, 4h–60d) and retention (`subagent_archive_retention_days`, 1d–60d) are configured per-org via `PATCH /v1/orgs/{id}/subagent-cleanup-config`.
 
 ### Phase 4 — Groups (Layer 1 Permission Ceiling)
 

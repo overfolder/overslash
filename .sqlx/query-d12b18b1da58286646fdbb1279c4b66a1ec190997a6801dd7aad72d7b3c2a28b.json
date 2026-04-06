@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE identities AS i\n           SET archived_at = now(), archived_reason = $1, updated_at = now()\n           FROM orgs o\n           WHERE i.org_id = o.id\n             AND i.kind = 'sub_agent'\n             AND i.archived_at IS NULL\n             AND i.last_active_at < now() - make_interval(secs => o.subagent_idle_timeout_secs)\n             AND NOT EXISTS (\n                 SELECT 1 FROM identities c\n                 WHERE c.parent_id = i.id AND c.archived_at IS NULL\n             )\n           RETURNING i.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d12b18b1da58286646fdbb1279c4b66a1ec190997a6801dd7aad72d7b3c2a28b"
+}
