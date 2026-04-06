@@ -7,6 +7,7 @@ on:
     types: [created, edited, deleted]
 permissions:
   pull-requests: read
+  checks: write
 
 jobs:
   check-sentry-comments:
@@ -31,6 +32,16 @@ jobs:
               core.info('No PR number found, skipping.');
               return;
             }
+
+            // When triggered by check_run, the workflow runs against the
+            // default branch, so its status posts to the master commit
+            // rather than the PR head. Explicitly publish a check run on
+            // the PR's head SHA so branch protection can gate on it.
+            const headSha =
+              context.payload.check_run?.head_sha ??
+              context.payload.pull_request?.head?.sha ??
+              null;
+            const checkName = 'No unresolved Sentry issues';
 
             const sentryBots = ['sentry-io[bot]', 'sentry-autofix[bot]', 'sentry[bot]'];
 
@@ -74,12 +85,31 @@ jobs:
               })
               .map((t) => t.comments.nodes[0]?.url);
 
-            if (unresolvedReview.length > 0) {
-              const lines = unresolvedReview.map((url) => `- Review thread: ${url}`);
-              core.setFailed(
-                `Found ${unresolvedReview.length} unresolved Sentry review thread(s):\n${lines.join('\n')}\n\n` +
-                'Resolve all Sentry-reported issues before merging.'
-              );
+            const failing = unresolvedReview.length > 0;
+            const summary = failing
+              ? `Found ${unresolvedReview.length} unresolved Sentry review thread(s).`
+              : 'No unresolved Sentry comments found.';
+            const text = failing
+              ? unresolvedReview.map((url) => `- ${url}`).join('\n') +
+                '\n\nResolve all Sentry-reported issues before merging.'
+              : 'All Sentry review threads are resolved.';
+
+            if (headSha) {
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: checkName,
+                head_sha: headSha,
+                status: 'completed',
+                conclusion: failing ? 'failure' : 'success',
+                output: { title: summary, summary, text },
+              });
             } else {
-              core.info('No unresolved Sentry comments found.');
+              core.warning('No head SHA resolved; cannot publish PR check run.');
+            }
+
+            if (failing) {
+              core.setFailed(summary);
+            } else {
+              core.info(summary);
             }
