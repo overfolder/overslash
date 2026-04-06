@@ -87,29 +87,32 @@ async fn no_inherit_needs_approval() {
     assert_eq!(execute(&base, &agent_key, mock_addr).await, 202);
 }
 
-// ── Test 3: Dynamic — parent gains rule after child creation ────────
+// ── Test 3: Dynamic — agent gains rule, sub-agent picks it up ───────
 
 #[tokio::test]
 async fn dynamic_parent_rule_addition() {
+    // Sub-agent with inherit=true under an agent with no rules. Initially the
+    // chain walk hits a gap at the agent → 202. Adding a rule to the agent
+    // unblocks the sub-agent on the next call (live pointer).
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, agent_id, agent_key, mock_addr) =
+    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
-    // Enable inherit on agent BEFORE parent has any rules
-    overslash_db::repos::identity::set_inherit_permissions(&pool, agent_id, true)
+    let (sub_id, sub_key) = create_sub_agent(&base, &org_key, agent_id).await;
+    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
         .await
         .unwrap();
 
-    // No rules yet → 202
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 202);
+    // No rules anywhere → sub passes via inherit, agent has gap → 202
+    assert_eq!(execute(&base, &sub_key, mock_addr).await, 202);
 
-    // Now add a rule to the parent
+    // Now add a rule to the agent
     client
         .post(format!("{base}/v1/permissions"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({
-            "identity_id": user_id,
+            "identity_id": agent_id,
             "action_pattern": "http:**",
             "effect": "allow"
         }))
@@ -117,29 +120,30 @@ async fn dynamic_parent_rule_addition() {
         .await
         .unwrap();
 
-    // Execute again — dynamically picks up parent's new rule → 200
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 200);
+    // Execute again — sub inherits, agent now has rule → 200
+    assert_eq!(execute(&base, &sub_key, mock_addr).await, 200);
 }
 
-// ── Test 4: Revocation — parent rule deleted → child denied ─────────
+// ── Test 4: Revocation — parent agent's rule deleted → sub denied ───
 
 #[tokio::test]
 async fn revocation_removes_inherited_access() {
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, agent_id, agent_key, mock_addr) =
+    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
-    overslash_db::repos::identity::set_inherit_permissions(&pool, agent_id, true)
+    let (sub_id, sub_key) = create_sub_agent(&base, &org_key, agent_id).await;
+    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
         .await
         .unwrap();
 
-    // Add rule on parent
+    // Add rule on parent agent
     let resp: Value = client
         .post(format!("{base}/v1/permissions"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({
-            "identity_id": user_id,
+            "identity_id": agent_id,
             "action_pattern": "http:**",
             "effect": "allow"
         }))
@@ -152,9 +156,9 @@ async fn revocation_removes_inherited_access() {
     let rule_id = resp["id"].as_str().unwrap();
 
     // Allowed
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 200);
+    assert_eq!(execute(&base, &sub_key, mock_addr).await, 200);
 
-    // Delete the parent's rule
+    // Delete the parent agent's rule
     client
         .delete(format!("{base}/v1/permissions/{rule_id}"))
         .header("Authorization", format!("Bearer {org_key}"))
@@ -163,7 +167,7 @@ async fn revocation_removes_inherited_access() {
         .unwrap();
 
     // Now needs approval — inherited rule is gone
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 202);
+    assert_eq!(execute(&base, &sub_key, mock_addr).await, 202);
 }
 
 // ── Test 5: Chain inheritance (user → agent → sub_agent) ────────────
@@ -283,38 +287,28 @@ async fn chain_break_stops_inheritance() {
     assert_eq!(execute(&base, &sub_key, mock_addr).await, 202);
 }
 
-// ── Test 7: Deny rule propagation ───────────────────────────────────
+// ── Test 7: Deny rule on a chain ancestor blocks the sub-agent ──────
 
 #[tokio::test]
 async fn inherited_deny_rule_blocks() {
+    // Sub-agent inherits, parent agent has a deny rule. The chain walk skips
+    // the inheriting sub-agent and consults the agent, where the deny fires.
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, agent_id, agent_key, mock_addr) =
+    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
-    overslash_db::repos::identity::set_inherit_permissions(&pool, agent_id, true)
+    let (sub_id, sub_key) = create_sub_agent(&base, &org_key, agent_id).await;
+    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
         .await
         .unwrap();
 
-    // Add allow rule on agent itself
+    // Deny rule on the parent agent
     client
         .post(format!("{base}/v1/permissions"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({
             "identity_id": agent_id,
-            "action_pattern": "http:**",
-            "effect": "allow"
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    // Add deny rule on user (parent)
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "identity_id": user_id,
             "action_pattern": "http:POST:**",
             "effect": "deny"
         }))
@@ -322,8 +316,38 @@ async fn inherited_deny_rule_blocks() {
         .await
         .unwrap();
 
-    // Deny from parent overrides allow from self → 403
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 403);
+    // Sub auto-passes (inherit), parent agent denies → 403
+    assert_eq!(execute(&base, &sub_key, mock_addr).await, 403);
+}
+
+/// Helper: create a sub_agent under the given agent and return (id, api_key).
+async fn create_sub_agent(base: &str, org_key: &str, parent_id: Uuid) -> (Uuid, String) {
+    let client = reqwest::Client::new();
+    let sub: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "sub-bot", "kind": "sub_agent", "parent_id": parent_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
+    let org_id: Uuid = sub["org_id"].as_str().unwrap().parse().unwrap();
+
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"org_id": org_id, "identity_id": sub_id, "name": "sub-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sub_key = key_resp["key"].as_str().unwrap().to_string();
+    (sub_id, sub_key)
 }
 
 // ── Shared setup that accepts a pool ────────────────────────────────

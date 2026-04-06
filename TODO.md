@@ -97,12 +97,12 @@ Existing dashboard code predates the unified permission model and template/servi
 ## Phase 3: Identity Hierarchy + Permissions
 
 - [x] Parent/child identity relationships (depth tracking, owner_id)
-- [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy) *(column added, resolution logic pending)*
+- [x] `inherit_permissions` — dynamic resolution (live pointer, not copy)
 - [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
 - [x] Sub-agent idle cleanup with two-phase archive (backend) — idle archive, retention purge, restore endpoint, per-org config
 - [ ] Dashboard: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
-- [ ] Permission chain walk (ancestor chain, gap detection)
-- [ ] Approval bubbling (gap level targeting, ancestor handling)
+- [x] Permission chain walk (ancestor chain, gap detection)
+- [x] Approval bubbling (current_resolver tracking, explicit bubble_up, auto-bubble timer, rule placement on closest non-inherit ancestor)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
 - [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
 - [ ] Org-level ACL — role-based access control for who can manage resources within an org

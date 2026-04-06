@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4\n         WHERE id = $1 AND status = 'pending' AND current_resolver_identity_id = $5\n         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "current_resolver_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "resolver_assigned_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "action_summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "action_detail",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "permission_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "resolved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "resolved_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "remember",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "token",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1fc05e9f580eb95f64fc167e2bc3f9b8748787db96fa59eefe2fec1d2aeaec2d"
+}

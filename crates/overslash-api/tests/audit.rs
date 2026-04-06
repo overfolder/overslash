@@ -891,8 +891,10 @@ async fn test_audit_approval_resolved() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
     let mock_addr = start_mock().await;
+    // The bootstrap helper already returns an org-level admin key — agents
+    // are not allowed to resolve their own approvals, so we use that one.
 
     // Create an approval
     client
@@ -917,10 +919,10 @@ async fn test_audit_approval_resolved() {
     let body: Value = resp.json().await.unwrap();
     let approval_id = body["approval_id"].as_str().unwrap();
 
-    // Resolve the approval
+    // Resolve the approval (using the org-level admin key)
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"resolution": "allow"}))
         .send()
         .await

@@ -55,7 +55,7 @@
   - Response panel with JSON syntax highlighting, headers table, request inspector
   - API key management with localStorage persistence
 
-### Phase 3 — Identity Hierarchy (foundations)
+### Phase 3 — Identity Hierarchy + Hierarchical Permissions
 
 - Parent/child identity relationships with `parent_id`, `depth`, `owner_id` columns
 - `IdentityKind` expanded: `user`, `agent`, `sub_agent`
@@ -65,6 +65,10 @@
 - Enrollment approval auto-assigns parent to approving user
 - `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
 - Sub-agent idle cleanup with two-phase archive — `last_active_at` touched per request, background loop (60s) archives idle sub-agents (revoking API keys with `revoked_reason='identity_archived'` and expiring pending approvals), then purges archived rows past the retention window. Parents wait for live children before archiving or purging. `POST /v1/identities/{id}/restore` un-archives within the window and resurrects auto-revoked API keys; manually-revoked keys are untouched. Archived identities return `403 identity_archived` from the auth middleware. Idle timeout (`subagent_idle_timeout_secs`, 4h–60d) and retention (`subagent_archive_retention_days`, 1d–60d) are configured per-org via `PATCH /v1/orgs/{id}/subagent-cleanup-config`.
+- Hierarchical permission chain walk (SPEC §5): `execute_action` walks the requester→user chain; each non-user level must authorize via own rules or `inherit_permissions`
+- Approval bubbling: approval `identity_id` stays the requester; `current_resolver_identity_id` tracks who must act now; explicit `bubble_up` resolution and per-org `approval_auto_bubble_secs` background sweep advance the resolver up the chain
+- Resolver authorization: only the current resolver, an ancestor of it, or an org-admin (no-identity) key can resolve a pending approval
+- "Allow & Remember" rule placement targets the requester's closest non-`inherit_permissions` ancestor (inclusive), not the requester itself when it just borrows permissions
 
 ### Phase 4 — Groups (Layer 1 Permission Ceiling)
 
@@ -112,7 +116,7 @@
 - Three-tier template registry (org + user DB-backed CRUD)
 - Template validation endpoint + OpenAPI import
 - Org-level ACL (role-based access control for who can manage groups, services, etc.)
-- Phase 3: permission chain walk, approval bubbling (`inherit_permissions` resolution done; parent/child + depth tracking done)
+- Phase 3: TTL-based sub-identity auto-cleanup, approval visibility scoping
 - Phase 4: Meta tools, semantic search, billing, documentation site
 
 ## What's Deployed

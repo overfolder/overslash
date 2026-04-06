@@ -87,6 +87,11 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Sub-agent purge error: {e}"),
                     _ => {}
                 }
+                match services::permission_chain::process_auto_bubble(&db).await {
+                    Ok(n) if n > 0 => tracing::info!("Auto-bubbled {n} approvals"),
+                    Err(e) => tracing::error!("Auto-bubble error: {e}"),
+                    _ => {}
+                }
             }
         });
 

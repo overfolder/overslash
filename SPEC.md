@@ -241,11 +241,51 @@ When a sub-agent executes an action, every level in the ancestor chain must auth
 1. Check sub-agent → has matching key or `inherit_permissions`? Pass, continue up.
 2. Check agent → has matching key? Pass, continue up.
 3. Check user → within group ceiling? Pass. All levels authorized → **execute**.
-4. First level without a matching key and without `inherit_permissions` → **gap**. Create approval at that level.
+4. First level without a matching key and without `inherit_permissions` → **gap**. Create an approval (see below).
 
 ### Approval Bubbling
 
-The approval is created at the gap level. That level's ancestors can resolve it. This means agents approve for their sub-agents without pestering the user.
+When a gap is found, an approval is created. The approval is **always linked to the requesting identity** (`identity_id` = the agent that triggered the action) — for audit, display, and so the requester sees the same approval whether resolved by an agent or a user.
+
+The approval has a **current resolver**: the closest ancestor that can act on it. The resolver search walks upward from the requester:
+
+- An ancestor can resolve only if the requested permission is within its **own boundary** (parent cannot grant a child more than itself has — same/narrower keys, same/shorter TTL).
+- Identities with `inherit_permissions=true` are skipped — they don't own permissions, they borrow.
+- The user is always the final resolver of last resort (constrained only by the group ceiling).
+
+The current resolver receives the approval (via webhook or polling) and chooses one of:
+
+- **Approve** — one-time, no rule stored.
+- **Approve & Remember** — store a permission rule (see "Rule placement" below).
+- **Bubble up** — defer to the next ancestor that can resolve, or the user if none.
+- **Reject** — denied.
+
+**Rule placement on Approve & Remember**: the new permission rule is added to the **closest non-`inherit_permissions` ancestor of the requester** (inclusive of the requester). Identities with `inherit_permissions=true` are skipped because their permissions are dynamic — putting a rule there would be silently overridden by parent walks. This is the requester's "permission-owning" identity.
+
+**Why this arrangement is expected to be common.** Real-world agent deployments tend to converge on a multi-level hierarchy:
+
+- **A single powerful "main" agent per user.** Users want one always-on agent (a Chief of Staff, an executive assistant, an ops manager) with broad authority across the services they own. It's the day-to-day driver and the entry point for delegation.
+- **Specialist sub-agents with minimum-privilege boundaries.** The main agent spawns long-lived specialists (Marketing, Finance, Engineering, Support) that each own a slice of the business. These intentionally do **not** inherit the parent's full power — they get only the services they need. This keeps a compromised or misbehaving specialist from reaching beyond its lane.
+- **Ephemeral task-scoped sub-sub-agents.** Specialists in turn spin up short-lived workers (a Researcher, a Reviewer, a Drafter) for individual tasks. These typically do use `inherit_permissions=true` because they're temporary and their privileges should track the parent's exactly — there's no lasting identity to grant rules to anyway.
+
+The result is a User → Main → Specialist → Worker shape with `inherit_permissions=true` only at the leaves. The bubbling model is designed for exactly this: most approvals get handled by the specialist or the main agent (which already has the relevant authority), and the user is only pulled in when something genuinely crosses a privilege boundary.
+
+**Example.** Chain: `User:alice → Agent:ChiefOfStaff → Agent:Marketing → Agent:Researcher (inherit_permissions=true)`.
+
+- alice's group grants `service-a`, `service-b`, `service-c` (full).
+- ChiefOfStaff has rules for `service-a:*` and `service-b:*`.
+- Marketing has rules for `service-a:*`.
+- Researcher inherits from Marketing.
+
+Researcher calls `service-b:action`:
+1. The approval is filed against Researcher (`identity_id = researcher`).
+2. Researcher is skipped (inherits). Marketing can't resolve (no `service-b`). ChiefOfStaff has `service-b` → **initial resolver = ChiefOfStaff**.
+3. Chief picks Approve & Remember → rule is created on **Marketing** (Researcher's closest non-inherit ancestor), not on Researcher.
+4. Next time Researcher does the same action, it auto-passes via Marketing's new rule.
+
+If Chief instead bubbles up → resolver = User. If Researcher had called `service-c:action`, the resolver search would have skipped Marketing (no `service-c`) and ChiefOfStaff (no `service-c`) and gone directly to alice.
+
+**Auto-bubble timeout.** If an approval sits with its current resolver longer than `approval_auto_bubble_secs` (per-org setting, default 300s = 5 minutes), it automatically bubbles to the next ancestor. Setting this to `0` makes every approval go straight to the user (skip agent resolvers entirely). This prevents requests from getting stuck on an absent or unresponsive agent resolver.
 
 ### Trust Model and Approval Resolution
 

@@ -20,12 +20,9 @@ use crate::{
 };
 use overslash_core::{
     crypto,
-    permissions::{GroupCeilingResult, PermissionKey, PermissionResult, check_permissions},
+    permissions::{GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
-    types::{
-        ActionRequest, ActionResult, InjectAs, PermissionEffect, PermissionRule, SecretRef,
-        service::Risk,
-    },
+    types::{ActionRequest, ActionResult, InjectAs, SecretRef, service::Risk},
 };
 
 pub fn router() -> Router<AppState> {
@@ -187,63 +184,34 @@ async fn execute_action(
         // has_groups == false → NoGroups → permissive (no ceiling enforced)
     }
 
-    // ── Layer 2: Permission key check (agents/sub-agents only) ───────
+    // ── Layer 2: Hierarchical permission check (agents/sub-agents only) ──
     let needs_gate =
         !action_req.secrets.is_empty() || req.connection.is_some() || meta.auth_injected;
 
     // Users are gated by groups only — they are their own approvers.
-    // Agents need permission key check unless auto-approved above.
+    // Agents walk the ancestor chain; first gap → approval at gap level.
     if identity.kind != "user" && needs_gate && !auto_approved {
-        // ── Resolve effective rules (own + inherited from ancestors) ──
-        let rule_rows = if identity.inherit_permissions {
-            // Walk ancestor chain to collect inherited rules.
-            // get_ancestor_chain returns depth ASC (root first), including self.
-            let chain =
-                overslash_db::repos::identity::get_ancestor_chain(&state.db, identity_id).await?;
-
-            // Collect identity IDs whose rules apply: always include self,
-            // then walk upward adding each parent reached via inherit_permissions=true.
-            let mut rule_identity_ids = vec![identity_id];
-            // Chain is root-first; reverse to walk from self upward.
-            let chain_rev: Vec<_> = chain.into_iter().rev().collect();
-            // chain_rev[0] is self; walk from index 0 upward
-            for i in 0..chain_rev.len() {
-                if chain_rev[i].inherit_permissions {
-                    // This identity inherits from its parent (next in chain_rev)
-                    if let Some(next) = chain_rev.get(i + 1) {
-                        rule_identity_ids.push(next.id);
-                    }
-                } else if i > 0 {
-                    // Chain of inheritance broken; stop walking
-                    break;
-                }
-            }
-
-            overslash_db::repos::permission_rule::list_by_identities(&state.db, &rule_identity_ids)
+        let bubble_secs =
+            overslash_db::repos::org::get_approval_auto_bubble_secs(&state.db, auth.org_id)
                 .await?
-        } else {
-            overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?
-        };
+                .unwrap_or(300);
+        let force_user_resolver = bubble_secs == 0;
 
-        let rules: Vec<PermissionRule> = rule_rows
-            .into_iter()
-            .map(|r| PermissionRule {
-                id: r.id,
-                org_id: r.org_id,
-                identity_id: r.identity_id,
-                action_pattern: r.action_pattern,
-                effect: if r.effect == "deny" {
-                    PermissionEffect::Deny
-                } else {
-                    PermissionEffect::Allow
-                },
-                created_at: r.created_at,
-            })
-            .collect();
-
-        match check_permissions(&rules, &perm_keys) {
-            PermissionResult::Allowed => {}
-            PermissionResult::NeedsApproval(uncovered) => {
+        match crate::services::permission_chain::walk(
+            &state.db,
+            identity_id,
+            &perm_keys,
+            force_user_resolver,
+        )
+        .await?
+        {
+            crate::services::permission_chain::ChainWalkResult::Allowed => {}
+            crate::services::permission_chain::ChainWalkResult::Gap {
+                uncovered_keys,
+                gap_identity_id: _,
+                initial_resolver_id,
+                rule_placement_id: _,
+            } => {
                 let token = generate_token();
                 let expires_at = time::OffsetDateTime::now_utc()
                     + time::Duration::seconds(state.config.approval_expiry_secs as i64);
@@ -251,13 +219,14 @@ async fn execute_action(
                     .description
                     .clone()
                     .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
-                let keys: Vec<String> = uncovered.iter().map(|k| k.0.clone()).collect();
+                let keys: Vec<String> = uncovered_keys.iter().map(|k| k.0.clone()).collect();
 
                 let approval = overslash_db::repos::approval::create(
                     &state.db,
                     &overslash_db::repos::approval::CreateApproval {
                         org_id: auth.org_id,
                         identity_id,
+                        current_resolver_identity_id: initial_resolver_id,
                         action_summary: &summary,
                         action_detail: Some(serde_json::to_value(&action_req).unwrap_or_default()),
                         permission_keys: &keys,
@@ -275,7 +244,10 @@ async fn execute_action(
                         action: "approval.created",
                         resource_type: Some("approval"),
                         resource_id: Some(approval.id),
-                        detail: serde_json::json!({ "summary": summary }),
+                        detail: serde_json::json!({
+                            "summary": summary,
+                            "current_resolver_identity_id": initial_resolver_id,
+                        }),
                         description: Some(&summary),
                         ip_address: ip.0.as_deref(),
                     },
@@ -293,7 +265,7 @@ async fn execute_action(
                 )
                     .into_response());
             }
-            PermissionResult::Denied(reason) => {
+            crate::services::permission_chain::ChainWalkResult::Denied(reason) => {
                 return Ok((
                     StatusCode::FORBIDDEN,
                     Json(ExecuteResponse::Denied { reason }),

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 8qYWOJBlJ1BmUntTqafdO70GIJ7YLM4SCMxecmy35sjHyJH6E5tJYF2EI5iglUO
+\restrict IbNmOJBlYgDlw4CARa3JmpBuLQNNWasFNtSCS3Dx9c9AdVR0jxp4hl2HikjJG4K
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,6 +23,13 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
+
+
+--
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -67,6 +74,8 @@ CREATE TABLE public.approvals (
     token text NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    current_resolver_identity_id uuid NOT NULL,
+    resolver_assigned_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -261,7 +270,9 @@ CREATE TABLE public.orgs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     subagent_idle_timeout_secs integer DEFAULT 14400 NOT NULL,
-    subagent_archive_retention_days integer DEFAULT 30 NOT NULL
+    subagent_archive_retention_days integer DEFAULT 30 NOT NULL,
+    approval_auto_bubble_secs integer DEFAULT 300 NOT NULL,
+    CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
 );
 
 
@@ -729,6 +740,13 @@ CREATE INDEX idx_approvals_org_status ON public.approvals USING btree (org_id, s
 
 
 --
+-- Name: idx_approvals_resolver_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_approvals_resolver_pending ON public.approvals USING btree (current_resolver_identity_id) WHERE (status = 'pending'::text);
+
+
+--
 -- Name: idx_audit_log_identity; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -994,6 +1012,14 @@ ALTER TABLE ONLY public.api_keys
 
 ALTER TABLE ONLY public.api_keys
     ADD CONSTRAINT api_keys_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: approvals approvals_current_resolver_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.approvals
+    ADD CONSTRAINT approvals_current_resolver_identity_id_fkey FOREIGN KEY (current_resolver_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --
@@ -1344,5 +1370,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 8qYWOJBlJ1BmUntTqafdO70GIJ7YLM4SCMxecmy35sjHyJH6E5tJYF2EI5iglUO
+\unrestrict IbNmOJBlYgDlw4CARa3JmpBuLQNNWasFNtSCS3Dx9c9AdVR0jxp4hl2HikjJG4K
 

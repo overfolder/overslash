@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO approvals (org_id, identity_id, action_summary, action_detail, permission_keys, token, expires_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7)\n         RETURNING id, org_id, identity_id, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+  "query": "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, permission_keys, token, expires_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
   "describe": {
     "columns": [
       {
@@ -20,57 +20,68 @@
       },
       {
         "ordinal": 3,
+        "name": "current_resolver_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "resolver_assigned_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
         "name": "action_summary",
         "type_info": "Text"
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "action_detail",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "permission_keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "remember",
         "type_info": "Bool"
       },
       {
-        "ordinal": 10,
+        "ordinal": 12,
         "name": "token",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid",
         "Uuid",
         "Text",
@@ -81,6 +92,8 @@
       ]
     },
     "nullable": [
+      false,
+      false,
       false,
       false,
       false,
@@ -96,5 +109,5 @@
       false
     ]
   },
-  "hash": "79b4e6e79cc00573a1e5f4c9449fe70cc7a3c21f1784f08b603b7d54e373244d"
+  "hash": "3e2dda753f4f89a98293347ef6684f4e52820f523ad9c11f0e7c436007da10e2"
 }

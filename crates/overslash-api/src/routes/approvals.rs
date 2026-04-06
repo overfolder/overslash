@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
 
-use overslash_core::permissions::{GroupCeilingResult, parse_derived_key};
+use overslash_core::permissions::{GroupCeilingResult, PermissionKey, parse_derived_key};
 use overslash_core::types::service::Risk;
 
 use crate::{
@@ -27,7 +27,13 @@ pub fn router() -> Router<AppState> {
 #[derive(Serialize)]
 struct ApprovalResponse {
     id: Uuid,
+    /// The identity that originally requested the action.
     identity_id: Uuid,
+    /// Alias of `identity_id`, named explicitly for clarity in the bubbling model.
+    requesting_identity_id: Uuid,
+    /// The identity currently expected to act on this approval. Bubbles upward
+    /// on explicit BubbleUp or via the auto-bubble timer.
+    current_resolver_identity_id: Uuid,
     /// SPIFFE-style hierarchical path of the requesting identity
     /// (`spiffe://<org>/user/alice/agent/henry/...`). See
     /// `crate::services::identity_path`.
@@ -52,6 +58,8 @@ impl ApprovalResponse {
         Self {
             id: r.id,
             identity_id: r.identity_id,
+            requesting_identity_id: r.identity_id,
+            current_resolver_identity_id: r.current_resolver_identity_id,
             identity_path,
             action_summary: r.action_summary,
             permission_keys: r.permission_keys,
@@ -104,7 +112,7 @@ async fn get_approval(
 
 #[derive(Deserialize)]
 struct ResolveRequest {
-    resolution: String, // "allow", "deny", "allow_remember"
+    resolution: String, // "allow", "deny", "allow_remember", "bubble_up"
     remember_keys: Option<Vec<String>>,
     ttl: Option<String>,
 }
@@ -117,19 +125,106 @@ async fn resolve_approval(
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
     let auth = acl;
+
+    // Load the approval and apply the multi-tenancy guard FIRST, before any
+    // other branch (including bubble_up). 404 (not 403) avoids leaking the
+    // existence of foreign approval ids.
+    let approval_pre = overslash_db::repos::approval::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+
+    // ── Authorize the caller as the current resolver (or an ancestor of them).
+    // Org-level (no identity_id) keys belong to org admins and are allowed for
+    // backward compatibility with the test/admin flows. Identity-bound keys
+    // must match the current resolver or be one of its ancestors.
+    //
+    // SPEC §5: "The requesting agent itself — never. An agent cannot resolve
+    // its own approval requests." This catches edge cases (e.g. an orphaned
+    // non-user identity ending up as its own resolver after the chain walk
+    // falls back) where is_self_or_ancestor would otherwise pass the same id
+    // against itself.
+    if let Some(caller_identity) = auth.identity_id {
+        if caller_identity == approval_pre.identity_id {
+            return Err(AppError::Forbidden(
+                "agents cannot resolve their own approval requests".into(),
+            ));
+        }
+        let allowed = crate::services::permission_chain::is_self_or_ancestor(
+            &state.db,
+            caller_identity,
+            approval_pre.current_resolver_identity_id,
+        )
+        .await?;
+        if !allowed {
+            return Err(AppError::Forbidden(
+                "caller is not authorized to resolve this approval".into(),
+            ));
+        }
+    }
+
+    // ── BubbleUp: advance the resolver instead of resolving.
+    if req.resolution == "bubble_up" {
+        let perm_keys: Vec<PermissionKey> = approval_pre
+            .permission_keys
+            .iter()
+            .map(|k| PermissionKey(k.clone()))
+            .collect();
+        let next = crate::services::permission_chain::find_next_resolver(
+            &state.db,
+            approval_pre.identity_id,
+            approval_pre.current_resolver_identity_id,
+            &perm_keys,
+        )
+        .await?;
+        // Already at the top of the chain (typically the user) — there is
+        // nowhere to bubble to. Reject so we don't reset the auto-bubble
+        // timer or log a misleading "bubbled from X to X" audit entry.
+        if next == approval_pre.current_resolver_identity_id {
+            return Err(AppError::Conflict(
+                "approval is already at the final resolver".into(),
+            ));
+        }
+        let updated = overslash_db::repos::approval::update_resolver(
+            &state.db,
+            id,
+            next,
+            approval_pre.current_resolver_identity_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "approval was concurrently resolved or bubbled by another caller".into(),
+            )
+        })?;
+
+        let _ = audit::log(
+            &state.db,
+            &AuditEntry {
+                org_id: auth.org_id,
+                identity_id: auth.identity_id,
+                action: "approval.bubbled",
+                resource_type: Some("approval"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "from": approval_pre.current_resolver_identity_id,
+                    "to": next,
+                }),
+                description: None,
+                ip_address: ip.0.as_deref(),
+            },
+        )
+        .await;
+
+        return Ok(Json(build_response(&state.db, updated).await?));
+    }
+
     let (status, remember) = match req.resolution.as_str() {
         "allow" => ("allowed", false),
         "deny" => ("denied", false),
         "allow_remember" => ("allowed", true),
         other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
-
-    // Multi-tenancy guard: refuse to act on approvals belonging to other orgs.
-    // We return 404 (not 403) to avoid leaking the existence of foreign approval ids.
-    overslash_db::repos::approval::get_by_id(&state.db, id)
-        .await?
-        .filter(|r| r.org_id == auth.org_id)
-        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
     let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
     if remember {
@@ -146,9 +241,7 @@ async fn resolve_approval(
             parsed_expires_at =
                 time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0));
         }
-        let approval = overslash_db::repos::approval::get_by_id(&state.db, id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+        let approval = &approval_pre;
 
         // Determine which keys will be stored: explicit remember_keys or fallback to permission_keys
         let effective_keys: &[String] = if let Some(ref keys) = req.remember_keys {
@@ -207,18 +300,32 @@ async fn resolve_approval(
         }
     }
 
-    let row = overslash_db::repos::approval::resolve(&state.db, id, status, "user", remember)
-        .await?
-        .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
+    let row = overslash_db::repos::approval::resolve(
+        &state.db,
+        id,
+        status,
+        "user",
+        remember,
+        approval_pre.current_resolver_identity_id,
+    )
+    .await?
+    .ok_or_else(|| {
+        AppError::Conflict("approval was concurrently resolved or bubbled by another caller".into())
+    })?;
 
     if remember {
-        let identity_id = row.identity_id;
+        // Place the rule on the requester's closest non-inherit_permissions
+        // ancestor (inclusive). For a Researcher(inherit) under Marketing,
+        // approving "remember" puts the rule on Marketing — not Researcher.
+        let placement_id =
+            crate::services::permission_chain::rule_placement_for(&state.db, row.identity_id)
+                .await?;
         let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
         for key in keys {
             let _ = overslash_db::repos::permission_rule::create(
                 &state.db,
                 auth.org_id,
-                identity_id,
+                placement_id,
                 key,
                 "allow",
                 parsed_expires_at,

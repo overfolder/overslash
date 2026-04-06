@@ -86,6 +86,11 @@ export interface SuggestedTier {
 export interface ApprovalResponse {
 	id: string;
 	identity_id: string;
+	/** Alias of `identity_id`, named explicitly for clarity in the bubbling model. */
+	requesting_identity_id: string;
+	/** The identity currently expected to act on this approval. Bubbles upward
+	 *  on explicit BubbleUp or via the per-org auto-bubble timer. */
+	current_resolver_identity_id: string;
 	/** SPIFFE-style hierarchical path of the requesting identity, e.g.
 	 *  `spiffe://acme/user/alice/agent/henry`. May be null if the chain
 	 *  could not be resolved. */
@@ -101,7 +106,7 @@ export interface ApprovalResponse {
 }
 
 export interface ResolveApprovalRequest {
-	resolution: 'allow' | 'deny' | 'allow_remember';
+	resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up';
 	remember_keys?: string[];
 	ttl?: string;
 }
