@@ -17,6 +17,9 @@ pub struct Config {
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
     pub dashboard_url: String,
+    pub redis_url: Option<String>,
+    pub default_rate_limit: u32,
+    pub default_rate_window_secs: u32,
 }
 
 impl Config {
@@ -48,6 +51,15 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
+            redis_url: env::var("REDIS_URL").ok(),
+            default_rate_limit: env::var("DEFAULT_RATE_LIMIT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000),
+            default_rate_window_secs: env::var("DEFAULT_RATE_WINDOW_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60),
         }
     }
 

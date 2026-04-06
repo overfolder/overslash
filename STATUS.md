@@ -92,6 +92,17 @@
 - Available providers endpoint — `GET /auth/providers?org=<slug>` for login page
 - Backward-compatible Google login routes preserved
 
+### Phase 4 — Rate Limiting
+
+- Two-tier rate limiting: User bucket (shared by all agents) + optional per-identity caps
+- Rate limit configuration API: `PUT/GET/DELETE /v1/rate-limits` with scopes: `org`, `group`, `user`, `identity_cap`
+- Resolution chain: per-user override → group default (most permissive) → org default → system fallback
+- Standard headers on all responses: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+- 429 Too Many Requests with `Retry-After` header when exceeded
+- Dual storage backend: Redis/Valkey (distributed) or in-memory DashMap (single-instance fallback)
+- Fail-open on Redis errors; health endpoint exempt from rate limiting
+- Fixed window counter algorithm with configurable window size
+
 ### Not Yet Built
 
 - Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
@@ -101,7 +112,7 @@
 - Template validation endpoint + OpenAPI import
 - Org-level ACL (role-based access control for who can manage groups, services, etc.)
 - Phase 3: permission chain walk, approval bubbling (`inherit_permissions` resolution done; parent/child + depth tracking done)
-- Phase 4: Meta tools, semantic search, rate limiting, billing, documentation site
+- Phase 4: Meta tools, semantic search, billing, documentation site
 
 ## What's Deployed
 

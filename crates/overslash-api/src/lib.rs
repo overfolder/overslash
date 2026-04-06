@@ -1,6 +1,7 @@
 pub mod config;
 pub mod error;
 pub mod extractors;
+pub mod middleware;
 pub mod ownership;
 pub mod routes;
 pub mod services;
@@ -21,6 +22,8 @@ pub struct AppState {
     pub config: Config,
     pub http_client: reqwest::Client,
     pub registry: Arc<ServiceRegistry>,
+    pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
+    pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
 }
 
 /// Create the application router with all routes and middleware.
@@ -38,11 +41,19 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         });
     tracing::info!("Loaded {} service definitions", registry.len());
 
+    let (rate_limiter, in_memory_store) =
+        services::rate_limit::create_store_with_eviction(&config).await;
+    let rate_limit_cache = Arc::new(services::rate_limit::RateLimitConfigCache::new(
+        std::time::Duration::from_secs(30),
+    ));
+
     let state = AppState {
         db,
         config,
         http_client: reqwest::Client::new(),
         registry: Arc::new(registry),
+        rate_limiter,
+        rate_limit_cache,
     };
 
     // Spawn background tasks
@@ -70,10 +81,19 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
             state.db.clone(),
             state.http_client.clone(),
         ));
+
+        // Rate limit eviction loop (in-memory store only)
+        if let Some(store) = in_memory_store {
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    store.evict_expired();
+                }
+            });
+        }
     }
 
-    let app = Router::new()
-        .merge(routes::health::router())
+    let rate_limited_routes = Router::new()
         .merge(routes::orgs::router())
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())
@@ -91,6 +111,15 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::org_idp_configs::router())
         .merge(routes::enrollment::router())
         .merge(routes::groups::router())
+        .merge(routes::rate_limits::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::rate_limit::rate_limit_middleware,
+        ));
+
+    let app = Router::new()
+        .merge(routes::health::router())
+        .merge(rate_limited_routes)
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

@@ -111,7 +111,7 @@ Existing dashboard code predates the unified permission model and template/servi
 
 - [ ] Meta tool definitions (overslash_search, overslash_execute, overslash_auth)
 - [ ] Semantic search for service/action discovery
-- [ ] Rate limiting per identity
+- [x] Rate limiting per identity — two-tier model (User bucket + identity caps), Redis/Valkey or in-memory
 - [ ] Org billing / usage metering
 - [x] Human-readable audit descriptions — interpolated descriptions for Mode C, method+URL for Mode A, identity name resolution in audit responses
 - [ ] Dashboard: org settings, webhook management, bulk permission operations

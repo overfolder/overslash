@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict smE7zXluL505AywONu7TTN7venulCE9iFjSZaueZofySjdxdoOeu1kaNf1k4gn6
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -308,6 +307,24 @@ CREATE TABLE public.permission_rules (
 
 
 --
+-- Name: rate_limits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.rate_limits (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid,
+    group_id uuid,
+    scope text NOT NULL,
+    max_requests integer DEFAULT 1000 NOT NULL,
+    window_seconds integer DEFAULT 60 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT rate_limits_scope_check CHECK ((scope = ANY (ARRAY['org'::text, 'group'::text, 'user'::text, 'identity_cap'::text])))
+);
+
+
+--
 -- Name: secret_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -596,6 +613,14 @@ ALTER TABLE ONLY public.permission_rules
 
 
 --
+-- Name: rate_limits rate_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rate_limits
+    ADD CONSTRAINT rate_limits_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: secret_versions secret_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -839,6 +864,41 @@ CREATE INDEX idx_pending_enrollments_status ON public.pending_enrollments USING 
 --
 
 CREATE INDEX idx_permission_rules_identity ON public.permission_rules USING btree (identity_id);
+
+
+--
+-- Name: idx_rate_limits_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_rate_limits_group ON public.rate_limits USING btree (org_id, group_id) WHERE (scope = 'group'::text);
+
+
+--
+-- Name: idx_rate_limits_identity_cap; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_rate_limits_identity_cap ON public.rate_limits USING btree (org_id, identity_id) WHERE (scope = 'identity_cap'::text);
+
+
+--
+-- Name: idx_rate_limits_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_rate_limits_org ON public.rate_limits USING btree (org_id);
+
+
+--
+-- Name: idx_rate_limits_org_default; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_rate_limits_org_default ON public.rate_limits USING btree (org_id) WHERE (scope = 'org'::text);
+
+
+--
+-- Name: idx_rate_limits_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_rate_limits_user ON public.rate_limits USING btree (org_id, identity_id) WHERE (scope = 'user'::text);
 
 
 --
@@ -1153,6 +1213,30 @@ ALTER TABLE ONLY public.permission_rules
 
 
 --
+-- Name: rate_limits rate_limits_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rate_limits
+    ADD CONSTRAINT rate_limits_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rate_limits rate_limits_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rate_limits
+    ADD CONSTRAINT rate_limits_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: rate_limits rate_limits_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.rate_limits
+    ADD CONSTRAINT rate_limits_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: secret_versions secret_versions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1244,5 +1328,4 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict smE7zXluL505AywONu7TTN7venulCE9iFjSZaueZofySjdxdoOeu1kaNf1k4gn6
 

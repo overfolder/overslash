@@ -631,7 +631,41 @@ Every action execution, approval resolution, secret access, and connection chang
 
 ---
 
-## 13. Open-Source Plan
+## 13. Rate Limiting
+
+Overslash enforces per-identity rate limiting to prevent abuse, runaway agents, and resource exhaustion. This is **not** upstream API rate limiting (which remains a non-goal per §2) — it limits requests *to Overslash itself*.
+
+### Two-Tier Model
+
+Every authenticated request checks **two counters**, both must pass:
+
+1. **User bucket** — keyed on the owning User. All agents and sub-agents under a User share this budget. Prevents malicious or forking agents from circumventing limits by spawning sub-identities.
+2. **Identity cap** (optional) — keyed on the specific identity (agent/sub-agent). A tighter ceiling that prevents a single misconfigured agent from consuming the entire User budget.
+
+### Configuration Resolution
+
+The User bucket limit is resolved in priority order:
+1. Per-user override (scope `user`)
+2. Group default — most permissive across the user's groups (scope `group`)
+3. Org-wide default (scope `org`)
+4. System fallback (`DEFAULT_RATE_LIMIT` env var, default 1000 req/min)
+
+Identity caps are per-identity only — no inheritance.
+
+Configured by org admins via `PUT /GET /DELETE /v1/rate-limits`.
+
+### Behavior
+
+- **Algorithm**: Fixed window counter.
+- **Headers** on all responses: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (reflecting the User bucket).
+- **429 Too Many Requests** with `Retry-After` header and JSON body when exceeded.
+- **Storage**: Redis/Valkey if available (distributed, accurate across instances); in-memory `DashMap` fallback (single-instance, no external dependency).
+- **Fail-open**: If Redis becomes unavailable at runtime, requests are allowed through (logged as warning).
+- **Health endpoint** (`/health`) is exempt from rate limiting.
+
+---
+
+## 14. Open-Source Plan
 
 Overslash will be released as open source (Apache 2.0 or similar). It has no platform-specific logic. The global service registry is community-maintained via PRs.
 

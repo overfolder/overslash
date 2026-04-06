@@ -39,6 +39,13 @@ pub enum AppError {
     #[error("crypto error: {0}")]
     Crypto(#[from] overslash_core::crypto::CryptoError),
 
+    #[error("rate limit exceeded")]
+    RateLimited {
+        limit: u32,
+        reset_at: u64,
+        retry_after: u64,
+    },
+
     #[error("response too large")]
     ResponseTooLarge {
         content_length: Option<u64>,
@@ -80,6 +87,26 @@ impl IntoResponse for AppError {
             Self::Crypto(e) => {
                 tracing::error!("Crypto error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "encryption error".into())
+            }
+            Self::RateLimited {
+                limit,
+                reset_at,
+                retry_after,
+            } => {
+                let mut response = (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({
+                        "error": "rate limit exceeded",
+                        "retry_after": retry_after,
+                    })),
+                )
+                    .into_response();
+                let headers = response.headers_mut();
+                headers.insert("Retry-After", retry_after.to_string().parse().unwrap());
+                headers.insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
+                headers.insert("X-RateLimit-Remaining", "0".parse().unwrap());
+                headers.insert("X-RateLimit-Reset", reset_at.to_string().parse().unwrap());
+                return response;
             }
             Self::ResponseTooLarge {
                 content_length,
