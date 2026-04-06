@@ -1,8 +1,8 @@
 name: Sentry Comments Check
 
 on:
-  pull_request:
-    branches: [master, dev]
+  check_run:
+    types: [completed]
   pull_request_review_comment:
     types: [created, edited, deleted]
 permissions:
@@ -12,8 +12,10 @@ jobs:
   check-sentry-comments:
     name: No unresolved Sentry issues
     if: >-
-      github.event_name == 'pull_request' ||
-      github.event_name == 'pull_request_review_comment'
+      github.event_name == 'pull_request_review_comment' ||
+      (github.event_name == 'check_run' &&
+       github.event.check_run.name == 'Seer Code Review' &&
+       github.event.check_run.pull_requests[0] != null)
     runs-on: ubuntu-latest
     steps:
       - name: Check for unresolved Sentry comments
@@ -22,7 +24,8 @@ jobs:
           script: |
             const prNumber =
               context.payload.pull_request?.number ??
-              context.payload.issue?.number;
+              context.payload.issue?.number ??
+              context.payload.check_run?.pull_requests?.[0]?.number;
 
             if (!prNumber) {
               core.info('No PR number found, skipping.');
