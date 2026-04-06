@@ -712,3 +712,36 @@ async fn user_level_deny_rule_blocks() {
     let resp = execute(&base, &agent_key, mock_addr).await;
     assert_eq!(resp.status(), 403);
 }
+
+// ── Test: orphaned non-user identity (no parent) does not silently pass
+
+#[tokio::test]
+async fn orphaned_non_user_identity_requires_approval() {
+    // The API forbids creating an agent without a parent, but the schema
+    // allows parent_id IS NULL. Insert one directly to simulate legacy data
+    // / migration drift / direct DB edits, and verify the chain walk does
+    // not skip its rule check (which would silently grant access).
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+
+    // Insert an orphaned agent: parent_id NULL, owner_id pointing at itself
+    // (so the Layer 1 ceiling lookup doesn't 500 before reaching the chain
+    // walk -- we want to exercise the chain walk's orphan path specifically).
+    let orphan_id = Uuid::new_v4();
+    sqlx::query!(
+        "INSERT INTO identities (id, org_id, name, kind, depth, owner_id)
+         VALUES ($1, $2, 'orphan-bot', 'agent', 1, $1)",
+        orphan_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let orphan_key = create_api_key(&base, &org_key, org_id, orphan_id, "ok").await;
+
+    // No rules anywhere. Without the orphan guard the chain walk would
+    // return Allowed and the action would execute. With the guard, the
+    // requester itself is treated as the gap and we get a 202.
+    let resp = execute(&base, &orphan_key, mock_addr).await;
+    assert_eq!(resp.status(), 202);
+}

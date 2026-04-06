@@ -54,33 +54,52 @@ pub async fn walk(
         return Err(AppError::Internal("identity chain is empty".into()));
     }
 
-    // Walk from requester upward, stopping before the user (handled by Layer 1).
+    // Walk from requester upward, stopping at the user level (handled by
+    // Layer 1 / group ceiling). We stop based on `kind == "user"` rather than
+    // `index == 0`: an orphaned non-user identity (no parent) would otherwise
+    // produce a 1-element chain whose only entry sits at index 0, the loop
+    // would never enter, and we'd silently grant access. Such rows shouldn't
+    // exist via the API but the schema allows them, so guard against it.
     let mut gap_idx: Option<usize> = None;
     let mut uncovered_keys: Vec<PermissionKey> = Vec::new();
     let last = chain.len() - 1;
     let mut i = last;
-    while i >= 1 {
+    loop {
         let ident = &chain[i];
-        if ident.inherit_permissions {
-            // Defers to parent -- continue upward.
-            i -= 1;
-            continue;
+        if ident.kind == "user" {
+            // User level: handled by Layer 1; stop the rule walk.
+            break;
         }
-        let rules = load_rules(pool, ident.id).await?;
-        match check_permissions(&rules, perm_keys) {
-            PermissionResult::Allowed => {
-                i -= 1;
-                continue;
-            }
-            PermissionResult::Denied(reason) => {
-                return Ok(ChainWalkResult::Denied(reason));
-            }
-            PermissionResult::NeedsApproval(uncovered) => {
-                gap_idx = Some(i);
-                uncovered_keys = uncovered;
+        if ident.inherit_permissions {
+            // Defers to parent. If there is no parent (orphaned non-user
+            // identity), treat the requester itself as the gap so we don't
+            // silently pass.
+            if i == 0 {
+                gap_idx = Some(last);
+                uncovered_keys = perm_keys.to_vec();
                 break;
             }
+        } else {
+            let rules = load_rules(pool, ident.id).await?;
+            match check_permissions(&rules, perm_keys) {
+                PermissionResult::Allowed => {}
+                PermissionResult::Denied(reason) => {
+                    return Ok(ChainWalkResult::Denied(reason));
+                }
+                PermissionResult::NeedsApproval(uncovered) => {
+                    gap_idx = Some(i);
+                    uncovered_keys = uncovered;
+                    break;
+                }
+            }
         }
+        if i == 0 {
+            // Reached the top of the chain without ever seeing a user. We
+            // already authorized the current (non-user, non-inherit) level
+            // above; nothing else to walk -- accept.
+            break;
+        }
+        i -= 1;
     }
 
     let Some(gap_idx) = gap_idx else {
