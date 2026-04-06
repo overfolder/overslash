@@ -13,10 +13,32 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-DASH_URL="${DASH_URL:-http://localhost:5173}"
-API_URL="${API_URL:-http://localhost:3000}"
+# Pick up worktree-isolated ports + COMPOSE_PROJECT_NAME if present. In the
+# main repo this is a no-op (worktree-env.sh exits early). In a worktree it
+# writes .env.local with PG/API/DASH host ports unique to that worktree, so
+# multiple worktrees can `make dev` concurrently.
+bash bin/worktree-env.sh
+if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+fi
+
+API_PORT="${API_HOST_PORT:-3000}"
+DASH_PORT="${DASH_HOST_PORT:-5173}"
+DASH_URL="${DASH_URL:-http://localhost:${DASH_PORT}}"
+API_URL="${API_URL:-http://localhost:${API_PORT}}"
+
 COMPOSE_FILE="docker/docker-compose.dev.yml"
 COMPOSE="$(command -v podman-compose || command -v docker-compose || echo 'docker compose')"
+# In a worktree, COMPOSE_PROJECT_NAME is set to overslash-wt-<id>; pass it as
+# --project-name because podman-compose 1.0.6 ignores the env var when the
+# compose file declares `name:`.
+PROJ_FLAG=()
+if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    PROJ_FLAG=(--project-name "$COMPOSE_PROJECT_NAME")
+fi
 KEEP_STACK="${KEEP_STACK:-1}"
 
 log() { printf '\033[0;32m[screenshots]\033[0m %s\n' "$*"; }
@@ -25,14 +47,14 @@ err() { printf '\033[0;31m[screenshots]\033[0m %s\n' "$*" >&2; }
 cleanup() {
   if [[ "$KEEP_STACK" != "1" ]]; then
     log "tearing down stack"
-    $COMPOSE -f "$COMPOSE_FILE" down || true
+    $COMPOSE "${PROJ_FLAG[@]}" -f "$COMPOSE_FILE" down || true
   fi
 }
 trap cleanup EXIT
 
 # 1. Ensure stack is up. `make dev` builds + runs api with cargo-watch + dashboard.
 log "starting stack ($COMPOSE up -d)"
-$COMPOSE -f "$COMPOSE_FILE" up -d postgres api dashboard
+$COMPOSE "${PROJ_FLAG[@]}" -f "$COMPOSE_FILE" up -d postgres api dashboard
 
 # 2. Wait for api and dashboard to respond.
 wait_for() {
@@ -78,7 +100,7 @@ log "org=$ORG_ID identity=$IDENTITY_ID"
 log "inserting fixture approval"
 TOKEN="screenshot-$(date +%s)"
 APPROVAL_ID="$(
-  $COMPOSE -f "$COMPOSE_FILE" exec -T postgres \
+  $COMPOSE "${PROJ_FLAG[@]}" -f "$COMPOSE_FILE" exec -T postgres \
     psql -U overslash -d overslash -At -c "
       INSERT INTO approvals (org_id, identity_id, action_summary, action_detail,
                              permission_keys, token, expires_at)
