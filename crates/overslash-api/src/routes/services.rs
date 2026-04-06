@@ -201,10 +201,16 @@ async fn create_service(
 /// Update a service instance by id.
 async fn update_service(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
+    // Multi-tenancy guard — refuse to mutate rows belonging to other orgs.
+    service_instance::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+
     let input = UpdateServiceInstance {
         name: req.name.as_deref(),
         connection_id: req.connection_id,
@@ -220,10 +226,16 @@ async fn update_service(
 /// Update service instance lifecycle status.
 async fn update_service_status(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateStatusRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
+    // Multi-tenancy guard.
+    service_instance::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
         return Err(AppError::BadRequest(format!(
             "invalid status '{}'; must be draft, active, or archived",

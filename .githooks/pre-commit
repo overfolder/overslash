@@ -27,6 +27,24 @@ if [ -z "$SQLX_OFFLINE" ] && [ "$DB_REACHABLE" = "false" ]; then
     export SQLX_OFFLINE=true
 fi
 
+# Guard against silently-discarded auth extractors in route handlers.
+# Pattern: `_auth: AuthContext` / `_org_id` / `_identity_id` in argument
+# position means the handler accepted an authenticated context and then
+# threw it away — usually a multi-tenancy bug (see PR #60 sentry review).
+# If a handler genuinely doesn't need auth it should not extract it at
+# all; this gate is intentionally strict.
+echo "  ignored-auth scan"
+IGNORED_AUTH_HITS=$(git ls-files 'crates/*/src/routes/*.rs' 2>/dev/null \
+    | xargs -r grep -nE '\b_(auth|org_id|identity_id)\b\s*:\s*(AuthContext|Uuid|MaybeAuthContext)' \
+    || true)
+if [ -n "$IGNORED_AUTH_HITS" ]; then
+    echo "ERROR: route handlers must not silently discard auth extractors:" >&2
+    echo "$IGNORED_AUTH_HITS" >&2
+    echo "Either use the value (e.g. enforce org_id on the query) or remove" >&2
+    echo "the extractor entirely. See PR #60 for context." >&2
+    exit 1
+fi
+
 echo "  cargo fmt --check"
 cargo fmt --check || {
     echo "ERROR: Code not formatted. Run 'cargo fmt' first."
