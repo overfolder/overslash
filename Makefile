@@ -1,6 +1,6 @@
 .PHONY: local local-down dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
-       infra-shutdown infra-resume env-setup worktree-clean
+       infra-shutdown infra-resume worktree-clean
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -8,37 +8,42 @@ TOFU_DIR := infra
 ENV ?= dev
 TF_VAR_FILE := $(TOFU_DIR)/env/$(ENV).tfvars
 
-# Load .env.local overrides if present (worktree isolation)
+# Load .env.local overrides if present (worktree isolation).
+# Used by non-compose targets like `test` and `migrate` that read DATABASE_URL.
+# Compose targets re-source .env.local inline below to handle the first-run case
+# where the file is created by bin/worktree-env.sh just before being read.
 -include .env.local
 export
-
-# Compose project flag (set by .env.local in worktrees, empty in main repo)
-COMPOSE_PROJECT := $(if $(COMPOSE_PROJECT_NAME),--project-name $(COMPOSE_PROJECT_NAME),)
 
 # Colors
 GREEN := \033[0;32m
 RED := \033[0;31m
 NC := \033[0m
 
-# Detect worktree and write .env.local (no-op in main repo)
-env-setup:
-	@bash bin/worktree-env.sh
+# Shell snippet: run worktree-env.sh, source .env.local (if created), then
+# build PROJ_FLAG. In worktrees, this becomes `--project-name overslash-wt-XXX`,
+# which overrides `name: overslash` in docker-compose.dev.yml (podman-compose
+# 1.0.6 does NOT honor COMPOSE_PROJECT_NAME env var when `name:` is set in the
+# file, so we must pass the flag explicitly). In the main repo, .env.local is
+# not created and PROJ_FLAG is empty, so compose uses `name: overslash`.
+WT_ENV = bash bin/worktree-env.sh && set -a && { [ -f .env.local ] && . ./.env.local; }; set +a; \
+         PROJ_FLAG=$${COMPOSE_PROJECT_NAME:+--project-name $$COMPOSE_PROJECT_NAME}
 
 # Start local infra (postgres only)
-local: env-setup
-	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml up -d postgres
+local:
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
 
 # Stop local infra
 local-down:
-	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml down
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down
 
 # Start all dev services (postgres + api with cargo-watch + dashboard)
-dev: env-setup
-	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml up --build
+dev:
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build
 
 # Start only the API (postgres + api)
-dev-api: env-setup
-	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml up --build postgres api
+dev-api:
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build postgres api
 
 # Start only the dashboard dev server (no container)
 dev-dashboard:
@@ -46,12 +51,13 @@ dev-dashboard:
 
 # Stop services
 down:
-	$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml down
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down
 
 # Remove worktree containers and volumes
 worktree-clean:
-	@if [ -n "$(COMPOSE_PROJECT_NAME)" ]; then \
-		$(COMPOSE) $(COMPOSE_PROJECT) -f docker/docker-compose.dev.yml down -v; \
+	@$(WT_ENV); \
+	if [ -n "$${COMPOSE_PROJECT_NAME:-}" ]; then \
+		$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down -v; \
 	else \
 		echo "Not in a worktree — nothing to clean."; \
 	fi

@@ -30,13 +30,19 @@ HASH=$(echo "$WORKTREE_ID" | cksum | awk '{print $1}')
 PG_PORT=$(( (HASH % 9000) + 56000 ))
 
 # Check if port is available, increment if not
+FOUND=0
 for i in $(seq 0 20); do
     PORT_TO_TRY=$(( PG_PORT + i ))
     if ! ss -tlnp 2>/dev/null | grep -q ":${PORT_TO_TRY} "; then
         PG_PORT=$PORT_TO_TRY
+        FOUND=1
         break
     fi
 done
+if [ "$FOUND" -eq 0 ]; then
+    echo "worktree-env.sh: no free port found in range $PG_PORT-$((PG_PORT + 20))" >&2
+    exit 1
+fi
 
 # Compose project name (lowercase, alphanumeric + hyphens)
 PROJECT_NAME="overslash-wt-${WORKTREE_ID}"
