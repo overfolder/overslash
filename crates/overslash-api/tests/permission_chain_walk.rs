@@ -432,6 +432,39 @@ async fn deny_rule_in_chain_short_circuits() {
     assert_eq!(resp.status(), 403);
 }
 
+// ── Test: bubble_up at the top of the chain is rejected ────────────
+
+#[tokio::test]
+async fn bubble_up_at_top_returns_conflict() {
+    // Single-agent chain: approval lands with current_resolver=user from
+    // the start. A bubble_up has nowhere to go and must 409 instead of
+    // resetting the auto-bubble timer or logging "bubbled X→X".
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let agent_id = create_identity(&base, &org_key, "bot", "agent", Some(user_id)).await;
+    let agent_key = create_api_key(&base, org_id, agent_id, "ak").await;
+
+    let approval_id: String = execute(&base, &agent_key, mock_addr)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"resolution": "bubble_up"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
 // ── Test: deny rule above the gap still blocks (cannot be approved) ─
 
 #[tokio::test]
