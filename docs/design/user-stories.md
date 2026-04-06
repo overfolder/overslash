@@ -39,7 +39,7 @@ Each story names: the **actors**, the **happy path**, the **Overslash surfaces**
    }
    ```
    The agent now knows: there is no live calendar service for Alice, but there is a global template it can instantiate. No human-driven dashboard tour needed.
-6. **Agent-led service creation.** OpenClaw calls `overslash_auth(action="create_service_from_template", template="google-calendar", name="google-calendar", on_behalf_of="alice")`. Because the template uses OAuth and no token exists yet, Overslash creates the service in `pending_oauth` state and returns an OAuth start URL bound to Overslash's system Google client (§7). OpenClaw prints the URL in chat: *"To connect your Google Calendar I need you to authorize this link."*
+6. **Agent-led service creation.** OpenClaw calls `overslash_auth(action="create_service_from_template", template="google-calendar", name="google-calendar", on_behalf_of="alice")`. Because the template uses OAuth and no token exists yet, Overslash creates the service in `pending_credentials` state (with `flow_kind: "oauth"`, §9 *Service Lifecycle States*) and returns an OAuth start URL bound to Overslash's system Google client (§7). OpenClaw prints the URL in chat: *"To connect your Google Calendar I need you to authorize this link."*
 7. **OAuth consent.** Alice clicks, signs into Google, grants the calendar scope, and lands on Overslash's OAuth callback. The token is encrypted and bound to Alice's new `google-calendar` service instance (§6, §9). Overslash flips the service to `active`. OpenClaw, polling `overslash_auth(action="status", service="google-calendar")` (or via webhook), sees the transition.
 8. **Re-discovery and execute.** OpenClaw re-runs `overslash_search(query="calendar")` — now `services` contains the live instance with full action schemas, and OpenClaw calls `overslash_execute(service="google-calendar", action="list_events")`.
 9. **Approval.** No matching permission key exists for `openclaw-laptop`. Overslash returns `{ status: "pending_approval", approval_id: "apr_..." }` with `suggested_tiers` (§5 *Specificity Tiers*). Because there is no platform mediating, OpenClaw surfaces the Overslash-hosted approval URL (`https://personal.overslash.dev/approvals/apr_...`) directly to Alice.
@@ -92,7 +92,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
      ]
    }
    ```
-   Claude Code calls `overslash_auth(action="create_service_from_template", template="linear", name="my-linear", scope="user")`. Linear uses an API key, not OAuth, so Overslash creates the service in `pending_secret` state and returns a **secret request URL** (`/secrets/provide/req_...?token=jwt`, §11). Bob pastes his Linear API key once into that signed page; the service flips to `active`. Subsequent `overslash_execute` calls work — and because this is a *user-owned* service, it bypasses the group ceiling for Bob himself (§5, §9).
+   Claude Code calls `overslash_auth(action="create_service_from_template", template="linear", name="my-linear", scope="user")`. Linear uses an API key, not OAuth, so Overslash creates the service in `pending_credentials` state (with `flow_kind: "secret"`, §9 *Service Lifecycle States*) and returns a **secret request URL** (`/secrets/provide/req_...?token=jwt`, §11). Bob pastes his Linear API key once into that signed page; the service flips to `active`. Subsequent `overslash_execute` calls work — and because this is a *user-owned* service, it bypasses the group ceiling for Bob himself (§5, §9).
 
 ### Surfaces touched
 - MCP server (Overslash's first-party MCP, see [mcp-integration.md](mcp-integration.md)).
@@ -562,3 +562,48 @@ Beyond the matrix above, this is which SPEC concepts each story exercises (✅ =
 - **Allow once (vs Allow & Remember)** — minor variant; not a story driver.
 
 These gaps are all minor or operational. The 8 stories together exercise every load-bearing SPEC concept.
+
+---
+
+## Pending SPEC gaps surfaced by these stories
+
+Writing the stories surfaced concrete SPEC gaps that are **not yet fixed** in SPEC.md. Each is documented in the relevant story's *Notes / open questions* section; collected here as a follow-up backlog. Items are roughly ordered by load-bearing-ness — the top items are ones where the absence creates ambiguity in user-story flows; the bottom items are nice-to-haves.
+
+### Trust model and approval mechanics (§5)
+
+- **`overslash_auth.resolve_descendant_approval` action** — §5 trust model permits ancestor agents to resolve descendant approvals within their own boundary, but §10 has no action for it. Story 4 step 8 invents one. Add to the `overslash_auth` action table in §10, and spell out the validation rules (requested keys ⊆ ancestor's boundary, requested TTL ≤ ancestor's remaining TTL on the source key) in §5.
+- **TTL inheritance bound** — when an ancestor resolves for a descendant, the granted TTL must be capped by the ancestor's own remaining TTL on the source key. Otherwise a parent could grant a child a longer-lived key than it has itself by extending TTL forward. Tied to the action above.
+- **Visibility of `superseded` approval drops** — §5 specifies the 3-pending cap and the `superseded` reason but doesn't say whether dropped approvals are visible to the user. Story 4 step 6 assumes silent drop; that's a UX hazard if the dropped approval was important. Should fire a notification on supersession or at minimum appear in the audit log with a clear reason.
+- **Required-TTL org policy on remembered approvals** — §5 makes TTL optional. Story 8 argues for an org setting `require_remembered_approval_ttl: true` (with a default max TTL) to prevent the "no-TTL `github:*:*`" footgun that enabled the incident in Story 8. Add to §5 as an opt-in org policy.
+- **Post-policy-change impact analysis** — when an org-admin tightens a group ceiling, Overslash should report which existing remembered approvals are now out-of-policy and either auto-revoke them or flag them for review. Story 8 step 10 calls this out as a TODO. Currently nothing in §5 or §11 addresses it.
+
+### Identity lifecycle (§4)
+
+- **Cascade disable semantics** — §4 mentions disabling identities but doesn't specify whether disable cascades to descendants. Story 8 step 4 assumes mandatory cascade (partial disable produces unsafe states). Worth pinning down: cascade should be mandatory, not optional.
+- **IdP-driven offboarding (SCIM)** — §4 covers user provisioning on first IdP login but not deprovisioning. Real-world deployments need SCIM `DELETE /Users/{id}` or detection of `user_disabled` on next login attempt. Without this, every Overslash deployment will eventually have a stale identity like Greg in Story 8. Add a §4 sub-section.
+- **Okta group → Overslash group claim mapping** — Story 5 step 9 assumes Frank is auto-assigned to Engineering via Okta group claims. §4 doesn't specify how (or whether) IdP group claims map to Overslash groups. Either build the mapping or explicitly document "manual group assignment for v1."
+- **Identity reparenting** — §4 mentions it as a feature but no mechanism is specified and no story exercises it. Worth a short §4 sub-section or removal from the feature list.
+
+### Service lifecycle and credentials (§9)
+
+- **Rotation never re-enters `pending_credentials`** — implicit in §9 lifecycle but Story 7 step 9 makes it explicit. Worth stating directly: rotation is a `secret_version++` operation on an `active` service, never a state change.
+- **Secret version resolved once per call** — Story 7 step 8 (in-flight call survives rotation) assumes secret version is resolved once at the moment of injection, not throughout the call's lifetime. Worth documenting in §6 as a safety property.
+- **Restore-version footgun guard** — §6 supports restoring old versions, but Story 7 step 11 notes that restoring a *leaked* old version would be catastrophic. The dashboard should require an explicit confirm + warning when restoring a version older than the most recent rotation marked as security-driven.
+- **OpenAPI import endpoint-selection UX** — §9 mentions OpenAPI import but the actual selection / risk-tagging / scope_param-assignment UX from Story 5 step 6 isn't specified. Worth either a §9 sub-section or a separate design doc.
+- **User-owned service shadowing audit** — §9 documents service shadowing as a feature without flagging the offboarding risk Story 8 step 8 surfaces. Worth a note + a dashboard surface listing "user-owned services that shadow org services" so security can review them.
+
+### Audit and observability (§12)
+
+- **Audit body redaction policy** — Story 6 step 10 assumes metadata-only audit by default with opt-in body logging via per-service `audit.log_payloads: true`. Currently §12 says nothing about payload logging. Worth pinning down the default and the opt-in mechanism.
+- **Resolution chains in audit entries** — Stories 4 and 8 rely on audit entries including the full hierarchical resolution chain (which level approved what, via which key). §12 doesn't specify the audit entry shape. Worth a sub-section.
+- **Audit export format for SIEM ingestion** — Story 8 step 9 exports for legal. The export format should be designed for downstream tools (Splunk, Datadog) — JSON with stable schema, signed, including IPs. Worth a §12 sub-section.
+
+### OAuth (§7)
+
+- **`docs/design/google-workspace-oauth.md` doc** — §7 references it for the BYOC Google Workspace path; Stories 1 and 5 reference it. Doesn't exist yet. Story 5 step 5 is the canonical use case.
+- **Domain-wide delegation** — covered in the Google research but no story uses it. Either fold into the BYOC vignette in Story 5 or write a §7 sub-doc on service-account flows.
+
+### Out of scope but worth tracking
+
+- **Anomaly detection** — Story 8 step 1 assumes a PagerDuty alert from an upstream tool watching the audit log. Overslash itself shouldn't be a SIEM (that's a non-goal), but the audit log export format should be designed to make this easy for downstream tools.
+- **Mode B (service + HTTP verb)** — the middle-ground execution mode in §8 is mentioned in SPEC but no story exercises it. Probably belongs as a vignette in a future Story 9, or Story 6 could be extended. Low priority — agents either know an action well enough to use Mode C or not at all and need Mode A.

@@ -719,6 +719,7 @@ Sub-actions, by category:
 | | `retry_credentials` | Re-issue a fresh credential flow URL for a `pending_credentials` or `error` service. Invalidates any previous URL on the same row. |
 | **Secret management** | `list_secrets` | List secret names + version metadata visible to caller (never values). |
 | | `request_secret` | Request a new secret value from a user. Returns a signed `/secrets/provide/req_...` URL. |
+| | `rotate_secret` | Rotate a secret on an `active` service. Params: `service`, `slot`. Returns a signed `/secrets/provide/...` URL for the user to paste a new value. The service stays `active` throughout — rotation is a `secret_version++` operation, never a state change (§6, §9). |
 | **Sub-identities** | `create_subagent` | Create a sub-agent under the calling agent. Params: `name`, `inherit_permissions?`, `ttl?`. Returns API key once. |
 | **Auth introspection** | `whoami` | Return the calling identity's SPIFFE path, depth, owner-user, group memberships. |
 
