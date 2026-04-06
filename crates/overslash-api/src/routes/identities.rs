@@ -252,13 +252,15 @@ struct RestoreResponse {
 
 async fn restore_identity(
     State(state): State<AppState>,
-    auth: AuthContext,
+    WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RestoreResponse>> {
-    // Org-scope: confirm the identity belongs to the caller's org before restoring.
+    // Restore mints fresh state (un-archives identity, resurrects API keys),
+    // so it requires write-level ACL on the overslash service — read-only
+    // users must not be able to revive archived identities.
     let existing = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
-    let existing = crate::ownership::require_org_owned(existing, auth.org_id, "identity")?;
+    let existing = crate::ownership::require_org_owned(existing, acl.org_id, "identity")?;
     if existing.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "only sub_agent identities can be restored".into(),
@@ -287,8 +289,8 @@ async fn restore_identity(
             let _ = audit::log(
                 &state.db,
                 &AuditEntry {
-                    org_id: auth.org_id,
-                    identity_id: auth.identity_id,
+                    org_id: acl.org_id,
+                    identity_id: acl.identity_id,
                     action: "identity.restored",
                     resource_type: Some("identity"),
                     resource_id: Some(identity.id),
