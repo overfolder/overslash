@@ -268,9 +268,17 @@ The core trust assumption: **agents are not trusted to approve their own actions
 
 (The secret request page at `/secrets/provide/req_...?token=jwt` uses a signed URL because providing a secret doesn't grant the agent authority — the agent still needs a separate approval to use it.)
 
+### Pending Approval Limits
+
+Each agent identity can have **at most 3 pending approvals** at any time. When a new approval request is created and 3 already exist, the oldest pending request is automatically dropped (denied with reason "superseded"). This prevents stale approvals from accumulating when agents are actively working.
+
+### Notification Delay
+
+Approval and secret requests are **not notified immediately**. Only requests that remain unresolved for **more than 1 minute** trigger notifications (bell badge, email, webhook). This prevents flash notifications for requests that agents or ancestor identities resolve quickly on their own. Notifications auto-dismiss when the underlying request is resolved.
+
 ### Remembered Approvals
 
-"Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Users can view and revoke remembered approvals per identity via the dashboard.
+"Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Permission rules and remembered approvals are the same concept — "permission rules" is the storage format, "remembered approvals" is the user-facing term. Users can view and revoke them per identity via the dashboard.
 
 ### Specificity Tiers
 

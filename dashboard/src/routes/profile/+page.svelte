@@ -125,8 +125,7 @@
 	}
 
 	h1 {
-		font-size: 1.75rem;
-		font-weight: 600;
+		font: var(--text-h1);
 		margin-bottom: 1.5rem;
 	}
 
