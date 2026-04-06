@@ -264,6 +264,20 @@ async fn restore_identity(
             "only sub_agent identities can be restored".into(),
         ));
     }
+    // If the parent is itself archived, restoring this child would create a
+    // live child under an archived parent, blocking the parent's purge forever.
+    // The user must restore the parent first.
+    if let Some(parent_id) = existing.parent_id {
+        if let Some(parent) = overslash_db::repos::identity::get_by_id(&state.db, parent_id).await?
+        {
+            if parent.archived_at.is_some() {
+                return Err(AppError::Conflict(
+                    "cannot restore identity while parent is archived; restore the parent first"
+                        .into(),
+                ));
+            }
+        }
+    }
 
     match overslash_db::repos::identity::restore(&state.db, id).await? {
         RestoreOutcome::Restored {

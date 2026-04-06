@@ -336,6 +336,76 @@ async fn test_archived_identity_auth_rejected_with_403() {
 }
 
 #[tokio::test]
+async fn test_cannot_restore_child_under_archived_parent() {
+    // Regression: restoring a child under an archived parent would re-create
+    // a live child, permanently blocking the parent from being purged.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{base}");
+    let (_org_id, admin_key, agent_id) =
+        setup_hierarchy(&client, &base, "restore-under-archived").await;
+    let org_uuid: Uuid = _org_id.parse().unwrap();
+
+    // Build parent → child sub-agents.
+    let parent_sub = make_subagent(&client, &base, &admin_key, &agent_id, "p").await;
+    let parent_str = parent_sub["id"].as_str().unwrap().to_string();
+    let parent_uuid: Uuid = parent_str.parse().unwrap();
+    let child_sub = make_subagent(&client, &base, &admin_key, &parent_str, "c").await;
+    let child_str = child_sub["id"].as_str().unwrap().to_string();
+    let child_uuid: Uuid = child_str.parse().unwrap();
+
+    // Archive child first (it has no children of its own), then archive parent.
+    force_org_config(&pool, org_uuid, 60, 30).await;
+    sqlx::query(
+        "UPDATE identities SET last_active_at = now() - interval '2 hours' WHERE id = ANY($1)",
+    )
+    .bind(vec![parent_uuid, child_uuid])
+    .execute(&pool)
+    .await
+    .unwrap();
+    overslash_db::repos::identity::archive_idle_subagents(&pool)
+        .await
+        .unwrap(); // archives child (parent still has live child snapshot)
+    overslash_db::repos::identity::archive_idle_subagents(&pool)
+        .await
+        .unwrap(); // archives parent
+
+    // Restoring the child while parent is still archived must be rejected.
+    let resp = client
+        .post(format!("{base}/v1/identities/{child_str}/restore"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("parent is archived"),
+        "error should mention archived parent, got: {body}"
+    );
+
+    // After restoring the parent, the child can be restored.
+    let resp = client
+        .post(format!("{base}/v1/identities/{parent_str}/restore"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .post(format!("{base}/v1/identities/{child_str}/restore"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
 async fn test_cannot_create_subagent_under_archived_parent() {
     // Regression: a child born under an archived parent would (a) be
     // immediately non-functional and (b) block the parent from ever being
