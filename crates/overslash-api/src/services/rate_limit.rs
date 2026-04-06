@@ -194,6 +194,8 @@ pub struct RateLimitConfigCache {
     user_budget: DashMap<(Uuid, Uuid), CachedConfig>,
     /// Identity cap cache: (org_id, identity_id) → config (None = no cap)
     identity_cap: DashMap<(Uuid, Uuid), CachedConfig>,
+    /// Org-level fallback budget cache: org_id → config (None = no DB row, use system fallback)
+    org_budget: DashMap<Uuid, CachedConfig>,
     ttl: Duration,
 }
 
@@ -202,6 +204,7 @@ impl RateLimitConfigCache {
         Self {
             user_budget: DashMap::new(),
             identity_cap: DashMap::new(),
+            org_budget: DashMap::new(),
             ttl,
         }
     }
@@ -215,6 +218,7 @@ impl RateLimitConfigCache {
     pub fn invalidate_org(&self, org_id: Uuid) {
         self.user_budget.retain(|(o, _), _| *o != org_id);
         self.identity_cap.retain(|(o, _), _| *o != org_id);
+        self.org_budget.remove(&org_id);
     }
 
     /// Drop the cached identity cap entry for a specific identity.
@@ -263,23 +267,44 @@ impl RateLimitConfigCache {
 
     /// Resolve the org-level fallback budget for unbound API keys.
     /// Uses the org default if set, otherwise the system fallback config.
+    /// Cached with the same TTL as user budgets.
     pub async fn resolve_org_budget(
         &self,
         pool: &PgPool,
         config: &Config,
         org_id: Uuid,
     ) -> RateLimitConfig {
-        if let Ok(Some(row)) = overslash_db::repos::rate_limit::get_org_default(pool, org_id).await
-        {
-            return RateLimitConfig {
-                max_requests: row.max_requests as u32,
-                window_seconds: row.window_seconds as u32,
-            };
-        }
-        RateLimitConfig {
+        let fallback = RateLimitConfig {
             max_requests: config.default_rate_limit,
             window_seconds: config.default_rate_window_secs,
+        };
+
+        // Check cache
+        if let Some(entry) = self.org_budget.get(&org_id) {
+            if entry.fetched_at.elapsed() < self.ttl {
+                return entry.config.unwrap_or(fallback);
+            }
         }
+
+        // Resolve from DB
+        let resolved = overslash_db::repos::rate_limit::get_org_default(pool, org_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| RateLimitConfig {
+                max_requests: row.max_requests as u32,
+                window_seconds: row.window_seconds as u32,
+            });
+
+        self.org_budget.insert(
+            org_id,
+            CachedConfig {
+                config: resolved,
+                fetched_at: Instant::now(),
+            },
+        );
+
+        resolved.unwrap_or(fallback)
     }
 
     /// Resolve an identity cap. Returns None if no cap is configured.
