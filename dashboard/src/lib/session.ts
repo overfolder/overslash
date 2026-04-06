@@ -68,3 +68,40 @@ export interface MeIdentity {
 	external_id: string | null;
 	is_org_admin?: boolean;
 }
+
+/** Mirrors overslash_core::permissions::DerivedKey */
+export interface DerivedKey {
+	service: string;
+	action: string;
+	arg: string;
+}
+
+/** Mirrors overslash_core::permissions::SuggestedTier */
+export interface SuggestedTier {
+	keys: string[];
+	description: string;
+}
+
+/** Mirrors crates/overslash-api/src/routes/approvals.rs ApprovalResponse */
+export interface ApprovalResponse {
+	id: string;
+	identity_id: string;
+	/** SPIFFE-style hierarchical path of the requesting identity, e.g.
+	 *  `spiffe://acme/user/alice/agent/henry`. May be null if the chain
+	 *  could not be resolved. */
+	identity_path: string | null;
+	action_summary: string;
+	permission_keys: string[];
+	derived_keys: DerivedKey[];
+	suggested_tiers: SuggestedTier[];
+	status: string;
+	token: string;
+	expires_at: string;
+	created_at: string;
+}
+
+export interface ResolveApprovalRequest {
+	resolution: 'allow' | 'deny' | 'allow_remember';
+	remember_keys?: string[];
+	ttl?: string;
+}

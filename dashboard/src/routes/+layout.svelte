@@ -16,7 +16,9 @@
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
-	const isLogin = $derived($page.url.pathname === '/login');
+	const standalone = $derived(
+		$page.url.pathname === '/login' || $page.url.pathname.startsWith('/approvals/')
+	);
 	const isAdmin = $derived(data?.user?.is_org_admin === true);
 	const collapsed = $derived($sidebarCollapsed);
 
@@ -27,7 +29,7 @@
 	});
 
 	$effect(() => {
-		if (isLogin) {
+		if (standalone) {
 			stopNotificationPolling();
 		} else {
 			startNotificationPolling();
@@ -45,7 +47,7 @@
 	}
 </script>
 
-{#if isLogin}
+{#if standalone}
 	{@render children()}
 {:else}
 	<div

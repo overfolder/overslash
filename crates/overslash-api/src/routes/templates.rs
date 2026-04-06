@@ -321,10 +321,16 @@ async fn create_template(
 /// Update a DB-stored template by id.
 async fn update_template(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTemplateRequest>,
 ) -> Result<Json<TemplateDetail>> {
+    // Multi-tenancy guard.
+    service_template::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("template not found".into()))?;
+
     let input = UpdateServiceTemplate {
         display_name: req.display_name.as_deref(),
         description: req.description.as_deref(),
@@ -349,9 +355,15 @@ async fn update_template(
 /// Delete a DB-stored template by id (cannot delete global templates).
 async fn delete_template(
     State(state): State<AppState>,
-    _auth: AuthContext,
+    auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    // Multi-tenancy guard.
+    service_template::get_by_id(&state.db, id)
+        .await?
+        .filter(|r| r.org_id == auth.org_id)
+        .ok_or_else(|| AppError::NotFound("template not found".into()))?;
+
     let deleted = service_template::delete(&state.db, id).await?;
     if !deleted {
         return Err(AppError::NotFound("template not found".into()));
