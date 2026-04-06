@@ -34,6 +34,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 		} catch {
 			errorBody = await res.text();
 		}
+		if (res.status === 401 && typeof window !== 'undefined') {
+			const here = window.location.pathname + window.location.search;
+			if (window.location.pathname !== '/login') {
+				window.location.href = `/login?reason=expired&return_to=${encodeURIComponent(here)}`;
+			}
+		}
 		throw new ApiError(res.status, errorBody);
 	}
 
