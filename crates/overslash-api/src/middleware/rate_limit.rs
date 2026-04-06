@@ -106,7 +106,7 @@ pub async fn rate_limit_middleware(
 }
 
 /// Extract the 12-char `osk_` prefix from the Authorization header.
-fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String> {
+pub fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String> {
     let auth = request.headers().get("authorization")?.to_str().ok()?;
     let key = auth.strip_prefix("Bearer ")?;
     if !key.starts_with("osk_") || key.len() < 12 {
@@ -122,7 +122,7 @@ fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String> {
 /// entry expires. The DB lookup is a single indexed query (uses idx_api_keys_prefix)
 /// and is much cheaper than the argon2 verification done by the AuthContext extractor.
 /// `find_by_prefix` already filters `revoked_at IS NULL`, so revoked keys are skipped.
-async fn resolve_identity(
+pub async fn resolve_identity(
     state: &AppState,
     prefix: &str,
 ) -> Option<(Uuid, Option<Uuid>, Option<Uuid>)> {

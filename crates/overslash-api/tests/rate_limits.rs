@@ -1,6 +1,13 @@
 mod common;
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::{Router, routing::get};
 use serde_json::{Value, json};
+use sqlx::PgPool;
+use tokio::net::TcpListener;
 use uuid::Uuid;
 
 /// Bootstrap: org + user + org-admin API key. Returns (base_url, client, org_id, org_api_key).
@@ -574,4 +581,389 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         resolved.max_requests, 500,
         "user override should win over org default"
     );
+}
+
+// ── Middleware end-to-end tests ─────────────────────────────────────
+//
+// These tests build a minimal Axum app with the rate_limit_middleware
+// in front of an "echo" handler so we can exercise the middleware end-to-end:
+// header parsing, identity resolution, two-counter check, 429 generation,
+// and response header injection.
+
+/// Build a test AppState with an in-memory rate limiter.
+async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
+        dashboard_url: "/".into(),
+        redis_url: None,
+        default_rate_limit: 1000,
+        default_rate_window_secs: 60,
+    };
+    overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: Arc::new(overslash_api::services::rate_limit::InMemoryRateLimitStore::new()),
+        rate_limit_cache: Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
+        ),
+    }
+}
+
+/// Spawn an Axum server with the rate_limit_middleware in front of an echo handler.
+/// Returns the bound address.
+async fn spawn_middleware_app(state: overslash_api::AppState) -> SocketAddr {
+    async fn echo() -> &'static str {
+        "ok"
+    }
+
+    let app = Router::new()
+        .route("/echo", get(echo))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::rate_limit::rate_limit_middleware,
+        ))
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// Create an org + user identity + user-bound API key directly in the DB.
+/// Returns (org_id, user_id, raw_api_key).
+async fn make_org_user_key(pool: &PgPool) -> (Uuid, Uuid, String) {
+    use rand::Rng;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let user_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'user')")
+        .bind(user_id)
+        .bind(org_id)
+        .bind("test-user")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    // Generate an API key. Format must be osk_<random>. The prefix (12 chars) is what
+    // the middleware uses for the lookup; we hash the full key with argon2.
+    let suffix: String = (0..32)
+        .map(|_| {
+            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            chars[rand::rng().random_range(0..chars.len())] as char
+        })
+        .collect();
+    let raw_key = format!("osk_{suffix}");
+    let prefix = raw_key[..12].to_string();
+
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+    };
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(raw_key.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
+         VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[])",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind("test-key")
+    .bind(&hash)
+    .bind(&prefix)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    (org_id, user_id, raw_key)
+}
+
+#[tokio::test]
+async fn test_middleware_passes_through_without_auth() {
+    let pool = common::test_pool().await;
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+
+    let resp = reqwest::get(format!("http://{addr}/echo")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    // No rate limit headers because middleware skipped (no auth header)
+    assert!(resp.headers().get("x-ratelimit-limit").is_none());
+}
+
+#[tokio::test]
+async fn test_middleware_passes_through_with_non_osk_auth() {
+    let pool = common::test_pool().await;
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", "Bearer not-an-osk-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers().get("x-ratelimit-limit").is_none());
+}
+
+#[tokio::test]
+async fn test_middleware_passes_through_for_unknown_key() {
+    let pool = common::test_pool().await;
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", "Bearer osk_unknown_prefix_xxxxxxxxxxxx")
+        .send()
+        .await
+        .unwrap();
+    // Unknown key → middleware skips, handler runs (200)
+    assert_eq!(resp.status(), 200);
+    assert!(resp.headers().get("x-ratelimit-limit").is_none());
+}
+
+#[tokio::test]
+async fn test_middleware_attaches_headers_for_known_key() {
+    let pool = common::test_pool().await;
+    let (_org_id, _user_id, raw_key) = make_org_user_key(&pool).await;
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", format!("Bearer {raw_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let limit = resp.headers().get("x-ratelimit-limit").unwrap();
+    let remaining = resp.headers().get("x-ratelimit-remaining").unwrap();
+    let reset = resp.headers().get("x-ratelimit-reset").unwrap();
+    assert_eq!(limit.to_str().unwrap(), "1000");
+    assert_eq!(remaining.to_str().unwrap(), "999");
+    assert!(reset.to_str().unwrap().parse::<u64>().is_ok());
+}
+
+#[tokio::test]
+async fn test_middleware_returns_429_when_user_bucket_exhausted() {
+    let pool = common::test_pool().await;
+    let (org_id, user_id, raw_key) = make_org_user_key(&pool).await;
+
+    // Set a tiny user budget: 2 requests per minute
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 2, 60)
+        .await
+        .unwrap();
+
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+    let client = reqwest::Client::new();
+
+    // First two requests should succeed
+    for i in 0..2 {
+        let resp = client
+            .get(format!("http://{addr}/echo"))
+            .header("authorization", format!("Bearer {raw_key}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "request {i} should succeed");
+    }
+
+    // Third should be rate-limited
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", format!("Bearer {raw_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 429);
+    assert_eq!(
+        resp.headers()
+            .get("x-ratelimit-limit")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("x-ratelimit-remaining")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "0"
+    );
+    assert!(resp.headers().get("retry-after").is_some());
+    assert!(resp.headers().get("x-ratelimit-reset").is_some());
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "rate limit exceeded");
+}
+
+#[tokio::test]
+async fn test_middleware_identity_cap_kicks_in_before_user_bucket() {
+    let pool = common::test_pool().await;
+    let (org_id, user_id, raw_key) = make_org_user_key(&pool).await;
+
+    // User bucket: 1000/min (generous), identity cap: 1/min (tight)
+    overslash_db::repos::rate_limit::upsert(
+        &pool,
+        org_id,
+        "identity_cap",
+        Some(user_id),
+        None,
+        1,
+        60,
+    )
+    .await
+    .unwrap();
+
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", format!("Bearer {raw_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", format!("Bearer {raw_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 429, "identity cap should kick in");
+}
+
+#[tokio::test]
+async fn test_middleware_skips_expired_key() {
+    let pool = common::test_pool().await;
+    let (_org_id, _user_id, raw_key) = make_org_user_key(&pool).await;
+
+    // Mark the key as expired
+    let prefix = &raw_key[..12];
+    sqlx::query("UPDATE api_keys SET expires_at = now() - INTERVAL '1 hour' WHERE key_prefix = $1")
+        .bind(prefix)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", format!("Bearer {raw_key}"))
+        .send()
+        .await
+        .unwrap();
+    // Expired key → middleware skips, handler runs (echo doesn't check auth)
+    assert_eq!(resp.status(), 200);
+    // No headers because middleware bailed out before counting
+    assert!(resp.headers().get("x-ratelimit-limit").is_none());
+}
+
+// ── Unit tests for extract_osk_prefix ───────────────────────────────
+
+#[test]
+fn test_extract_osk_prefix_valid() {
+    use axum::body::Body;
+    let req = axum::http::Request::builder()
+        .header("authorization", "Bearer osk_abcdefgh1234567890")
+        .body(Body::empty())
+        .unwrap();
+    let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
+    assert_eq!(prefix.as_deref(), Some("osk_abcdefgh"));
+}
+
+#[test]
+fn test_extract_osk_prefix_no_header() {
+    use axum::body::Body;
+    let req = axum::http::Request::builder().body(Body::empty()).unwrap();
+    let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
+    assert!(prefix.is_none());
+}
+
+#[test]
+fn test_extract_osk_prefix_no_bearer() {
+    use axum::body::Body;
+    let req = axum::http::Request::builder()
+        .header("authorization", "Basic abcd")
+        .body(Body::empty())
+        .unwrap();
+    let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
+    assert!(prefix.is_none());
+}
+
+#[test]
+fn test_extract_osk_prefix_wrong_scheme() {
+    use axum::body::Body;
+    let req = axum::http::Request::builder()
+        .header("authorization", "Bearer xyz_notanoskkey")
+        .body(Body::empty())
+        .unwrap();
+    let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
+    assert!(prefix.is_none());
+}
+
+#[test]
+fn test_extract_osk_prefix_too_short() {
+    use axum::body::Body;
+    let req = axum::http::Request::builder()
+        .header("authorization", "Bearer osk_abc") // < 12 chars
+        .body(Body::empty())
+        .unwrap();
+    let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
+    assert!(prefix.is_none());
+}
+
+#[test]
+fn test_extract_osk_prefix_non_ascii_header() {
+    use axum::body::Body;
+    // Headers with bytes that fail to_str() should yield None
+    let req = axum::http::Request::builder()
+        .header(
+            "authorization",
+            axum::http::HeaderValue::from_bytes(b"Bearer \xff\xfe\xfd").unwrap(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let prefix = overslash_api::middleware::rate_limit::extract_osk_prefix(&req);
+    assert!(prefix.is_none());
 }
