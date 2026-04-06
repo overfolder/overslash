@@ -126,6 +126,7 @@ impl FromRequestParts<AppState> for AuthContext {
                     let restorable_until =
                         archived_at + time::Duration::days(retention_days as i64);
                     identity_archive_error = Some(AppError::IdentityArchived {
+                        identity_id,
                         reason: ident.archived_reason.unwrap_or_else(|| "unknown".into()),
                         restorable_until,
                     });

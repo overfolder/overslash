@@ -329,9 +329,18 @@ async fn test_archived_identity_auth_rejected_with_403() {
     assert_eq!(body["error"], "identity_archived");
     assert_eq!(body["reason"], "idle_timeout");
     assert!(body["restorable_until"].is_string());
+    // identity_id is included so clients don't have to track it themselves.
+    assert_eq!(body["identity_id"].as_str().unwrap(), sub_id.to_string());
+    // The hint embeds the actual UUID — no literal `{id}` placeholder.
+    let hint = body["hint"].as_str().unwrap_or("");
     assert!(
-        body["hint"].as_str().unwrap_or("").contains("/restore"),
-        "hint should mention the restore endpoint"
+        hint.contains(&sub_id.to_string()),
+        "hint should embed the actual identity id, got: {hint}"
+    );
+    assert!(hint.contains("/restore"), "hint should mention restore");
+    assert!(
+        !hint.contains("{id}"),
+        "hint must not contain literal {{id}} placeholder"
     );
 }
 
