@@ -476,6 +476,62 @@ async fn test_purged_identity_orphan_key_does_not_authenticate() {
 }
 
 #[tokio::test]
+async fn test_archived_identity_takes_precedence_over_key_expiry() {
+    // Regression: a sub-agent whose API key has its own expires_at in the past
+    // AND whose identity is archived should still see the actionable
+    // 403 identity_archived (with restore hint), not 401 api_key_expired.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{base}");
+    let (org_id, admin_key, agent_id) =
+        setup_hierarchy(&client, &base, "archived-vs-expired").await;
+    let org_uuid: Uuid = org_id.parse().unwrap();
+
+    let sub = make_subagent(&client, &base, &admin_key, &agent_id, "doomed").await;
+    let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
+
+    let sub_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": &org_id, "identity_id": sub_id, "name": "k"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let key_id: Uuid = sub_key["id"].as_str().unwrap().parse().unwrap();
+    let key_str = sub_key["key"].as_str().unwrap().to_string();
+
+    // Set the key's own absolute expiry to the past
+    sqlx::query("UPDATE api_keys SET expires_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(key_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Archive the identity
+    force_org_config(&pool, org_uuid, 60, 30).await;
+    sqlx::query("UPDATE identities SET last_active_at = now() - interval '2 hours' WHERE id = $1")
+        .bind(sub_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    overslash_db::repos::identity::archive_idle_subagents(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {key_str}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "identity_archived");
+}
+
+#[tokio::test]
 async fn test_manually_revoked_key_returns_401_not_403() {
     // A manually-revoked key (revoked_reason IS NULL) on a healthy identity must
     // still return 401, not 403, because nothing about the identity is archived.

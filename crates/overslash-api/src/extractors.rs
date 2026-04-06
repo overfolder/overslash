@@ -96,14 +96,7 @@ impl FromRequestParts<AppState> for AuthContext {
                 .map_err(|e| AppError::Internal(format!("db error: {e}")))?
                 .ok_or_else(|| AppError::Unauthorized("invalid api key".into()))?;
 
-        // Check expiry
-        if let Some(expires_at) = key_row.expires_at {
-            if expires_at < time::OffsetDateTime::now_utc() {
-                return Err(AppError::Unauthorized("api key expired".into()));
-            }
-        }
-
-        // Verify hash
+        // Verify hash first — gate any further info disclosure on a valid key.
         let parsed_hash = argon2::PasswordHash::new(&key_row.key_hash)
             .map_err(|_| AppError::Internal("invalid stored hash".into()))?;
 
@@ -150,18 +143,25 @@ impl FromRequestParts<AppState> for AuthContext {
             }
         }
 
+        // Identity-archived takes precedence over both key revoke and key expiry
+        // because it's the most actionable error (the client can call /restore).
+        if let Some(err) = identity_archive_error {
+            return Err(err);
+        }
+
         // The "_including_archived" lookup intentionally returns auto-revoked
         // keys so we can serve a clear 403. But after the identity is purged,
         // api_keys.identity_id becomes NULL via FK SET NULL while revoked_at
         // and revoked_reason remain. Such an orphan must NOT authenticate.
-        // Reject any revoked key here, surfacing the friendly 403 only when
-        // the identity is still around and archived.
         if key_row.revoked_at.is_some() {
-            return Err(identity_archive_error
-                .unwrap_or_else(|| AppError::Unauthorized("invalid api key".into())));
+            return Err(AppError::Unauthorized("invalid api key".into()));
         }
-        if let Some(err) = identity_archive_error {
-            return Err(err);
+
+        // Per-key absolute expiry (independent of identity activity).
+        if let Some(expires_at) = key_row.expires_at {
+            if expires_at < time::OffsetDateTime::now_utc() {
+                return Err(AppError::Unauthorized("api key expired".into()));
+            }
         }
 
         // Touch api_key last_used (fire and forget)
