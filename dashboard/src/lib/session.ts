@@ -66,4 +66,5 @@ export interface MeIdentity {
 	name: string;
 	kind: string;
 	external_id: string | null;
+	is_org_admin?: boolean;
 }

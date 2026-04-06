@@ -1,10 +1,2 @@
-<script lang="ts">
-	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
-
-	onMount(() => {
-		goto('/profile');
-	});
-</script>
-
-<p>Redirecting...</p>
+<h1>Dashboard</h1>
+<p>Welcome to Overslash.</p>
