@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict NNtMRwkgiE40G0AA4A27069T2HwfEHKIc9dgoDcCpfqraPouPzdbbAjxORWwpP6
+\restrict 8qYWOJBlJ1BmUntTqafdO70GIJ7YLM4SCMxecmy35sjHyJH6E5tJYF2EI5iglUO
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,13 +23,6 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
-
-
---
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -1351,5 +1344,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict NNtMRwkgiE40G0AA4A27069T2HwfEHKIc9dgoDcCpfqraPouPzdbbAjxORWwpP6
+\unrestrict 8qYWOJBlJ1BmUntTqafdO70GIJ7YLM4SCMxecmy35sjHyJH6E5tJYF2EI5iglUO
 

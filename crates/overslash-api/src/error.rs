@@ -52,6 +52,13 @@ pub enum AppError {
         content_type: Option<String>,
         limit_bytes: usize,
     },
+
+    #[error("identity archived: {reason}")]
+    IdentityArchived {
+        identity_id: uuid::Uuid,
+        reason: String,
+        restorable_until: time::OffsetDateTime,
+    },
 }
 
 impl IntoResponse for AppError {
@@ -121,6 +128,27 @@ impl IntoResponse for AppError {
                         "content_type": content_type,
                         "limit_bytes": limit_bytes,
                         "hint": "retry with prefer_stream: true to stream large responses"
+                    })),
+                )
+                    .into_response();
+            }
+            Self::IdentityArchived {
+                identity_id,
+                reason,
+                restorable_until,
+            } => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": "identity_archived",
+                        "identity_id": identity_id,
+                        "reason": reason,
+                        "restorable_until": restorable_until
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_default(),
+                        "hint": format!(
+                            "POST /v1/identities/{identity_id}/restore to recover within the retention window"
+                        ),
                     })),
                 )
                     .into_response();

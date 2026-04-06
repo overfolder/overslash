@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE approvals SET status = 'expired', resolved_at = now(), resolved_by = 'system'\n         WHERE identity_id = ANY($1) AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e8110a40813fad3e695bc17be56e49a5bce53470be8756ef814b459b7802651b"
+}

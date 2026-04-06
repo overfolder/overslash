@@ -99,7 +99,8 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] Parent/child identity relationships (depth tracking, owner_id)
 - [ ] `inherit_permissions` — dynamic resolution (live pointer, not copy) *(column added, resolution logic pending)*
 - [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
-- [ ] TTL-based sub-identity auto-cleanup
+- [x] Sub-agent idle cleanup with two-phase archive (backend) — idle archive, retention purge, restore endpoint, per-org config
+- [ ] Dashboard: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
 - [ ] Permission chain walk (ancestor chain, gap detection)
 - [ ] Approval bubbling (gap level targeting, ancestor handling)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
