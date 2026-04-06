@@ -261,6 +261,27 @@ impl RateLimitConfigCache {
         })
     }
 
+    /// Resolve the org-level fallback budget for unbound API keys.
+    /// Uses the org default if set, otherwise the system fallback config.
+    pub async fn resolve_org_budget(
+        &self,
+        pool: &PgPool,
+        config: &Config,
+        org_id: Uuid,
+    ) -> RateLimitConfig {
+        if let Ok(Some(row)) = overslash_db::repos::rate_limit::get_org_default(pool, org_id).await
+        {
+            return RateLimitConfig {
+                max_requests: row.max_requests as u32,
+                window_seconds: row.window_seconds as u32,
+            };
+        }
+        RateLimitConfig {
+            max_requests: config.default_rate_limit,
+            window_seconds: config.default_rate_window_secs,
+        }
+    }
+
     /// Resolve an identity cap. Returns None if no cap is configured.
     pub async fn resolve_identity_cap(
         &self,

@@ -33,17 +33,29 @@ pub async fn rate_limit_middleware(
     // rejects, we've only over-counted one user-bucket request (acceptable).
     // If we did identity cap first, a user-bucket rejection would waste the cap.
 
-    // Counter 1: User bucket (always enforced)
+    // Counter 1: User bucket (always enforced).
+    // For identity-bound keys, bucket on the owning user (so all agents share).
+    // For org-level keys (no identity_id), bucket on the org itself — otherwise
+    // unbound keys would bypass rate limiting entirely.
     let user_id = owner_user_id.or(identity_id);
-    let user_budget = if let Some(user_id) = user_id {
+    let (bucket_key, budget) = if let Some(user_id) = user_id {
         let budget = state
             .rate_limit_cache
             .resolve_user_budget(&state.db, &state.config, org_id, user_id)
             .await;
-        let key = format!("rl:{org_id}:user:{user_id}");
+        (format!("rl:{org_id}:user:{user_id}"), budget)
+    } else {
+        // Org-level fallback: use the org default (or system fallback)
+        let budget = state
+            .rate_limit_cache
+            .resolve_org_budget(&state.db, &state.config, org_id)
+            .await;
+        (format!("rl:{org_id}:org"), budget)
+    };
+    let user_budget = {
         let result = state
             .rate_limiter
-            .check_and_increment(&key, budget.max_requests, budget.window_seconds)
+            .check_and_increment(&bucket_key, budget.max_requests, budget.window_seconds)
             .await;
         if !result.allowed {
             let now = now_unix();
@@ -56,8 +68,6 @@ pub async fn rate_limit_middleware(
             .into_response();
         }
         Some(result)
-    } else {
-        None
     };
 
     // Counter 2: Identity cap (optional, tighter ceiling for specific agents)

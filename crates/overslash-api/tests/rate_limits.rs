@@ -1175,3 +1175,93 @@ async fn test_cache_invalidation_org_flushes_all() {
         .await;
     assert_eq!(r3.max_requests, 999);
 }
+
+/// Create an org + an org-level (unbound) API key. Returns (org_id, raw_api_key).
+async fn make_org_unbound_key(pool: &PgPool) -> (Uuid, String) {
+    use rand::Rng;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let suffix: String = (0..32)
+        .map(|_| {
+            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            chars[rand::rng().random_range(0..chars.len())] as char
+        })
+        .collect();
+    let raw_key = format!("osk_{suffix}");
+    let prefix = raw_key[..12].to_string();
+
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+    };
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(raw_key.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
+         VALUES ($1, NULL, $2, $3, $4, ARRAY[]::text[])",
+    )
+    .bind(org_id)
+    .bind("org-admin")
+    .bind(&hash)
+    .bind(&prefix)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    (org_id, raw_key)
+}
+
+#[tokio::test]
+async fn test_middleware_org_unbound_key_uses_org_bucket() {
+    let pool = common::test_pool().await;
+    let (org_id, raw_key) = make_org_unbound_key(&pool).await;
+
+    // Tight org default: 2 req / 60s
+    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 2, 60)
+        .await
+        .unwrap();
+
+    let state = make_app_state(pool).await;
+    let addr = spawn_middleware_app(state).await;
+    let client = reqwest::Client::new();
+
+    // First two should pass, third should be rate-limited.
+    // This proves org-level keys do NOT bypass rate limiting.
+    for i in 0..2 {
+        let resp = client
+            .get(format!("http://{addr}/echo"))
+            .header("authorization", format!("Bearer {raw_key}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "request {i} should succeed");
+        assert_eq!(
+            resp.headers()
+                .get("x-ratelimit-limit")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "2"
+        );
+    }
+
+    let resp = client
+        .get(format!("http://{addr}/echo"))
+        .header("authorization", format!("Bearer {raw_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 429, "org-level key should be rate-limited");
+}
