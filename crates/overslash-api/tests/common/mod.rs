@@ -25,22 +25,26 @@ static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
 pub async fn test_pool() -> PgPool {
     let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    // Create the template database exactly once (async-safe).
+    // Create the template database exactly once per process (async-safe).
+    // The template name is scoped by PID so multiple test binaries running in
+    // parallel don't race on the same row in pg_database.
     let template_name = TEMPLATE_DB
         .get_or_init(|| async {
-            let template = "overslash_test_template";
+            let template = format!("overslash_test_tpl_{}", std::process::id());
             let admin_pool = PgPool::connect(&base_url).await.unwrap();
 
-            // Clean up stale test databases from previous runs.
-            // Only drop databases with zero active connections to avoid
-            // interfering with parallel test binaries.
+            // Clean up stale test databases AND stale per-process templates from
+            // previous runs. Only drop databases with zero active connections so
+            // we don't interfere with concurrently-running test binaries.
             let stale_dbs: Vec<(String,)> = sqlx::query_as(
                 "SELECT datname FROM pg_database d \
-                 WHERE datname LIKE 'test_%' \
+                 WHERE (datname LIKE 'test_%' OR datname LIKE 'overslash_test_tpl_%') \
+                 AND datname <> $1 \
                  AND NOT EXISTS ( \
                      SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname \
-                 )"
+                 )",
             )
+            .bind(&template)
             .fetch_all(&admin_pool)
             .await
             .unwrap_or_default();
@@ -51,31 +55,24 @@ pub async fn test_pool() -> PgPool {
                     .ok();
             }
 
-            // Terminate existing connections to the template DB so we can drop it
-            sqlx::query(&format!(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{template}'"
-            ))
-            .execute(&admin_pool)
-            .await
-            .ok();
-
-            sqlx::query(&format!("DROP DATABASE IF EXISTS {template}"))
+            // (Re)create our per-process template
+            sqlx::query(&format!("DROP DATABASE IF EXISTS \"{template}\""))
                 .execute(&admin_pool)
                 .await
                 .unwrap();
-            sqlx::query(&format!("CREATE DATABASE {template}"))
+            sqlx::query(&format!("CREATE DATABASE \"{template}\""))
                 .execute(&admin_pool)
                 .await
                 .unwrap();
 
             // Connect to template DB and run all migrations
-            let tpl_url = replace_db_name(&base_url, template);
+            let tpl_url = replace_db_name(&base_url, &template);
             let tpl_pool = PgPool::connect(&tpl_url).await.unwrap();
             overslash_db::MIGRATOR.run(&tpl_pool).await.unwrap();
             tpl_pool.close().await;
 
             admin_pool.close().await;
-            template.to_string()
+            template
         })
         .await;
 
@@ -83,7 +80,7 @@ pub async fn test_pool() -> PgPool {
     let test_db = format!("test_{}", Uuid::new_v4().simple());
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
     sqlx::query(&format!(
-        "CREATE DATABASE {test_db} TEMPLATE {template_name}"
+        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{template_name}\""
     ))
     .execute(&admin_pool)
     .await

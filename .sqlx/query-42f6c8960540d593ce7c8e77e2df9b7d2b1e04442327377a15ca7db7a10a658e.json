@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO orgs (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at, updated_at",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, created_at, updated_at\n         FROM orgs WHERE slug = $1",
   "describe": {
     "columns": [
       {
@@ -20,18 +20,27 @@
       },
       {
         "ordinal": 3,
+        "name": "subagent_idle_timeout_secs",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "subagent_archive_retention_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
         "Text"
       ]
     },
@@ -40,8 +49,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "343588c4d7d67953eecb3fa156d1568f9705ee69e536a74d28fb37d330e9f28b"
+  "hash": "42f6c8960540d593ce7c8e77e2df9b7d2b1e04442327377a15ca7db7a10a658e"
 }

@@ -128,7 +128,7 @@ Org (acme)
 - **Agents** created by users
 - **Sub-agents** created by agents — no user intervention needed
 - Each identity has API keys for authenticating with Overslash
-- Sub-agents can have a **TTL** for auto-cleanup (ephemeral workers)
+- Sub-agents are garbage-collected by **idle timeout** (ephemeral workers): if a sub-agent has not made an authenticated request for longer than the org's `subagent_idle_timeout_secs`, it is **archived** in two phases — first its API keys are auto-revoked and pending approvals expired (`archived_at` set), then after `subagent_archive_retention_days` the row is hard-deleted. Archived identities return `403 identity_archived` from the gateway with a `restorable_until` timestamp, and `POST /v1/identities/{id}/restore` un-archives within the retention window and resurrects the auto-revoked API keys (manually-revoked keys stay revoked). Parents never archive while a live sub-agent child exists, so active subtrees outlive idle parents. Org admins configure both knobs in `[4h, 60d]` and `[1d, 60d]` ranges respectively. Users and agents are never auto-archived.
 
 ### Agent Enrollment
 

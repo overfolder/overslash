@@ -50,6 +50,9 @@ pub struct Identity {
     pub owner_id: Option<Uuid>,
     pub inherit_permissions: bool,
     pub metadata: serde_json::Value,
+    pub last_active_at: OffsetDateTime,
+    pub archived_at: Option<OffsetDateTime>,
+    pub archived_reason: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
