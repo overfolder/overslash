@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict jnj6XoUTQaa7LbL7azrHYczC1n0btUDI5x0fedW7BGeBXBuUAZ9o991Pn9wmW9k
+\restrict NNtMRwkgiE40G0AA4A27069T2HwfEHKIc9dgoDcCpfqraPouPzdbbAjxORWwpP6
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -51,7 +51,8 @@ CREATE TABLE public.api_keys (
     expires_at timestamp with time zone,
     last_used_at timestamp with time zone,
     revoked_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    revoked_reason text
 );
 
 
@@ -198,7 +199,9 @@ CREATE TABLE public.identities (
     depth integer DEFAULT 0 NOT NULL,
     owner_id uuid,
     inherit_permissions boolean DEFAULT false NOT NULL,
-    expires_at timestamp with time zone,
+    last_active_at timestamp with time zone DEFAULT now() NOT NULL,
+    archived_at timestamp with time zone,
+    archived_reason text,
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
 
@@ -264,7 +267,8 @@ CREATE TABLE public.orgs (
     slug text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    allow_user_templates boolean DEFAULT true NOT NULL
+    subagent_idle_timeout_secs integer DEFAULT 14400 NOT NULL,
+    subagent_archive_retention_days integer DEFAULT 30 NOT NULL
 );
 
 
@@ -788,6 +792,13 @@ CREATE INDEX idx_groups_org ON public.groups USING btree (org_id);
 
 
 --
+-- Name: idx_identities_archived; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_archived ON public.identities USING btree (archived_at) WHERE (archived_at IS NOT NULL);
+
+
+--
 -- Name: idx_identities_email; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -795,10 +806,10 @@ CREATE INDEX idx_identities_email ON public.identities USING btree (email) WHERE
 
 
 --
--- Name: idx_identities_expires; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_identities_idle_subagents; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_identities_expires ON public.identities USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+CREATE INDEX idx_identities_idle_subagents ON public.identities USING btree (last_active_at) WHERE ((kind = 'sub_agent'::text) AND (archived_at IS NULL));
 
 
 --
@@ -1340,5 +1351,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict jnj6XoUTQaa7LbL7azrHYczC1n0btUDI5x0fedW7BGeBXBuUAZ9o991Pn9wmW9k
+\unrestrict NNtMRwkgiE40G0AA4A27069T2HwfEHKIc9dgoDcCpfqraPouPzdbbAjxORWwpP6
 
