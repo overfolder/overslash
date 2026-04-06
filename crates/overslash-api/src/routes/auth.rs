@@ -422,12 +422,12 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                     )
                     .await?;
                     // Bootstrap system assets and add dev user as admin
-                    let _ = overslash_db::repos::org_bootstrap::bootstrap_org(
+                    overslash_db::repos::org_bootstrap::bootstrap_org(
                         &state.db,
                         new_org.id,
                         Some(new_identity.id),
                     )
-                    .await;
+                    .await?;
                     (new_org.id, new_identity.id)
                 }
                 Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
@@ -702,12 +702,12 @@ async fn find_or_provision_user(
         {
             Ok(new_identity) => {
                 // Auto-join the Everyone group
-                let _ = overslash_db::repos::org_bootstrap::add_to_everyone_group(
+                overslash_db::repos::org_bootstrap::add_to_everyone_group(
                     &state.db,
                     matched_config.org_id,
                     new_identity.id,
                 )
-                .await;
+                .await?;
                 return Ok((
                     matched_config.org_id,
                     new_identity.id,
@@ -754,12 +754,12 @@ async fn find_or_provision_user(
     {
         Ok(new_identity) => {
             // Bootstrap system assets and add creator as admin
-            let _ = overslash_db::repos::org_bootstrap::bootstrap_org(
+            overslash_db::repos::org_bootstrap::bootstrap_org(
                 &state.db,
                 new_org.id,
                 Some(new_identity.id),
             )
-            .await;
+            .await?;
             Ok((new_org.id, new_identity.id, userinfo.email.clone()))
         }
         Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {

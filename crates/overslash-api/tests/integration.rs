@@ -1215,70 +1215,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
 // BYOC Credential Tests
 // ============================================================================
 
-/// Helper: bootstrap org + identity + identity-bound API key. Returns (org_id, identity_id, api_key, org_admin_api_key).
-async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid, String, String) {
-    let org: Value = client
-        .post(format!("{base}/v1/orgs"))
-        .json(&json!({"name": "ByocOrg", "slug": format!("byoc-{}", Uuid::new_v4())}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-
-    // Org-level key (needed to create identity)
-    let org_key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_api_key = org_key["key"].as_str().unwrap().to_string();
-
-    let user: Value = client
-        .post(format!("{base}/v1/identities"))
-        .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-user", "kind": "user"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let user_id = user["id"].as_str().unwrap();
-
-    let ident: Value = client
-        .post(format!("{base}/v1/identities"))
-        .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
-
-    // Identity-bound key
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"org_id": org_id, "identity_id": ident_id, "name": "agent-key"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key_resp["key"].as_str().unwrap().to_string();
-
-    (org_id, ident_id, api_key, org_api_key)
-}
+use common::bootstrap_org_identity;
 
 // --- Test 1: BYOC CRUD API ---
 

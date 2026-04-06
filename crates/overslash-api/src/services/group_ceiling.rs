@@ -40,25 +40,15 @@ pub async fn resolve_ceiling_user_id(
 }
 
 /// Load and transform the group ceiling for a user identity.
-/// Uses actual group membership (not just grant existence) to determine
-/// whether the user has any groups assigned.
+/// `has_groups` reflects user-created group membership only — system groups
+/// (Everyone, Admins) don't count for ceiling enforcement.
 pub async fn load_ceiling(
     pool: &PgPool,
     user_identity_id: Uuid,
 ) -> Result<ResolvedCeiling, crate::error::AppError> {
-    // Check actual group membership — system groups (Everyone, Admins) don't count
-    // for ceiling enforcement. Only user-created groups trigger the ceiling.
     let groups =
         overslash_db::repos::group::list_groups_for_identity(pool, user_identity_id).await?;
     let has_groups = groups.iter().any(|g| !g.is_system);
-
-    if !has_groups {
-        return Ok(ResolvedCeiling {
-            has_groups: false,
-            allow_raw_http: false,
-            grants: vec![],
-        });
-    }
 
     let ceiling = overslash_db::repos::group::get_ceiling_for_user(pool, user_identity_id).await?;
 
@@ -73,7 +63,7 @@ pub async fn load_ceiling(
         .collect();
 
     Ok(ResolvedCeiling {
-        has_groups: true,
+        has_groups,
         allow_raw_http: ceiling.allow_raw_http,
         grants,
     })

@@ -103,23 +103,29 @@ async fn list_services(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Vec<ServiceInstanceSummary>>> {
-    // Resolve the ceiling user (self for users, owner for agents)
-    let identity_id = auth
-        .identity_id
-        .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
-    let ceiling_user_id =
-        crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
+    // Org-level API keys (no identity) bypass group filtering — they see everything.
+    // Otherwise resolve the ceiling user (self for users, owner for agents) and apply
+    // group-based visibility.
+    let visible_ids = if let Some(identity_id) = auth.identity_id {
+        let ceiling_user_id =
+            crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
 
-    // Check group-based visibility — system groups (Everyone, Admins) don't count
-    // for visibility filtering. Only user-created groups trigger filtering, matching
-    // the behavior in group_ceiling::load_ceiling.
-    let groups =
-        overslash_db::repos::group::list_groups_for_identity(&state.db, ceiling_user_id).await?;
-    let has_user_groups = groups.iter().any(|g| !g.is_system);
-    let visible_ids = if !has_user_groups {
-        None // no user groups = permissive (backward compat)
+        // System groups (Everyone, Admins) don't count for visibility filtering.
+        // Only user-created groups trigger filtering, matching group_ceiling::load_ceiling.
+        let groups =
+            overslash_db::repos::group::list_groups_for_identity(&state.db, ceiling_user_id)
+                .await?;
+        let has_user_groups = groups.iter().any(|g| !g.is_system);
+        if !has_user_groups {
+            None // no user groups = permissive (backward compat)
+        } else {
+            Some(
+                overslash_db::repos::group::get_visible_service_ids(&state.db, ceiling_user_id)
+                    .await?,
+            )
+        }
     } else {
-        Some(overslash_db::repos::group::get_visible_service_ids(&state.db, ceiling_user_id).await?)
+        None // org-level key — permissive
     };
 
     let rows = service_instance::list_available_with_groups(
@@ -270,8 +276,10 @@ async fn delete_service(
     // Resolve by name to get the id, then delete.
     // Parse as UUID first (for /v1/services/{id} style), otherwise resolve by name.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
+        // Multi-tenancy guard: scope UUID lookup to caller's org
         service_instance::get_by_id(&state.db, uuid)
             .await?
+            .filter(|r| r.org_id == auth.org_id)
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
         service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)

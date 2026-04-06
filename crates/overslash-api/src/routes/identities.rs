@@ -165,12 +165,8 @@ async fn create_identity(
 
     // Auto-join new users to the Everyone group
     if row.kind == "user" {
-        let _ = overslash_db::repos::org_bootstrap::add_to_everyone_group(
-            &state.db,
-            auth.org_id,
-            row.id,
-        )
-        .await;
+        overslash_db::repos::org_bootstrap::add_to_everyone_group(&state.db, auth.org_id, row.id)
+            .await?;
     }
 
     let _ = audit::log(
