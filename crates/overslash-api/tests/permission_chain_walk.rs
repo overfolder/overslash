@@ -745,3 +745,89 @@ async fn orphaned_non_user_identity_requires_approval() {
     let resp = execute(&base, &orphan_key, mock_addr).await;
     assert_eq!(resp.status(), 202);
 }
+
+// ── Test: optimistic locking on resolve / update_resolver ───────────
+
+#[tokio::test]
+async fn stale_expected_resolver_rejects_resolve_and_update() {
+    // Repo-level test: both `resolve` and `update_resolver` must return None
+    // when `expected_resolver` no longer matches the row's current resolver.
+    // This is the optimistic-locking guard against the
+    // bubble-then-resolve race noted by Sentry.
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, _mock_addr) = bootstrap(pool.clone()).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let chief_id = create_identity(&base, &org_key, "chief", "agent", Some(user_id)).await;
+    let researcher_id =
+        create_identity(&base, &org_key, "researcher", "sub_agent", Some(chief_id)).await;
+
+    // Insert a pending approval owned by researcher with chief as resolver.
+    let token = format!("tok_{}", Uuid::new_v4());
+    let approval = overslash_db::repos::approval::create(
+        &pool,
+        &overslash_db::repos::approval::CreateApproval {
+            org_id,
+            identity_id: researcher_id,
+            current_resolver_identity_id: chief_id,
+            action_summary: "test",
+            action_detail: None,
+            permission_keys: &["http:GET:example.com/x".to_string()],
+            token: &token,
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        },
+    )
+    .await
+    .unwrap();
+
+    // 1) Stale resolver passed to update_resolver → no row updated.
+    let stale_id = Uuid::new_v4();
+    let res = overslash_db::repos::approval::update_resolver(&pool, approval.id, user_id, stale_id)
+        .await
+        .unwrap();
+    assert!(
+        res.is_none(),
+        "update_resolver should reject stale expected_resolver"
+    );
+
+    // Sanity: matching expected_resolver works.
+    let ok = overslash_db::repos::approval::update_resolver(&pool, approval.id, user_id, chief_id)
+        .await
+        .unwrap();
+    assert!(
+        ok.is_some(),
+        "update_resolver should accept matching expected_resolver"
+    );
+
+    // 2) Resolver is now `user`. Caller with stale `chief` → resolve refused.
+    let res = overslash_db::repos::approval::resolve(
+        &pool,
+        approval.id,
+        "allowed",
+        "test",
+        false,
+        chief_id,
+    )
+    .await
+    .unwrap();
+    assert!(
+        res.is_none(),
+        "resolve should reject stale expected_resolver"
+    );
+
+    // Matching resolver works.
+    let row = overslash_db::repos::approval::resolve(
+        &pool,
+        approval.id,
+        "allowed",
+        "test",
+        false,
+        user_id,
+    )
+    .await
+    .unwrap();
+    assert!(
+        row.is_some(),
+        "resolve should accept matching expected_resolver"
+    );
+}

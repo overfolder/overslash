@@ -174,9 +174,18 @@ async fn resolve_approval(
                 "approval is already at the final resolver".into(),
             ));
         }
-        let updated = overslash_db::repos::approval::update_resolver(&state.db, id, next)
-            .await?
-            .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
+        let updated = overslash_db::repos::approval::update_resolver(
+            &state.db,
+            id,
+            next,
+            approval_pre.current_resolver_identity_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "approval was concurrently resolved or bubbled by another caller".into(),
+            )
+        })?;
 
         let _ = audit::log(
             &state.db,
@@ -280,9 +289,18 @@ async fn resolve_approval(
         }
     }
 
-    let row = overslash_db::repos::approval::resolve(&state.db, id, status, "user", remember)
-        .await?
-        .ok_or_else(|| AppError::Conflict("approval is not pending".into()))?;
+    let row = overslash_db::repos::approval::resolve(
+        &state.db,
+        id,
+        status,
+        "user",
+        remember,
+        approval_pre.current_resolver_identity_id,
+    )
+    .await?
+    .ok_or_else(|| {
+        AppError::Conflict("approval was concurrently resolved or bubbled by another caller".into())
+    })?;
 
     if remember {
         // Place the rule on the requester's closest non-inherit_permissions

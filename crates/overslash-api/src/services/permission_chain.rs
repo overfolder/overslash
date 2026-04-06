@@ -292,9 +292,14 @@ pub async fn process_auto_bubble(pool: &PgPool) -> Result<u64, AppError> {
         if next == approval.current_resolver_identity_id {
             continue;
         }
-        if overslash_db::repos::approval::update_resolver(pool, approval.id, next)
-            .await?
-            .is_some()
+        if overslash_db::repos::approval::update_resolver(
+            pool,
+            approval.id,
+            next,
+            approval.current_resolver_identity_id,
+        )
+        .await?
+        .is_some()
         {
             let _ = overslash_db::repos::audit::log(
                 pool,

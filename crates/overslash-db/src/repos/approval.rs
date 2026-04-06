@@ -73,45 +73,52 @@ pub async fn get_by_token(pool: &PgPool, token: &str) -> Result<Option<ApprovalR
     .await
 }
 
-/// Atomically resolve a pending approval. Returns None if not pending.
+/// Atomically resolve a pending approval, with optimistic locking on the
+/// current resolver. Returns None if the approval is not pending OR if the
+/// resolver has been advanced since the caller checked authorization.
 pub async fn resolve(
     pool: &PgPool,
     id: Uuid,
     status: &str,
     resolved_by: &str,
     remember: bool,
+    expected_resolver: Uuid,
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
         "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4
-         WHERE id = $1 AND status = 'pending'
+         WHERE id = $1 AND status = 'pending' AND current_resolver_identity_id = $5
          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         id,
         status,
         resolved_by,
         remember,
+        expected_resolver,
     )
     .fetch_optional(pool)
     .await
 }
 
-/// Atomically advance the current resolver of a pending approval (bubble up).
+/// Atomically advance the current resolver of a pending approval (bubble up),
+/// with optimistic locking on `expected_resolver`. Returns None if the
+/// approval is not pending OR has been concurrently bubbled by someone else.
 /// Updates `resolver_assigned_at` so per-bubble timeouts restart.
-/// Returns None if the approval is not pending.
 pub async fn update_resolver(
     pool: &PgPool,
     id: Uuid,
     new_resolver: Uuid,
+    expected_resolver: Uuid,
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
         "UPDATE approvals
             SET current_resolver_identity_id = $2,
                 resolver_assigned_at = now()
-          WHERE id = $1 AND status = 'pending'
+          WHERE id = $1 AND status = 'pending' AND current_resolver_identity_id = $3
           RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         id,
         new_resolver,
+        expected_resolver,
     )
     .fetch_optional(pool)
     .await
