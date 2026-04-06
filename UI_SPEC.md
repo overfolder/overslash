@@ -770,31 +770,31 @@ Pending secret requests do NOT appear here — they are surfaced in the agent de
 
 ### Secret list
 
-Uses the **Search Bar** (see Design System). Filterable by name, service, owner.
+Uses the **Search Bar** (see Design System). Filterable by name, owner.
 
 ```
-Secret Name          Service       Owner          Versions    Last Used
-────────────────────────────────────────────────────────────────────────────
-github_token         GitHub        alice (you)    3           2m ago
-stripe_api_key       Stripe        alice (you)    1           1h ago
-openai_key           —             agent:henry    2           5m ago
+Secret Name          Owner          Versions    Last Used
+────────────────────────────────────────────────────────────────
+github_token         alice (you)    3           2m ago
+stripe_api_key       alice (you)    1           1h ago
+openai_key           agent:henry    2           5m ago
 ```
 
 - **Name** — the secret identifier used for injection
-- **Service** — associated service, if any (blank for generic secrets)
 - **Owner** — which identity in the subtree owns this secret
 - **Versions** — count
 - **Last used** — last time any version was injected during action execution
 
-`[+ New Secret]` button — name + value input + optional service association. Value in a password-type field during creation.
+`[+ New Secret]` button — name + value input. Value in a password-type field during creation.
 
 ### Secret detail
 
 Clicking a secret row opens the detail view:
 
-- **Secret name** and associated service
+- **Secret name**
 - **Owner** — which identity owns this secret
 - **Last used** timestamp
+- **Used by** — list of services (and agents, if direct) that reference this secret. Each row links to the service detail. Empty state: "No services use this secret yet."
 - **`[Update Value]`** — creates a new version. Password-type input.
 - **`[Delete]`** — removes the secret entirely (all versions). Confirmation dialog warns which agents/services reference it.
 
@@ -922,7 +922,16 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 
 ### Template Editor
 
-The editing view for user-defined and org-defined templates. Two tabs:
+The editing view for user-defined and org-defined templates. Two tabs.
+
+**Header**: shows breadcrumb (`← Services / Template Editor:`) followed by the template display name and an optional **status pill** next to it indicating the template's lifecycle state:
+- **`Draft`** (warning yellow) — work in progress, not yet published. Templates start in Draft when imported from OpenAPI or created from scratch. Drafts are only visible to the author and cannot be used to create services.
+- **`Active`** (success green) — published and usable. (No pill is shown for Active to keep the header uncluttered, OR an Active pill is shown for explicitness — implementation choice.)
+- **`Archived`** (muted gray) — retired template, hidden from catalogs but still referenced by historical services.
+
+The pill is omitted if the template has no special status. Changing status happens via the kebab menu in the header (`Publish`, `Unpublish`, `Archive`).
+
+Two tabs:
 
 #### Visual tab
 
@@ -930,18 +939,46 @@ A form-based editor for the template definition:
 
 **Template section:**
 - Key, display name, description, base URL
-- Auth config: method picker + relevant fields (OAuth URLs/scopes, API key injection config)
+- **Auth config**: method picker (`API Key` / `OAuth 2.0` / `Bearer Token` / `Basic Auth` / `None`) + relevant fields per method:
+  - **API Key**: header/query name, injection location (`header` / `query`), and a **Secret picker** for the key value (see below).
+  - **OAuth 2.0**: authorize URL, token URL, scopes (multi-input), and **Secret pickers** for `client_id` and `client_secret`.
+  - **Bearer Token**: **Secret picker** for the token.
+  - **Basic Auth**: username field + **Secret picker** for the password.
+  
+  **Secret picker** — a searchable dropdown listing the secrets the current user owns (filtered to user-level secrets, plus org-level secrets if the user is an org admin). The dropdown shows: secret name (mono), owner identity, last-used timestamp. Typing in the dropdown filters the list by name (debounced 200ms). A `[+ New Secret]` action at the bottom of the dropdown opens the New Secret modal inline; on save, the newly-created secret is auto-selected. Selected secrets render as a chip with the secret name and a `✕` to clear. The picker stores a reference to the secret (not its value) — the value is injected at execution time, never embedded in the template.
 
 **Actions section:**
 - List of defined actions with name, method badge, path, mutating badge (read/write)
-- `[+ New Action]` button opens an inline form:
-  - Name, HTTP method (dropdown), path template (with `{param}` placeholder syntax)
-  - Description template — supports `{param}` interpolation and `[conditional segments]`. Typing `{` triggers autocomplete from the action's defined params. Placeholders render as highlighted chips. Invalid placeholders (referencing non-existent params) show as validation warnings. Example: `Create pull request '{title}' on {repo}`
-  - Mutating toggle — optional, defaults to inferred from HTTP method (GET/HEAD/OPTIONS → read, else → write)
-  - Scope param: which parameter drives the permission key arg (dropdown from defined params)
-  - Parameters: add/remove rows — name, type (string / number / boolean / enum), required toggle, description, enum values if applicable
-- Click any action to expand and edit inline
+- `[+ New Action]` button opens the **New Action modal** (see below)
+- Click any action to open the same modal in **edit mode** prefilled with that action's values
 - Drag to reorder, delete with confirmation
+
+##### New / Edit Action modal
+
+A centered modal (~640px wide, scroll if content exceeds viewport) that captures all fields for an action in one place. Same component used for both create and edit (the title and primary button label switch between *New Action* / *Edit Action* and *Create* / *Save*).
+
+**Modal layout:**
+
+1. **Header** — title (`New Action` or `Edit Action: <name>`), close `✕` button.
+2. **Identity row** — two fields side by side:
+   - **Name** (`text`, required) — snake_case identifier used in permission keys and SDK calls. Validation: lowercase, digits, underscores, starts with letter. Inline error if invalid.
+   - **HTTP Method** (`dropdown`, required) — `GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS`. Each option shows the method's badge color.
+3. **Path template** (`text`, required) — full-width, monospace input. Supports `{param}` placeholder syntax. Typing `{` triggers autocomplete from currently-defined params. Inline placeholder chips render in primary color. Invalid placeholders (param not defined) underlined with a warning. Example: `/repos/{owner}/{repo}/issues`.
+4. **Description template** (`textarea`, required) — full-width, 2 rows tall. Supports `{param}` interpolation and `[conditional segments]`. Typing `{` triggers param autocomplete; typing `[` starts a conditional segment. Placeholders render as highlighted chips inside the textarea preview. Live preview line below shows the rendered example using placeholder values. Example: `Create pull request "{title}" on {owner}/{repo}` → preview: `Create pull request "Fix bug" on overfolder/app`.
+5. **Mutating toggle** — checkbox + label `Mutating (write) action`. Default value is inferred from the HTTP method (GET/HEAD/OPTIONS → unchecked/read, others → checked/write). Manual override allowed; an info icon explains what mutating means (controls approval-by-default behavior).
+6. **Scope param** (`dropdown`) — which defined parameter drives the permission key arg. Options are populated from the params table below. `None` is allowed (key uses `*` wildcard). Helper text: *"The selected param's value becomes the resource arg in the permission key, e.g. for `slack.chat.post_message:#general` the scope param is `channel`."*
+7. **Parameters table** — full-width editable table with columns:
+   - **Name** (text, required) — param identifier
+   - **Type** (dropdown) — `string` / `number` / `boolean` / `enum` / `object`
+   - **Required** (checkbox)
+   - **Description** (text)
+   - **Enum values** (only when type = `enum`) — comma-separated; renders as removable chips
+   - Trailing **`✕`** button to delete the row
+   
+   Below the table: `[+ Add parameter]` ghost button.
+8. **Footer** — full-width row with `[Cancel]` (ghost, left) and `[Create]` / `[Save]` (primary, right). For edit mode also a `[Delete action]` button on the far left in danger style with a confirmation popover.
+
+**Validation:** the primary button is disabled until all required fields are valid. Errors render inline beneath each field. The modal locks scroll on the page behind it (overlay backdrop dimmed at 50% opacity).
 
 #### YAML tab
 
@@ -1053,7 +1090,17 @@ Timestamp            Identity (SPIFFE)                                    Event 
 ```
 
 - **Timestamp** — relative for recent, absolute for older. Hover shows full UTC + local.
-- **Identity** — SPIFFE ID of the identity that triggered the event. The full path encodes the hierarchy.
+- **Identity** — full SPIFFE-style hierarchical path of the identity that triggered the event, with the `spiffe://` scheme stripped (e.g. `acme/user/alice/agent/henry/agent/researcher`). 
+  
+  > **Note on segment conventions:** SPIFFE itself only defines the URI shape (`spiffe://<trust-domain>/<path>`); the segment names are application-defined. Overslash uses `<org>/user/<username>/agent/<agentname>` and recurses with `agent/<name>` for sub-agents at any depth, so the hierarchy scales to arbitrary nesting (`agent/a/agent/b/agent/c/...`) without inventing new prefixes.
+  
+  The path is grouped into **logical link units**, each navigating to the corresponding detail view:
+  - `acme` — org segment (links to Org page)
+  - `user/alice` — user link unit (type + name together, links to that User Profile page)
+  - `agent/henry` — agent link unit (type + name together, links to that agent's Dashboard detail panel)
+  - `agent/researcher` — sub-agent link unit at the next nesting level (recursively the same `agent/<name>` pattern, links to that sub-agent's Dashboard detail panel)
+  
+  The forward-slash separators between link units stay muted (non-clickable). Hover on a link unit underlines the whole `type/name` pair.
 - **Event type** — action executed, approval created/resolved, secret accessed, connection changed, identity created/deleted, permission changed
 - **Service** — which external service was involved (blank for identity/permission events)
 - **Result** — success/fail/pending, with status code for executions
