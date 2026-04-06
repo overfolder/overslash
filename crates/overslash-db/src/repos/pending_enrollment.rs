@@ -135,6 +135,29 @@ pub async fn deny(pool: &PgPool, id: Uuid) -> Result<Option<PendingEnrollmentRow
     .await
 }
 
+/// Atomically bind a pending enrollment to an org on first authenticated view.
+/// Succeeds (returns the row) if the enrollment is unclaimed or already claimed
+/// by the given org. Returns `None` if it has been claimed by a different org.
+pub async fn claim_for_org(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+) -> Result<Option<PendingEnrollmentRow>, sqlx::Error> {
+    sqlx::query_as!(
+        PendingEnrollmentRow,
+        "UPDATE pending_enrollments
+         SET org_id = $2
+         WHERE id = $1 AND status = 'pending' AND (org_id IS NULL OR org_id = $2)
+         RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,
+                   org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,
+                   expires_at, created_at, resolved_at, requester_ip",
+        id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn expire_stale(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE pending_enrollments SET status = 'expired', resolved_at = now()

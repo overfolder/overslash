@@ -387,7 +387,7 @@ async fn get_enrollment_approval(
 
     // Check for session — if no session, tell the client to authenticate
     let session = extract_session(&state, &headers);
-    if session.is_none() {
+    let Some(session) = session else {
         return Ok((
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -397,7 +397,15 @@ async fn get_enrollment_approval(
             })),
         )
             .into_response());
-    }
+    };
+
+    // Bind the enrollment to this viewer's org on first authenticated view.
+    // After this, only sessions in the same org can see/resolve it; everyone
+    // else gets a 404. This prevents a leaked approval URL from being
+    // claimed by a user in an unintended org.
+    let row = pending_enrollment::claim_for_org(&state.db, row.id, session.org)
+        .await?
+        .ok_or_else(|| AppError::NotFound("enrollment not found".into()))?;
 
     Ok((
         StatusCode::OK,
@@ -449,6 +457,14 @@ async fn resolve_enrollment(
 
     if row.expires_at < time::OffsetDateTime::now_utc() {
         return Err(AppError::Conflict("enrollment has expired".into()));
+    }
+
+    // If the enrollment has been claimed by another org via a prior GET,
+    // refuse: only the org that "viewed" first may resolve it.
+    if let Some(claimed) = row.org_id {
+        if claimed != session.org {
+            return Err(AppError::NotFound("enrollment not found".into()));
+        }
     }
 
     match req.decision.as_str() {
