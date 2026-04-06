@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE pending_enrollments\n         SET status = 'denied', resolved_at = now()\n         WHERE id = $1 AND status = 'pending'\n         RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                   org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                   expires_at, created_at, resolved_at",
+  "query": "SELECT id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                expires_at, created_at, resolved_at, requester_ip\n         FROM pending_enrollments WHERE poll_token_prefix = $1",
   "describe": {
     "columns": [
       {
@@ -87,11 +87,16 @@
         "ordinal": 16,
         "name": "resolved_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "requester_ip",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -111,8 +116,9 @@
       true,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "ab055433a8ee51a23a3cb8c1968737cdd91463d8a2935beeb0e8d9e161a74fa9"
+  "hash": "b494d1c6f764bba9171a1a5006255b0cd41f709a4f81d5ee6aedd8a1c236b9fe"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO pending_enrollments (suggested_name, platform, metadata, approval_token, poll_token_hash, poll_token_prefix, expires_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7)\n         RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                   org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                   expires_at, created_at, resolved_at",
+  "query": "UPDATE pending_enrollments\n         SET status = 'approved', org_id = $2, identity_id = $3, api_key_hash = $4, api_key_prefix = $5,\n             approved_by = $6, final_name = $7, resolved_at = now()\n         WHERE id = $1 AND status = 'pending'\n         RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                   org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                   expires_at, created_at, resolved_at, requester_ip",
   "describe": {
     "columns": [
       {
@@ -87,17 +87,22 @@
         "ordinal": 16,
         "name": "resolved_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "requester_ip",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Jsonb",
-        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
         "Text",
         "Varchar",
-        "Timestamptz"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -117,8 +122,9 @@
       true,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "17782bf8adae1730a76e80f282a2ee46b62f7e13b91050812725a9ec20b1903c"
+  "hash": "67ff856600bb6b7995453b3f5f9ef2428a8b390c5b98ca9b16bf995936fe95c5"
 }

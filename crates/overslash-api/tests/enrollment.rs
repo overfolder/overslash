@@ -46,15 +46,16 @@ async fn setup_org_with_agent(base: &str, client: &reqwest::Client) -> (Uuid, Uu
     (org_id, agent_id, api_key)
 }
 
-/// Extract the approval token from an approval URL and rebuild with the test base.
+/// Extract the approval token from an approval URL (which points to the dashboard
+/// consent page) and rebuild as the backend POST endpoint at the test base.
 fn rebase_approval_url(approval_url: &str, base: &str) -> String {
-    // approval_url looks like "http://localhost:3000/enroll/approve/{token}"
-    // We need "http://127.0.0.1:{port}/enroll/approve/{token}"
-    let path = approval_url
-        .find("/enroll/approve/")
-        .map(|i| &approval_url[i..])
+    // approval_url looks like ".../enroll/consent/{token}"
+    // We need ".../enroll/approve/{token}" against the test API base.
+    let token = approval_url
+        .rsplit_once('/')
+        .map(|(_, t)| t)
         .unwrap_or(approval_url);
-    format!("{base}{path}")
+    format!("{base}/enroll/approve/{token}")
 }
 
 /// Get dev session JWT token string.
@@ -335,7 +336,7 @@ async fn test_initiate_enrollment() {
         resp["approval_url"]
             .as_str()
             .unwrap()
-            .contains("/enroll/approve/")
+            .contains("/enroll/consent/")
     );
     assert!(resp["poll_token"].as_str().unwrap().starts_with("osp_"));
     assert!(resp["expires_at"].is_string());
@@ -884,4 +885,155 @@ async fn test_agent_initiated_audit() {
     // so it won't appear in the agent's org-scoped audit view.
     // But enrollment.approved is logged under the approving user's org.
     assert!(events.contains(&"enrollment.approved"));
+}
+
+#[tokio::test]
+async fn test_get_approval_returns_requester_ip_and_created_at() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let init: Value = client
+        .post(format!("{base}/v1/enroll/initiate"))
+        .json(&json!({ "name": "ip-bot" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let approval_url = rebase_approval_url(init["approval_url"].as_str().unwrap(), &base);
+    let session = dev_session_token(&base, &client).await;
+
+    let resp: Value = client
+        .get(approval_url)
+        .header("cookie", format!("oss_session={session}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(resp["status"], "pending");
+    assert!(resp["created_at"].is_string());
+    assert!(resp.get("requester_ip").is_some());
+}
+
+#[tokio::test]
+async fn test_approve_with_parent_id_places_under_parent() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let session = dev_session_token(&base, &client).await;
+
+    // First, create an intermediate agent by approving a prior enrollment under the dev user.
+    let init_parent: Value = client
+        .post(format!("{base}/v1/enroll/initiate"))
+        .json(&json!({ "name": "intermediate-agent" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let parent_approval_url =
+        rebase_approval_url(init_parent["approval_url"].as_str().unwrap(), &base);
+    let parent_approve: Value = client
+        .post(parent_approval_url)
+        .header("cookie", format!("oss_session={session}"))
+        .json(&json!({ "decision": "approve" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let parent_id = parent_approve["identity_id"].as_str().unwrap().to_string();
+
+    // Initiate enrollment
+    let init: Value = client
+        .post(format!("{base}/v1/enroll/initiate"))
+        .json(&json!({ "name": "child-bot" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let approval_url = rebase_approval_url(init["approval_url"].as_str().unwrap(), &base);
+    let poll_token = init["poll_token"].as_str().unwrap();
+
+    // Approve under the chosen parent
+    let approve_resp = client
+        .post(approval_url)
+        .header("cookie", format!("oss_session={session}"))
+        .json(&json!({ "decision": "approve", "parent_id": &parent_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(approve_resp.status(), 200);
+
+    let status: Value = client
+        .get(format!("{base}/v1/enroll/status?poll_token={poll_token}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let api_key = status["api_key"].as_str().unwrap();
+    let new_id = status["identity_id"].as_str().unwrap();
+
+    let identities: Vec<Value> = client
+        .get(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent = identities
+        .iter()
+        .find(|i| i["id"].as_str().unwrap() == new_id)
+        .unwrap();
+    assert_eq!(agent["parent_id"].as_str().unwrap(), parent_id.as_str());
+    let parent_agent = identities
+        .iter()
+        .find(|i| i["id"].as_str().unwrap() == parent_id.as_str())
+        .unwrap();
+    assert_eq!(
+        agent["owner_id"].as_str().unwrap(),
+        parent_agent["owner_id"].as_str().unwrap(),
+        "new agent should inherit owner_id from its parent agent"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_rejects_parent_from_other_org() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let init: Value = client
+        .post(format!("{base}/v1/enroll/initiate"))
+        .json(&json!({ "name": "stray-bot" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let approval_url = rebase_approval_url(init["approval_url"].as_str().unwrap(), &base);
+    let session = dev_session_token(&base, &client).await;
+
+    let bogus = Uuid::new_v4();
+    let resp = client
+        .post(approval_url)
+        .header("cookie", format!("oss_session={session}"))
+        .json(&json!({ "decision": "approve", "parent_id": bogus }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }

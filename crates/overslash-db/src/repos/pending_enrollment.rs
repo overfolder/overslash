@@ -21,6 +21,7 @@ pub struct PendingEnrollmentRow {
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
     pub resolved_at: Option<OffsetDateTime>,
+    pub requester_ip: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -33,14 +34,15 @@ pub async fn create(
     poll_token_hash: &str,
     poll_token_prefix: &str,
     expires_at: OffsetDateTime,
+    requester_ip: Option<&str>,
 ) -> Result<PendingEnrollmentRow, sqlx::Error> {
     sqlx::query_as!(
         PendingEnrollmentRow,
-        "INSERT INTO pending_enrollments (suggested_name, platform, metadata, approval_token, poll_token_hash, poll_token_prefix, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "INSERT INTO pending_enrollments (suggested_name, platform, metadata, approval_token, poll_token_hash, poll_token_prefix, expires_at, requester_ip)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,
                    org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,
-                   expires_at, created_at, resolved_at",
+                   expires_at, created_at, resolved_at, requester_ip",
         suggested_name,
         platform,
         metadata,
@@ -48,6 +50,7 @@ pub async fn create(
         poll_token_hash,
         poll_token_prefix,
         expires_at,
+        requester_ip,
     )
     .fetch_one(pool)
     .await
@@ -61,7 +64,7 @@ pub async fn find_by_poll_prefix(
         PendingEnrollmentRow,
         "SELECT id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,
                 org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,
-                expires_at, created_at, resolved_at
+                expires_at, created_at, resolved_at, requester_ip
          FROM pending_enrollments WHERE poll_token_prefix = $1",
         prefix,
     )
@@ -77,7 +80,7 @@ pub async fn find_by_approval_token(
         PendingEnrollmentRow,
         "SELECT id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,
                 org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,
-                expires_at, created_at, resolved_at
+                expires_at, created_at, resolved_at, requester_ip
          FROM pending_enrollments WHERE approval_token = $1",
         token,
     )
@@ -104,7 +107,7 @@ pub async fn approve(
          WHERE id = $1 AND status = 'pending'
          RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,
                    org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,
-                   expires_at, created_at, resolved_at",
+                   expires_at, created_at, resolved_at, requester_ip",
         id,
         org_id,
         identity_id,
@@ -125,7 +128,7 @@ pub async fn deny(pool: &PgPool, id: Uuid) -> Result<Option<PendingEnrollmentRow
          WHERE id = $1 AND status = 'pending'
          RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,
                    org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,
-                   expires_at, created_at, resolved_at",
+                   expires_at, created_at, resolved_at, requester_ip",
         id,
     )
     .fetch_optional(pool)

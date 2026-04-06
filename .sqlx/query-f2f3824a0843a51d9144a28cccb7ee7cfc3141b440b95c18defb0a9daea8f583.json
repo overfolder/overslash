@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                expires_at, created_at, resolved_at\n         FROM pending_enrollments WHERE poll_token_prefix = $1",
+  "query": "INSERT INTO pending_enrollments (suggested_name, platform, metadata, approval_token, poll_token_hash, poll_token_prefix, expires_at, requester_ip)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n         RETURNING id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                   org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                   expires_at, created_at, resolved_at, requester_ip",
   "describe": {
     "columns": [
       {
@@ -87,10 +87,22 @@
         "ordinal": 16,
         "name": "resolved_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "requester_ip",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Text",
+        "Varchar",
+        "Timestamptz",
         "Text"
       ]
     },
@@ -111,8 +123,9 @@
       true,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "89e2cf3c6cb4b5bd82fb1d6a26910fc2468682c5e261b1f96e630e0ffdfb49e0"
+  "hash": "f2f3824a0843a51d9144a28cccb7ee7cfc3141b440b95c18defb0a9daea8f583"
 }

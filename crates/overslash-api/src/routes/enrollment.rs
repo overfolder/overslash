@@ -277,13 +277,21 @@ async fn initiate_enrollment(
         &poll_hash,
         &poll_prefix,
         expires_at,
+        ip.0.as_deref(),
     )
     .await?;
 
-    let approval_url = format!(
-        "{}/enroll/approve/{}",
-        state.config.public_url, approval_token
-    );
+    // Approval URL points to the dashboard consent page, not the backend API.
+    // dashboard_url defaults to "/" so prefer public_url when it's relative.
+    let dash = state.config.dashboard_url.trim_end_matches('/');
+    let approval_url = if dash.starts_with("http://") || dash.starts_with("https://") {
+        format!("{dash}/enroll/consent/{approval_token}")
+    } else {
+        format!(
+            "{}{dash}/enroll/consent/{approval_token}",
+            state.config.public_url.trim_end_matches('/')
+        )
+    };
 
     let _ = audit::log(
         &state.db,
@@ -399,7 +407,15 @@ async fn get_enrollment_approval(
             "platform": row.platform,
             "metadata": row.metadata,
             "status": row.status,
-            "expires_at": row.expires_at.to_string(),
+            "expires_at": row
+                .expires_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| row.expires_at.to_string()),
+            "created_at": row
+                .created_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| row.created_at.to_string()),
+            "requester_ip": row.requester_ip,
         })),
     )
         .into_response())
@@ -409,6 +425,7 @@ async fn get_enrollment_approval(
 struct ResolveEnrollmentRequest {
     decision: String, // "approve" or "deny"
     agent_name: Option<String>,
+    parent_id: Option<Uuid>,
 }
 
 async fn resolve_enrollment(
@@ -438,23 +455,46 @@ async fn resolve_enrollment(
         "approve" => {
             let agent_name = req.agent_name.as_deref().unwrap_or(&row.suggested_name);
 
-            // Verify the approving user's identity still exists
-            let approver = identity::get_by_id(&state.db, session.sub)
-                .await?
-                .ok_or_else(|| {
-                    AppError::BadRequest("approving user identity no longer exists".into())
-                })?;
+            // Resolve parent: caller-supplied parent_id (must belong to org) or default to approver
+            let parent = if let Some(pid) = req.parent_id {
+                let p = identity::get_by_id(&state.db, pid).await?;
+                let p = crate::ownership::require_org_owned(p, session.org, "identity")?;
+                if p.kind != "user" && p.kind != "agent" && p.kind != "sub_agent" {
+                    return Err(AppError::BadRequest(
+                        "parent must be a user, agent, or sub_agent".into(),
+                    ));
+                }
+                p
+            } else {
+                identity::get_by_id(&state.db, session.sub)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::BadRequest("approving user identity no longer exists".into())
+                    })?
+            };
 
-            // Create agent identity under the approving user
+            // Owner inherits the parent's ownership chain: if the parent is a user,
+            // the user IS the owner; otherwise the new agent shares the parent's owner_id.
+            let owner_id = if parent.kind == "user" {
+                parent.id
+            } else {
+                parent.owner_id.ok_or_else(|| {
+                    AppError::BadRequest(
+                        "cannot enroll under an identity with no owner chain".into(),
+                    )
+                })?
+            };
+
+            // Create agent identity under the chosen parent
             let new_identity = identity::create_with_parent(
                 &state.db,
                 session.org,
                 agent_name,
                 "agent",
                 None,
-                session.sub,
-                approver.depth + 1,
-                session.sub,
+                parent.id,
+                parent.depth + 1,
+                owner_id,
             )
             .await?;
 

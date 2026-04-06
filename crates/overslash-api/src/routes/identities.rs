@@ -216,7 +216,7 @@ async fn create_identity(
 
 async fn list_identities(
     State(state): State<AppState>,
-    auth: AuthContext,
+    auth: crate::extractors::UserOrKeyAuth,
 ) -> Result<Json<Vec<IdentityResponse>>> {
     let rows = overslash_db::repos::identity::list_by_org(&state.db, auth.org_id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
