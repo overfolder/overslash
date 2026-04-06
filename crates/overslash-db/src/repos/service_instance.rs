@@ -19,6 +19,8 @@ pub struct ServiceInstanceRow {
     pub updated_at: OffsetDateTime,
 }
 
+crate::repos::impl_org_owned!(ServiceInstanceRow);
+
 pub struct CreateServiceInstance<'a> {
     pub org_id: Uuid,
     pub owner_identity_id: Option<Uuid>,
