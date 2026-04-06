@@ -110,11 +110,14 @@ async fn list_services(
     let ceiling_user_id =
         crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
 
-    // Check group-based visibility
+    // Check group-based visibility — system groups (Everyone, Admins) don't count
+    // for visibility filtering. Only user-created groups trigger filtering, matching
+    // the behavior in group_ceiling::load_ceiling.
     let groups =
         overslash_db::repos::group::list_groups_for_identity(&state.db, ceiling_user_id).await?;
-    let visible_ids = if groups.is_empty() {
-        None // no groups = permissive (backward compat)
+    let has_user_groups = groups.iter().any(|g| !g.is_system);
+    let visible_ids = if !has_user_groups {
+        None // no user groups = permissive (backward compat)
     } else {
         Some(overslash_db::repos::group::get_visible_service_ids(&state.db, ceiling_user_id).await?)
     };

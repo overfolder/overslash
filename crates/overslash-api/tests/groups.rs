@@ -402,8 +402,8 @@ async fn service_visibility_filtered_by_groups() {
     let svc1_id = create_org_service(&base, &client, &org_key, "svc-a").await;
     create_org_service(&base, &client, &org_key, "svc-b").await;
 
-    // User is in Everyone group (system), which only grants overslash service.
-    // svc-a and svc-b are not granted yet, so user sees only overslash.
+    // User is only in system groups (Everyone) which don't trigger filtering.
+    // Permissive mode applies — user sees all services.
     let resp = client
         .get(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {user_key}"))
@@ -413,8 +413,12 @@ async fn service_visibility_filtered_by_groups() {
     let services: Vec<Value> = resp.json().await.unwrap();
     let before_names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
     assert!(
-        !before_names.contains(&"svc-a"),
-        "should not see svc-a without grant"
+        before_names.contains(&"svc-a"),
+        "permissive: should see svc-a when only in system groups"
+    );
+    assert!(
+        before_names.contains(&"svc-b"),
+        "permissive: should see svc-b when only in system groups"
     );
 
     // Create group with only svc-a granted
