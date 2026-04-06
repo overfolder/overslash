@@ -216,18 +216,11 @@ async fn create_identity(
 
 async fn list_identities(
     State(state): State<AppState>,
-    crate::extractors::OrgAcl {
-        org_id,
-        access_level,
-        ..
-    }: crate::extractors::OrgAcl,
+    crate::extractors::OrgAcl { org_id, .. }: crate::extractors::OrgAcl,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    // Listing identities is a Read operation. OrgAcl supports both API key
-    // and dashboard session callers and enforces the org-level Read floor.
-    use overslash_core::permissions::AccessLevel;
-    if access_level < AccessLevel::Read {
-        return Err(AppError::Forbidden("read access required".into()));
-    }
+    // Listing identities is a Read operation; OrgAcl resolves at least Read
+    // for any authenticated caller in the org and supports both API keys and
+    // dashboard sessions, so org membership is the right floor here.
     let rows = overslash_db::repos::identity::list_by_org(&state.db, org_id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
