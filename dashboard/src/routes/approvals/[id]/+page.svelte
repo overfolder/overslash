@@ -6,74 +6,65 @@
 </script>
 
 <div class="page">
-	<div class="card">
-		<header class="header">
-			<span class="logo">&#x2F;&#x2F; overslash</span>
-			<h1>Approval request</h1>
-		</header>
+	<header class="topbar">
+		<a class="logo" href="/">Overs<span class="slash">/</span>ash</a>
+	</header>
 
+	<main class="body">
 		{#if data.approval}
 			<ApprovalResolver approval={data.approval} />
 		{:else if data.error}
-			<div class="empty">
-				<div class="empty-title">Approval unavailable</div>
-				<div class="empty-msg">{data.error.message}</div>
+			<div class="card empty">
+				<h1>Approval unavailable</h1>
+				<p>{data.error.message}</p>
 			</div>
 		{/if}
-	</div>
+	</main>
 </div>
 
 <style>
 	.page {
 		min-height: 100vh;
-		display: flex;
-		align-items: flex-start;
-		justify-content: center;
-		padding: 3rem 1.5rem;
-		background: var(--color-bg);
-	}
-	.card {
-		width: 100%;
-		max-width: 640px;
-		background: var(--color-bg);
-		border: 1px solid var(--color-border);
-		border-radius: 10px;
-		padding: 2rem 2.25rem;
+		background: var(--color-bg, #f7f7fa);
 		display: flex;
 		flex-direction: column;
-		gap: 1.5rem;
 	}
-	.header {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
+	.topbar {
+		background: #fff;
 		border-bottom: 1px solid var(--color-border);
-		padding-bottom: 1rem;
+		padding: 1rem 2rem;
 	}
 	.logo {
-		font-family: var(--font-mono);
-		color: var(--color-primary);
-		font-size: 0.9rem;
-		font-weight: 600;
-	}
-	.header h1 {
-		margin: 0;
-		font-size: 1.4rem;
-		color: var(--color-text);
-	}
-	.empty {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		text-align: center;
-		padding: 2rem 0;
-	}
-	.empty-title {
+		font-weight: 700;
 		font-size: 1.05rem;
 		color: var(--color-text);
-		font-weight: 600;
+		text-decoration: none;
+		font-family: var(--font-sans);
 	}
-	.empty-msg {
+	.slash {
+		color: var(--color-primary);
+	}
+	.body {
+		flex: 1;
+		display: flex;
+		justify-content: center;
+		padding: 4rem 1.5rem;
+	}
+	.empty {
+		max-width: 520px;
+		background: #fff;
+		border: 1px solid var(--color-border);
+		border-radius: 12px;
+		padding: 2rem;
+		text-align: center;
+		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+	}
+	.empty h1 {
+		margin: 0 0 0.5rem 0;
+		font-size: 1.1rem;
+	}
+	.empty p {
+		margin: 0;
 		color: var(--color-text-muted);
 		font-size: 0.9rem;
 	}

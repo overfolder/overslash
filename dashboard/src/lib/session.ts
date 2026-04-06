@@ -86,6 +86,10 @@ export interface SuggestedTier {
 export interface ApprovalResponse {
 	id: string;
 	identity_id: string;
+	/** SPIFFE-style hierarchical path of the requesting identity, e.g.
+	 *  `spiffe://acme/user/alice/agent/henry`. May be null if the chain
+	 *  could not be resolved. */
+	identity_path: string | null;
 	action_summary: string;
 	permission_keys: string[];
 	derived_keys: DerivedKey[];

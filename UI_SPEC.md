@@ -1261,6 +1261,7 @@ Login required. If not logged in → redirect to login → redirect back. If log
 ```
 
 - Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
+- **Agent (identity)** — rendered as a SPIFFE-style hierarchical path (`acme/user/alice/agent/henry/...`), with the same link-unit treatment as the audit log Identity column (see §"Audit Log"). Backed by `identity_path` on the approval API response. The bare `identity_id` UUID is never shown to end users.
 - Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as dashboard)
 - After resolution → confirmation + link to dashboard
 - **Already resolved** — "This approval was allowed by alice 3m ago." (or denied)

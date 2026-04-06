@@ -5,6 +5,7 @@
 		type ApprovalResponse,
 		type ResolveApprovalRequest
 	} from '$lib/session';
+	import IdentityPath from './IdentityPath.svelte';
 
 	let { approval, onResolved }: {
 		approval: ApprovalResponse;
@@ -14,19 +15,56 @@
 	let override = $state<ApprovalResponse | null>(null);
 	const current = $derived(override ?? approval);
 	let selectedTier = $state(0);
-	let ttl = $state('24h');
+	let ttl = $state('forever');
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 
 	const ttlOptions = [
+		{ value: 'forever', label: 'Never' },
 		{ value: '1h', label: '1 hour' },
 		{ value: '24h', label: '24 hours' },
 		{ value: '7d', label: '7 days' },
-		{ value: '30d', label: '30 days' },
-		{ value: 'forever', label: 'Forever' }
+		{ value: '30d', label: '30 days' }
 	];
 
 	const isPending = $derived(current.status === 'pending');
+
+	// Derive Service / Action display from the first parsed permission key.
+	// `derived_keys` comes from the API as `{service, action, arg}`.
+	const primary = $derived(current.derived_keys[0] ?? null);
+	const serviceLabel = $derived(primary ? humanize(primary.service) : '—');
+	const actionLabel = $derived(primary ? primary.action : '—');
+
+	function humanize(slug: string): string {
+		// "github" -> "GitHub", "google_calendar" -> "Google Calendar"
+		const known: Record<string, string> = {
+			github: 'GitHub',
+			gitlab: 'GitLab',
+			google_calendar: 'Google Calendar',
+			gmail: 'Gmail'
+		};
+		if (known[slug]) return known[slug];
+		return slug
+			.split(/[_\-]/)
+			.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+			.join(' ');
+	}
+
+	function relativeTime(iso: string): string {
+		const t = Date.parse(iso);
+		if (Number.isNaN(t)) return iso;
+		const diff = (t - Date.now()) / 1000;
+		const abs = Math.abs(diff);
+		const unit =
+			abs < 60
+				? `${Math.round(abs)}s`
+				: abs < 3600
+					? `${Math.round(abs / 60)}m`
+					: abs < 86400
+						? `${Math.round(abs / 3600)}h`
+						: `${Math.round(abs / 86400)}d`;
+		return diff < 0 ? `${unit} ago` : `in ${unit}`;
+	}
 
 	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember') {
 		submitting = true;
@@ -66,40 +104,40 @@
 	}
 </script>
 
-<div class="resolver">
+<div class="card">
+	<h1>Approval Request</h1>
+	<p class="summary">{current.action_summary}</p>
+
+	<dl class="meta">
+		<dt>Agent</dt>
+		<dd>
+			{#if current.identity_path}
+				<IdentityPath path={current.identity_path} />
+			{:else}
+				<code class="mono mute">{current.identity_id}</code>
+			{/if}
+		</dd>
+
+		<dt>Service</dt>
+		<dd>{serviceLabel}</dd>
+
+		<dt>Action</dt>
+		<dd><code class="mono">{actionLabel}</code></dd>
+
+		<dt>Requested</dt>
+		<dd>{relativeTime(current.created_at)}</dd>
+
+		<dt>Expires</dt>
+		<dd>{relativeTime(current.expires_at)}</dd>
+	</dl>
+
 	{#if !isPending}
 		<div class="banner banner-{current.status}">
 			This approval is <strong>{current.status}</strong>.
 		</div>
-	{/if}
-
-	<section class="block">
-		<div class="label">Action</div>
-		<div class="summary">{current.action_summary}</div>
-	</section>
-
-	<section class="block">
-		<div class="label">Requested by identity</div>
-		<code class="mono">{current.identity_id}</code>
-	</section>
-
-	<section class="block">
-		<div class="label">Permission keys</div>
-		<ul class="keys">
-			{#each current.permission_keys as key}
-				<li><code class="mono">{key}</code></li>
-			{/each}
-		</ul>
-	</section>
-
-	<section class="block">
-		<div class="label">Expires</div>
-		<div>{current.expires_at}</div>
-	</section>
-
-	{#if isPending}
-		<section class="block">
-			<div class="label">Remember scope (for "Allow & remember")</div>
+	{:else}
+		<div class="scope-block">
+			<div class="scope-label">Scope</div>
 			<div class="tiers">
 				{#each current.suggested_tiers as tier, i}
 					<label class="tier" class:selected={selectedTier === i}>
@@ -111,26 +149,24 @@
 							onchange={() => (selectedTier = i)}
 						/>
 						<div class="tier-body">
+							<code class="mono tier-key">{tier.keys[0]}{tier.keys.length > 1
+									? ` +${tier.keys.length - 1}`
+									: ''}</code>
 							<div class="tier-desc">{tier.description}</div>
-							<div class="tier-keys">
-								{#each tier.keys as k}
-									<code class="mono">{k}</code>
-								{/each}
-							</div>
 						</div>
 					</label>
 				{/each}
 			</div>
 
-			<div class="ttl-row">
-				<label for="ttl">Remember for</label>
+			<div class="expiry-row">
+				<label for="ttl">Expiry:</label>
 				<select id="ttl" bind:value={ttl}>
 					{#each ttlOptions as opt}
 						<option value={opt.value}>{opt.label}</option>
 					{/each}
 				</select>
 			</div>
-		</section>
+		</div>
 
 		{#if error}
 			<div class="error">{error}</div>
@@ -138,163 +174,187 @@
 
 		<div class="actions">
 			<button
-				class="btn btn-deny"
-				disabled={submitting}
-				onclick={() => resolve('deny')}
-			>
-				Deny
-			</button>
-			<button
-				class="btn btn-allow-once"
-				disabled={submitting}
-				onclick={() => resolve('allow')}
-			>
-				Allow once
-			</button>
-			<button
-				class="btn btn-allow-remember"
+				class="btn btn-primary"
 				disabled={submitting}
 				onclick={() => resolve('allow_remember')}
 			>
-				Allow & remember
+				Allow &amp; Remember
+			</button>
+			<button class="btn btn-deny" disabled={submitting} onclick={() => resolve('deny')}>
+				Deny
 			</button>
 		</div>
 	{/if}
 </div>
 
 <style>
-	.resolver {
+	.card {
+		width: 100%;
+		max-width: 520px;
+		background: #fff;
+		border: 1px solid var(--color-border);
+		border-radius: 12px;
+		padding: 1.75rem 2rem;
+		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
 		display: flex;
 		flex-direction: column;
-		gap: 1.25rem;
+		gap: 1rem;
 	}
-	.block {
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.label {
-		font-size: 0.75rem;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--color-text-muted);
+	h1 {
+		margin: 0;
+		font-size: 1.15rem;
+		font-weight: 700;
+		color: var(--color-text);
 	}
 	.summary {
-		font-size: 1.05rem;
+		margin: 0;
 		color: var(--color-text);
+		font-size: 0.9rem;
+	}
+	.meta {
+		display: grid;
+		grid-template-columns: 90px 1fr;
+		gap: 0.55rem 1rem;
+		margin: 0.25rem 0 0 0;
+	}
+	.meta dt {
+		color: var(--color-text-muted);
+		font-size: 0.8rem;
+		align-self: center;
+	}
+	.meta dd {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--color-text);
+		align-self: center;
+		min-width: 0;
+		word-break: break-all;
 	}
 	.mono {
 		font-family: var(--font-mono);
-		font-size: 0.85rem;
-		background: var(--color-surface);
-		padding: 0.1rem 0.4rem;
-		border-radius: 4px;
-		border: 1px solid var(--color-border);
+		font-size: 0.8rem;
 	}
-	.keys {
-		list-style: none;
-		padding: 0;
-		margin: 0;
+	.mute {
+		color: var(--color-text-muted);
+	}
+	.scope-block {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 0.5rem;
+		margin-top: 0.25rem;
+	}
+	.scope-label {
+		font-weight: 600;
+		font-size: 0.85rem;
+		color: var(--color-text);
 	}
 	.tiers {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 0.4rem;
 	}
 	.tier {
 		display: flex;
-		gap: 0.6rem;
-		padding: 0.75rem;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		cursor: pointer;
 		align-items: flex-start;
+		gap: 0.6rem;
+		padding: 0.65rem 0.75rem;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		cursor: pointer;
+		background: #fff;
+		transition: background 0.1s, border-color 0.1s;
+	}
+	.tier:hover {
+		border-color: #c7c2f0;
 	}
 	.tier.selected {
 		border-color: var(--color-primary);
-		background: var(--color-surface);
+		background: #efeefb;
+	}
+	.tier input {
+		margin-top: 0.15rem;
+		accent-color: var(--color-primary);
 	}
 	.tier-body {
 		display: flex;
 		flex-direction: column;
-		gap: 0.4rem;
+		gap: 0.15rem;
+		min-width: 0;
+	}
+	.tier-key {
+		color: var(--color-primary);
+		font-size: 0.78rem;
+		word-break: break-all;
 	}
 	.tier-desc {
-		font-weight: 500;
-		color: var(--color-text);
+		color: var(--color-text-muted);
+		font-size: 0.75rem;
 	}
-	.tier-keys {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-	}
-	.ttl-row {
+	.expiry-row {
 		display: flex;
 		align-items: center;
-		gap: 0.6rem;
-		margin-top: 0.75rem;
+		gap: 0.5rem;
+		margin-top: 0.4rem;
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
 	}
-	.ttl-row select {
-		padding: 0.4rem 0.6rem;
+	.expiry-row select {
+		padding: 0.3rem 0.5rem;
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		background: var(--color-bg);
+		background: #fff;
 		color: var(--color-text);
+		font-size: 0.8rem;
 	}
 	.actions {
 		display: flex;
 		gap: 0.6rem;
-		justify-content: flex-end;
+		margin-top: 0.5rem;
 	}
 	.btn {
-		padding: 0.6rem 1rem;
+		padding: 0.55rem 1rem;
 		border-radius: 6px;
-		border: 1px solid var(--color-border);
-		font-size: 0.9rem;
+		font-size: 0.85rem;
+		font-weight: 500;
 		cursor: pointer;
-		background: var(--color-surface);
-		color: var(--color-text);
+		border: 1px solid transparent;
 	}
 	.btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.btn-deny {
-		border-color: #b94a48;
-		color: #b94a48;
-	}
-	.btn-allow-once {
-		border-color: var(--color-primary);
-		color: var(--color-primary);
-	}
-	.btn-allow-remember {
+	.btn-primary {
 		background: var(--color-primary);
-		color: white;
+		color: #fff;
 		border-color: var(--color-primary);
+	}
+	.btn-deny {
+		background: #fff;
+		color: #d14343;
+		border-color: #d14343;
 	}
 	.banner {
 		padding: 0.75rem 1rem;
-		border-radius: 6px;
+		border-radius: 8px;
+		font-size: 0.85rem;
 		border: 1px solid var(--color-border);
-		background: var(--color-surface);
 	}
 	.banner-allowed {
 		border-color: #2e7d32;
 		color: #2e7d32;
+		background: rgba(46, 125, 50, 0.06);
 	}
 	.banner-denied {
-		border-color: #b94a48;
-		color: #b94a48;
+		border-color: #d14343;
+		color: #d14343;
+		background: rgba(209, 67, 67, 0.06);
 	}
 	.error {
 		padding: 0.6rem 0.8rem;
-		border: 1px solid #b94a48;
+		border: 1px solid #d14343;
 		border-radius: 6px;
-		color: #b94a48;
-		background: rgba(185, 74, 72, 0.08);
-		font-size: 0.85rem;
+		color: #d14343;
+		background: rgba(209, 67, 67, 0.06);
+		font-size: 0.8rem;
 	}
 </style>

@@ -28,39 +28,39 @@ const ME = {
 	is_org_admin: true
 };
 
+const now = Date.now();
 const PENDING_APPROVAL = {
 	id: APPROVAL_ID,
 	identity_id: ME.identity_id,
-	action_summary: 'POST https://api.example.com/messages',
-	permission_keys: [
-		'example:messages.send:channel-general',
-		'example:messages.send:channel-random'
-	],
+	identity_path: 'spiffe://acme/user/alice/agent/henry',
+	action_summary: 'Create pull request "Fix bug" on overfolder/app',
+	permission_keys: ['github:create_pull_request:overfolder/app'],
 	derived_keys: [
-		{ service: 'example', action: 'messages.send', arg: 'channel-general' },
-		{ service: 'example', action: 'messages.send', arg: 'channel-random' }
+		{
+			key: 'github:create_pull_request:overfolder/app',
+			service: 'github',
+			action: 'create_pull_request',
+			arg: 'overfolder/app'
+		}
 	],
 	suggested_tiers: [
 		{
-			keys: [
-				'example:messages.send:channel-general',
-				'example:messages.send:channel-random'
-			],
-			description: 'Just these channels'
+			keys: ['github:create_pull_request:overfolder/app'],
+			description: 'Most specific — this exact repo'
 		},
 		{
-			keys: ['example:messages.send:*'],
-			description: 'Any channel for messages.send'
+			keys: ['github:create_pull_request:*'],
+			description: 'Any repository'
 		},
 		{
-			keys: ['example:*:*'],
-			description: 'Any action on the example service'
+			keys: ['github:*:*'],
+			description: 'All GitHub actions'
 		}
 	],
 	status: 'pending',
 	token: 'demo-token',
-	expires_at: '2030-01-01T00:00:00Z',
-	created_at: '2026-04-06T12:00:00Z'
+	expires_at: new Date(now + 14 * 60 * 1000).toISOString(),
+	created_at: new Date(now - 2 * 60 * 1000).toISOString()
 };
 
 const PROVIDERS = [{ key: 'google', label: 'Continue with Google', icon: null }];
@@ -161,11 +161,11 @@ try {
 	await installMocks(ctx, { authenticated: true, approval: PENDING_APPROVAL });
 	const page = await ctx.newPage();
 	await page.goto(`${BASE}/approvals/${APPROVAL_ID}`, { waitUntil: 'networkidle' });
-	await page.getByRole('button', { name: 'Deny' }).waitFor({ timeout: 10_000 });
+	await page.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 10_000 });
 	await shot(page, 'pending');
 
 	// 3. Resolved (Deny)
-	await page.getByRole('button', { name: 'Deny' }).click();
+	await page.getByRole('button', { name: /^Deny$/ }).click();
 	await page.getByText(/this approval is/i).waitFor({ timeout: 10_000 });
 	await shot(page, 'resolved');
 
