@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE rate_limits SET max_requests = $2, window_seconds = $3, updated_at = now()\n                 WHERE org_id = $1 AND scope = 'org'\n                 RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
+  "query": "INSERT INTO rate_limits (org_id, scope, max_requests, window_seconds)\n                 VALUES ($1, 'org', $2, $3)\n                 ON CONFLICT (org_id) WHERE scope = 'org' DO UPDATE\n                   SET max_requests = EXCLUDED.max_requests,\n                       window_seconds = EXCLUDED.window_seconds,\n                       updated_at = now()\n                 RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -68,5 +68,5 @@
       false
     ]
   },
-  "hash": "f151f3064979231d4706769a64ccd51063f0b44ef84c9da19ce297890675a524"
+  "hash": "2bd274df63acc17bd0b0b6fca25280ebcc0d466dcfd9d7104032e35ce5fa19fe"
 }

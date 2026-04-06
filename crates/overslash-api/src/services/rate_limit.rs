@@ -97,10 +97,19 @@ impl RateLimitStore for RedisRateLimitStore {
 
 // ── In-memory implementation ────────────────────────────────────────
 
+/// In-memory counter entry: tracks count, window start time, and the window size
+/// so eviction can correctly determine when each entry has fully elapsed.
+#[derive(Debug, Clone, Copy)]
+struct CounterEntry {
+    count: u32,
+    window_start: u64,
+    window_seconds: u32,
+}
+
 #[derive(Default)]
 pub struct InMemoryRateLimitStore {
-    /// Map from window_key → (count, window_start_unix)
-    counters: DashMap<String, (u32, u64)>,
+    /// Map from window_key → CounterEntry
+    counters: DashMap<String, CounterEntry>,
 }
 
 impl InMemoryRateLimitStore {
@@ -110,13 +119,14 @@ impl InMemoryRateLimitStore {
         }
     }
 
-    /// Remove expired entries. Called periodically from a background task.
-    /// Uses a generous retention window (1 hour) to avoid evicting counters for
-    /// large configurable windows (e.g., hourly rate limits).
+    /// Remove entries whose configured window has fully elapsed.
+    /// Each entry stores its own `window_seconds` so we evict per-entry rather
+    /// than using a single hardcoded retention period (which could prematurely
+    /// evict counters for limits with large windows).
     pub fn evict_expired(&self) {
         let now = now_unix();
         self.counters
-            .retain(|_, (_, window_start)| *window_start + 3600 > now);
+            .retain(|_, entry| entry.window_start + entry.window_seconds as u64 > now);
     }
 }
 
@@ -134,17 +144,21 @@ impl RateLimitStore for InMemoryRateLimitStore {
             let reset_at = window_start + window_seconds as u64;
             let window_key = format!("{key}:{window_start}");
 
-            let mut entry = self.counters.entry(window_key).or_insert((0, window_start));
-            let (count, stored_start) = entry.value_mut();
+            let mut entry = self.counters.entry(window_key).or_insert(CounterEntry {
+                count: 0,
+                window_start,
+                window_seconds,
+            });
 
             // If the stored window is stale, reset
-            if *stored_start != window_start {
-                *count = 0;
-                *stored_start = window_start;
+            if entry.window_start != window_start {
+                entry.count = 0;
+                entry.window_start = window_start;
+                entry.window_seconds = window_seconds;
             }
 
-            *count += 1;
-            let current = *count;
+            entry.count += 1;
+            let current = entry.count;
             drop(entry);
 
             let allowed = current <= max_requests;

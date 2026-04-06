@@ -17,7 +17,8 @@ pub struct RateLimitRow {
 
 impl_org_owned!(RateLimitRow);
 
-/// Upsert a rate limit config. Uses scope + org + identity/group to determine uniqueness.
+/// Upsert a rate limit config atomically using INSERT ... ON CONFLICT.
+/// Uses partial unique indexes (one per scope) as conflict targets to avoid races.
 pub async fn upsert(
     pool: &PgPool,
     org_id: Uuid,
@@ -27,59 +28,71 @@ pub async fn upsert(
     max_requests: i32,
     window_seconds: i32,
 ) -> Result<RateLimitRow, sqlx::Error> {
-    // Use the appropriate unique index for conflict resolution based on scope.
-    // We do a two-step approach: try update, then insert if no rows updated.
-    // This avoids complex ON CONFLICT with partial indexes.
-    let existing = match scope {
+    // Each scope has its own partial unique index. PostgreSQL infers the index
+    // from the index_predicate (the WHERE clause matching the partial index).
+    match scope {
         "org" => {
             sqlx::query_as!(
                 RateLimitRow,
-                "UPDATE rate_limits SET max_requests = $2, window_seconds = $3, updated_at = now()
-                 WHERE org_id = $1 AND scope = 'org'
+                "INSERT INTO rate_limits (org_id, scope, max_requests, window_seconds)
+                 VALUES ($1, 'org', $2, $3)
+                 ON CONFLICT (org_id) WHERE scope = 'org' DO UPDATE
+                   SET max_requests = EXCLUDED.max_requests,
+                       window_seconds = EXCLUDED.window_seconds,
+                       updated_at = now()
                  RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
                 org_id, max_requests, window_seconds,
             )
-            .fetch_optional(pool)
-            .await?
+            .fetch_one(pool)
+            .await
         }
         "group" => {
             sqlx::query_as!(
                 RateLimitRow,
-                "UPDATE rate_limits SET max_requests = $3, window_seconds = $4, updated_at = now()
-                 WHERE org_id = $1 AND group_id = $2 AND scope = 'group'
+                "INSERT INTO rate_limits (org_id, group_id, scope, max_requests, window_seconds)
+                 VALUES ($1, $2, 'group', $3, $4)
+                 ON CONFLICT (org_id, group_id) WHERE scope = 'group' DO UPDATE
+                   SET max_requests = EXCLUDED.max_requests,
+                       window_seconds = EXCLUDED.window_seconds,
+                       updated_at = now()
                  RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
                 org_id, group_id, max_requests, window_seconds,
             )
-            .fetch_optional(pool)
-            .await?
+            .fetch_one(pool)
+            .await
         }
-        "user" | "identity_cap" => {
+        "user" => {
             sqlx::query_as!(
                 RateLimitRow,
-                "UPDATE rate_limits SET max_requests = $3, window_seconds = $4, updated_at = now()
-                 WHERE org_id = $1 AND identity_id = $2 AND scope = $5
+                "INSERT INTO rate_limits (org_id, identity_id, scope, max_requests, window_seconds)
+                 VALUES ($1, $2, 'user', $3, $4)
+                 ON CONFLICT (org_id, identity_id) WHERE scope = 'user' DO UPDATE
+                   SET max_requests = EXCLUDED.max_requests,
+                       window_seconds = EXCLUDED.window_seconds,
+                       updated_at = now()
                  RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
-                org_id, identity_id, max_requests, window_seconds, scope,
+                org_id, identity_id, max_requests, window_seconds,
             )
-            .fetch_optional(pool)
-            .await?
+            .fetch_one(pool)
+            .await
         }
-        _ => None,
-    };
-
-    if let Some(row) = existing {
-        return Ok(row);
+        "identity_cap" => {
+            sqlx::query_as!(
+                RateLimitRow,
+                "INSERT INTO rate_limits (org_id, identity_id, scope, max_requests, window_seconds)
+                 VALUES ($1, $2, 'identity_cap', $3, $4)
+                 ON CONFLICT (org_id, identity_id) WHERE scope = 'identity_cap' DO UPDATE
+                   SET max_requests = EXCLUDED.max_requests,
+                       window_seconds = EXCLUDED.window_seconds,
+                       updated_at = now()
+                 RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
+                org_id, identity_id, max_requests, window_seconds,
+            )
+            .fetch_one(pool)
+            .await
+        }
+        _ => Err(sqlx::Error::Protocol(format!("invalid scope: {scope}"))),
     }
-
-    sqlx::query_as!(
-        RateLimitRow,
-        "INSERT INTO rate_limits (org_id, identity_id, group_id, scope, max_requests, window_seconds)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at",
-        org_id, identity_id, group_id, scope, max_requests, window_seconds,
-    )
-    .fetch_one(pool)
-    .await
 }
 
 /// Get the rate limit for a specific identity (scope = 'user' or 'identity_cap').
