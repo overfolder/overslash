@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -31,6 +31,14 @@ pub fn router() -> Router<AppState> {
         .route("/auth/me", get(me))
         .route("/auth/me/identity", get(me_identity))
         .route("/auth/dev/token", get(dev_token))
+        .route("/auth/logout", post(logout))
+}
+
+async fn logout() -> impl IntoResponse {
+    let clear = "oss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+    let mut headers = HeaderMap::new();
+    headers.insert(header::SET_COOKIE, clear.parse().unwrap());
+    (headers, axum::Json(json!({ "status": "logged_out" })))
 }
 
 // ---------------------------------------------------------------------------
