@@ -4,6 +4,15 @@
 
 set -euo pipefail
 
+# Required commands. `ss` is Linux-only — fail loudly on macOS/BSD rather than
+# silently picking a port we never actually verified to be free.
+for cmd in ss cksum awk grep; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "worktree-env.sh: required command '$cmd' not found in PATH" >&2
+        exit 1
+    fi
+done
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_LOCAL="$REPO_ROOT/.env.local"
