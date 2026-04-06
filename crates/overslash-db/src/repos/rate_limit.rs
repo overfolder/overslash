@@ -114,7 +114,8 @@ pub async fn get_for_identity(
 }
 
 /// Get the most permissive group rate limit across the given groups.
-/// Returns the group config with the highest max_requests.
+/// Returns the group config with the highest throughput (max_requests / window_seconds),
+/// so that e.g. "100/min" beats "200/hour" instead of comparing raw counts.
 pub async fn get_most_permissive_for_groups(
     pool: &PgPool,
     org_id: Uuid,
@@ -125,7 +126,7 @@ pub async fn get_most_permissive_for_groups(
         "SELECT id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at
          FROM rate_limits
          WHERE org_id = $1 AND scope = 'group' AND group_id = ANY($2)
-         ORDER BY max_requests DESC
+         ORDER BY (max_requests::float8 / NULLIF(window_seconds, 0)) DESC NULLS LAST
          LIMIT 1",
         org_id, group_ids,
     )

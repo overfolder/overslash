@@ -35,12 +35,27 @@ impl PrefixCache {
             ttl,
         }
     }
+
+    /// Remove cache entries that have outlived their TTL.
+    /// Called periodically from a background task to prevent unbounded growth
+    /// from rotating or deleted API keys.
+    pub fn evict_expired(&self) {
+        let ttl = self.ttl;
+        self.entries
+            .retain(|_, entry| entry.fetched_at.elapsed() < ttl);
+    }
 }
 
 // Module-level lazy static for the prefix cache.
 // Initialized once, shared across all requests.
 static PREFIX_CACHE: std::sync::LazyLock<PrefixCache> =
     std::sync::LazyLock::new(|| PrefixCache::new(Duration::from_secs(60)));
+
+/// Evict expired entries from the global prefix cache.
+/// Spawned as a background task in `create_app` to prevent unbounded memory growth.
+pub fn evict_prefix_cache() {
+    PREFIX_CACHE.evict_expired();
+}
 
 pub async fn rate_limit_middleware(
     State(state): State<AppState>,
