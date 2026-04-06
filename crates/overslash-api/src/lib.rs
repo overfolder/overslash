@@ -91,15 +91,6 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                 }
             });
         }
-
-        // Prefix cache eviction loop: prevents unbounded memory growth
-        // from accumulated API key prefixes (rotated/deleted keys).
-        tokio::spawn(async {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                middleware::rate_limit::evict_prefix_cache();
-            }
-        });
     }
 
     let rate_limited_routes = Router::new()

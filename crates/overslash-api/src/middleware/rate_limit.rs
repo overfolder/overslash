@@ -1,61 +1,11 @@
-use std::time::{Duration, Instant};
-
 use axum::response::IntoResponse;
 use axum::{extract::State, http::Request, middleware::Next, response::Response};
-use dashmap::DashMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::error::AppError;
 use crate::services::rate_limit::now_unix;
-
-/// Cached identity info resolved from an API key prefix.
-struct CachedIdentity {
-    org_id: Uuid,
-    identity_id: Option<Uuid>,
-    /// The owning user's identity ID. For users, this is the same as identity_id.
-    owner_user_id: Option<Uuid>,
-    /// Key expiry time (None = never expires). Used to skip rate limiting for expired keys.
-    expires_at: Option<OffsetDateTime>,
-    fetched_at: Instant,
-}
-
-/// Lightweight prefix → identity cache to avoid DB lookups on every request.
-/// This does NOT verify the key (no argon2) — it only identifies the caller.
-pub struct PrefixCache {
-    entries: DashMap<String, CachedIdentity>,
-    ttl: Duration,
-}
-
-impl PrefixCache {
-    pub fn new(ttl: Duration) -> Self {
-        Self {
-            entries: DashMap::new(),
-            ttl,
-        }
-    }
-
-    /// Remove cache entries that have outlived their TTL.
-    /// Called periodically from a background task to prevent unbounded growth
-    /// from rotating or deleted API keys.
-    pub fn evict_expired(&self) {
-        let ttl = self.ttl;
-        self.entries
-            .retain(|_, entry| entry.fetched_at.elapsed() < ttl);
-    }
-}
-
-// Module-level lazy static for the prefix cache.
-// Initialized once, shared across all requests.
-static PREFIX_CACHE: std::sync::LazyLock<PrefixCache> =
-    std::sync::LazyLock::new(|| PrefixCache::new(Duration::from_secs(60)));
-
-/// Evict expired entries from the global prefix cache.
-/// Spawned as a background task in `create_app` to prevent unbounded memory growth.
-pub fn evict_prefix_cache() {
-    PREFIX_CACHE.evict_expired();
-}
 
 pub async fn rate_limit_middleware(
     State(state): State<AppState>,
@@ -166,32 +116,23 @@ fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String> {
 }
 
 /// Resolve (org_id, identity_id, owner_user_id) from the API key prefix.
-/// Uses a lightweight cache to avoid DB lookups on every request.
-/// Returns None for expired keys to avoid consuming rate limit budget.
+///
+/// We deliberately do NOT cache the lookup. Caching introduces TOCTOU windows
+/// where revoked or expired keys still consume rate limit budget until the cache
+/// entry expires. The DB lookup is a single indexed query (uses idx_api_keys_prefix)
+/// and is much cheaper than the argon2 verification done by the AuthContext extractor.
+/// `find_by_prefix` already filters `revoked_at IS NULL`, so revoked keys are skipped.
 async fn resolve_identity(
     state: &AppState,
     prefix: &str,
 ) -> Option<(Uuid, Option<Uuid>, Option<Uuid>)> {
-    // Check cache
-    if let Some(entry) = PREFIX_CACHE.entries.get(prefix) {
-        if entry.fetched_at.elapsed() < PREFIX_CACHE.ttl {
-            // Skip expired keys — don't consume rate limit budget for invalid requests
-            if let Some(expires_at) = entry.expires_at {
-                if expires_at < OffsetDateTime::now_utc() {
-                    return None;
-                }
-            }
-            return Some((entry.org_id, entry.identity_id, entry.owner_user_id));
-        }
-    }
-
-    // Look up API key by prefix (no argon2 — just identification)
+    // Look up API key by prefix (no argon2 — just identification, filters revoked)
     let key_row = overslash_db::repos::api_key::find_by_prefix(&state.db, prefix)
         .await
         .ok()
         .flatten()?;
 
-    // Skip expired keys
+    // Skip expired keys to avoid consuming rate limit budget for invalid requests
     if let Some(expires_at) = key_row.expires_at {
         if expires_at < OffsetDateTime::now_utc() {
             return None;
@@ -213,17 +154,6 @@ async fn resolve_identity(
     } else {
         None
     };
-
-    PREFIX_CACHE.entries.insert(
-        prefix.to_string(),
-        CachedIdentity {
-            org_id: key_row.org_id,
-            identity_id: key_row.identity_id,
-            owner_user_id,
-            expires_at: key_row.expires_at,
-            fetched_at: Instant::now(),
-        },
-    );
 
     Some((key_row.org_id, key_row.identity_id, owner_user_id))
 }

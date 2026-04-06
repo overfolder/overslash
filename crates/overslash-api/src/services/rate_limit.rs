@@ -58,7 +58,9 @@ impl RateLimitStore for RedisRateLimitStore {
             let reset_at = window_start + window_seconds as u64;
             let window_key = format!("{key}:{window_start}");
 
-            let result: Result<(u32,), _> = redis::pipe()
+            // Use i64 to match Redis INCR's native return type and avoid
+            // truncation/overflow on long-window high-traffic counters.
+            let result: Result<(i64,), _> = redis::pipe()
                 .atomic()
                 .cmd("INCR")
                 .arg(&window_key)
@@ -71,8 +73,13 @@ impl RateLimitStore for RedisRateLimitStore {
 
             match result {
                 Ok((count,)) => {
-                    let allowed = count <= max_requests;
-                    let remaining = if allowed { max_requests - count } else { 0 };
+                    let max_i64 = max_requests as i64;
+                    let allowed = count <= max_i64;
+                    let remaining = if allowed {
+                        (max_i64 - count).max(0) as u32
+                    } else {
+                        0
+                    };
                     RateLimitResult {
                         allowed,
                         limit: max_requests,
