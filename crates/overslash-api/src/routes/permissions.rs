@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{delete, post},
 };
 use serde::{Deserialize, Serialize};
@@ -91,14 +91,33 @@ async fn create_permission(
     }))
 }
 
+#[derive(Deserialize)]
+struct ListPermissionsQuery {
+    identity_id: Option<Uuid>,
+}
+
 async fn list_permissions(
     auth: AuthContext,
     scope: OrgScope,
+    Query(q): Query<ListPermissionsQuery>,
 ) -> Result<Json<Vec<PermissionResponse>>> {
-    // For MVP, list all permissions for the calling identity
-    let identity_id = auth
-        .identity_id
-        .ok_or_else(|| AppError::BadRequest("no identity on this key".into()))?;
+    // ?identity_id= is the identity-hierarchy detail panel filter: any
+    // authenticated org member may list permission rules attached to a
+    // specific identity in their own org. Cross-tenant ids are blocked at
+    // the scope boundary (returns None).
+    //
+    // Without a query param the legacy MVP behaviour applies: list rules
+    // for the calling identity.
+    let identity_id = if let Some(target) = q.identity_id {
+        scope
+            .get_identity(target)
+            .await?
+            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        target
+    } else {
+        auth.identity_id
+            .ok_or_else(|| AppError::BadRequest("no identity on this key".into()))?
+    };
     let rows = scope
         .list_permission_rules_for_identity(identity_id)
         .await?;

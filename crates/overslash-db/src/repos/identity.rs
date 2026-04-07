@@ -262,6 +262,247 @@ pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool
     Ok(result.rows_affected() > 0)
 }
 
+pub(crate) async fn rename(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+    name: &str,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
+    sqlx::query_as!(
+        IdentityRow,
+        "UPDATE identities SET name = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at",
+        id,
+        org_id,
+        name,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// All optional patches to apply to an identity, atomically.
+#[derive(Debug, Default)]
+pub struct PatchIdentity<'a> {
+    pub name: Option<&'a str>,
+    /// New (parent_id, depth, owner_id, descendant_owner_id) — caller has
+    /// already validated parent kind, cycle, and resolved depth/owner.
+    pub move_to: Option<(Uuid, i32, Uuid, Uuid)>,
+    pub inherit_permissions: Option<bool>,
+}
+
+/// Apply rename + move + inherit toggle in a single transaction so the
+/// patch is atomic — no partial updates if any step fails.
+pub(crate) async fn apply_patch(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+    patch: PatchIdentity<'_>,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Lock the row up front so concurrent moves can't race the cycle check.
+    let current = sqlx::query!(
+        "SELECT depth FROM identities WHERE id = $1 AND org_id = $2 FOR UPDATE",
+        id,
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+
+    if let Some(name) = patch.name {
+        sqlx::query!(
+            "UPDATE identities SET name = $3, updated_at = now()
+             WHERE id = $1 AND org_id = $2",
+            id,
+            org_id,
+            name,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    if let Some((parent_id, new_depth, owner_id, descendant_owner_id)) = patch.move_to {
+        let depth_delta = new_depth - current.depth;
+        sqlx::query!(
+            "UPDATE identities SET parent_id = $3, depth = $4, owner_id = $5, updated_at = now()
+             WHERE id = $1 AND org_id = $2",
+            id,
+            org_id,
+            parent_id,
+            new_depth,
+            owner_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            r#"WITH RECURSIVE subtree AS (
+                SELECT id FROM identities WHERE parent_id = $1
+                UNION ALL
+                SELECT i.id FROM identities i
+                INNER JOIN subtree s ON i.parent_id = s.id
+            )
+            UPDATE identities SET
+                depth = depth + $2,
+                owner_id = CASE WHEN kind = 'sub_agent' THEN $3 ELSE owner_id END,
+                updated_at = now()
+            WHERE id IN (SELECT id FROM subtree)"#,
+            id,
+            depth_delta,
+            descendant_owner_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    if let Some(inherit) = patch.inherit_permissions {
+        sqlx::query!(
+            "UPDATE identities SET inherit_permissions = $2, updated_at = now() WHERE id = $1",
+            id,
+            inherit,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let row = sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at
+         FROM identities WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Some(row))
+}
+
+/// Move an identity to a new parent and recursively update its descendants.
+///
+/// All descendants have their `depth` shifted by the same delta as the moved
+/// node, and any sub_agent descendants get their `owner_id` rewritten to
+/// `descendant_owner_id` (the User at the top of the new chain). This keeps
+/// the SubAgent.owner_id invariant after a move that crosses owner chains.
+pub(crate) async fn move_under(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+    parent_id: Uuid,
+    new_depth: i32,
+    new_owner_id: Uuid,
+    descendant_owner_id: Uuid,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Fetch current depth so we can shift descendants by the delta.
+    let current = sqlx::query!(
+        "SELECT depth FROM identities WHERE id = $1 AND org_id = $2 FOR UPDATE",
+        id,
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let depth_delta = new_depth - current.depth;
+
+    let row = sqlx::query_as!(
+        IdentityRow,
+        "UPDATE identities SET parent_id = $3, depth = $4, owner_id = $5, updated_at = now()
+         WHERE id = $1 AND org_id = $2
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at",
+        id,
+        org_id,
+        parent_id,
+        new_depth,
+        new_owner_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    // Shift all descendants' depth and rewrite sub_agent owner_id.
+    sqlx::query!(
+        r#"WITH RECURSIVE subtree AS (
+            SELECT id FROM identities WHERE parent_id = $1
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN subtree s ON i.parent_id = s.id
+        )
+        UPDATE identities SET
+            depth = depth + $2,
+            owner_id = CASE WHEN kind = 'sub_agent' THEN $3 ELSE owner_id END,
+            updated_at = now()
+        WHERE id IN (SELECT id FROM subtree)"#,
+        id,
+        depth_delta,
+        descendant_owner_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Some(row))
+}
+
+/// Outcome of an attempt to delete a leaf identity.
+pub enum DeleteLeafOutcome {
+    Deleted,
+    NotFound,
+    HasChildren,
+}
+
+/// Atomically delete an identity only if it has no children.
+///
+/// The parent row is locked `FOR UPDATE` for the duration of the transaction,
+/// which forces any concurrent FK-checking INSERT (which needs at least
+/// `FOR KEY SHARE`) to block until we commit. This closes the TOCTOU race
+/// where a child could be inserted between a separate count and delete and
+/// then be silently cascade-deleted.
+pub(crate) async fn delete_leaf(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+) -> Result<DeleteLeafOutcome, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let exists = sqlx::query!(
+        "SELECT id FROM identities WHERE id = $1 AND org_id = $2 FOR UPDATE",
+        id,
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if exists.is_none() {
+        return Ok(DeleteLeafOutcome::NotFound);
+    }
+
+    let child = sqlx::query!(
+        "SELECT 1 as exists FROM identities WHERE parent_id = $1 LIMIT 1",
+        id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if child.is_some() {
+        return Ok(DeleteLeafOutcome::HasChildren);
+    }
+
+    sqlx::query!(
+        "DELETE FROM identities WHERE id = $1 AND org_id = $2",
+        id,
+        org_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(DeleteLeafOutcome::Deleted)
+}
+
 /// Stamp `last_active_at = now()` for a sub-agent. Used by the auth middleware
 /// after each authenticated request to keep idle-cleanup tracking current.
 /// Returns Ok(()) even if the row doesn't exist or is already archived; this

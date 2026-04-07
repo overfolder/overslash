@@ -101,6 +101,9 @@ struct ListQuery {
     ///
     /// Unset preserves the legacy org-wide listing.
     scope: Option<String>,
+    /// Optional: list pending approvals for a specific identity (used by the
+    /// identity hierarchy view). Caller must own the identity's org.
+    identity_id: Option<Uuid>,
 }
 
 async fn list_approvals(
@@ -109,6 +112,21 @@ async fn list_approvals(
     scope: OrgScope,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<ApprovalResponse>>> {
+    // ?identity_id= is the identity-hierarchy detail panel filter: list
+    // pending approvals **requested by** that identity. Cross-tenant ids
+    // return NotFound at the scope boundary.
+    if let Some(identity_id) = q.identity_id {
+        scope
+            .get_identity(identity_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        let rows = scope.list_mine_approvals(identity_id).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(build_response(&scope, row).await?);
+        }
+        return Ok(Json(out));
+    }
     let rows = match q.scope.as_deref() {
         Some("mine") => {
             let identity_id = auth.identity_id.ok_or_else(|| {

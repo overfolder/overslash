@@ -85,6 +85,41 @@ export type ExecuteResponse =
     }
   | { status: 'denied'; reason: string };
 
+export interface Identity {
+  id: string;
+  org_id: string;
+  name: string;
+  kind: 'user' | 'agent' | 'sub_agent';
+  external_id: string | null;
+  parent_id: string | null;
+  depth: number;
+  owner_id: string | null;
+  inherit_permissions: boolean;
+}
+
+export interface PermissionRule {
+  id: string;
+  identity_id: string;
+  action_pattern: string;
+  effect: string;
+}
+
+export interface EnrollmentToken {
+  id: string;
+  identity_id: string;
+  token_prefix: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface CreatedEnrollmentToken {
+  id: string;
+  token: string;
+  token_prefix: string;
+  identity_id: string;
+  expires_at: string;
+}
+
 export interface ActionResult {
   status_code: number;
   headers: Record<string, string>;

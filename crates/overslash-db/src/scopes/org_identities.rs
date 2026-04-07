@@ -12,7 +12,7 @@
 
 use uuid::Uuid;
 
-use crate::repos::identity::{self, IdentityRow, RestoreOutcome};
+use crate::repos::identity::{self, DeleteLeafOutcome, IdentityRow, PatchIdentity, RestoreOutcome};
 use crate::scopes::OrgScope;
 
 impl OrgScope {
@@ -158,5 +158,59 @@ impl OrgScope {
     /// auto-revoked API keys.
     pub async fn restore_identity(&self, id: Uuid) -> Result<RestoreOutcome, sqlx::Error> {
         identity::restore(self.db(), self.org_id(), id).await
+    }
+
+    /// Rename an identity in this org. Returns `None` if the row does not
+    /// exist or belongs to another tenant.
+    pub async fn rename_identity(
+        &self,
+        id: Uuid,
+        name: &str,
+    ) -> Result<Option<IdentityRow>, sqlx::Error> {
+        identity::rename(self.db(), id, self.org_id(), name).await
+    }
+
+    /// Move an identity to a new parent and recursively update all
+    /// descendants' depth and (for sub-agents) `owner_id`. The caller must
+    /// have already validated parent kind, cycles, and resolved the new
+    /// owner ids.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn move_identity_under(
+        &self,
+        id: Uuid,
+        parent_id: Uuid,
+        new_depth: i32,
+        new_owner_id: Uuid,
+        descendant_owner_id: Uuid,
+    ) -> Result<Option<IdentityRow>, sqlx::Error> {
+        identity::move_under(
+            self.db(),
+            id,
+            self.org_id(),
+            parent_id,
+            new_depth,
+            new_owner_id,
+            descendant_owner_id,
+        )
+        .await
+    }
+
+    /// Apply rename + move + inherit_permissions atomically (single
+    /// transaction). The route layer uses this so a failed move can't leave
+    /// a half-applied rename committed.
+    pub async fn apply_identity_patch(
+        &self,
+        id: Uuid,
+        patch: PatchIdentity<'_>,
+    ) -> Result<Option<IdentityRow>, sqlx::Error> {
+        identity::apply_patch(self.db(), id, self.org_id(), patch).await
+    }
+
+    /// Atomically delete a leaf identity. Holds `FOR UPDATE` on the parent
+    /// row so concurrent FK-checking inserts can't sneak a child in between
+    /// the leaf check and the delete (which would otherwise be silently
+    /// cascade-deleted).
+    pub async fn delete_identity_leaf(&self, id: Uuid) -> Result<DeleteLeafOutcome, sqlx::Error> {
+        identity::delete_leaf(self.db(), id, self.org_id()).await
     }
 }
