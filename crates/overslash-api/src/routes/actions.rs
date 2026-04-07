@@ -208,7 +208,7 @@ async fn execute_action(
             crate::services::permission_chain::ChainWalkResult::Allowed => {}
             crate::services::permission_chain::ChainWalkResult::Gap {
                 uncovered_keys,
-                gap_identity_id: _,
+                gap_identity_id,
                 initial_resolver_id,
                 rule_placement_id: _,
             } => {
@@ -253,6 +253,54 @@ async fn execute_action(
                     },
                 )
                 .await;
+
+                // ── approval.created webhook (SPEC §5) ───────────────────
+                // can_be_handled_by lists every identity in the resolver chain
+                // who can act on this approval right now: the current resolver
+                // and its strict ancestors (excluding the requester, who can
+                // never self-resolve). Computed once here so subscribers don't
+                // have to walk the tree themselves.
+                let resolver_chain = overslash_db::repos::identity::get_ancestor_chain(
+                    &state.db,
+                    initial_resolver_id,
+                )
+                .await
+                .unwrap_or_default();
+                let can_be_handled_by: Vec<serde_json::Value> = resolver_chain
+                    .iter()
+                    .filter(|i| i.id != identity_id)
+                    .map(|i| {
+                        serde_json::json!({
+                            "identity_id": i.id,
+                            "kind": i.kind,
+                            "name": i.name,
+                        })
+                    })
+                    .collect();
+                let webhook_payload = serde_json::json!({
+                    "approval_id": approval.id,
+                    "identity_id": identity_id,
+                    "gap_identity_id": gap_identity_id,
+                    "current_resolver_identity_id": initial_resolver_id,
+                    "action_summary": summary,
+                    "permission_keys": keys,
+                    "can_be_handled_by": can_be_handled_by,
+                });
+                {
+                    let db = state.db.clone();
+                    let client = state.http_client.clone();
+                    let org_id = auth.org_id;
+                    tokio::spawn(async move {
+                        crate::services::webhook_dispatcher::dispatch(
+                            &db,
+                            &client,
+                            org_id,
+                            "approval.created",
+                            webhook_payload,
+                        )
+                        .await;
+                    });
+                }
 
                 return Ok((
                     StatusCode::ACCEPTED,

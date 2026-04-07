@@ -287,6 +287,19 @@ If Chief instead bubbles up → resolver = User. If Researcher had called `servi
 
 **Auto-bubble timeout.** If an approval sits with its current resolver longer than `approval_auto_bubble_secs` (per-org setting, default 300s = 5 minutes), it automatically bubbles to the next ancestor. Setting this to `0` makes every approval go straight to the user (skip agent resolvers entirely). This prevents requests from getting stuck on an absent or unresponsive agent resolver.
 
+### Visibility Scoping
+
+`GET /v1/approvals` accepts an optional `?scope=` filter so callers can ask three different questions about the same pending-approvals set without round-tripping the whole list:
+
+- **`?scope=mine`** — approvals the **caller has requested** (`identity_id = caller`). Useful for an agent polling "what am I waiting on?" or for a user to see things they themselves submitted via the dashboard.
+- **`?scope=assigned`** — approvals where **the caller is the current resolver right now** (`current_resolver_identity_id = caller`). This is the strict "inbox" view: only approvals that are sitting on this exact identity, not on a descendant. Excludes anything the caller requested themselves (the self-resolve ban — see "Trust Model and Approval Resolution" below — would block resolution anyway).
+- **`?scope=actionable`** — approvals the caller **could act on**: the caller is the current resolver, **or** any descendant of the caller is the current resolver. An ancestor can always step in for a descendant, so this surfaces everything in the caller's subtree. Also excludes self-requested approvals.
+- **No `scope`** — legacy org-wide listing of all pending approvals. Preserved for back-compat with admin tooling.
+
+`mine`, `assigned`, and `actionable` all require an identity-bound credential (the caller has to be a real identity to ask "is this mine?").
+
+The three scopes layer naturally for a dashboard inbox: `assigned` is the bell-badge count, `actionable` is the broader queue an org admin or main agent can drain on behalf of subordinates, and `mine` is the "outbox" of things the caller is waiting on.
+
 ### Trust Model and Approval Resolution
 
 The core trust assumption: **agents are not trusted to approve their own actions.** Overslash exists precisely because prompt-based permission ("please ask before sending") is not real security. The approval system enforces this:
