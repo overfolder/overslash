@@ -160,9 +160,14 @@ fi
 # Re-fetch PR metadata: the initial $PR_JSON can be up to ~10 minutes stale
 # if we waited for CI above. A conflict introduced during that wait would
 # otherwise be missed (TOCTOU).
-PR_JSON_FRESH="$(gh pr view --json number,mergeable,mergeStateStatus 2>/dev/null || true)"
+PR_JSON_FRESH="$(gh pr view --json number,mergeable,mergeStateStatus,baseRefName 2>/dev/null || true)"
 [[ -z "$PR_JSON_FRESH" ]] && PR_JSON_FRESH="$PR_JSON"
 MERGE_STATE="$(printf '%s' "$PR_JSON_FRESH" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("mergeStateStatus","")+"|"+str(d.get("mergeable","")))')"
+# Refresh PR_BASE from the same fresh fetch — the base branch can be changed
+# by a user during the CI wait, and the auto-merge decision below must reflect
+# the current target, not the value captured at hook entry.
+PR_BASE_FRESH="$(printf '%s' "$PR_JSON_FRESH" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("baseRefName",""))')"
+[[ -n "$PR_BASE_FRESH" ]] && PR_BASE="$PR_BASE_FRESH"
 CONFLICTING=0
 if printf '%s' "$MERGE_STATE" | grep -qi 'CONFLICTING'; then
   CONFLICTING=1
