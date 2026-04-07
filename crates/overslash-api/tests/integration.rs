@@ -1340,7 +1340,7 @@ async fn test_oauth_callback_with_org_byoc_credential() {
 
     let (api_addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC credential (no identity_id)
     let byoc: Value = client

@@ -60,7 +60,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Ban sqlx::test (use common::test_pool instead)
         run: |
@@ -92,6 +92,7 @@ jobs:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -113,13 +114,16 @@ jobs:
         run: cargo sqlx migrate run --source crates/overslash-db/migrations
 
       - name: Verify sqlx offline cache
-        run: cargo sqlx prepare --workspace --check
+        run: cargo sqlx prepare --workspace --check -- --tests
 
-  test:
-    name: Test + Coverage
+  coverage:
+    name: Coverage
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: coverage-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     services:
       postgres:
         image: postgres:16-alpine
@@ -138,38 +142,23 @@ jobs:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-llvm-cov
-
-      - name: Cache sqlx-cli
-        id: cache-sqlx
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/sqlx
-            ~/.cargo/bin/cargo-sqlx
-          key: sqlx-cli-${{ runner.os }}-0.8
-
-      - name: Install sqlx-cli
-        if: steps.cache-sqlx.outputs.cache-hit != 'true'
-        run: cargo install sqlx-cli --no-default-features --features postgres --locked
-
-      - name: Run migrations
-        run: cargo sqlx migrate run --source crates/overslash-db/migrations
+          tool: cargo-llvm-cov,cargo-nextest
 
       - name: Tests with coverage
-        run: cargo llvm-cov clean --workspace && cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
-          # Write-action E2E tests (Resend, X, Google Calendar) are #[ignore]d.
-          # Run manually with: cargo test -- --ignored
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -177,10 +166,7 @@ jobs:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: overfolder/overslash
-          fail_ci_if_error: false
-
-      - name: Coverage summary
-        run: cargo llvm-cov --workspace --summary-only --no-run
+          fail_ci_if_error: true
 
   infra:
     name: Infrastructure
@@ -234,10 +220,10 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, sqlx-check, test, infra, dashboard]
+    needs: [changes, lint, sqlx-check, coverage, infra, dashboard]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped
         run: |
           echo '${{ toJSON(needs) }}'
-          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped" or .value.result == "cancelled")'

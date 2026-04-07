@@ -9,78 +9,30 @@ use std::sync::Arc;
 
 use reqwest::Client;
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool, Row};
 use tokio::net::TcpListener;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-/// Lazily-created template database name. Migrations run once; each test clones it.
-static TEMPLATE_DB: OnceCell<String> = OnceCell::const_new();
+/// Shared template DB name. Created once per Postgres instance, never dropped.
+/// Concurrent test processes (e.g. nextest) coordinate via a Postgres advisory
+/// lock so exactly one creates+migrates it; the rest wait, then `CREATE
+/// DATABASE … TEMPLATE` from it.
+const TEMPLATE_DB_NAME: &str = "overslash_test_template";
+/// Arbitrary key for the advisory lock used to serialize template creation.
+const TEMPLATE_LOCK_KEY: i64 = 0x0_5_0_E_5_7_5_7;
 
 /// Returns a fresh `PgPool` backed by a clone of the migrated template database.
-///
-/// On first call, creates a template DB and runs all migrations (~500ms).
-/// Subsequent calls clone the template (~80ms) instead of re-migrating (~500ms each).
-/// Stale test databases from previous runs are cleaned up during template init.
+/// nextest-safe: each test runs in its own process, all sharing one template.
 pub async fn test_pool() -> PgPool {
     let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    // Create the template database exactly once per process (async-safe).
-    // The template name is scoped by PID so multiple test binaries running in
-    // parallel don't race on the same row in pg_database.
-    let template_name = TEMPLATE_DB
-        .get_or_init(|| async {
-            let template = format!("overslash_test_tpl_{}", std::process::id());
-            let admin_pool = PgPool::connect(&base_url).await.unwrap();
+    ensure_template(&base_url).await;
 
-            // Clean up stale test databases AND stale per-process templates from
-            // previous runs. Only drop databases with zero active connections so
-            // we don't interfere with concurrently-running test binaries.
-            let stale_dbs: Vec<(String,)> = sqlx::query_as(
-                "SELECT datname FROM pg_database d \
-                 WHERE (datname LIKE 'test_%' OR datname LIKE 'overslash_test_tpl_%') \
-                 AND datname <> $1 \
-                 AND NOT EXISTS ( \
-                     SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname \
-                 )",
-            )
-            .bind(&template)
-            .fetch_all(&admin_pool)
-            .await
-            .unwrap_or_default();
-            for (db_name,) in &stale_dbs {
-                sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\""))
-                    .execute(&admin_pool)
-                    .await
-                    .ok();
-            }
-
-            // (Re)create our per-process template
-            sqlx::query(&format!("DROP DATABASE IF EXISTS \"{template}\""))
-                .execute(&admin_pool)
-                .await
-                .unwrap();
-            sqlx::query(&format!("CREATE DATABASE \"{template}\""))
-                .execute(&admin_pool)
-                .await
-                .unwrap();
-
-            // Connect to template DB and run all migrations
-            let tpl_url = replace_db_name(&base_url, &template);
-            let tpl_pool = PgPool::connect(&tpl_url).await.unwrap();
-            overslash_db::MIGRATOR.run(&tpl_pool).await.unwrap();
-            tpl_pool.close().await;
-
-            admin_pool.close().await;
-            template
-        })
-        .await;
-
-    // Clone template for this test
+    // Clone template for this test.
     let test_db = format!("test_{}", Uuid::new_v4().simple());
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
     sqlx::query(&format!(
-        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{template_name}\""
+        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
     ))
     .execute(&admin_pool)
     .await
@@ -89,6 +41,71 @@ pub async fn test_pool() -> PgPool {
 
     let test_url = replace_db_name(&base_url, &test_db);
     PgPool::connect(&test_url).await.unwrap()
+}
+
+/// Create+migrate the shared template if it doesn't exist yet.
+/// Uses a Postgres advisory lock to serialize concurrent processes.
+async fn ensure_template(base_url: &str) {
+    let admin_pool = PgPool::connect(base_url).await.unwrap();
+
+    // Fast path: template already exists.
+    if template_exists(&admin_pool).await {
+        admin_pool.close().await;
+        return;
+    }
+
+    // Slow path: take a session-scoped advisory lock on a single connection
+    // that we DETACH from the pool. Detaching is the panic-safety mechanism:
+    // if CREATE DATABASE or MIGRATOR.run() panics, the owned PgConnection is
+    // dropped, the underlying socket is closed, the Postgres session ends, and
+    // session-level advisory locks held by that session are released
+    // automatically. If we used a PoolConnection it would be returned to the
+    // pool on unwind with the lock still held.
+    //
+    // CREATE DATABASE can't run inside a transaction block, so we use a
+    // session lock instead of pg_advisory_xact_lock.
+    let mut conn = admin_pool.acquire().await.unwrap().detach();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(TEMPLATE_LOCK_KEY)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let exists: Option<sqlx::postgres::PgRow> =
+        sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+            .bind(TEMPLATE_DB_NAME)
+            .fetch_optional(&mut conn)
+            .await
+            .unwrap();
+
+    if exists.is_none() {
+        sqlx::query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let tpl_url = replace_db_name(base_url, TEMPLATE_DB_NAME);
+        let tpl_pool = PgPool::connect(&tpl_url).await.unwrap();
+        overslash_db::MIGRATOR.run(&tpl_pool).await.unwrap();
+        tpl_pool.close().await;
+    }
+
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(TEMPLATE_LOCK_KEY)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let _ = conn.close().await;
+    admin_pool.close().await;
+}
+
+async fn template_exists(admin_pool: &PgPool) -> bool {
+    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+        .bind(TEMPLATE_DB_NAME)
+        .fetch_optional(admin_pool)
+        .await
+        .unwrap()
+        .map(|r| r.try_get::<i32, _>(0).unwrap_or(0) == 1)
+        .unwrap_or(false)
 }
 
 /// Replace the database name in a Postgres URL.
