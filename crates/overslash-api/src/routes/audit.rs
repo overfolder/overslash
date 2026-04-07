@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use overslash_db::repos::{audit, identity};
+use overslash_db::OrgScope;
+use overslash_db::repos::audit::AuditFilter;
 
-use crate::{AppState, error::Result, extractors::AuthContext};
+use crate::{AppState, error::Result};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/audit", get(query_audit))
@@ -67,12 +68,11 @@ where
 }
 
 async fn query_audit(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    scope: OrgScope,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>> {
-    let filter = audit::AuditFilter {
-        org_id: auth.org_id,
+    let filter = AuditFilter {
+        org_id: scope.org_id(),
         action: params.action,
         resource_type: params.resource_type,
         identity_id: params.identity_id,
@@ -83,7 +83,7 @@ async fn query_audit(
         offset: params.offset,
     };
 
-    let rows = audit::query_filtered(&state.db, &filter).await?;
+    let rows = scope.query_audit_log(filter).await?;
 
     // Batch-resolve identity names
     let identity_ids: Vec<Uuid> = rows
@@ -95,7 +95,8 @@ async fn query_audit(
     let name_map: HashMap<Uuid, String> = if identity_ids.is_empty() {
         HashMap::new()
     } else {
-        identity::get_names_by_ids(&state.db, &identity_ids)
+        scope
+            .get_identity_names_by_ids(&identity_ids)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("failed to resolve identity names for audit response: {e}");

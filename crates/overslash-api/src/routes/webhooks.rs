@@ -1,17 +1,18 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::Path,
     routing::{delete, post},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::OrgScope;
+use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
     error::Result,
-    extractors::{AdminAcl, AuthContext, ClientIp},
+    extractors::{AdminAcl, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -35,8 +36,8 @@ struct WebhookResponse {
 }
 
 async fn create_webhook(
-    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateWebhookRequest>,
 ) -> Result<Json<WebhookResponse>> {
@@ -47,19 +48,13 @@ async fn create_webhook(
     rand::rng().fill_bytes(&mut secret_bytes);
     let secret = hex::encode(secret_bytes);
 
-    let row = overslash_db::repos::webhook::create_subscription(
-        &state.db,
-        auth.org_id,
-        &req.url,
-        &req.events,
-        &secret,
-    )
-    .await?;
+    let row = scope
+        .create_webhook_subscription(&req.url, &req.events, &secret)
+        .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "webhook.created",
             resource_type: Some("webhook"),
@@ -67,9 +62,8 @@ async fn create_webhook(
             detail: serde_json::json!({ "url": &row.url, "events": &row.events }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(WebhookResponse {
         id: row.id,
@@ -79,11 +73,8 @@ async fn create_webhook(
     }))
 }
 
-async fn list_webhooks(
-    State(state): State<AppState>,
-    auth: AuthContext,
-) -> Result<Json<Vec<WebhookResponse>>> {
-    let rows = overslash_db::repos::webhook::list_by_org(&state.db, auth.org_id).await?;
+async fn list_webhooks(scope: OrgScope) -> Result<Json<Vec<WebhookResponse>>> {
+    let rows = scope.list_webhook_subscriptions().await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| WebhookResponse {
@@ -97,20 +88,18 @@ async fn list_webhooks(
 }
 
 async fn delete_webhook(
-    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    let deleted =
-        overslash_db::repos::webhook::delete_subscription(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_webhook_subscription(id).await?;
 
     if deleted {
-        let _ = overslash_db::repos::audit::log(
-            &state.db,
-            &overslash_db::repos::audit::AuditEntry {
-                org_id: auth.org_id,
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
                 identity_id: auth.identity_id,
                 action: "webhook.deleted",
                 resource_type: Some("webhook"),
@@ -118,9 +107,8 @@ async fn delete_webhook(
                 detail: serde_json::json!({}),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))

@@ -326,7 +326,8 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         .unwrap();
 
     // Set an org-wide default
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 250, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 250, 60)
         .await
         .unwrap();
 
@@ -418,17 +419,10 @@ async fn test_resolve_identity_cap_returns_some_when_set() {
         .await
         .unwrap();
 
-    overslash_db::repos::rate_limit::upsert(
-        &pool,
-        org_id,
-        "identity_cap",
-        Some(identity_id),
-        None,
-        7,
-        60,
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("identity_cap", Some(identity_id), None, 7, 60)
+        .await
+        .unwrap();
 
     let cache = RateLimitConfigCache::new(Duration::from_secs(30));
     let resolved = cache
@@ -504,18 +498,20 @@ async fn test_get_most_permissive_for_groups_picks_highest_throughput() {
 
     // g1: 200 / 3600s = 0.055/s
     // g2: 100 / 60s   = 1.667/s   ← higher throughput, should win
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "group", None, Some(g1), 200, 3600)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("group", None, Some(g1), 200, 3600)
         .await
         .unwrap();
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "group", None, Some(g2), 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("group", None, Some(g2), 100, 60)
         .await
         .unwrap();
 
-    let row =
-        overslash_db::repos::rate_limit::get_most_permissive_for_groups(&pool, org_id, &[g1, g2])
-            .await
-            .unwrap()
-            .expect("should find a group limit");
+    let row = overslash_db::OrgScope::new(org_id, pool.clone())
+        .most_permissive_group_rate_limit(&[g1, g2])
+        .await
+        .unwrap()
+        .expect("should find a group limit");
 
     assert_eq!(row.group_id, Some(g2));
     assert_eq!(row.max_requests, 100);
@@ -549,10 +545,12 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         .unwrap();
 
     // Org default + user override
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 100, 60)
         .await
         .unwrap();
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 500, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 500, 60)
         .await
         .unwrap();
 
@@ -787,7 +785,8 @@ async fn test_middleware_returns_429_when_user_bucket_exhausted() {
     let (org_id, user_id, raw_key) = make_org_user_key(&pool).await;
 
     // Set a tiny user budget: 2 requests per minute
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 2, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 2, 60)
         .await
         .unwrap();
 
@@ -843,17 +842,10 @@ async fn test_middleware_identity_cap_kicks_in_before_user_bucket() {
     let (org_id, user_id, raw_key) = make_org_user_key(&pool).await;
 
     // User bucket: 1000/min (generous), identity cap: 1/min (tight)
-    overslash_db::repos::rate_limit::upsert(
-        &pool,
-        org_id,
-        "identity_cap",
-        Some(user_id),
-        None,
-        1,
-        60,
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("identity_cap", Some(user_id), None, 1, 60)
+        .await
+        .unwrap();
 
     let state = make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
@@ -999,7 +991,8 @@ async fn test_cache_invalidation_user_budget() {
         .await
         .unwrap();
 
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 100, 60)
         .await
         .unwrap();
 
@@ -1033,7 +1026,8 @@ async fn test_cache_invalidation_user_budget() {
     assert_eq!(r1.max_requests, 100);
 
     // Update the limit in DB
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 555, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 555, 60)
         .await
         .unwrap();
 
@@ -1087,7 +1081,8 @@ async fn test_cache_invalidation_identity_cap() {
     );
 
     // Set a cap
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "identity_cap", Some(id), None, 7, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("identity_cap", Some(id), None, 7, 60)
         .await
         .unwrap();
 
@@ -1133,7 +1128,8 @@ async fn test_cache_invalidation_org_flushes_all() {
         .await
         .unwrap();
 
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 100, 60)
         .await
         .unwrap();
 
@@ -1166,7 +1162,8 @@ async fn test_cache_invalidation_org_flushes_all() {
     assert_eq!(r1.max_requests, 100);
 
     // Update the org default
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 999, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 999, 60)
         .await
         .unwrap();
 
@@ -1237,7 +1234,8 @@ async fn test_middleware_org_unbound_key_uses_org_bucket() {
     let (org_id, raw_key) = make_org_unbound_key(&pool).await;
 
     // Tight org default: 2 req / 60s
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 2, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 2, 60)
         .await
         .unwrap();
 

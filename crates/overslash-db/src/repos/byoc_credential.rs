@@ -22,7 +22,7 @@ pub struct CreateByocCredential<'a> {
     pub encrypted_client_secret: &'a [u8],
 }
 
-pub async fn create(
+pub(crate) async fn create(
     pool: &PgPool,
     input: &CreateByocCredential<'_>,
 ) -> Result<ByocCredentialRow, sqlx::Error> {
@@ -43,7 +43,10 @@ pub async fn create(
     .await
 }
 
-pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
+pub(crate) async fn get_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
     sqlx::query_as!(
         ByocCredentialRow,
         "SELECT id, org_id, identity_id, provider_key,
@@ -55,7 +58,7 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ByocCredentialR
     .await
 }
 
-pub async fn list_by_org(
+pub(crate) async fn list_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<ByocCredentialRow>, sqlx::Error> {
@@ -70,7 +73,11 @@ pub async fn list_by_org(
     .await
 }
 
-pub async fn delete_by_org(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_by_org(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM byoc_credentials WHERE id = $1 AND org_id = $2",
         id,
@@ -83,7 +90,7 @@ pub async fn delete_by_org(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool
 
 /// Resolve BYOC credential for a given org + optional identity + provider.
 /// Returns identity-level match first, then org-level (identity_id IS NULL).
-pub async fn resolve(
+pub(crate) async fn resolve(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,

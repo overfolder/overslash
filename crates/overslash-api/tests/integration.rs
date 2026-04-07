@@ -562,17 +562,24 @@ async fn test_secret_versioning() {
         .unwrap();
     assert_eq!(r["version"], 2);
 
-    // Get metadata
-    let r = client
+    // GET /v1/secrets/{name} is dashboard-only (JWT session). API keys
+    // must be rejected so a compromised agent token can't enumerate the
+    // secret namespace.
+    let resp = client
         .get(format!("{base}/v1/secrets/s1"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
-        .unwrap()
-        .json::<Value>()
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    let resp = client
+        .get(format!("{base}/v1/secrets"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
         .await
         .unwrap();
-    assert_eq!(r["current_version"], 2);
+    assert_eq!(resp.status(), 401);
 }
 
 #[tokio::test]
@@ -1119,9 +1126,9 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
     let refresh_tok = overslash_core::crypto::encrypt(&enc_key, b"valid_refresh_token").unwrap();
     let expired_time = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id: org.id,
             identity_id: ident.id,
             provider_key: "github",
@@ -1131,15 +1138,14 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // resolve_access_token should detect expiry and refresh
     let http_client = reqwest::Client::new();
     let new_token = overslash_api::services::oauth::resolve_access_token(
-        &pool,
+        &scope,
         &http_client,
         &enc_key,
         &conn,
@@ -1152,10 +1158,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
     assert_eq!(new_token, "mock_refreshed_access_token");
 
     // Verify the DB was updated with new tokens
-    let updated_conn = overslash_db::repos::connection::get_by_id(&pool, conn.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated_conn = scope.get_connection(conn.id).await.unwrap().unwrap();
     let decrypted_new =
         overslash_core::crypto::decrypt(&enc_key, &updated_conn.encrypted_access_token).unwrap();
     assert_eq!(
@@ -1183,9 +1186,9 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     let valid_access = overslash_core::crypto::encrypt(&enc_key, b"still_valid_token").unwrap();
     let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id: org.id,
             identity_id: ident.id,
             provider_key: "github",
@@ -1195,15 +1198,14 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Should return the existing token without refreshing
     let http_client = reqwest::Client::new();
     let token = overslash_api::services::oauth::resolve_access_token(
-        &pool,
+        &scope,
         &http_client,
         &enc_key,
         &conn,
@@ -1381,7 +1383,8 @@ async fn test_oauth_callback_with_org_byoc_credential() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -1457,7 +1460,8 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -1518,7 +1522,8 @@ async fn test_oauth_callback_pinned_byoc_credential() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -1723,22 +1728,13 @@ async fn test_google_calendar_three_modes() {
     // Create a BYOC credential so client_credentials::resolve succeeds
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
-    let byoc = overslash_db::repos::byoc_credential::create(
-        &pool,
-        &overslash_db::repos::byoc_credential::CreateByocCredential {
-            org_id,
-            identity_id: None,
-            provider_key: "google",
-            encrypted_client_id: &encrypted_cid,
-            encrypted_client_secret: &encrypted_csec,
-        },
-    )
-    .await
-    .unwrap();
+    let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_byoc_credential(None, "google", &encrypted_cid, &encrypted_csec)
+        .await
+        .unwrap();
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id: ident_id,
             provider_key: "google",
@@ -1748,10 +1744,9 @@ async fn test_google_calendar_three_modes() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: Some(byoc.id),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
@@ -1944,9 +1939,8 @@ async fn test_google_calendar_real_byoc() {
         overslash_core::crypto::encrypt(&enc_key, refresh_token.as_bytes()).unwrap();
     let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id: ident_id,
             provider_key: "google",
@@ -1956,10 +1950,9 @@ async fn test_google_calendar_real_byoc() {
             scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
             account_email: Some("angel.overspiral@gmail.com"),
             byoc_credential_id: Some(byoc_id),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Create broad permission rules: http:** for raw HTTP, google_calendar:*:* for Mode C
     client

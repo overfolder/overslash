@@ -447,11 +447,11 @@ Secret values are encrypted at rest. Access to values depends on the actor:
 | Actor | Own secrets | Child identity secrets | Other user secrets |
 |-------|-----------|----------------------|------------------|
 | **User** (dashboard) | read/write | read/write | — |
-| **Agent** (API) | list names only | list names only | — |
+| **Agent** (API) | — | — | — |
 | **Org admin** (dashboard) | read/write | read/write | read/write (all org) |
 
 - **Users** can view and manage secret values for all secrets in their subtree (their own + their agents' secrets) via the dashboard.
-- **Agents** can list secret names, version numbers, and timestamps (created, last used) but never read values via API. Secret values are only injected at action execution time. Version numbers and timestamps give agents enough signal to detect rotations and confirm writes without exposing values.
+- **Agents** have **no read access to the secret vault via API key** — not even names or version numbers. Secret values are only injected at action execution time, gated by the permission chain. Listing and inspection of secrets is dashboard-only (JWT session auth), so the secret namespace is never exposed to a compromised agent token. Agents that need to confirm a rotation must rely on the audit trail or on a successful action execution.
 - **Org admins** can view and manage all secrets across the org. This follows the standard model for org-managed credential stores (same as 1Password Teams, AWS Secrets Manager, etc.) and is required for compliance, debugging, and offboarding scenarios.
 
 ---

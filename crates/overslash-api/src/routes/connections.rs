@@ -6,12 +6,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::audit::AuditEntry;
+use overslash_db::scopes::{OrgScope, UserScope};
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp, WriteAcl},
+    extractors::{ClientIp, WriteAcl},
     services::{client_credentials, oauth},
 };
 use overslash_core::crypto;
@@ -186,10 +187,14 @@ async fn oauth_callback(
         .expires_in
         .map(|secs| time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 
-    // Store connection with pinned BYOC credential
-    let conn = overslash_db::repos::connection::create(
-        &state.db,
-        &overslash_db::repos::connection::CreateConnection {
+    // Store connection with pinned BYOC credential. The org_id from the
+    // OAuth state cookie is the source of truth — mint an `OrgScope` from
+    // it so the create is bound at the type level. The OAuth callback is
+    // unauthenticated by design (the redirect_uri is public), so the org_id
+    // comes from the signed state we issued at initiate time.
+    let scope = OrgScope::new(org_id, state.db.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id,
             provider_key,
@@ -199,14 +204,12 @@ async fn oauth_callback(
             scopes: &[],
             account_email: None,
             byoc_credential_id: effective_byoc_id,
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     // Audit
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = scope
+        .log_audit(AuditEntry {
             org_id,
             identity_id: Some(identity_id),
             action: "connection.created",
@@ -215,9 +218,8 @@ async fn oauth_callback(
             detail: serde_json::json!({ "provider": provider_key }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(serde_json::json!({
         "status": "connected",
@@ -235,15 +237,8 @@ struct ConnectionSummary {
     created_at: String,
 }
 
-async fn list_connections(
-    State(state): State<AppState>,
-    auth: AuthContext,
-) -> Result<Json<Vec<ConnectionSummary>>> {
-    let identity_id = auth
-        .identity_id
-        .ok_or_else(|| AppError::BadRequest("key must be bound to an identity".into()))?;
-
-    let rows = overslash_db::repos::connection::list_by_identity(&state.db, identity_id).await?;
+async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary>>> {
+    let rows = scope.list_my_connections().await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| ConnectionSummary {
@@ -264,18 +259,21 @@ async fn delete_connection(
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    // Scope delete: if identity-bound key, must own the connection.
+    // Scope delete: if identity-bound, must own the connection.
     // Org-level keys can delete any connection in the org.
     let deleted = if let Some(identity_id) = auth.identity_id {
-        overslash_db::repos::connection::delete_by_identity(&state.db, id, identity_id).await?
+        UserScope::new(auth.org_id, identity_id, state.db.clone())
+            .delete_my_connection(id)
+            .await?
     } else {
-        overslash_db::repos::connection::delete_by_org(&state.db, id, auth.org_id).await?
+        OrgScope::new(auth.org_id, state.db.clone())
+            .delete_connection(id)
+            .await?
     };
 
     if deleted {
-        let _ = overslash_db::repos::audit::log(
-            &state.db,
-            &overslash_db::repos::audit::AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "connection.deleted",
@@ -284,9 +282,8 @@ async fn delete_connection(
                 detail: serde_json::json!({}),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))

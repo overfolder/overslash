@@ -7,13 +7,14 @@ use overslash_core::types::IdentityKind;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::OrgScope;
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::identity::RestoreOutcome;
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp, WriteAcl},
+    extractors::{ClientIp, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -94,14 +95,15 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
 
 /// Fetch and validate a parent identity: must exist, belong to the same org, and be one of the allowed kinds.
 async fn validate_parent(
-    state: &AppState,
+    scope: &OrgScope,
     parent_id: Uuid,
-    org_id: Uuid,
     allowed_kinds: &[IdentityKind],
     child_kind: IdentityKind,
 ) -> Result<overslash_db::repos::identity::IdentityRow> {
-    let parent = overslash_db::repos::identity::get_by_id(&state.db, parent_id).await?;
-    let parent = crate::ownership::require_org_owned(parent, org_id, "parent identity")?;
+    let parent = scope
+        .get_identity(parent_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("parent identity not found".into()))?;
     let parent_kind: IdentityKind = parent
         .kind
         .parse()
@@ -126,6 +128,7 @@ async fn validate_parent(
 async fn create_identity(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
@@ -139,47 +142,34 @@ async fn create_identity(
                     "user identities cannot have a parent".into(),
                 ));
             }
-            overslash_db::repos::identity::create(
-                &state.db,
-                auth.org_id,
-                &req.name,
-                kind_str,
-                req.external_id.as_deref(),
-            )
-            .await?
+            scope
+                .create_identity(&req.name, kind_str, req.external_id.as_deref())
+                .await?
         }
         IdentityKind::Agent => {
             let parent_id = req.parent_id.ok_or_else(|| {
                 AppError::BadRequest("agent identities require a parent_id".into())
             })?;
-            let parent = validate_parent(
-                &state,
-                parent_id,
-                auth.org_id,
-                &[IdentityKind::User],
-                req.kind,
-            )
-            .await?;
-            overslash_db::repos::identity::create_with_parent(
-                &state.db,
-                auth.org_id,
-                &req.name,
-                kind_str,
-                req.external_id.as_deref(),
-                parent_id,
-                parent.depth + 1,
-                parent.id,
-            )
-            .await?
+            let parent =
+                validate_parent(&scope, parent_id, &[IdentityKind::User], req.kind).await?;
+            scope
+                .create_identity_with_parent(
+                    &req.name,
+                    kind_str,
+                    req.external_id.as_deref(),
+                    parent_id,
+                    parent.depth + 1,
+                    parent.id,
+                )
+                .await?
         }
         IdentityKind::SubAgent => {
             let parent_id = req.parent_id.ok_or_else(|| {
                 AppError::BadRequest("sub_agent identities require a parent_id".into())
             })?;
             let parent = validate_parent(
-                &state,
+                &scope,
                 parent_id,
-                auth.org_id,
                 &[IdentityKind::Agent, IdentityKind::SubAgent],
                 req.kind,
             )
@@ -189,17 +179,16 @@ async fn create_identity(
                     "cannot create sub_agent under an identity with no owner chain".into(),
                 )
             })?;
-            overslash_db::repos::identity::create_with_parent(
-                &state.db,
-                auth.org_id,
-                &req.name,
-                kind_str,
-                req.external_id.as_deref(),
-                parent_id,
-                parent.depth + 1,
-                owner_id,
-            )
-            .await?
+            scope
+                .create_identity_with_parent(
+                    &req.name,
+                    kind_str,
+                    req.external_id.as_deref(),
+                    parent_id,
+                    parent.depth + 1,
+                    owner_id,
+                )
+                .await?
         }
     };
 
@@ -209,9 +198,8 @@ async fn create_identity(
             .await?;
     }
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "identity.created",
@@ -225,43 +213,39 @@ async fn create_identity(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(row.into()))
 }
 
 async fn list_identities(
-    State(state): State<AppState>,
-    crate::extractors::OrgAcl { org_id, .. }: crate::extractors::OrgAcl,
+    _: crate::extractors::OrgAcl,
+    scope: OrgScope,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    // Listing identities is a Read operation; OrgAcl resolves at least Read
-    // for any authenticated caller in the org and supports both API keys and
-    // dashboard sessions, so org membership is the right floor here.
-    let rows = overslash_db::repos::identity::list_by_org(&state.db, org_id).await?;
+    let rows = scope.list_identities().await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
 async fn list_children(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    let ident = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
-    let _ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
-    let rows = overslash_db::repos::identity::list_children(&state.db, id).await?;
+    // Verify the parent itself lives in this org. Cross-tenant ids return None.
+    let _ident = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    let rows = scope.list_identity_children(id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
-async fn get_chain(
-    State(state): State<AppState>,
-    auth: AuthContext,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<IdentityResponse>>> {
-    let ident = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
-    let _ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
-    let rows = overslash_db::repos::identity::get_ancestor_chain(&state.db, id).await?;
+async fn get_chain(scope: OrgScope, Path(id): Path<Uuid>) -> Result<Json<Vec<IdentityResponse>>> {
+    let _ident = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    let rows = scope.get_identity_ancestor_chain(id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
@@ -272,8 +256,8 @@ struct RestoreResponse {
 }
 
 async fn restore_identity(
-    State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RestoreResponse>> {
@@ -284,22 +268,23 @@ async fn restore_identity(
     // Org-scope and kind checks happen here for clear error messages, but the
     // parent-archived guard runs INSIDE the repo transaction (with FOR UPDATE
     // row locks) to close the TOCTOU race against archive_idle_subagents.
-    let existing = overslash_db::repos::identity::get_by_id(&state.db, id).await?;
-    let existing = crate::ownership::require_org_owned(existing, acl.org_id, "identity")?;
+    let existing = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     if existing.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "only sub_agent identities can be restored".into(),
         ));
     }
 
-    match overslash_db::repos::identity::restore(&state.db, id).await? {
+    match scope.restore_identity(id).await? {
         RestoreOutcome::Restored {
             identity,
             api_keys_resurrected,
         } => {
-            let _ = audit::log(
-                &state.db,
-                &AuditEntry {
+            let _ = scope
+                .log_audit(AuditEntry {
                     org_id: acl.org_id,
                     identity_id: acl.identity_id,
                     action: "identity.restored",
@@ -311,9 +296,8 @@ async fn restore_identity(
                     }),
                     description: None,
                     ip_address: ip.0.as_deref(),
-                },
-            )
-            .await;
+                })
+                .await;
             Ok(Json(RestoreResponse {
                 identity: (*identity).into(),
                 api_keys_resurrected,

@@ -27,7 +27,7 @@ pub struct WebhookDeliveryRow {
     pub created_at: OffsetDateTime,
 }
 
-pub async fn create_subscription(
+pub(crate) async fn create_subscription(
     pool: &PgPool,
     org_id: Uuid,
     url: &str,
@@ -48,7 +48,7 @@ pub async fn create_subscription(
     .await
 }
 
-pub async fn list_by_org(
+pub(crate) async fn list_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<WebhookSubscriptionRow>, sqlx::Error> {
@@ -62,7 +62,7 @@ pub async fn list_by_org(
     .await
 }
 
-pub async fn delete_subscription(
+pub(crate) async fn delete_subscription(
     pool: &PgPool,
     id: Uuid,
     org_id: Uuid,
@@ -77,7 +77,7 @@ pub async fn delete_subscription(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn find_matching_subscriptions(
+pub(crate) async fn find_matching_subscriptions(
     pool: &PgPool,
     org_id: Uuid,
     event: &str,
@@ -93,7 +93,7 @@ pub async fn find_matching_subscriptions(
     .await
 }
 
-pub async fn create_delivery(
+pub(crate) async fn create_delivery(
     pool: &PgPool,
     subscription_id: Uuid,
     event: &str,
@@ -112,7 +112,7 @@ pub async fn create_delivery(
     .await
 }
 
-pub async fn mark_delivered(
+pub(crate) async fn mark_delivered(
     pool: &PgPool,
     id: Uuid,
     status_code: i32,
@@ -130,7 +130,7 @@ pub async fn mark_delivered(
     Ok(())
 }
 
-pub async fn mark_failed(
+pub(crate) async fn mark_failed(
     pool: &PgPool,
     id: Uuid,
     status_code: Option<i32>,
@@ -164,7 +164,7 @@ pub struct PendingDeliveryRow {
     pub secret: String,
 }
 
-pub async fn get_pending_deliveries(
+pub(crate) async fn get_pending_deliveries(
     pool: &PgPool,
     limit: i64,
 ) -> Result<Vec<PendingDeliveryRow>, sqlx::Error> {

@@ -6,14 +6,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
-use overslash_db::repos::group;
+use overslash_db::repos::audit::AuditEntry;
+use overslash_db::repos::group::GroupRow;
+use overslash_db::scopes::OrgScope;
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp},
-    ownership::require_org_owned,
+    extractors::{AdminAcl, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -82,8 +82,8 @@ struct GroupResponse {
     updated_at: String,
 }
 
-impl From<group::GroupRow> for GroupResponse {
-    fn from(r: group::GroupRow) -> Self {
+impl From<GroupRow> for GroupResponse {
+    fn from(r: GroupRow) -> Self {
         Self {
             id: r.id,
             org_id: r.org_id,
@@ -120,28 +120,25 @@ struct MemberResponse {
 async fn create_group(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupResponse>> {
     let auth = acl;
-    let row = group::create(
-        &state.db,
-        auth.org_id,
-        &req.name,
-        &req.description,
-        req.allow_raw_http,
-    )
-    .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db_err) if db_err.constraint() == Some("groups_org_id_name_key") => {
-            AppError::Conflict(format!("group '{}' already exists", req.name))
-        }
-        _ => AppError::Database(e),
-    })?;
+    let row = scope
+        .create_group(&req.name, &req.description, req.allow_raw_http)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_err)
+                if db_err.constraint() == Some("groups_org_id_name_key") =>
+            {
+                AppError::Conflict(format!("group '{}' already exists", req.name))
+            }
+            _ => AppError::Database(e),
+        })?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "group.created",
@@ -153,33 +150,29 @@ async fn create_group(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(GroupResponse::from(row)))
 }
 
-async fn list_groups(
-    State(state): State<AppState>,
-    auth: AuthContext,
-) -> Result<Json<Vec<GroupResponse>>> {
-    let rows = group::list_by_org(&state.db, auth.org_id).await?;
+async fn list_groups(scope: OrgScope) -> Result<Json<Vec<GroupResponse>>> {
+    let rows = scope.list_groups().await?;
     Ok(Json(rows.into_iter().map(GroupResponse::from).collect()))
 }
 
-async fn get_group(
-    State(state): State<AppState>,
-    auth: AuthContext,
-    Path(id): Path<Uuid>,
-) -> Result<Json<GroupResponse>> {
-    let row = require_org_owned(group::get_by_id(&state.db, id).await?, auth.org_id, "group")?;
+async fn get_group(scope: OrgScope, Path(id): Path<Uuid>) -> Result<Json<GroupResponse>> {
+    let row = scope
+        .get_group(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
     Ok(Json(GroupResponse::from(row)))
 }
 
 async fn update_group(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateGroupRequest>,
@@ -188,31 +181,29 @@ async fn update_group(
     // Prevent renaming or modifying system groups (Everyone, Admins).
     // Renaming would break the new-user auto-join and last-admin protection
     // which look up groups by name.
-    let existing = require_org_owned(group::get_by_id(&state.db, id).await?, auth.org_id, "group")?;
+    let existing = scope
+        .get_group(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system group".into()));
     }
 
-    let row = group::update(
-        &state.db,
-        id,
-        auth.org_id,
-        &req.name,
-        &req.description,
-        req.allow_raw_http,
-    )
-    .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db_err) if db_err.constraint() == Some("groups_org_id_name_key") => {
-            AppError::Conflict(format!("group '{}' already exists", req.name))
-        }
-        _ => AppError::Database(e),
-    })?
-    .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+    let row = scope
+        .update_group(id, &req.name, &req.description, req.allow_raw_http)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_err)
+                if db_err.constraint() == Some("groups_org_id_name_key") =>
+            {
+                AppError::Conflict(format!("group '{}' already exists", req.name))
+            }
+            _ => AppError::Database(e),
+        })?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "group.updated",
@@ -224,9 +215,8 @@ async fn update_group(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(GroupResponse::from(row)))
 }
@@ -234,22 +224,25 @@ async fn update_group(
 async fn delete_group(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Prevent deletion of system groups (Everyone, Admins)
-    let grp = require_org_owned(group::get_by_id(&state.db, id).await?, auth.org_id, "group")?;
+    let grp = scope
+        .get_group(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
     if grp.is_system {
         return Err(AppError::BadRequest("cannot delete system group".into()));
     }
 
-    let deleted = group::delete(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_group(id).await?;
 
     if deleted {
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "group.deleted",
@@ -258,9 +251,8 @@ async fn delete_group(
                 detail: serde_json::json!({}),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
@@ -271,6 +263,7 @@ async fn delete_group(
 async fn add_grant(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(group_id): Path<Uuid>,
     Json(req): Json<AddGrantRequest>,
@@ -285,45 +278,43 @@ async fn add_grant(
     }
 
     // Verify group exists and belongs to org
-    require_org_owned(
-        group::get_by_id(&state.db, group_id).await?,
-        auth.org_id,
-        "group",
-    )?;
+    scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    // Verify service instance exists, belongs to org, and is org-level
-    let svc = overslash_db::repos::service_instance::get_by_id(&state.db, req.service_instance_id)
+    // Verify service instance exists, belongs to org, and is org-level.
+    // Org-scoped lookup — a foreign id returns None at the SQL boundary.
+    let svc = scope
+        .get_service_instance(req.service_instance_id)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    if svc.org_id != auth.org_id {
-        return Err(AppError::NotFound("service instance not found".into()));
-    }
     if svc.owner_identity_id.is_some() {
         return Err(AppError::BadRequest(
             "only org-level service instances can be granted to groups".into(),
         ));
     }
 
-    let grant_row = group::add_grant(
-        &state.db,
-        group_id,
-        req.service_instance_id,
-        &req.access_level,
-        req.auto_approve_reads,
-    )
-    .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db_err)
-            if db_err.constraint() == Some("group_grants_group_id_service_instance_id_key") =>
-        {
-            AppError::Conflict("service already granted to this group".into())
-        }
-        _ => AppError::Database(e),
-    })?;
+    let grant_row = scope
+        .add_group_grant(
+            group_id,
+            req.service_instance_id,
+            &req.access_level,
+            req.auto_approve_reads,
+        )
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_err)
+                if db_err.constraint() == Some("group_grants_group_id_service_instance_id_key") =>
+            {
+                AppError::Conflict("service already granted to this group".into())
+            }
+            _ => AppError::Database(e),
+        })?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "group_grant.created",
@@ -338,9 +329,8 @@ async fn add_grant(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(GroupGrantResponse {
         id: grant_row.id,
@@ -354,18 +344,16 @@ async fn add_grant(
 }
 
 async fn list_grants(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    scope: OrgScope,
     Path(group_id): Path<Uuid>,
 ) -> Result<Json<Vec<GroupGrantResponse>>> {
-    // Verify group belongs to org
-    require_org_owned(
-        group::get_by_id(&state.db, group_id).await?,
-        auth.org_id,
-        "group",
-    )?;
+    // Verify group belongs to org (returns None at the SQL boundary otherwise)
+    scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let rows = group::list_grants(&state.db, group_id).await?;
+    let rows = scope.list_group_grants(group_id).await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| GroupGrantResponse {
@@ -384,16 +372,16 @@ async fn list_grants(
 async fn remove_grant(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path((group_id, grant_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Verify group belongs to org
-    let grp = require_org_owned(
-        group::get_by_id(&state.db, group_id).await?,
-        auth.org_id,
-        "group",
-    )?;
+    let grp = scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
     // Prevent removing grants from system groups — would break ACL enforcement
     // (e.g., removing the Admins → overslash grant locks out all admins)
@@ -403,12 +391,11 @@ async fn remove_grant(
         ));
     }
 
-    let deleted = group::remove_grant(&state.db, grant_id, group_id).await?;
+    let deleted = scope.remove_group_grant(grant_id, group_id).await?;
 
     if deleted {
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "group_grant.deleted",
@@ -417,9 +404,8 @@ async fn remove_grant(
                 detail: serde_json::json!({ "group_id": group_id }),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
@@ -430,31 +416,31 @@ async fn remove_grant(
 async fn assign_identity(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(group_id): Path<Uuid>,
     Json(req): Json<AssignIdentityRequest>,
 ) -> Result<Json<MemberResponse>> {
     let auth = acl;
     // Verify group belongs to org
-    let grp = require_org_owned(
-        group::get_by_id(&state.db, group_id).await?,
-        auth.org_id,
-        "group",
-    )?;
+    let grp = scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
     // Verify identity exists, belongs to org, and is a user
-    let identity = require_org_owned(
-        overslash_db::repos::identity::get_by_id(&state.db, req.identity_id).await?,
-        auth.org_id,
-        "identity",
-    )?;
+    let identity = scope
+        .get_identity(req.identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     if identity.kind != "user" {
         return Err(AppError::BadRequest(
             "only users can be assigned to groups (agents inherit via owner)".into(),
         ));
     }
 
-    let row = group::assign_identity(&state.db, req.identity_id, group_id)
+    let row = scope
+        .assign_identity_to_group(req.identity_id, group_id)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db_err)
@@ -463,11 +449,11 @@ async fn assign_identity(
                 AppError::Conflict("identity already assigned to this group".into())
             }
             _ => AppError::Database(e),
-        })?;
+        })?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "identity_group.assigned",
@@ -481,9 +467,8 @@ async fn assign_identity(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(MemberResponse {
         identity_id: row.identity_id,
@@ -492,39 +477,34 @@ async fn assign_identity(
     }))
 }
 
-async fn list_members(
-    State(state): State<AppState>,
-    auth: AuthContext,
-    Path(group_id): Path<Uuid>,
-) -> Result<Json<Vec<Uuid>>> {
+async fn list_members(scope: OrgScope, Path(group_id): Path<Uuid>) -> Result<Json<Vec<Uuid>>> {
     // Verify group belongs to org
-    require_org_owned(
-        group::get_by_id(&state.db, group_id).await?,
-        auth.org_id,
-        "group",
-    )?;
+    scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let ids = group::list_identity_ids_in_group(&state.db, group_id).await?;
+    let ids = scope.list_identity_ids_in_group(group_id).await?;
     Ok(Json(ids))
 }
 
 async fn unassign_identity(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path((group_id, identity_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     // Verify group belongs to org
-    let grp = require_org_owned(
-        group::get_by_id(&state.db, group_id).await?,
-        auth.org_id,
-        "group",
-    )?;
+    let grp = scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
     // Prevent removing the last member from the Admins system group
     if grp.is_system && grp.name == "Admins" {
-        let count = group::count_members_in_group(&state.db, group_id).await?;
+        let count = scope.count_members_in_group(group_id).await?;
         if count <= 1 {
             return Err(AppError::BadRequest(
                 "cannot remove the last member from the Admins group".into(),
@@ -532,12 +512,13 @@ async fn unassign_identity(
         }
     }
 
-    let deleted = group::unassign_identity(&state.db, identity_id, group_id).await?;
+    let deleted = scope
+        .unassign_identity_from_group(identity_id, group_id)
+        .await?;
 
     if deleted {
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "identity_group.unassigned",
@@ -549,9 +530,8 @@ async fn unassign_identity(
                 }),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))

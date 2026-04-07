@@ -29,8 +29,10 @@ impl OrgScope {
         self.org_id
     }
 
-    /// Internal accessor for sibling scope modules. Not for external use.
-    pub(crate) fn db(&self) -> &PgPool {
+    /// Raw pool accessor. Exposed for cross-crate code that must call
+    /// helpers still taking `&PgPool` (e.g. permission-chain walks pre
+    /// step 7, audit logging). Prefer scope methods where they exist.
+    pub fn db(&self) -> &PgPool {
         &self.db
     }
 }

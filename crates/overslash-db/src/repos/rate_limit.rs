@@ -19,7 +19,7 @@ impl_org_owned!(RateLimitRow);
 
 /// Upsert a rate limit config atomically using INSERT ... ON CONFLICT.
 /// Uses partial unique indexes (one per scope) as conflict targets to avoid races.
-pub async fn upsert(
+pub(crate) async fn upsert(
     pool: &PgPool,
     org_id: Uuid,
     scope: &str,
@@ -96,7 +96,7 @@ pub async fn upsert(
 }
 
 /// Get the rate limit for a specific identity (scope = 'user' or 'identity_cap').
-pub async fn get_for_identity(
+pub(crate) async fn get_for_identity(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Uuid,
@@ -116,7 +116,7 @@ pub async fn get_for_identity(
 /// Get the most permissive group rate limit across the given groups.
 /// Returns the group config with the highest throughput (max_requests / window_seconds),
 /// so that e.g. "100/min" beats "200/hour" instead of comparing raw counts.
-pub async fn get_most_permissive_for_groups(
+pub(crate) async fn get_most_permissive_for_groups(
     pool: &PgPool,
     org_id: Uuid,
     group_ids: &[Uuid],
@@ -135,7 +135,7 @@ pub async fn get_most_permissive_for_groups(
 }
 
 /// Get the org-wide default rate limit.
-pub async fn get_org_default(
+pub(crate) async fn get_org_default(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Option<RateLimitRow>, sqlx::Error> {
@@ -151,7 +151,10 @@ pub async fn get_org_default(
 }
 
 /// List all rate limit configs for an org.
-pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<RateLimitRow>, sqlx::Error> {
+pub(crate) async fn list_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<RateLimitRow>, sqlx::Error> {
     sqlx::query_as!(
         RateLimitRow,
         "SELECT id, org_id, identity_id, group_id, scope, max_requests, window_seconds, created_at, updated_at
@@ -165,7 +168,7 @@ pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<RateLimitRow
 }
 
 /// Delete a rate limit config.
-pub async fn delete(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM rate_limits WHERE id = $1 AND org_id = $2",
         id,

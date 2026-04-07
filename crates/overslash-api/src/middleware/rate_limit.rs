@@ -140,11 +140,12 @@ pub async fn resolve_identity(
     // Include archive-auto-revoked keys so an attacker hammering a stolen key
     // belonging to an archived identity still gets rate-limited (the 403 reject
     // still costs us DB lookups + argon2 in the auth extractor).
-    let key_row =
-        overslash_db::repos::api_key::find_by_prefix_including_archived(&state.db, prefix)
-            .await
-            .ok()
-            .flatten()?;
+    // Cross-org by design — see `SystemScope::find_api_key_by_prefix_including_archived`.
+    let key_row = overslash_db::SystemScope::new_internal(state.db.clone())
+        .find_api_key_by_prefix_including_archived(prefix)
+        .await
+        .ok()
+        .flatten()?;
 
     // Skip expired keys to avoid consuming rate limit budget for invalid requests
     if let Some(expires_at) = key_row.expires_at {
@@ -153,9 +154,10 @@ pub async fn resolve_identity(
         }
     }
 
-    // Resolve owner_user_id from the identity
+    // Resolve owner_user_id from the identity, bounded to the key's org.
     let owner_user_id = if let Some(identity_id) = key_row.identity_id {
-        match overslash_db::repos::identity::get_by_id(&state.db, identity_id).await {
+        let scope = overslash_db::OrgScope::new(key_row.org_id, state.db.clone());
+        match scope.get_identity(identity_id).await {
             Ok(Some(identity)) => {
                 if identity.kind == "user" {
                     Some(identity.id)

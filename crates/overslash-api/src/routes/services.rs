@@ -6,7 +6,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::service_instance::{self, CreateServiceInstance, UpdateServiceInstance};
+use overslash_db::repos::service_instance::{
+    CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
+};
+use overslash_db::scopes::OrgScope;
 
 use crate::{
     AppState,
@@ -100,41 +103,33 @@ struct UpdateStatusRequest {
 
 /// List service instances available to the caller (user's + org's), filtered by group membership.
 async fn list_services(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
 ) -> Result<Json<Vec<ServiceInstanceSummary>>> {
     // Org-level API keys (no identity) bypass group filtering — they see everything.
     // Otherwise resolve the ceiling user (self for users, owner for agents) and apply
     // group-based visibility.
     let visible_ids = if let Some(identity_id) = auth.identity_id {
         let ceiling_user_id =
-            crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
+            crate::services::group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
 
         // System groups (Everyone, Admins) don't count for visibility filtering.
         // Only user-created groups trigger filtering, matching group_ceiling::load_ceiling.
-        let groups =
-            overslash_db::repos::group::list_groups_for_identity(&state.db, ceiling_user_id)
-                .await?;
+        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
         let has_user_groups = groups.iter().any(|g| !g.is_system);
         if !has_user_groups {
             None // no user groups = permissive (backward compat)
         } else {
-            Some(
-                overslash_db::repos::group::get_visible_service_ids(&state.db, ceiling_user_id)
-                    .await?,
-            )
+            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
         }
     } else {
         None // org-level key — permissive
     };
 
-    let rows = service_instance::list_available_with_groups(
-        &state.db,
-        auth.org_id,
-        auth.identity_id,
-        visible_ids.as_deref(),
-    )
-    .await?;
+    let rows = scope
+        .list_available_service_instances_with_groups(auth.identity_id, visible_ids.as_deref())
+        .await?;
 
     let services = rows.into_iter().map(row_to_summary).collect();
     Ok(Json(services))
@@ -142,11 +137,12 @@ async fn list_services(
 
 /// Get a service instance by name using user-shadows-org resolution.
 async fn get_service(
-    State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    let row = service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+    let row = scope
+        .resolve_service_instance_by_name(auth.identity_id, &name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
     Ok(Json(row_to_detail(row)))
@@ -156,6 +152,7 @@ async fn get_service(
 async fn create_service(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     Json(req): Json<CreateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
     let auth = acl;
@@ -195,31 +192,29 @@ async fn create_service(
         status: &req.status,
     };
 
-    let row = service_instance::create(&state.db, &input)
-        .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!("service '{name}' already exists"));
-                }
+    let row = scope.create_service_instance(input).await.map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.constraint().is_some() {
+                return AppError::Conflict(format!("service '{name}' already exists"));
             }
-            AppError::Database(e)
-        })?;
+        }
+        AppError::Database(e)
+    })?;
 
     Ok(Json(row_to_detail(row)))
 }
 
 /// Update a service instance by id.
 async fn update_service(
-    State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    _: AdminAcl,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    // Multi-tenancy guard — refuse to mutate rows belonging to other orgs.
-    let existing = service_instance::get_by_id(&state.db, id)
+    // Org-scoped lookup — a foreign id returns None at the SQL boundary.
+    let existing = scope
+        .get_service_instance(id)
         .await?
-        .filter(|r| r.org_id == acl.org_id)
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
@@ -231,7 +226,8 @@ async fn update_service(
         secret_name: req.secret_name.as_ref().map(|o| o.as_deref()),
     };
 
-    let row = service_instance::update(&state.db, id, &input)
+    let row = scope
+        .update_service_instance(id, &input)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     Ok(Json(row_to_detail(row)))
@@ -239,15 +235,14 @@ async fn update_service(
 
 /// Update service instance lifecycle status.
 async fn update_service_status(
-    State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    _: AdminAcl,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateStatusRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    // Multi-tenancy guard.
-    let existing = service_instance::get_by_id(&state.db, id)
+    let existing = scope
+        .get_service_instance(id)
         .await?
-        .filter(|r| r.org_id == acl.org_id)
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
@@ -260,7 +255,8 @@ async fn update_service_status(
         )));
     }
 
-    let row = service_instance::update_status(&state.db, id, &req.status)
+    let row = scope
+        .update_service_instance_status(id, &req.status)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     Ok(Json(row_to_detail(row)))
@@ -268,21 +264,21 @@ async fn update_service_status(
 
 /// Delete a service instance.
 async fn delete_service(
-    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    // Resolve by name to get the id, then delete.
-    // Parse as UUID first (for /v1/services/{id} style), otherwise resolve by name.
+    // Resolve by name (or id) to get the row; both lookups are org-scoped
+    // at the SQL boundary, so a foreign id returns None → 404.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
-        // Multi-tenancy guard: scope UUID lookup to caller's org
-        service_instance::get_by_id(&state.db, uuid)
+        scope
+            .get_service_instance(uuid)
             .await?
-            .filter(|r| r.org_id == auth.org_id)
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
-        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+        scope
+            .resolve_service_instance_by_name(auth.identity_id, &name)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
@@ -292,7 +288,7 @@ async fn delete_service(
         return Err(AppError::BadRequest("cannot delete system service".into()));
     }
 
-    let deleted = service_instance::delete(&state.db, instance.id).await?;
+    let deleted = scope.delete_service_instance(instance.id).await?;
     if !deleted {
         return Err(AppError::NotFound("service instance not found".into()));
     }
@@ -303,13 +299,14 @@ async fn delete_service(
 async fn list_service_actions(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
     // Resolve the instance to get the template key
-    let instance =
-        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    let instance = scope
+        .resolve_service_instance_by_name(auth.identity_id, &name)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
     super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
         .await
@@ -318,7 +315,7 @@ async fn list_service_actions(
 
 // -- Helpers --
 
-fn row_to_summary(row: service_instance::ServiceInstanceRow) -> ServiceInstanceSummary {
+fn row_to_summary(row: ServiceInstanceRow) -> ServiceInstanceSummary {
     ServiceInstanceSummary {
         id: row.id,
         name: row.name,
@@ -331,7 +328,7 @@ fn row_to_summary(row: service_instance::ServiceInstanceRow) -> ServiceInstanceS
     }
 }
 
-fn row_to_detail(row: service_instance::ServiceInstanceRow) -> ServiceInstanceDetail {
+fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
     ServiceInstanceDetail {
         id: row.id,
         org_id: row.org_id,

@@ -32,12 +32,12 @@ async fn execute(base: &str, api_key: &str, mock_addr: std::net::SocketAddr) -> 
 #[tokio::test]
 async fn inherit_from_parent_allows() {
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, agent_id, agent_key, mock_addr) =
+    let (base, org_key, user_id, agent_id, agent_key, mock_addr, org_id) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
     // Enable inherit_permissions on agent
-    overslash_db::repos::identity::set_inherit_permissions(&pool, agent_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, agent_id, true)
         .await
         .unwrap();
 
@@ -64,7 +64,7 @@ async fn inherit_from_parent_allows() {
 #[tokio::test]
 async fn no_inherit_needs_approval() {
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, _agent_id, agent_key, mock_addr) =
+    let (base, org_key, user_id, _agent_id, agent_key, mock_addr, _org_id) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
@@ -95,12 +95,12 @@ async fn dynamic_parent_rule_addition() {
     // chain walk hits a gap at the agent → 202. Adding a rule to the agent
     // unblocks the sub-agent on the next call (live pointer).
     let pool = common::test_pool().await;
-    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr) =
+    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr, org_id) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
     let (sub_id, sub_key) = create_sub_agent(&base, &org_key, agent_id).await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, sub_id, true)
         .await
         .unwrap();
 
@@ -129,12 +129,12 @@ async fn dynamic_parent_rule_addition() {
 #[tokio::test]
 async fn revocation_removes_inherited_access() {
     let pool = common::test_pool().await;
-    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr) =
+    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr, org_id) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
     let (sub_id, sub_key) = create_sub_agent(&base, &org_key, agent_id).await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, sub_id, true)
         .await
         .unwrap();
 
@@ -175,7 +175,8 @@ async fn revocation_removes_inherited_access() {
 #[tokio::test]
 async fn chain_inheritance_through_multiple_levels() {
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, agent_id, _, mock_addr) = setup_with_pool(pool.clone()).await;
+    let (base, org_key, user_id, agent_id, _, mock_addr, _org_id) =
+        setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
     // Create sub_agent under agent
@@ -206,10 +207,10 @@ async fn chain_inheritance_through_multiple_levels() {
     let sub_key = key_resp["key"].as_str().unwrap().to_string();
 
     // Enable inherit on both agent AND sub_agent
-    overslash_db::repos::identity::set_inherit_permissions(&pool, agent_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, agent_id, true)
         .await
         .unwrap();
-    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, sub_id, true)
         .await
         .unwrap();
 
@@ -235,7 +236,8 @@ async fn chain_inheritance_through_multiple_levels() {
 #[tokio::test]
 async fn chain_break_stops_inheritance() {
     let pool = common::test_pool().await;
-    let (base, org_key, user_id, agent_id, _, mock_addr) = setup_with_pool(pool.clone()).await;
+    let (base, org_key, user_id, agent_id, _, mock_addr, _org_id) =
+        setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
     // Create sub_agent
@@ -266,7 +268,7 @@ async fn chain_break_stops_inheritance() {
 
     // Agent has inherit=false (default), sub_agent has inherit=true
     // So sub_agent inherits from agent, but NOT from user.
-    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, sub_id, true)
         .await
         .unwrap();
 
@@ -294,12 +296,12 @@ async fn inherited_deny_rule_blocks() {
     // Sub-agent inherits, parent agent has a deny rule. The chain walk skips
     // the inheriting sub-agent and consults the agent, where the deny fires.
     let pool = common::test_pool().await;
-    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr) =
+    let (base, org_key, _user_id, agent_id, _agent_key, mock_addr, org_id) =
         setup_with_pool(pool.clone()).await;
     let client = reqwest::Client::new();
 
     let (sub_id, sub_key) = create_sub_agent(&base, &org_key, agent_id).await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, sub_id, true)
         .await
         .unwrap();
 
@@ -355,7 +357,15 @@ async fn create_sub_agent(base: &str, org_key: &str, parent_id: Uuid) -> (Uuid, 
 /// Like `setup()` but accepts a pool so tests can also use it directly for DB operations.
 async fn setup_with_pool(
     pool: sqlx::PgPool,
-) -> (String, String, Uuid, Uuid, String, std::net::SocketAddr) {
+) -> (
+    String,
+    String,
+    Uuid,
+    Uuid,
+    String,
+    std::net::SocketAddr,
+    Uuid,
+) {
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let mock_addr = common::start_mock().await;
@@ -434,5 +444,6 @@ async fn setup_with_pool(
         agent_id,
         agent_api_key,
         mock_addr,
+        org_id,
     )
 }

@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::OrgScope;
+use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
@@ -41,11 +42,8 @@ impl From<overslash_db::repos::api_key::ApiKeyRow> for ApiKeySummary {
     }
 }
 
-async fn list_api_keys(
-    State(state): State<AppState>,
-    OrgAcl { org_id, .. }: OrgAcl,
-) -> Result<Json<Vec<ApiKeySummary>>> {
-    let rows = overslash_db::repos::api_key::list_by_org(&state.db, org_id).await?;
+async fn list_api_keys(_: OrgAcl, scope: OrgScope) -> Result<Json<Vec<ApiKeySummary>>> {
+    let rows = scope.list_api_keys().await?;
     Ok(Json(rows.into_iter().map(ApiKeySummary::from).collect()))
 }
 
@@ -80,10 +78,15 @@ async fn create_api_key(
             // AND no existing identities for this org. Once any identity is created
             // (e.g., via OAuth signup), the bootstrap window is closed and all
             // future key creation must be authenticated.
-            let key_count =
-                overslash_db::repos::api_key::count_by_org(&state.db, req.org_id).await?;
-            let identity_count =
-                overslash_db::repos::identity::count_by_org(&state.db, req.org_id).await?;
+            // Bootstrap path: no verified caller exists yet, so mint an
+            // OrgScope inline against the requested org for both the api_key
+            // and identity count checks. The org_id comes from the
+            // unauthenticated request body, which is acceptable here only
+            // because we hard-fail the bootstrap if any key or identity
+            // already exists.
+            let bootstrap_scope = OrgScope::new(req.org_id, state.db.clone());
+            let key_count = bootstrap_scope.count_api_keys().await?;
+            let identity_count = bootstrap_scope.count_identities().await?;
             if key_count > 0 || identity_count > 0 {
                 return Err(AppError::Unauthorized(
                     "missing authorization header".into(),
@@ -100,20 +103,16 @@ async fn create_api_key(
 
     let (raw_key, key_hash, key_prefix) = generate_api_key()?;
 
-    let row = overslash_db::repos::api_key::create(
-        &state.db,
-        req.org_id,
-        req.identity_id,
-        &req.name,
-        &key_hash,
-        &key_prefix,
-        &[],
-    )
-    .await?;
+    // Mint a scope for the (now-validated) target org and create the key
+    // through it so the org_id is bound at the type level rather than
+    // re-passed as a parameter.
+    let create_scope = OrgScope::new(req.org_id, state.db.clone());
+    let row = create_scope
+        .create_api_key(req.identity_id, &req.name, &key_hash, &key_prefix, &[])
+        .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = create_scope
+        .log_audit(AuditEntry {
             org_id: req.org_id,
             identity_id: None,
             action: "api_key.created",
@@ -122,9 +121,8 @@ async fn create_api_key(
             detail: serde_json::json!({ "name": &row.name, "key_prefix": &key_prefix }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(CreateApiKeyResponse {
         id: row.id,

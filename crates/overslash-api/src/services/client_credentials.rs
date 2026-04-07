@@ -1,4 +1,5 @@
 use overslash_core::crypto;
+use overslash_db::OrgScope;
 use overslash_db::repos::{byoc_credential, connection::ConnectionRow};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -34,20 +35,22 @@ pub async fn resolve(
     //    If a pinned credential was specified but no longer exists, error immediately
     //    rather than silently falling through to a different credential.
     let pinned = pinned_byoc_id.or_else(|| connection.and_then(|c| c.byoc_credential_id));
+    let scope = OrgScope::new(org_id, pool.clone());
     if let Some(byoc_id) = pinned {
-        let row = byoc_credential::get_by_id(pool, byoc_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "pinned BYOC credential '{byoc_id}' not found — \
+        let row = scope.get_byoc_credential(byoc_id).await?.ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "pinned BYOC credential '{byoc_id}' not found — \
                      it may have been deleted. Create a new connection."
-                ))
-            })?;
+            ))
+        })?;
         return decrypt_byoc(&row, enc_key);
     }
 
     // 2 + 3. Cascade: identity-level → org-level
-    if let Some(row) = byoc_credential::resolve(pool, org_id, identity_id, provider_key).await? {
+    if let Some(row) = scope
+        .resolve_byoc_credential(identity_id, provider_key)
+        .await?
+    {
         return decrypt_byoc(&row, enc_key);
     }
 

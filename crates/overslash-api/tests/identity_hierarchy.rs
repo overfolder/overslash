@@ -649,7 +649,8 @@ async fn test_delete_parent_cascades_children() {
         .unwrap();
 
     // Delete agent — sub_agent should cascade
-    overslash_db::repos::identity::delete(&pool, agent_id.parse().unwrap())
+    overslash_db::OrgScope::new(org_id.parse().unwrap(), pool.clone())
+        .delete_identity(agent_id.parse().unwrap())
         .await
         .unwrap();
 
