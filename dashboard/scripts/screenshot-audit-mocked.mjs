@@ -140,9 +140,16 @@ function jsonRoute(body, status = 200) {
 		});
 }
 
+const IDENTITIES = [
+	{ id: '11111111-1111-1111-1111-111111111111', name: 'spiffe://acme/user/alice/agent/henry' },
+	{ id: '22222222-2222-2222-2222-222222222222', name: 'spiffe://acme/user/alice' },
+	{ id: '33333333-3333-3333-3333-333333333333', name: 'spiffe://acme/user/bob' }
+];
+
 async function installMocks(ctx, { entries }) {
 	await ctx.route('**/auth/me/identity', jsonRoute(ME));
 	await ctx.route('**/auth/providers**', jsonRoute([{ key: 'google', label: 'Continue with Google', icon: null }]));
+	await ctx.route('**/v1/identities', jsonRoute(IDENTITIES));
 	await ctx.route('**/v1/audit*', (route) => {
 		const url = new URL(route.request().url());
 		const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
@@ -176,6 +183,25 @@ try {
 		await page.getByText('action.executed').first().click();
 		await page.waitForTimeout(300);
 		await shot(page, 'audit-expanded');
+		await ctx.close();
+	}
+
+	// 2b. Search bar with chips + autocomplete suggestions
+	{
+		const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+		await installMocks(ctx, { entries: ENTRIES });
+		const page = await ctx.newPage();
+		await page.goto(`${BASE}/audit`, { waitUntil: 'networkidle' });
+		const input = page.locator('.search input');
+		await input.click();
+		// Type a structured expression and commit it as a chip.
+		await input.fill('event = action.executed');
+		await input.press('Enter');
+		await page.waitForTimeout(150);
+		// Now type a partial key to surface the autocomplete dropdown.
+		await input.fill('ide');
+		await page.waitForTimeout(350); // wait past the 200ms debounce
+		await shot(page, 'audit-search');
 		await ctx.close();
 	}
 

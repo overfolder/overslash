@@ -27,15 +27,30 @@
 	let expandedId = $state<string | null>(null);
 
 	let sentinel: HTMLDivElement | undefined = $state();
+	// Tracks the in-flight audit fetch so a filter change can cancel any
+	// scroll-triggered request that would otherwise overwrite the new page
+	// with stale data.
+	let inFlight: AbortController | null = null;
 
 	async function fetchPage(reset: boolean) {
-		if (loading) return;
+		// On reset (filter change / refresh) abort any pending scroll fetch
+		// so its response can't clobber the freshly-filtered page.
+		if (reset && inFlight) {
+			inFlight.abort();
+			inFlight = null;
+		} else if (loading) {
+			return;
+		}
+		const ctrl = new AbortController();
+		inFlight = ctrl;
 		loading = true;
 		loadError = null;
 		const nextOffset = reset ? 0 : offset;
+		const requestFilters = filters;
 		try {
 			const page = await session.get<AuditEntry[]>(
-				`/v1/audit?${buildQuery(filters, PAGE_LIMIT, nextOffset)}`
+				`/v1/audit?${buildQuery(requestFilters, PAGE_LIMIT, nextOffset)}`,
+				ctrl.signal
 			);
 			if (reset) {
 				entries = page;
@@ -46,10 +61,14 @@
 			}
 			done = page.length < PAGE_LIMIT;
 		} catch (e) {
+			if ((e as { name?: string })?.name === 'AbortError') return;
 			loadError =
 				e instanceof ApiError ? `Failed to load audit log (${e.status}).` : 'Network error loading audit log.';
 		} finally {
-			loading = false;
+			if (inFlight === ctrl) {
+				inFlight = null;
+				loading = false;
+			}
 		}
 	}
 

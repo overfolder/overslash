@@ -36,5 +36,8 @@ export function downloadCsv(entries: AuditEntry[]): void {
 	document.body.appendChild(a);
 	a.click();
 	document.body.removeChild(a);
-	URL.revokeObjectURL(url);
+	// Firefox initiates the download asynchronously after click(); revoking
+	// the blob URL synchronously can race with that and cancel the download.
+	// Defer revocation so the browser has time to start the transfer.
+	setTimeout(() => URL.revokeObjectURL(url), 100);
 }

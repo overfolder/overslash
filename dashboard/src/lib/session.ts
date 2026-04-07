@@ -15,11 +15,17 @@ export class ApiError extends Error {
 	}
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+	method: string,
+	path: string,
+	body?: unknown,
+	signal?: AbortSignal
+): Promise<T> {
 	const init: RequestInit = {
 		method,
 		headers: { 'Content-Type': 'application/json' },
-		credentials: 'include' // send cookies
+		credentials: 'include', // send cookies
+		signal
 	};
 	if (body !== undefined) {
 		init.body = JSON.stringify(body);
@@ -52,10 +58,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const session = {
-	get: <T>(path: string) => request<T>('GET', path),
-	post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
-	put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
-	delete: <T>(path: string) => request<T>('DELETE', path)
+	get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
+	post: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
+		request<T>('POST', path, body, signal),
+	put: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
+		request<T>('PUT', path, body, signal),
+	delete: <T>(path: string, signal?: AbortSignal) => request<T>('DELETE', path, undefined, signal)
 };
 
 /** Response from GET /auth/me/identity — full identity details */
