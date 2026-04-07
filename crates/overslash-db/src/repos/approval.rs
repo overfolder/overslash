@@ -157,6 +157,30 @@ pub async fn list_mine(
     .await
 }
 
+/// List pending approvals where the caller is the current resolver right now
+/// (`?scope=assigned`). Strict "inbox" view — does NOT include approvals
+/// sitting on a descendant of the caller. Excludes self-requested approvals.
+pub async fn list_assigned_to_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    caller_id: Uuid,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+         FROM approvals
+         WHERE org_id = $1
+           AND status = 'pending'
+           AND current_resolver_identity_id = $2
+           AND identity_id <> $2
+         ORDER BY created_at DESC",
+        org_id,
+        caller_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// List pending approvals the caller can act on (`?scope=actionable`).
 ///
 /// An approval is actionable for `caller_id` when:
