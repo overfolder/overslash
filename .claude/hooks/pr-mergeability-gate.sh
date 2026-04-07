@@ -56,7 +56,7 @@ if [[ -z "$BRANCH" || "$BRANCH" == "HEAD" ]]; then
   exit 0
 fi
 
-PR_JSON="$(gh pr view --json number,mergeable,mergeStateStatus,headRefName 2>/dev/null || true)"
+PR_JSON="$(gh pr view --json number,mergeable,mergeStateStatus,headRefName,baseRefName 2>/dev/null || true)"
 if [[ -z "$PR_JSON" ]]; then
   # No PR for this branch -> nothing to gate
   exit 0
@@ -66,6 +66,7 @@ PR_NUMBER="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; print(json.lo
 if [[ -z "$PR_NUMBER" ]]; then
   exit 0
 fi
+PR_BASE="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("baseRefName",""))')"
 
 # ----- gate 1: CI green (with bounded wait on pending) --------------------
 ci_status() {
@@ -188,6 +189,13 @@ if [[ "$CONFLICTING" -eq 1 ]]; then
 fi
 
 if [[ ${#FAILS[@]} -eq 0 ]]; then
+  # All gates passed: arm auto-merge so the PR enters the merge queue.
+  # ONLY for PRs targeting dev — master uses merge-commits via manual release
+  # cuts, and arming auto-merge there would bypass that workflow.
+  # Best-effort and idempotent — failure here must not block stop.
+  if [[ "$PR_BASE" == "dev" ]]; then
+    gh pr merge "$PR_NUMBER" --auto --squash >/dev/null 2>&1 || true
+  fi
   echo 0 > "$COUNTER_FILE"
   exit 0
 fi
