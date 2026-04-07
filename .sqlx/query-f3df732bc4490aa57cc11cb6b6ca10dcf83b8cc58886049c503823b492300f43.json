@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO identities (org_id, name, kind, external_id) VALUES ($1, $2, $3, $4)\n         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at",
+  "query": "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at\n         FROM identities WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -75,21 +75,23 @@
       },
       {
         "ordinal": 14,
+        "name": "preferences",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -108,8 +110,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "8aa5be001a706d27c3755094d5df77a73ab2ffb820fdcbd8a7e59551242b8459"
+  "hash": "f3df732bc4490aa57cc11cb6b6ca10dcf83b8cc58886049c503823b492300f43"
 }
