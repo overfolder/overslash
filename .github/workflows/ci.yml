@@ -92,6 +92,7 @@ jobs:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -138,6 +139,7 @@ jobs:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -181,6 +183,7 @@ jobs:
       DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
