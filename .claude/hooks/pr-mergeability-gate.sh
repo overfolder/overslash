@@ -156,7 +156,12 @@ except Exception as e:
 fi
 
 # ----- gate 3: merge conflicts --------------------------------------------
-MERGE_STATE="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("mergeStateStatus","")+"|"+str(d.get("mergeable","")))')"
+# Re-fetch PR metadata: the initial $PR_JSON can be up to ~10 minutes stale
+# if we waited for CI above. A conflict introduced during that wait would
+# otherwise be missed (TOCTOU).
+PR_JSON_FRESH="$(gh pr view --json number,mergeable,mergeStateStatus 2>/dev/null || true)"
+[[ -z "$PR_JSON_FRESH" ]] && PR_JSON_FRESH="$PR_JSON"
+MERGE_STATE="$(printf '%s' "$PR_JSON_FRESH" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("mergeStateStatus","")+"|"+str(d.get("mergeable","")))')"
 CONFLICTING=0
 if printf '%s' "$MERGE_STATE" | grep -qi 'CONFLICTING'; then
   CONFLICTING=1
