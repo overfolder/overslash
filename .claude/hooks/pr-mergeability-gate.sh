@@ -72,7 +72,7 @@ ci_status() {
   # Returns: GREEN | FAILING:<csv> | PENDING:<csv> | ERROR:<msg>
   # Fails CLOSED: any unexpected gh failure becomes ERROR, never GREEN.
   local out rc
-  out="$(gh pr checks "$PR_NUMBER" --required 2>&1)"
+  out="$(gh pr checks "$PR_NUMBER" 2>&1)"
   rc=$?
   # gh pr checks exits non-zero when checks are pending/failing, AND when
   # the API call itself fails. Distinguish "real error" from "checks not green":
@@ -85,9 +85,10 @@ ci_status() {
     return
   fi
   local failing pending total
-  failing="$(printf '%s\n' "$out" | awk '$2=="fail" {print $1}' | paste -sd, -)"
-  pending="$(printf '%s\n' "$out" | awk '$2=="pending" {print $1}' | paste -sd, -)"
-  total="$(printf '%s\n' "$out" | awk 'NF>=2 && ($2=="pass"||$2=="fail"||$2=="pending"||$2=="skipping")' | wc -l)"
+  # gh pr checks emits TAB-separated columns; check names may contain spaces.
+  failing="$(printf '%s\n' "$out" | awk -F'\t' '$2=="fail"    {print $1}' | paste -sd, -)"
+  pending="$(printf '%s\n' "$out" | awk -F'\t' '$2=="pending" {print $1}' | paste -sd, -)"
+  total="$(printf '%s\n' "$out" | awk -F'\t' 'NF>=2 && ($2=="pass"||$2=="fail"||$2=="pending"||$2=="skipping")' | wc -l)"
   if [[ "$total" -eq 0 ]]; then
     # No recognizable rows: treat as error rather than silently green.
     local first
@@ -107,7 +108,7 @@ ci_status() {
 CI="$(ci_status)"
 if [[ "$CI" == PENDING:* ]]; then
   # Wait up to CI_WAIT_SECONDS for CI to settle. --watch blocks until done.
-  timeout "$CI_WAIT_SECONDS" gh pr checks "$PR_NUMBER" --required --watch >/dev/null 2>&1 || true
+  timeout "$CI_WAIT_SECONDS" gh pr checks "$PR_NUMBER" --watch >/dev/null 2>&1 || true
   CI="$(ci_status)"
 fi
 
