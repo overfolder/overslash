@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict IbNmOJBlYgDlw4CARa3JmpBuLQNNWasFNtSCS3Dx9c9AdVR0jxp4hl2HikjJG4K
+\restrict PoNQ2g6Ub70cpB53XNupqXZUBvsJBZz80zpBlBkBEcfgAH9sbCJGvpoadlYok7l
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -204,6 +204,7 @@ CREATE TABLE public.identities (
     last_active_at timestamp with time zone DEFAULT now() NOT NULL,
     archived_at timestamp with time zone,
     archived_reason text,
+    preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
 
@@ -285,7 +286,6 @@ CREATE TABLE public.pending_enrollments (
     suggested_name text NOT NULL,
     platform text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    requester_ip text,
     status text DEFAULT 'pending'::text NOT NULL,
     approval_token text NOT NULL,
     poll_token_hash text NOT NULL,
@@ -299,6 +299,7 @@ CREATE TABLE public.pending_enrollments (
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     resolved_at timestamp with time zone,
+    requester_ip text,
     CONSTRAINT pending_enrollments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -1371,5 +1372,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict IbNmOJBlYgDlw4CARa3JmpBuLQNNWasFNtSCS3Dx9c9AdVR0jxp4hl2HikjJG4K
+\unrestrict PoNQ2g6Ub70cpB53XNupqXZUBvsJBZz80zpBlBkBEcfgAH9sbCJGvpoadlYok7l
 

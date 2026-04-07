@@ -12,6 +12,7 @@ pub mod identities;
 pub mod org_idp_configs;
 pub mod orgs;
 pub mod permissions;
+pub mod preferences;
 pub mod rate_limits;
 pub mod secrets;
 pub mod services;

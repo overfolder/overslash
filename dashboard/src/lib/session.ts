@@ -70,11 +70,45 @@ export const session = {
 export interface MeIdentity {
 	identity_id: string;
 	org_id: string;
+	org_name?: string | null;
+	org_slug?: string | null;
 	email: string;
 	name: string;
 	kind: string;
 	external_id: string | null;
+	picture?: string | null;
 	is_org_admin?: boolean;
+}
+
+/** GET /v1/secrets item */
+export interface SecretMetadata {
+	name: string;
+	current_version: number;
+}
+
+/** GET /v1/permissions item — remembered approval rule */
+export interface PermissionRule {
+	id: string;
+	identity_id: string;
+	action_pattern: string;
+	effect: string;
+	expires_at: string | null;
+	created_at: string;
+}
+
+/** GET /v1/enrollment-tokens item */
+export interface EnrollmentTokenItem {
+	id: string;
+	identity_id: string;
+	token_prefix: string;
+	expires_at: string;
+	created_at: string;
+}
+
+/** GET/PUT /auth/me/preferences */
+export interface UserPreferences {
+	time_display?: 'relative' | 'absolute';
+	theme?: 'light' | 'dark' | 'system';
 }
 
 /** Mirrors overslash_core::permissions::DerivedKey */

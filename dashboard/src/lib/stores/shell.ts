@@ -1,5 +1,5 @@
 import { writable, type Writable } from 'svelte/store';
-import { session } from '$lib/session';
+import { session, type UserPreferences } from '$lib/session';
 
 function persisted<T>(key: string, initial: T): Writable<T> {
 	let stored = initial;
@@ -38,6 +38,45 @@ function initialTheme(): 'light' | 'dark' {
 
 export const sidebarCollapsed = persisted<boolean>('ovs_sidebar_collapsed', false);
 export const theme = persisted<'light' | 'dark'>('ovs_theme', initialTheme());
+export const timeFormat = persisted<'relative' | 'absolute'>('ovs_time_format', 'relative');
+
+let preferencesHydrated = false;
+let suppressSync = false;
+
+/** Pull user preferences from the backend and apply to local stores. Idempotent. */
+export async function hydrateUserPreferences(): Promise<void> {
+	if (preferencesHydrated) return;
+	preferencesHydrated = true;
+	try {
+		const prefs = await session.get<UserPreferences>('/auth/me/preferences');
+		suppressSync = true;
+		if (prefs.theme === 'light' || prefs.theme === 'dark') {
+			theme.set(prefs.theme);
+		}
+		if (prefs.time_display === 'relative' || prefs.time_display === 'absolute') {
+			timeFormat.set(prefs.time_display);
+		}
+		suppressSync = false;
+	} catch {
+		/* not authenticated or backend down — keep local values */
+	}
+}
+
+async function pushPreferences(patch: UserPreferences) {
+	if (suppressSync || !preferencesHydrated) return;
+	try {
+		await session.put('/auth/me/preferences', patch);
+	} catch {
+		/* ignore — local store still updated */
+	}
+}
+
+theme.subscribe((val) => {
+	void pushPreferences({ theme: val });
+});
+timeFormat.subscribe((val) => {
+	void pushPreferences({ time_display: val });
+});
 
 export const notificationsStore = writable<{ count: number }>({ count: 0 });
 

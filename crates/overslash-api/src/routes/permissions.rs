@@ -4,6 +4,8 @@ use axum::{
     routing::{delete, post},
 };
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use overslash_db::OrgScope;
@@ -42,6 +44,12 @@ struct PermissionResponse {
     identity_id: Uuid,
     action_pattern: String,
     effect: String,
+    expires_at: Option<String>,
+    created_at: String,
+}
+
+fn fmt_time(t: OffsetDateTime) -> String {
+    t.format(&Rfc3339).unwrap_or_else(|_| t.to_string())
 }
 
 async fn create_permission(
@@ -78,6 +86,8 @@ async fn create_permission(
         identity_id: row.identity_id,
         action_pattern: row.action_pattern,
         effect: row.effect,
+        expires_at: row.expires_at.map(fmt_time),
+        created_at: fmt_time(row.created_at),
     }))
 }
 
@@ -99,6 +109,8 @@ async fn list_permissions(
                 identity_id: r.identity_id,
                 action_pattern: r.action_pattern,
                 effect: r.effect,
+                expires_at: r.expires_at.map(fmt_time),
+                created_at: fmt_time(r.created_at),
             })
             .collect(),
     ))
