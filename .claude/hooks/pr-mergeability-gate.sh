@@ -96,25 +96,47 @@ if [[ "$CI" == PENDING:* ]]; then
 fi
 
 # ----- gate 2: unresolved review conversations ----------------------------
-UNRESOLVED="$(gh api graphql -f query='
-  query($owner:String!,$repo:String!,$num:Int!) {
-    repository(owner:$owner,name:$repo) {
-      pullRequest(number:$num) {
-        reviewThreads(first:100) { nodes { isResolved } }
+OWNER="$(gh repo view --json owner -q .owner.login 2>/dev/null || true)"
+REPO="$(gh repo view --json name  -q .name        2>/dev/null || true)"
+UNRESOLVED_ERR=""
+UNRESOLVED=0
+if [[ -z "$OWNER" || -z "$REPO" ]]; then
+  UNRESOLVED_ERR="could not resolve owner/repo via gh"
+else
+  GQL_OUT="$(gh api graphql -f query='
+    query($owner:String!,$repo:String!,$num:Int!) {
+      repository(owner:$owner,name:$repo) {
+        pullRequest(number:$num) {
+          reviewThreads(first:100) { nodes { isResolved } }
+        }
       }
-    }
-  }' \
-  -F owner="$(gh repo view --json owner -q .owner.login 2>/dev/null)" \
-  -F repo="$(gh repo view --json name  -q .name        2>/dev/null)" \
-  -F num="$PR_NUMBER" 2>/dev/null \
-  | python3 -c 'import sys,json
+    }' \
+    -F owner="$OWNER" -F repo="$REPO" -F num="$PR_NUMBER" 2>&1)"
+  GQL_RC=$?
+  if [[ $GQL_RC -ne 0 ]]; then
+    UNRESOLVED_ERR="gh api graphql failed (rc=$GQL_RC)"
+  else
+    PARSED="$(printf '%s' "$GQL_OUT" | python3 -c '
+import sys, json
 try:
-  d=json.load(sys.stdin)
-  n=d["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-  print(sum(1 for t in n if not t.get("isResolved")))
-except Exception:
-  print(0)')"
-UNRESOLVED="${UNRESOLVED:-0}"
+  d = json.loads(sys.stdin.read())
+  if "errors" in d and d["errors"]:
+    print("ERR:graphql errors")
+  else:
+    n = d["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+    print(sum(1 for t in n if not t.get("isResolved")))
+except Exception as e:
+  print(f"ERR:parse {type(e).__name__}")
+' 2>/dev/null)"
+    if [[ "$PARSED" == ERR:* ]]; then
+      UNRESOLVED_ERR="${PARSED#ERR:}"
+    elif [[ -z "$PARSED" ]]; then
+      UNRESOLVED_ERR="empty graphql response"
+    else
+      UNRESOLVED="$PARSED"
+    fi
+  fi
+fi
 
 # ----- gate 3: merge conflicts --------------------------------------------
 MERGE_STATE="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("mergeStateStatus","")+"|"+str(d.get("mergeable","")))')"
@@ -131,7 +153,11 @@ case "$CI" in
   PENDING:*) FAILS+=("CI still pending after ${CI_WAIT_SECONDS}s (${CI#PENDING:})") ;;
   *) ;;
 esac
-if [[ "$UNRESOLVED" -gt 0 ]]; then
+if [[ -n "$UNRESOLVED_ERR" ]]; then
+  # Fail closed: if we can't determine the state of review threads, treat
+  # the gate as failing rather than silently letting the PR through.
+  FAILS+=("could not check review threads ($UNRESOLVED_ERR)")
+elif [[ "$UNRESOLVED" -gt 0 ]]; then
   FAILS+=("$UNRESOLVED unresolved review conversation(s)")
 fi
 if [[ "$CONFLICTING" -eq 1 ]]; then
