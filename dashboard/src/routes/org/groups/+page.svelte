@@ -92,6 +92,7 @@
 			await load();
 		} catch {
 			error = 'Failed to delete group';
+			deleteTarget = null;
 		} finally {
 			deleteBusy = false;
 		}
