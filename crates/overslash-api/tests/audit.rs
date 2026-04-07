@@ -99,6 +99,7 @@ fn filter(org_id: Uuid) -> AuditFilter {
         identity_id: None,
         since: None,
         until: None,
+        q: None,
         limit: 100,
         offset: 0,
     }

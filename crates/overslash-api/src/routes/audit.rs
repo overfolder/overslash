@@ -36,6 +36,9 @@ struct AuditQuery {
     action: Option<String>,
     resource_type: Option<String>,
     identity_id: Option<Uuid>,
+    /// Free-text substring (case-insensitive) over action, description and
+    /// identity name. Drives the audit log search bar.
+    q: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     since: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
@@ -75,6 +78,7 @@ async fn query_audit(
         identity_id: params.identity_id,
         since: params.since,
         until: params.until,
+        q: params.q.filter(|s| !s.is_empty()),
         limit: params.limit,
         offset: params.offset,
     };

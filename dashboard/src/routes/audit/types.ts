@@ -18,6 +18,7 @@ export interface AuditFilters {
 	resource_type?: string;
 	since?: string;
 	until?: string;
+	q?: string;
 }
 
 export const PAGE_LIMIT = 50;
@@ -31,12 +32,13 @@ export function buildQuery(filters: AuditFilters, limit: number, offset: number)
 	if (filters.resource_type) p.set('resource_type', filters.resource_type);
 	if (filters.since) p.set('since', filters.since);
 	if (filters.until) p.set('until', filters.until);
+	if (filters.q) p.set('q', filters.q);
 	return p.toString();
 }
 
 export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 	const f: AuditFilters = {};
-	const keys = ['identity_id', 'action', 'resource_type', 'since', 'until'] as const;
+	const keys = ['identity_id', 'action', 'resource_type', 'since', 'until', 'q'] as const;
 	for (const k of keys) {
 		const v = params.get(k);
 		if (v) f[k] = v;

@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
 	import { session, ApiError } from '$lib/session';
-	import AuditFiltersBar from './AuditFilters.svelte';
+	import SearchBar, { type SearchValue } from '$lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
 	import { downloadCsv } from './exportCsv';
+	import { AUDIT_SEARCH_KEYS, filtersToSearch, searchToFilters } from './searchMapping';
 	import {
 		buildQuery,
 		filtersToSearchString,
@@ -16,6 +17,7 @@
 
 	let entries = $state<AuditEntry[]>(data.entries);
 	let filters = $state<AuditFilters>(data.filters);
+	let searchValue = $state<SearchValue>(filtersToSearch(data.filters));
 	let offset = $state(data.entries.length);
 	let done = $state(data.entries.length < PAGE_LIMIT);
 	let loading = $state(false);
@@ -58,6 +60,11 @@
 		fetchPage(true);
 	}
 
+	function onSearchChange(next: SearchValue) {
+		searchValue = next;
+		applyFilters(searchToFilters(next));
+	}
+
 	function refresh() {
 		fetchPage(true);
 	}
@@ -96,7 +103,14 @@
 		</div>
 	</header>
 
-	<AuditFiltersBar {filters} onchange={applyFilters} />
+	<div class="search-wrap">
+		<SearchBar
+			keys={AUDIT_SEARCH_KEYS}
+			value={searchValue}
+			onchange={onSearchChange}
+			placeholder="Search audit log — try `event = action.executed` or free text"
+		/>
+	</div>
 
 	{#if loadError && entries.length === 0}
 		<div class="state error">
@@ -163,6 +177,9 @@
 	.actions {
 		display: flex;
 		gap: var(--space-2);
+	}
+	.search-wrap {
+		margin-bottom: var(--space-4);
 	}
 	.actions button {
 		padding: 6px 12px;
