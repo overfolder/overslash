@@ -69,16 +69,32 @@ fi
 
 # ----- gate 1: CI green (with bounded wait on pending) --------------------
 ci_status() {
-  # Returns: GREEN | FAILING:<csv> | PENDING:<csv> | UNKNOWN
-  local out
-  out="$(gh pr checks "$PR_NUMBER" --required 2>&1 || true)"
+  # Returns: GREEN | FAILING:<csv> | PENDING:<csv> | ERROR:<msg>
+  # Fails CLOSED: any unexpected gh failure becomes ERROR, never GREEN.
+  local out rc
+  out="$(gh pr checks "$PR_NUMBER" --required 2>&1)"
+  rc=$?
+  # gh pr checks exits non-zero when checks are pending/failing, AND when
+  # the API call itself fails. Distinguish "real error" from "checks not green":
+  #   - rc=0 + parseable rows  -> some mix of pass/pending/fail
+  #   - rc!=0 + parseable rows -> pending/failing checks (normal)
+  #   - "no required checks" / "no checks reported" message -> GREEN
+  #   - rc!=0 + no parseable rows -> genuine API/auth/network error
   if printf '%s' "$out" | grep -qiE 'no required checks|no checks reported'; then
     echo "GREEN"
     return
   fi
-  local failing pending
+  local failing pending total
   failing="$(printf '%s\n' "$out" | awk '$2=="fail" {print $1}' | paste -sd, -)"
   pending="$(printf '%s\n' "$out" | awk '$2=="pending" {print $1}' | paste -sd, -)"
+  total="$(printf '%s\n' "$out" | awk 'NF>=2 && ($2=="pass"||$2=="fail"||$2=="pending"||$2=="skipping")' | wc -l)"
+  if [[ "$total" -eq 0 ]]; then
+    # No recognizable rows: treat as error rather than silently green.
+    local first
+    first="$(printf '%s' "$out" | head -1 | tr -d '\n')"
+    echo "ERROR:gh pr checks rc=$rc: ${first:-no output}"
+    return
+  fi
   if [[ -n "$failing" ]]; then
     echo "FAILING:$failing"
   elif [[ -n "$pending" ]]; then
@@ -151,7 +167,8 @@ case "$CI" in
   GREEN) ;;
   FAILING:*) FAILS+=("failing checks (${CI#FAILING:})") ;;
   PENDING:*) FAILS+=("CI still pending after ${CI_WAIT_SECONDS}s (${CI#PENDING:})") ;;
-  *) ;;
+  ERROR:*)   FAILS+=("could not check CI status (${CI#ERROR:})") ;;
+  *)         FAILS+=("could not check CI status (unknown ci_status output)") ;;
 esac
 if [[ -n "$UNRESOLVED_ERR" ]]; then
   # Fail closed: if we can't determine the state of review threads, treat
@@ -175,7 +192,7 @@ echo "$COUNT" > "$COUNTER_FILE"
 
 REASON="PR #${PR_NUMBER}: $(IFS='; '; echo "${FAILS[*]}") [block ${COUNT}/${MAX_BLOCKS}]"
 
-if [[ "$COUNT" -ge "$MAX_BLOCKS" ]]; then
+if [[ "$COUNT" -gt "$MAX_BLOCKS" ]]; then
   # Surface state but allow stop so a human can take over.
   echo "pr-mergeability-gate: reached ${MAX_BLOCKS} block attempts; allowing stop. ${REASON}" >&2
   echo 0 > "$COUNTER_FILE"
