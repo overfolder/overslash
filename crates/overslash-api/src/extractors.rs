@@ -108,11 +108,15 @@ impl FromRequestParts<AppState> for AuthContext {
         // Use the variant that also returns keys auto-revoked because their
         // identity was archived, so we can return 403 identity_archived instead
         // of a misleading 401 invalid_api_key.
-        let key_row =
-            overslash_db::repos::api_key::find_by_prefix_including_archived(&state.db, prefix)
-                .await
-                .map_err(|e| AppError::Internal(format!("db error: {e}")))?
-                .ok_or_else(|| AppError::Unauthorized("invalid api key".into()))?;
+        // Cross-org by design: at this point in the request lifecycle there
+        // is no org context — the API key row is what tells us which org the
+        // caller belongs to. The lookup runs through `SystemScope`, which is
+        // the documented home for the bootstrap path.
+        let key_row = SystemScope::new_internal(state.db.clone())
+            .find_api_key_by_prefix_including_archived(prefix)
+            .await
+            .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| AppError::Unauthorized("invalid api key".into()))?;
 
         // Verify hash first — gate any further info disclosure on a valid key.
         let parsed_hash = argon2::PasswordHash::new(&key_row.key_hash)
@@ -130,7 +134,12 @@ impl FromRequestParts<AppState> for AuthContext {
         // last_active_at so the idle-cleanup loop doesn't reap it.
         let mut identity_archive_error: Option<AppError> = None;
         if let Some(identity_id) = key_row.identity_id {
-            let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
+            // Mint a per-key OrgScope so the identity lookup is bounded by
+            // the org the key belongs to (defence in depth — the FK already
+            // pins identity_id to the same org).
+            let key_scope = OrgScope::new(key_row.org_id, state.db.clone());
+            let identity = key_scope
+                .get_identity(identity_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
             if let Some(ident) = identity {
@@ -150,13 +159,9 @@ impl FromRequestParts<AppState> for AuthContext {
                     });
                 } else if ident.kind == "sub_agent" {
                     // Sub-agents only: keep idle-cleanup tracking current.
-                    let db_for_active = state.db.clone();
+                    let touch_scope = OrgScope::new(key_row.org_id, state.db.clone());
                     tokio::spawn(async move {
-                        let _ = overslash_db::repos::identity::touch_last_active(
-                            &db_for_active,
-                            identity_id,
-                        )
-                        .await;
+                        let _ = touch_scope.touch_identity_last_active(identity_id).await;
                     });
                 }
             }
@@ -183,11 +188,12 @@ impl FromRequestParts<AppState> for AuthContext {
             }
         }
 
-        // Touch api_key last_used (fire and forget)
-        let db = state.db.clone();
+        // Touch api_key last_used (fire and forget). Bounded to the key's
+        // own org via OrgScope.
+        let touch_scope = OrgScope::new(key_row.org_id, state.db.clone());
         let key_id = key_row.id;
         tokio::spawn(async move {
-            let _ = overslash_db::repos::api_key::touch_last_used(&db, key_id).await;
+            let _ = touch_scope.touch_api_key_last_used(key_id).await;
         });
 
         Ok(AuthContext {
@@ -234,6 +240,36 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
     }
 }
 
+/// Dashboard-only auth: requires a valid JWT session cookie. Bearer API
+/// keys are explicitly rejected. Use this for endpoints whose audience is
+/// the dashboard UI and which must not be reachable by an agent's API key
+/// (e.g. read access to the secret vault).
+#[derive(Debug, Clone)]
+pub struct SessionAuth {
+    pub org_id: Uuid,
+    pub identity_id: Uuid,
+}
+
+impl FromRequestParts<AppState> for SessionAuth {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = extract_cookie(&parts.headers, "oss_session")
+            .ok_or_else(|| AppError::Unauthorized("session cookie required".into()))?;
+        let signing_key = hex::decode(&state.config.signing_key)
+            .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+        let claims = jwt::verify(&signing_key, &token)
+            .map_err(|_| AppError::Unauthorized("invalid session".into()))?;
+        Ok(SessionAuth {
+            org_id: claims.org,
+            identity_id: claims.sub,
+        })
+    }
+}
+
 // ── Org ACL extractors ──────────────────────────────────────────────
 //
 // ACL is enforced via group grants on the "overslash" service instance.
@@ -268,13 +304,15 @@ impl FromRequestParts<AppState> for OrgAcl {
             });
         };
 
+        // Construct an OrgScope inline (extractors are the official scope
+        // construction site, per `scopes/mod.rs`) so the identity lookup
+        // and the ceiling SQL are both bounded by the caller's org.
+        let scope = OrgScope::new(auth.org_id, state.db.clone());
+
         // Resolve the ceiling user (agents use their owner's groups)
         let ceiling_user_id =
-            crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
-
-        // Get all grants across groups for this user
-        let ceiling =
-            overslash_db::repos::group::get_ceiling_for_user(&state.db, ceiling_user_id).await?;
+            crate::services::group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
+        let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
 
         // Find the highest access level for the overslash service
         let access_level = ceiling
@@ -363,12 +401,31 @@ impl FromRequestParts<AppState> for OptionalOrgAcl {
 // ---------------------------------------------------------------------------
 // Capability scopes.
 //
-// Currently only `OrgScope` has an Axum extractor; the other scope types
-// (`UserScope`, `AgentScope`) exist for downstream code to build against
-// and will gain extractors as handlers begin consuming them.
-// `SystemScope` is intentionally not extractable from a request — it is
-// minted by background workers via `SystemScope::new_internal(db)`.
+// `OrgScope` and `UserScope` have Axum extractors. `AgentScope` exists for
+// downstream code to build against and will gain an extractor when handlers
+// begin consuming it. `SystemScope` is intentionally not extractable from
+// a request — it is minted by background workers via
+// `SystemScope::new_internal(db)`.
 // ---------------------------------------------------------------------------
+
+/// Axum extractor that mints a `UserScope` from a verified API key or
+/// session cookie. The caller MUST be identity-bound — org-level keys
+/// (no `identity_id`) are rejected with 400, since a `UserScope` requires
+/// an `(org_id, user_id)` pair at the type level.
+impl FromRequestParts<AppState> for UserScope {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
+        let identity_id = auth.identity_id.ok_or_else(|| {
+            AppError::BadRequest("this endpoint requires an identity-bound credential".into())
+        })?;
+        Ok(UserScope::new(auth.org_id, identity_id, state.db.clone()))
+    }
+}
 
 /// Axum extractor that mints an `OrgScope` from a verified API key or
 /// session cookie. Any authenticated caller in any role can produce one.
@@ -388,7 +445,7 @@ impl FromRequestParts<AppState> for OrgScope {
 // `overslash-db` even before its extractor exists. Remove names from this
 // signature as real extractors are added.
 #[allow(dead_code)]
-fn _scope_types_exist(_: UserScope, _: AgentScope, _: SystemScope) {}
+fn _scope_types_exist(_: AgentScope, _: SystemScope) {}
 
 fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;

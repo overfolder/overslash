@@ -4,6 +4,7 @@ use sqlx::PgPool;
 
 use overslash_core::crypto;
 use overslash_db::repos::{connection, oauth_provider};
+use overslash_db::scopes::OrgScope;
 
 /// A PKCE pair: the verifier (sent during token exchange) and the challenge
 /// (sent in the authorization URL).
@@ -159,14 +160,21 @@ pub async fn refresh_token(
 }
 
 /// Resolve the access token for a connection, refreshing if expired.
+///
+/// The `scope` argument bounds the refresh-write to the connection's org —
+/// callers must pass an `OrgScope` whose `org_id` matches `conn.org_id`.
+/// (`OrgScope::update_connection_tokens` is itself an `(id, org_id)`
+/// double-key update, so a mismatched scope is a silent no-op rather than
+/// a cross-tenant write.)
 pub async fn resolve_access_token(
-    pool: &PgPool,
+    scope: &OrgScope,
     http_client: &reqwest::Client,
     enc_key: &[u8; 32],
     conn: &connection::ConnectionRow,
     client_id: &str,
     client_secret: &str,
 ) -> Result<String, OAuthError> {
+    let pool: &PgPool = scope.db();
     let access_token = String::from_utf8(
         crypto::decrypt(enc_key, &conn.encrypted_access_token)
             .map_err(|e| OAuthError::CryptoError(e.to_string()))?,
@@ -226,15 +234,10 @@ pub async fn resolve_access_token(
         .expires_in
         .map(|secs| time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 
-    connection::update_tokens(
-        pool,
-        conn.id,
-        &new_access,
-        new_refresh.as_deref(),
-        new_expires,
-    )
-    .await
-    .map_err(|e| OAuthError::DbError(e.to_string()))?;
+    scope
+        .update_connection_tokens(conn.id, &new_access, new_refresh.as_deref(), new_expires)
+        .await
+        .map_err(|e| OAuthError::DbError(e.to_string()))?;
 
     Ok(tokens.access_token)
 }

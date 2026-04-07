@@ -64,9 +64,8 @@ async fn test_eventbrite_e2e() {
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
 
-    let _conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id: ident_id,
             provider_key: "eventbrite",
@@ -76,10 +75,9 @@ async fn test_eventbrite_e2e() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: Some(byoc_id),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Create broad permission rules: http:** for raw HTTP, eventbrite:*:* for Mode C
     client

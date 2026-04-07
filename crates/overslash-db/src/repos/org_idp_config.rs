@@ -15,7 +15,7 @@ pub struct OrgIdpConfigRow {
     pub updated_at: OffsetDateTime,
 }
 
-pub async fn create(
+pub(crate) async fn create(
     pool: &PgPool,
     org_id: Uuid,
     provider_key: &str,
@@ -40,7 +40,7 @@ pub async fn create(
     .await
 }
 
-pub async fn get_by_id(
+pub(crate) async fn get_by_id(
     pool: &PgPool,
     id: Uuid,
     org_id: Uuid,
@@ -56,7 +56,7 @@ pub async fn get_by_id(
     .await
 }
 
-pub async fn get_by_org_and_provider(
+pub(crate) async fn get_by_org_and_provider(
     pool: &PgPool,
     org_id: Uuid,
     provider_key: &str,
@@ -72,7 +72,10 @@ pub async fn get_by_org_and_provider(
     .await
 }
 
-pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
+pub(crate) async fn list_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
         "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at
@@ -83,7 +86,7 @@ pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<OrgIdpConfig
     .await
 }
 
-pub async fn list_enabled_by_org(
+pub(crate) async fn list_enabled_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
@@ -98,7 +101,7 @@ pub async fn list_enabled_by_org(
 }
 
 /// Find org IdP configs whose allowed_email_domains contain the given domain.
-pub async fn find_by_email_domain(
+pub(crate) async fn find_by_email_domain(
     pool: &PgPool,
     domain: &str,
 ) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
@@ -113,7 +116,7 @@ pub async fn find_by_email_domain(
     .await
 }
 
-pub async fn update(
+pub(crate) async fn update(
     pool: &PgPool,
     id: Uuid,
     org_id: Uuid,
@@ -143,7 +146,7 @@ pub async fn update(
     .await
 }
 
-pub async fn delete(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM org_idp_configs WHERE id = $1 AND org_id = $2",
         id,

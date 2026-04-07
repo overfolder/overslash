@@ -118,7 +118,8 @@ async fn test_oauth_x_callback_with_byoc() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -154,9 +155,9 @@ async fn test_oauth_x_token_refresh() {
     let enc_access = overslash_core::crypto::encrypt(&enc_key, b"old_x_access_token").unwrap();
     let enc_refresh = overslash_core::crypto::encrypt(&enc_key, b"old_x_refresh_token").unwrap();
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id: org.id,
             identity_id: ident.id,
             provider_key: "x",
@@ -166,15 +167,14 @@ async fn test_oauth_x_token_refresh() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Resolve should trigger a refresh
     let http_client = reqwest::Client::new();
     let new_token = overslash_api::services::oauth::resolve_access_token(
-        &pool,
+        &scope,
         &http_client,
         &enc_key,
         &conn,
@@ -187,10 +187,7 @@ async fn test_oauth_x_token_refresh() {
     assert_eq!(new_token, "mock_refreshed_access_token");
 
     // Verify DB was updated
-    let updated = overslash_db::repos::connection::get_by_id(&pool, conn.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = scope.get_connection(conn.id).await.unwrap().unwrap();
     assert!(updated.token_expires_at.unwrap() > time::OffsetDateTime::now_utc());
 }
 
@@ -322,9 +319,8 @@ async fn test_x_real_post_and_delete() {
         new_refresh.map(|rt| overslash_core::crypto::encrypt(&enc_key, rt.as_bytes()).unwrap());
     let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id: ident_id,
             provider_key: "x",
@@ -334,10 +330,9 @@ async fn test_x_real_post_and_delete() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: Some(byoc_id),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Create broad permission rule
     client

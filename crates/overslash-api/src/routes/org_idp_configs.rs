@@ -7,10 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use overslash_db::repos::{
-    audit::{self, AuditEntry},
-    oauth_provider, org_idp_config,
-};
+use overslash_db::OrgScope;
+use overslash_db::repos::{audit::AuditEntry, oauth_provider};
 
 use crate::{
     AppState,
@@ -91,6 +89,7 @@ struct DiscoverRequest {
 async fn create_idp_config(
     State(state): State<AppState>,
     auth: UserOrKeyAuth,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateIdpConfigRequest>,
 ) -> Result<Json<IdpConfigResponse>> {
@@ -172,26 +171,25 @@ async fn create_idp_config(
     let encrypted_client_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;
     let encrypted_client_secret = crypto::encrypt(&enc_key, req.client_secret.as_bytes())?;
 
-    let row = org_idp_config::create(
-        &state.db,
-        auth.org_id,
-        &provider_key,
-        &encrypted_client_id,
-        &encrypted_client_secret,
-        req.enabled,
-        &req.allowed_email_domains,
-    )
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.is_unique_violation() {
-                return AppError::Conflict(format!(
-                    "IdP config already exists for provider '{provider_key}'"
-                ));
+    let row = scope
+        .create_org_idp_config(
+            &provider_key,
+            &encrypted_client_id,
+            &encrypted_client_secret,
+            req.enabled,
+            &req.allowed_email_domains,
+        )
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() {
+                    return AppError::Conflict(format!(
+                        "IdP config already exists for provider '{provider_key}'"
+                    ));
+                }
             }
-        }
-        AppError::Database(e)
-    })?;
+            AppError::Database(e)
+        })?;
 
     let display_name = oauth_provider::get_by_key(&state.db, &provider_key)
         .await?
@@ -199,10 +197,9 @@ async fn create_idp_config(
         .unwrap_or_else(|| provider_key.clone());
 
     let desc = format!("Configured {display_name} as login identity provider");
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "org_idp_config.created",
             resource_type: Some("org_idp_config"),
@@ -210,9 +207,8 @@ async fn create_idp_config(
             detail: json!({ "provider_key": provider_key }),
             description: Some(&desc),
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(IdpConfigResponse {
         id: row.id,
@@ -229,7 +225,7 @@ async fn create_idp_config(
 
 async fn list_idp_configs(
     State(state): State<AppState>,
-    auth: UserOrKeyAuth,
+    scope: OrgScope,
 ) -> Result<Json<Vec<serde_json::Value>>> {
     let mut results: Vec<serde_json::Value> = Vec::new();
 
@@ -246,7 +242,7 @@ async fn list_idp_configs(
     }
 
     // DB-configured IdPs for this org
-    let db_configs = org_idp_config::list_by_org(&state.db, auth.org_id).await?;
+    let db_configs = scope.list_org_idp_configs().await?;
     for config in db_configs {
         // Skip if already shown from env vars
         if results
@@ -279,12 +275,14 @@ async fn list_idp_configs(
 async fn update_idp_config(
     State(state): State<AppState>,
     auth: UserOrKeyAuth,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateIdpConfigRequest>,
 ) -> Result<Json<IdpConfigResponse>> {
     // Verify config exists and belongs to this org
-    let existing = org_idp_config::get_by_id(&state.db, id, auth.org_id)
+    let existing = scope
+        .get_org_idp_config(id)
         .await?
         .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
 
@@ -312,17 +310,16 @@ async fn update_idp_config(
         .map(|s| crypto::encrypt(&enc_key, s.as_bytes()))
         .transpose()?;
 
-    let updated = org_idp_config::update(
-        &state.db,
-        id,
-        auth.org_id,
-        encrypted_client_id.as_deref(),
-        encrypted_client_secret.as_deref(),
-        req.enabled,
-        req.allowed_email_domains.as_deref(),
-    )
-    .await?
-    .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
+    let updated = scope
+        .update_org_idp_config(
+            id,
+            encrypted_client_id.as_deref(),
+            encrypted_client_secret.as_deref(),
+            req.enabled,
+            req.allowed_email_domains.as_deref(),
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
 
     let display_name = oauth_provider::get_by_key(&state.db, &updated.provider_key)
         .await?
@@ -330,10 +327,9 @@ async fn update_idp_config(
         .unwrap_or_else(|| updated.provider_key.clone());
 
     let desc = format!("Updated {display_name} identity provider configuration");
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "org_idp_config.updated",
             resource_type: Some("org_idp_config"),
@@ -341,9 +337,8 @@ async fn update_idp_config(
             detail: json!({ "provider_key": updated.provider_key }),
             description: Some(&desc),
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(IdpConfigResponse {
         id: updated.id,
@@ -359,18 +354,17 @@ async fn update_idp_config(
 }
 
 async fn delete_idp_config(
-    State(state): State<AppState>,
     auth: UserOrKeyAuth,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted = org_idp_config::delete(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_org_idp_config(id).await?;
 
     if deleted {
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
-                org_id: auth.org_id,
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
                 identity_id: auth.identity_id,
                 action: "org_idp_config.deleted",
                 resource_type: Some("org_idp_config"),
@@ -378,9 +372,8 @@ async fn delete_idp_config(
                 detail: json!({}),
                 description: Some("Removed identity provider configuration"),
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(json!({ "deleted": deleted })))

@@ -24,7 +24,7 @@ pub struct SecretVersionRow {
 }
 
 /// Store or update a secret. Creates a new version each time.
-pub async fn put(
+pub(crate) async fn put(
     pool: &PgPool,
     org_id: Uuid,
     name: &str,
@@ -66,7 +66,7 @@ pub async fn put(
     Ok((secret, version))
 }
 
-pub async fn get_by_name(
+pub(crate) async fn get_by_name(
     pool: &PgPool,
     org_id: Uuid,
     name: &str,
@@ -82,7 +82,7 @@ pub async fn get_by_name(
     .await
 }
 
-pub async fn get_current_value(
+pub(crate) async fn get_current_value(
     pool: &PgPool,
     org_id: Uuid,
     name: &str,
@@ -100,7 +100,10 @@ pub async fn get_current_value(
     .await
 }
 
-pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<SecretRow>, sqlx::Error> {
+pub(crate) async fn list_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<SecretRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretRow,
         "SELECT id, org_id, name, current_version, deleted_at, created_at, updated_at
@@ -111,7 +114,11 @@ pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<SecretRow>, 
     .await
 }
 
-pub async fn soft_delete(pool: &PgPool, org_id: Uuid, name: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn soft_delete(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE secrets SET deleted_at = now() WHERE org_id = $1 AND name = $2 AND deleted_at IS NULL",
         org_id,

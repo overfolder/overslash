@@ -27,7 +27,7 @@ pub struct AuditEntry<'a> {
     pub ip_address: Option<&'a str>,
 }
 
-pub async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Error> {
+pub(crate) async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Error> {
     sqlx::query!(
         "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -45,6 +45,7 @@ pub async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct AuditFilter {
     pub org_id: Uuid,
     pub action: Option<String>,
@@ -60,7 +61,7 @@ pub struct AuditFilter {
     pub offset: i64,
 }
 
-pub async fn query_filtered(
+pub(crate) async fn query_filtered(
     pool: &PgPool,
     filter: &AuditFilter,
 ) -> Result<Vec<AuditRow>, sqlx::Error> {

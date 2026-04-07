@@ -100,7 +100,14 @@ pub async fn create_with_parent(
     .await
 }
 
-pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<IdentityRow>, sqlx::Error> {
+/// Cross-org user lookup by email. Used exclusively by the login bootstrap
+/// path, where the org is not yet known. All in-org callers must instead go
+/// through `OrgScope::get_identity` (which is bounded by `self.org_id()`).
+/// Surfaced on `SystemScope::find_user_identity_by_email`.
+pub(crate) async fn find_user_by_email_global(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
         "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at
@@ -111,18 +118,23 @@ pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<Identity
     .await
 }
 
-pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<IdentityRow>, sqlx::Error> {
+pub async fn get_by_id(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
         "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at
-         FROM identities WHERE id = $1",
+         FROM identities WHERE id = $1 AND org_id = $2",
         id,
+        org_id,
     )
     .fetch_optional(pool)
     .await
 }
 
-pub async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Error> {
+pub(crate) async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Error> {
     let row = sqlx::query!(
         "SELECT COUNT(*) AS count FROM identities WHERE org_id = $1",
         org_id,
@@ -132,7 +144,10 @@ pub async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Erro
     Ok(row.count.unwrap_or(0))
 }
 
-pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<IdentityRow>, sqlx::Error> {
+pub(crate) async fn list_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
         "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at
@@ -145,13 +160,15 @@ pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<IdentityRow>
 
 pub async fn list_children(
     pool: &PgPool,
+    org_id: Uuid,
     parent_id: Uuid,
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
         "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at
-         FROM identities WHERE parent_id = $1 ORDER BY created_at",
+         FROM identities WHERE parent_id = $1 AND org_id = $2 ORDER BY created_at",
         parent_id,
+        org_id,
     )
     .fetch_all(pool)
     .await
@@ -159,6 +176,7 @@ pub async fn list_children(
 
 pub async fn get_ancestor_chain(
     pool: &PgPool,
+    org_id: Uuid,
     identity_id: Uuid,
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
@@ -166,7 +184,7 @@ pub async fn get_ancestor_chain(
         r#"WITH RECURSIVE chain AS (
             SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at,
                    1 AS _depth
-            FROM identities WHERE id = $1
+            FROM identities WHERE id = $1 AND org_id = $2
             UNION ALL
             SELECT i.id, i.org_id, i.name, i.kind, i.external_id, i.email, i.metadata,
                    i.parent_id, i.depth, i.owner_id, i.inherit_permissions,
@@ -174,7 +192,7 @@ pub async fn get_ancestor_chain(
                    i.created_at, i.updated_at, c._depth + 1
             FROM identities i
             INNER JOIN chain c ON i.id = c.parent_id
-            WHERE c._depth < 50
+            WHERE c._depth < 50 AND i.org_id = $2
         )
         SELECT id as "id!", org_id as "org_id!", name as "name!", kind as "kind!",
                external_id, email, metadata as "metadata!",
@@ -185,33 +203,27 @@ pub async fn get_ancestor_chain(
                created_at as "created_at!", updated_at as "updated_at!"
         FROM chain ORDER BY depth ASC"#,
         identity_id,
+        org_id,
     )
     .fetch_all(pool)
     .await
 }
 
-pub async fn get_names_by_ids(
-    pool: &PgPool,
-    ids: &[Uuid],
-) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
-    let rows = sqlx::query!("SELECT id, name FROM identities WHERE id = ANY($1)", ids,)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.into_iter().map(|r| (r.id, r.name)).collect())
-}
-
 /// Update an identity's profile (name, metadata) on subsequent login.
 pub async fn update_profile(
     pool: &PgPool,
+    org_id: Uuid,
     id: Uuid,
     name: &str,
     metadata: serde_json::Value,
 ) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "UPDATE identities SET name = $2, metadata = $3, updated_at = now() WHERE id = $1
+        "UPDATE identities SET name = $3, metadata = $4, updated_at = now()
+         WHERE id = $1 AND org_id = $2
          RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at",
         id,
+        org_id,
         name,
         metadata,
     )
@@ -221,12 +233,15 @@ pub async fn update_profile(
 
 pub async fn set_inherit_permissions(
     pool: &PgPool,
+    org_id: Uuid,
     id: Uuid,
     inherit: bool,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
-        "UPDATE identities SET inherit_permissions = $2, updated_at = now() WHERE id = $1",
+        "UPDATE identities SET inherit_permissions = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
         id,
+        org_id,
         inherit,
     )
     .execute(pool)
@@ -234,10 +249,14 @@ pub async fn set_inherit_permissions(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!("DELETE FROM identities WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM identities WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -245,10 +264,16 @@ pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
 /// after each authenticated request to keep idle-cleanup tracking current.
 /// Returns Ok(()) even if the row doesn't exist or is already archived; this
 /// is fire-and-forget and shouldn't surface errors to the request path.
-pub async fn touch_last_active(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub(crate) async fn touch_last_active(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "UPDATE identities SET last_active_at = now() WHERE id = $1 AND archived_at IS NULL",
+        "UPDATE identities SET last_active_at = now()
+         WHERE id = $1 AND org_id = $2 AND archived_at IS NULL",
         id,
+        org_id,
     )
     .execute(pool)
     .await?;
@@ -365,7 +390,11 @@ pub enum RestoreOutcome {
 ///   - a concurrent purge can't delete the row mid-restore, and
 ///   - a concurrent archive can't archive the parent between our check and
 ///     our UPDATE (TOCTOU race).
-pub async fn restore(pool: &PgPool, id: Uuid) -> Result<RestoreOutcome, sqlx::Error> {
+pub(crate) async fn restore(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<RestoreOutcome, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
     // Lock the identity row + read its retention window. FOR UPDATE prevents
@@ -374,9 +403,10 @@ pub async fn restore(pool: &PgPool, id: Uuid) -> Result<RestoreOutcome, sqlx::Er
         r#"SELECT i.archived_at, i.parent_id,
                   o.subagent_archive_retention_days
            FROM identities i JOIN orgs o ON i.org_id = o.id
-           WHERE i.id = $1
+           WHERE i.id = $1 AND i.org_id = $2
            FOR UPDATE OF i"#,
         id,
+        org_id,
     )
     .fetch_optional(&mut *tx)
     .await?;

@@ -10,7 +10,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::audit::AuditEntry;
+use overslash_db::scopes::OrgScope;
 
 use crate::{
     AppState,
@@ -95,6 +96,7 @@ struct ServiceScope {
 async fn execute_action(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<ExecuteRequest>,
 ) -> Result<Response, AppError> {
@@ -103,14 +105,15 @@ async fn execute_action(
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
 
     // Resolve the identity to determine kind and owner for ceiling check
-    let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id)
+    let identity = scope
+        .get_identity(identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
     let ceiling_user_id = crate::services::group_ceiling::ceiling_user_id_from_identity(&identity)?;
 
     // Resolve the request to a concrete ActionRequest
-    let (action_req, meta) = resolve_request(&state, &auth, identity_id, &req).await?;
+    let (action_req, meta) = resolve_request(&state, &auth, &scope, identity_id, &req).await?;
 
     let perm_keys = if let Some(ref scope) = meta.service_scope {
         PermissionKey::from_service_action(
@@ -145,8 +148,7 @@ async fn execute_action(
             || meta.service_instance_owner == Some(identity_id));
 
     if !is_user_owned_service {
-        let ceiling =
-            crate::services::group_ceiling::load_ceiling(&state.db, ceiling_user_id).await?;
+        let ceiling = crate::services::group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
         if ceiling.has_groups {
             match crate::services::group_ceiling::check_ceiling(
@@ -164,15 +166,9 @@ async fn execute_action(
                 GroupCeilingResult::WithinCeilingAutoApprove if identity.kind != "user" => {
                     // Auto-create permission rules for the agent
                     for key in &perm_keys {
-                        overslash_db::repos::permission_rule::create(
-                            &state.db,
-                            auth.org_id,
-                            identity_id,
-                            &key.0,
-                            "allow",
-                            None,
-                        )
-                        .await?;
+                        scope
+                            .create_permission_rule(identity_id, &key.0, "allow", None)
+                            .await?;
                     }
                     auto_approved = true;
                 }
@@ -198,7 +194,7 @@ async fn execute_action(
         let force_user_resolver = bubble_secs == 0;
 
         match crate::services::permission_chain::walk(
-            &state.db,
+            &scope,
             identity_id,
             &perm_keys,
             force_user_resolver,
@@ -221,24 +217,20 @@ async fn execute_action(
                     .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
                 let keys: Vec<String> = uncovered_keys.iter().map(|k| k.0.clone()).collect();
 
-                let approval = overslash_db::repos::approval::create(
-                    &state.db,
-                    &overslash_db::repos::approval::CreateApproval {
-                        org_id: auth.org_id,
+                let approval = scope
+                    .create_approval(
                         identity_id,
-                        current_resolver_identity_id: initial_resolver_id,
-                        action_summary: &summary,
-                        action_detail: Some(serde_json::to_value(&action_req).unwrap_or_default()),
-                        permission_keys: &keys,
-                        token: &token,
+                        initial_resolver_id,
+                        &summary,
+                        Some(serde_json::to_value(&action_req).unwrap_or_default()),
+                        &keys,
+                        &token,
                         expires_at,
-                    },
-                )
-                .await?;
+                    )
+                    .await?;
 
-                let _ = audit::log(
-                    &state.db,
-                    &AuditEntry {
+                let _ = OrgScope::new(auth.org_id, state.db.clone())
+                    .log_audit(AuditEntry {
                         org_id: auth.org_id,
                         identity_id: Some(identity_id),
                         action: "approval.created",
@@ -250,9 +242,8 @@ async fn execute_action(
                         }),
                         description: Some(&summary),
                         ip_address: ip.0.as_deref(),
-                    },
-                )
-                .await;
+                    })
+                    .await;
 
                 // ── approval.created webhook (SPEC §5) ───────────────────
                 // can_be_handled_by lists every identity in the resolver chain
@@ -260,12 +251,10 @@ async fn execute_action(
                 // and its strict ancestors (excluding the requester, who can
                 // never self-resolve). Computed once here so subscribers don't
                 // have to walk the tree themselves.
-                let resolver_chain = overslash_db::repos::identity::get_ancestor_chain(
-                    &state.db,
-                    initial_resolver_id,
-                )
-                .await
-                .unwrap_or_default();
+                let resolver_chain = scope
+                    .get_identity_ancestor_chain(initial_resolver_id)
+                    .await
+                    .unwrap_or_default();
                 let can_be_handled_by: Vec<serde_json::Value> = resolver_chain
                     .iter()
                     .filter(|i| i.id != identity_id)
@@ -327,13 +316,12 @@ async fn execute_action(
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let mut secret_values = HashMap::new();
     for secret_ref in &action_req.secrets {
-        let version = overslash_db::repos::secret::get_current_value(
-            &state.db,
-            auth.org_id,
-            &secret_ref.name,
-        )
-        .await?
-        .ok_or_else(|| AppError::BadRequest(format!("secret '{}' not found", secret_ref.name)))?;
+        let version = scope
+            .get_current_secret_value(&secret_ref.name)
+            .await?
+            .ok_or_else(|| {
+                AppError::BadRequest(format!("secret '{}' not found", secret_ref.name))
+            })?;
         let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
         let value = String::from_utf8(decrypted)
             .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
@@ -362,9 +350,8 @@ async fn execute_action(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
 
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
                 action: "action.streamed",
@@ -380,9 +367,8 @@ async fn execute_action(
                 }),
                 description: meta.description.as_deref(),
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
 
         // Build streaming response — pipe upstream bytes through to caller
         let stream = upstream.bytes_stream();
@@ -431,9 +417,8 @@ async fn execute_action(
         http_executor::ExecuteError::Request(e) => AppError::Request(e),
     })?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: Some(identity_id),
             action: "action.executed",
@@ -449,9 +434,8 @@ async fn execute_action(
             }),
             description: meta.description.as_deref(),
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok((
         StatusCode::OK,
@@ -468,12 +452,13 @@ async fn execute_action(
 async fn resolve_request(
     state: &AppState,
     auth: &AuthContext,
+    scope: &OrgScope,
     identity_id: Uuid,
     req: &ExecuteRequest,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
     if let Some(conn_id) = req.connection {
-        let conn = overslash_db::repos::connection::get_by_id(&state.db, conn_id).await?;
+        let conn = scope.get_connection(conn_id).await?;
         let conn = crate::ownership::require_org_owned(conn, auth.org_id, "connection")?;
 
         let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
@@ -491,7 +476,7 @@ async fn resolve_request(
         .await?;
 
         let access_token = crate::services::oauth::resolve_access_token(
-            &state.db,
+            scope,
             &state.http_client,
             &enc_key,
             &conn,
@@ -531,13 +516,9 @@ async fn resolve_request(
     // Mode C: service + action
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
         // Try to resolve through a service instance first (user-shadows-org)
-        let instance = overslash_db::repos::service_instance::resolve_by_name(
-            &state.db,
-            auth.org_id,
-            auth.identity_id,
-            service_key,
-        )
-        .await?;
+        let instance = scope
+            .resolve_service_instance_by_name(auth.identity_id, service_key)
+            .await?;
 
         // Resolve the template: if instance found use its template_key, else use service_key directly
         let svc =
@@ -637,7 +618,7 @@ async fn resolve_request(
         let (secrets, oauth_injected) = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
-                auth.org_id,
+                scope,
                 identity_id,
                 inst,
                 &svc,
@@ -646,15 +627,7 @@ async fn resolve_request(
             )
             .await
         } else {
-            resolve_service_auth(
-                state,
-                auth.org_id,
-                identity_id,
-                &svc,
-                &req.secrets,
-                &mut headers,
-            )
-            .await
+            resolve_service_auth(state, scope, identity_id, &svc, &req.secrets, &mut headers).await
         };
 
         let resolver_base = if host.contains("://") {
@@ -743,7 +716,7 @@ async fn resolve_request(
 /// If OAuth token is resolved, it's injected directly into headers (not via SecretRef).
 async fn resolve_service_auth(
     state: &AppState,
-    org_id: Uuid,
+    scope: &OrgScope,
     identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
@@ -753,6 +726,11 @@ async fn resolve_service_auth(
         return (explicit_secrets.to_vec(), false);
     }
 
+    let org_id = scope.org_id();
+    // The auto-resolve path is per-identity: build a UserScope so the
+    // connection lookup is bounded by `(org_id, user_id)`.
+    let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
+
     // Try OAuth first: check if identity has a connection for this service's OAuth provider
     for service_auth in &svc.auth {
         if let overslash_core::types::ServiceAuth::OAuth {
@@ -760,10 +738,7 @@ async fn resolve_service_auth(
             token_injection,
         } = service_auth
         {
-            if let Ok(Some(conn)) =
-                overslash_db::repos::connection::find_by_provider(&state.db, identity_id, provider)
-                    .await
-            {
+            if let Ok(Some(conn)) = user_scope.find_my_connection_by_provider(provider).await {
                 let enc_key = match crypto::parse_hex_key(&state.config.secrets_encryption_key) {
                     Ok(k) => k,
                     Err(_) => continue,
@@ -784,7 +759,7 @@ async fn resolve_service_auth(
                 };
 
                 if let Ok(access_token) = crate::services::oauth::resolve_access_token(
-                    &state.db,
+                    scope,
                     &state.http_client,
                     &enc_key,
                     &conn,
@@ -838,7 +813,7 @@ async fn resolve_service_auth(
 /// use that directly. Otherwise fall back to auto-resolve from the template's auth config.
 async fn resolve_instance_auth(
     state: &AppState,
-    org_id: Uuid,
+    scope: &OrgScope,
     identity_id: Uuid,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     svc: &overslash_core::types::ServiceDefinition,
@@ -849,16 +824,16 @@ async fn resolve_instance_auth(
         return (explicit_secrets.to_vec(), false);
     }
 
+    let org_id = scope.org_id();
     // If instance has a bound connection, use it directly
     if let Some(conn_id) = instance.connection_id {
-        if let Ok(Some(conn)) = overslash_db::repos::connection::get_by_id(&state.db, conn_id).await
-        {
+        if let Ok(Some(conn)) = scope.get_connection(conn_id).await {
             let enc_key = match crypto::parse_hex_key(&state.config.secrets_encryption_key) {
                 Ok(k) => k,
                 Err(_) => {
                     return resolve_service_auth(
                         state,
-                        org_id,
+                        scope,
                         identity_id,
                         svc,
                         explicit_secrets,
@@ -882,7 +857,7 @@ async fn resolve_instance_auth(
                 Err(_) => {
                     return resolve_service_auth(
                         state,
-                        org_id,
+                        scope,
                         identity_id,
                         svc,
                         explicit_secrets,
@@ -893,7 +868,7 @@ async fn resolve_instance_auth(
             };
 
             if let Ok(access_token) = crate::services::oauth::resolve_access_token(
-                &state.db,
+                scope,
                 &state.http_client,
                 &enc_key,
                 &conn,
@@ -963,7 +938,7 @@ async fn resolve_instance_auth(
     }
 
     // No bound credentials on instance — fall back to auto-resolve
-    resolve_service_auth(state, org_id, identity_id, svc, explicit_secrets, headers).await
+    resolve_service_auth(state, scope, identity_id, svc, explicit_secrets, headers).await
 }
 
 fn generate_token() -> String {

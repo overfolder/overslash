@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
@@ -68,9 +68,12 @@ async fn create_org(
     // Bootstrap system assets: overslash service, Everyone + Admins groups, grants
     overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, None).await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    // No auth context (org creation is the bootstrap entrypoint) — mint an
+    // OrgScope for the freshly created org so the audit row is written under
+    // it, rather than going through the repo directly.
+    let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db.clone());
+    let _ = bootstrap_scope
+        .log_audit(AuditEntry {
             org_id: org.id,
             identity_id: None,
             action: "org.created",
@@ -79,9 +82,8 @@ async fn create_org(
             detail: serde_json::json!({ "name": &org.name, "slug": &org.slug }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(org.into()))
 }
@@ -159,9 +161,8 @@ async fn patch_subagent_cleanup_config(
     .await?
     .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: org.id,
             identity_id: acl.identity_id,
             action: "org.subagent_cleanup_config.updated",
@@ -173,9 +174,8 @@ async fn patch_subagent_cleanup_config(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(org.into()))
 }

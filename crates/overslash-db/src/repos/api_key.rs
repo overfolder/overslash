@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Reason an API key was auto-revoked. Manually-revoked keys leave this NULL.
-pub const REVOKED_REASON_IDENTITY_ARCHIVED: &str = "identity_archived";
+pub(crate) const REVOKED_REASON_IDENTITY_ARCHIVED: &str = "identity_archived";
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct ApiKeyRow {
@@ -21,7 +21,7 @@ pub struct ApiKeyRow {
     pub created_at: OffsetDateTime,
 }
 
-pub async fn create(
+pub(crate) async fn create(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
@@ -46,7 +46,10 @@ pub async fn create(
     .await
 }
 
-pub async fn find_by_prefix(pool: &PgPool, prefix: &str) -> Result<Option<ApiKeyRow>, sqlx::Error> {
+pub(crate) async fn find_by_prefix(
+    pool: &PgPool,
+    prefix: &str,
+) -> Result<Option<ApiKeyRow>, sqlx::Error> {
     sqlx::query_as!(
         ApiKeyRow,
         "SELECT id, org_id, identity_id, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, revoked_reason, created_at
@@ -64,7 +67,7 @@ pub async fn find_by_prefix(pool: &PgPool, prefix: &str) -> Result<Option<ApiKey
 ///
 /// Manually-revoked keys (revoked_reason IS NULL or anything other than the
 /// archive sentinel) remain hidden — those are genuinely invalid.
-pub async fn find_by_prefix_including_archived(
+pub(crate) async fn find_by_prefix_including_archived(
     pool: &PgPool,
     prefix: &str,
 ) -> Result<Option<ApiKeyRow>, sqlx::Error> {
@@ -81,14 +84,10 @@ pub async fn find_by_prefix_including_archived(
     .await
 }
 
-pub async fn touch_last_used(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query!("UPDATE api_keys SET last_used_at = now() WHERE id = $1", id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<ApiKeyRow>, sqlx::Error> {
+pub(crate) async fn list_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<ApiKeyRow>, sqlx::Error> {
     sqlx::query_as!(
         ApiKeyRow,
         "SELECT id, org_id, identity_id, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, revoked_reason, created_at
@@ -99,7 +98,7 @@ pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<ApiKeyRow>, 
     .await
 }
 
-pub async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Error> {
+pub(crate) async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Error> {
     let row = sqlx::query!(
         "SELECT COUNT(*) AS count FROM api_keys WHERE org_id = $1 AND revoked_at IS NULL",
         org_id,
@@ -109,19 +108,9 @@ pub async fn count_by_org(pool: &PgPool, org_id: Uuid) -> Result<i64, sqlx::Erro
     Ok(row.count.unwrap_or(0))
 }
 
-pub async fn revoke(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!(
-        "UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
-        id,
-    )
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
 /// Bulk-revoke all active API keys belonging to the given identity IDs,
 /// tagging them with `revoked_reason` so they can be later resurrected by `restore`.
-pub async fn revoke_by_identity_ids_with_reason<'e>(
+pub(crate) async fn revoke_by_identity_ids_with_reason<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     ids: &[Uuid],
     reason: &str,
@@ -139,7 +128,7 @@ pub async fn revoke_by_identity_ids_with_reason<'e>(
 
 /// Resurrect API keys that were auto-revoked for the given reason on this identity.
 /// Manually-revoked keys (revoked_reason IS NULL or different) are left untouched.
-pub async fn unrevoke_by_identity_id_and_reason<'e>(
+pub(crate) async fn unrevoke_by_identity_id_and_reason<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     identity_id: Uuid,
     reason: &str,

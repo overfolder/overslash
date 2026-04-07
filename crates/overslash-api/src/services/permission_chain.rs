@@ -14,12 +14,12 @@
 //!    request (a parent cannot grant more than it has). If no agent qualifies,
 //!    or if `force_user_resolver=true`, the user is the resolver.
 
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use overslash_core::permissions::{PermissionKey, PermissionResult, check_permissions};
 use overslash_core::types::{PermissionEffect, PermissionRule};
 use overslash_db::repos::identity::IdentityRow;
+use overslash_db::scopes::{OrgScope, SystemScope};
 
 use crate::error::AppError;
 
@@ -43,13 +43,13 @@ pub enum ChainWalkResult {
 /// `force_user_resolver` short-circuits the resolver search and assigns the
 /// user directly -- used when the org has set `approval_auto_bubble_secs = 0`.
 pub async fn walk(
-    pool: &PgPool,
+    scope: &OrgScope,
     requester_id: Uuid,
     perm_keys: &[PermissionKey],
     force_user_resolver: bool,
 ) -> Result<ChainWalkResult, AppError> {
     // chain is depth ASC: chain[0] is the user (root), chain.last() is requester.
-    let chain = overslash_db::repos::identity::get_ancestor_chain(pool, requester_id).await?;
+    let chain = scope.get_identity_ancestor_chain(requester_id).await?;
     if chain.is_empty() {
         return Err(AppError::Internal("identity chain is empty".into()));
     }
@@ -80,7 +80,7 @@ pub async fn walk(
                 break;
             }
         } else {
-            let rules = load_rules(pool, ident.id).await?;
+            let rules = load_rules(scope, ident.id).await?;
             match check_permissions(&rules, perm_keys) {
                 PermissionResult::Allowed => {}
                 PermissionResult::Denied(reason) => {
@@ -120,7 +120,7 @@ pub async fn walk(
             if ident.inherit_permissions {
                 continue;
             }
-            let rules = load_rules(pool, ident.id).await?;
+            let rules = load_rules(scope, ident.id).await?;
             if let PermissionResult::Denied(reason) = check_permissions(&rules, perm_keys) {
                 return Ok(ChainWalkResult::Denied(reason));
             }
@@ -132,7 +132,7 @@ pub async fn walk(
     let initial_resolver_id = if force_user_resolver {
         chain[0].id
     } else {
-        compute_resolver_above(pool, &chain, gap_idx, &uncovered_keys).await?
+        compute_resolver_above(scope, &chain, gap_idx, &uncovered_keys).await?
     };
 
     Ok(ChainWalkResult::Gap {
@@ -147,12 +147,12 @@ pub async fn walk(
 /// that targets `requester_id`. Used by explicit BubbleUp and the auto-bubble
 /// background loop.
 pub async fn find_next_resolver(
-    pool: &PgPool,
+    scope: &OrgScope,
     requester_id: Uuid,
     current_resolver_id: Uuid,
     keys: &[PermissionKey],
 ) -> Result<Uuid, AppError> {
-    let chain = overslash_db::repos::identity::get_ancestor_chain(pool, requester_id).await?;
+    let chain = scope.get_identity_ancestor_chain(requester_id).await?;
     if chain.is_empty() {
         return Err(AppError::Internal("identity chain is empty".into()));
     }
@@ -176,7 +176,7 @@ pub async fn find_next_resolver(
     while j >= 1 {
         let ident = &chain[j];
         if !ident.inherit_permissions {
-            let rules = load_rules(pool, ident.id).await?;
+            let rules = load_rules(scope, ident.id).await?;
             if matches!(check_permissions(&rules, keys), PermissionResult::Allowed) {
                 return Ok(ident.id);
             }
@@ -208,7 +208,7 @@ fn compute_rule_placement(chain: &[IdentityRow]) -> Uuid {
 /// cover the uncovered keys. Skips `inherit_permissions=true` ancestors. Falls
 /// back to the user at chain[0] if no agent qualifies.
 async fn compute_resolver_above(
-    pool: &PgPool,
+    scope: &OrgScope,
     chain: &[IdentityRow],
     gap_idx: usize,
     uncovered: &[PermissionKey],
@@ -220,7 +220,7 @@ async fn compute_resolver_above(
     while j >= 1 {
         let ident = &chain[j];
         if !ident.inherit_permissions {
-            let rules = load_rules(pool, ident.id).await?;
+            let rules = load_rules(scope, ident.id).await?;
             if matches!(
                 check_permissions(&rules, uncovered),
                 PermissionResult::Allowed
@@ -234,8 +234,10 @@ async fn compute_resolver_above(
 }
 
 /// Load and convert this identity's OWN permission rules (no inheritance walk).
-async fn load_rules(pool: &PgPool, identity_id: Uuid) -> Result<Vec<PermissionRule>, AppError> {
-    let rows = overslash_db::repos::permission_rule::list_by_identity(pool, identity_id).await?;
+async fn load_rules(scope: &OrgScope, identity_id: Uuid) -> Result<Vec<PermissionRule>, AppError> {
+    let rows = scope
+        .list_permission_rules_for_identity(identity_id)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|r| PermissionRule {
@@ -258,8 +260,8 @@ async fn load_rules(pool: &PgPool, identity_id: Uuid) -> Result<Vec<PermissionRu
 /// rules: the rule must land on the closest non-`inherit_permissions` ancestor
 /// of the requester (inclusive), not on the requester itself if the requester
 /// just borrows permissions.
-pub async fn rule_placement_for(pool: &PgPool, requester_id: Uuid) -> Result<Uuid, AppError> {
-    let chain = overslash_db::repos::identity::get_ancestor_chain(pool, requester_id).await?;
+pub async fn rule_placement_for(scope: &OrgScope, requester_id: Uuid) -> Result<Uuid, AppError> {
+    let chain = scope.get_identity_ancestor_chain(requester_id).await?;
     if chain.is_empty() {
         return Err(AppError::Internal("identity chain is empty".into()));
     }
@@ -272,8 +274,8 @@ pub async fn rule_placement_for(pool: &PgPool, requester_id: Uuid) -> Result<Uui
 ///
 /// Exposed as a standalone function so the background loop and tests can both
 /// call it.
-pub async fn process_auto_bubble(pool: &PgPool) -> Result<u64, AppError> {
-    let stale = overslash_db::repos::approval::list_pending_for_auto_bubble(pool).await?;
+pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> {
+    let stale = system.list_pending_approvals_for_auto_bubble().await?;
     let mut bubbled = 0u64;
     for approval in stale {
         let perm_keys: Vec<PermissionKey> = approval
@@ -281,8 +283,11 @@ pub async fn process_auto_bubble(pool: &PgPool) -> Result<u64, AppError> {
             .iter()
             .map(|k| PermissionKey(k.clone()))
             .collect();
+        // Per-approval OrgScope so the bubble update is org-bounded even
+        // though the sweep itself is cross-tenant.
+        let org_scope = system.scope_for_org(approval.org_id);
         let next = find_next_resolver(
-            pool,
+            &org_scope,
             approval.identity_id,
             approval.current_resolver_identity_id,
             &perm_keys,
@@ -292,19 +297,14 @@ pub async fn process_auto_bubble(pool: &PgPool) -> Result<u64, AppError> {
         if next == approval.current_resolver_identity_id {
             continue;
         }
-        if overslash_db::repos::approval::update_resolver(
-            pool,
-            approval.id,
-            next,
-            approval.current_resolver_identity_id,
-        )
-        .await?
-        .is_some()
+        if org_scope
+            .update_approval_resolver(approval.id, next, approval.current_resolver_identity_id)
+            .await?
+            .is_some()
         {
-            let _ = overslash_db::repos::audit::log(
-                pool,
-                &overslash_db::repos::audit::AuditEntry {
-                    org_id: approval.org_id,
+            let _ = org_scope
+                .log_audit(overslash_db::repos::audit::AuditEntry {
+                    org_id: org_scope.org_id(),
                     identity_id: None,
                     action: "approval.auto_bubbled",
                     resource_type: Some("approval"),
@@ -315,9 +315,8 @@ pub async fn process_auto_bubble(pool: &PgPool) -> Result<u64, AppError> {
                     }),
                     description: None,
                     ip_address: None,
-                },
-            )
-            .await;
+                })
+                .await;
             bubbled += 1;
         }
     }
@@ -328,13 +327,13 @@ pub async fn process_auto_bubble(pool: &PgPool) -> Result<u64, AppError> {
 /// Used for resolver authorization: a higher-up agent (or the user) can
 /// always step in for a lower one.
 pub async fn is_self_or_ancestor(
-    pool: &PgPool,
+    scope: &OrgScope,
     candidate: Uuid,
     target: Uuid,
 ) -> Result<bool, AppError> {
     if candidate == target {
         return Ok(true);
     }
-    let chain = overslash_db::repos::identity::get_ancestor_chain(pool, target).await?;
+    let chain = scope.get_identity_ancestor_chain(target).await?;
     Ok(chain.iter().any(|c| c.id == candidate))
 }

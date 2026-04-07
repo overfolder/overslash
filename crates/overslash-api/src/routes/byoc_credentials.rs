@@ -6,14 +6,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp},
+    extractors::{AdminAcl, ClientIp},
 };
 use overslash_core::crypto;
+use overslash_db::OrgScope;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -43,6 +44,7 @@ struct ByocCredentialResponse {
 async fn create_byoc(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateByocRequest>,
 ) -> Result<Json<ByocCredentialResponse>> {
@@ -54,41 +56,39 @@ async fn create_byoc(
 
     // If identity_id is provided, verify it belongs to the same org
     if let Some(identity_id) = req.identity_id {
-        let identity = overslash_db::repos::identity::get_by_id(&state.db, identity_id).await?;
-        crate::ownership::require_org_owned(identity, auth.org_id, "identity")?;
+        scope
+            .get_identity(identity_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     }
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted_client_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;
     let encrypted_client_secret = crypto::encrypt(&enc_key, req.client_secret.as_bytes())?;
 
-    let row = overslash_db::repos::byoc_credential::create(
-        &state.db,
-        &overslash_db::repos::byoc_credential::CreateByocCredential {
-            org_id: auth.org_id,
-            identity_id: req.identity_id,
-            provider_key: &req.provider,
-            encrypted_client_id: &encrypted_client_id,
-            encrypted_client_secret: &encrypted_client_secret,
-        },
-    )
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.code().as_deref() == Some("23505") {
-                return AppError::Conflict(format!(
-                    "BYOC credential already exists for provider '{}'",
-                    req.provider
-                ));
+    let row = scope
+        .create_byoc_credential(
+            req.identity_id,
+            &req.provider,
+            &encrypted_client_id,
+            &encrypted_client_secret,
+        )
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.code().as_deref() == Some("23505") {
+                    return AppError::Conflict(format!(
+                        "BYOC credential already exists for provider '{}'",
+                        req.provider
+                    ));
+                }
             }
-        }
-        AppError::Database(e)
-    })?;
+            AppError::Database(e)
+        })?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "byoc_credential.created",
             resource_type: Some("byoc_credential"),
@@ -96,9 +96,8 @@ async fn create_byoc(
             detail: serde_json::json!({ "provider": req.provider }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(ByocCredentialResponse {
         id: row.id,
@@ -110,11 +109,8 @@ async fn create_byoc(
     }))
 }
 
-async fn list_byoc(
-    State(state): State<AppState>,
-    auth: AuthContext,
-) -> Result<Json<Vec<ByocCredentialResponse>>> {
-    let rows = overslash_db::repos::byoc_credential::list_by_org(&state.db, auth.org_id).await?;
+async fn list_byoc(scope: OrgScope) -> Result<Json<Vec<ByocCredentialResponse>>> {
+    let rows = scope.list_byoc_credentials().await?;
 
     Ok(Json(
         rows.into_iter()
@@ -131,20 +127,18 @@ async fn list_byoc(
 }
 
 async fn delete_byoc(
-    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    let deleted =
-        overslash_db::repos::byoc_credential::delete_by_org(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_byoc_credential(id).await?;
 
     if deleted {
-        let _ = overslash_db::repos::audit::log(
-            &state.db,
-            &overslash_db::repos::audit::AuditEntry {
-                org_id: auth.org_id,
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
                 identity_id: auth.identity_id,
                 action: "byoc_credential.deleted",
                 resource_type: Some("byoc_credential"),
@@ -152,9 +146,8 @@ async fn delete_byoc(
                 detail: serde_json::json!({}),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))

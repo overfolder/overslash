@@ -4,26 +4,27 @@
 //! needed to resolve an `identity_id` into its ancestor chain + org slug.
 
 use overslash_core::identity_path::build_spiffe_path;
-use overslash_db::repos::{identity, org};
-use sqlx::PgPool;
+use overslash_db::OrgScope;
+use overslash_db::repos::org;
 use uuid::Uuid;
 
 /// Resolve `identity_id` into a SPIFFE-style path
 /// `spiffe://<org_slug>/<kind>/<name>/...` (root first, leaf last).
 ///
-/// Returns `None` if the identity does not exist. Falls back to the
-/// literal `unknown` org slug if the org row has gone missing (should not
-/// happen but we don't want to fail an approval render over it).
+/// Returns `None` if the identity does not exist within the caller's org.
+/// Falls back to the literal `unknown` org slug if the org row has gone
+/// missing (should not happen but we don't want to fail an approval render
+/// over it).
 pub async fn build_for_identity(
-    db: &PgPool,
+    scope: &OrgScope,
     identity_id: Uuid,
 ) -> Result<Option<String>, sqlx::Error> {
-    let chain = identity::get_ancestor_chain(db, identity_id).await?;
+    let chain = scope.get_identity_ancestor_chain(identity_id).await?;
     if chain.is_empty() {
         return Ok(None);
     }
 
-    let org_slug = match org::get_by_id(db, chain[0].org_id).await? {
+    let org_slug = match org::get_by_id(scope.db(), chain[0].org_id).await? {
         Some(o) => o.slug,
         None => "unknown".to_string(),
     };

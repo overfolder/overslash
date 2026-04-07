@@ -6,7 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::OrgScope;
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::rate_limit;
 
 use crate::{
@@ -120,6 +121,7 @@ fn invalidate_cache_for(
 async fn upsert_rate_limit(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<UpsertRateLimitRequest>,
 ) -> Result<Json<RateLimitResponse>> {
@@ -169,26 +171,24 @@ async fn upsert_rate_limit(
 
     let scope_str = req.scope.as_str();
 
-    let row = rate_limit::upsert(
-        &state.db,
-        auth.org_id,
-        scope_str,
-        req.identity_id,
-        req.group_id,
-        req.max_requests,
-        req.window_seconds,
-    )
-    .await?;
+    let row = scope
+        .upsert_rate_limit(
+            scope_str,
+            req.identity_id,
+            req.group_id,
+            req.max_requests,
+            req.window_seconds,
+        )
+        .await?;
 
     // Invalidate cached configs so the new value takes effect immediately
     // (rather than waiting up to 30s for the cache TTL).
     invalidate_cache_for(&state, &req.scope, auth.org_id, req.identity_id);
 
     // Audit
-    audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "rate_limit.upsert",
             resource_type: Some("rate_limit"),
@@ -205,40 +205,36 @@ async fn upsert_rate_limit(
                 "Set {} rate limit: {} requests per {}s",
                 scope_str, req.max_requests, req.window_seconds
             )),
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     Ok(Json(row.into()))
 }
 
-async fn list_rate_limits(
-    State(state): State<AppState>,
-    auth: AuthContext,
-) -> Result<Json<Vec<RateLimitResponse>>> {
-    let rows = rate_limit::list_by_org(&state.db, auth.org_id).await?;
+async fn list_rate_limits(scope: OrgScope) -> Result<Json<Vec<RateLimitResponse>>> {
+    let rows = scope.list_rate_limits().await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
 async fn delete_rate_limit(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted = rate_limit::delete(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_rate_limit(id).await?;
     if !deleted {
         return Err(AppError::NotFound("rate limit config not found".into()));
     }
 
     // Invalidate everything for the org. We don't know the scope of the deleted row
     // (we'd need to fetch it first), so the safest course is to flush the org's cache.
-    state.rate_limit_cache.invalidate_org(auth.org_id);
+    state.rate_limit_cache.invalidate_org(scope.org_id());
 
-    audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "rate_limit.delete",
             resource_type: Some("rate_limit"),
@@ -246,9 +242,8 @@ async fn delete_rate_limit(
             detail: serde_json::json!({}),
             ip_address: ip.0.as_deref(),
             description: Some("Deleted rate limit config"),
-        },
-    )
-    .await?;
+        })
+        .await?;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }

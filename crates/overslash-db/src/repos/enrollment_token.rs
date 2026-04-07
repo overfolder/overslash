@@ -15,7 +15,7 @@ pub struct EnrollmentTokenRow {
     pub created_at: OffsetDateTime,
 }
 
-pub async fn create(
+pub(crate) async fn create(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Uuid,
@@ -40,7 +40,7 @@ pub async fn create(
     .await
 }
 
-pub async fn find_by_prefix(
+pub(crate) async fn find_by_prefix(
     pool: &PgPool,
     prefix: &str,
 ) -> Result<Option<EnrollmentTokenRow>, sqlx::Error> {
@@ -54,7 +54,7 @@ pub async fn find_by_prefix(
     .await
 }
 
-pub async fn mark_used(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+pub(crate) async fn mark_used(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE enrollment_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL",
         id,
@@ -64,7 +64,7 @@ pub async fn mark_used(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn list_by_org(
+pub(crate) async fn list_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<EnrollmentTokenRow>, sqlx::Error> {
@@ -79,7 +79,7 @@ pub async fn list_by_org(
     .await
 }
 
-pub async fn revoke(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
+pub(crate) async fn revoke(pool: &PgPool, id: Uuid, org_id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE enrollment_tokens SET used_at = now() WHERE id = $1 AND org_id = $2 AND used_at IS NULL",
         id,

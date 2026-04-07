@@ -39,7 +39,7 @@ pub struct UpdateServiceInstance<'a> {
     pub secret_name: Option<Option<&'a str>>,
 }
 
-pub async fn create(
+pub(crate) async fn create(
     pool: &PgPool,
     input: &CreateServiceInstance<'_>,
 ) -> Result<ServiceInstanceRow, sqlx::Error> {
@@ -64,20 +64,28 @@ pub async fn create(
     .await
 }
 
-pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+/// Look up a service instance by id, scoped to an org.
+///
+/// Double-key lookup: a row id belonging to a different org returns `None`.
+pub(crate) async fn get_by_id(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
          template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
-         FROM service_instances WHERE id = $1",
+         FROM service_instances WHERE id = $1 AND org_id = $2",
         id,
+        org_id,
     )
     .fetch_optional(pool)
     .await
 }
 
 /// Get a service instance by name within a specific scope (org or user).
-pub async fn get_by_name(
+pub(crate) async fn get_by_name(
     pool: &PgPool,
     org_id: Uuid,
     owner_identity_id: Option<Uuid>,
@@ -103,7 +111,7 @@ pub async fn get_by_name(
 /// - Plain `name` tries user scope first, then org scope
 ///
 /// Only returns active instances by default (for execution). Use `get_by_name` for any status.
-pub async fn resolve_by_name(
+pub(crate) async fn resolve_by_name(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
@@ -159,7 +167,7 @@ pub async fn resolve_by_name(
 }
 
 /// List org-level instances.
-pub async fn list_by_org(
+pub(crate) async fn list_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
@@ -176,7 +184,7 @@ pub async fn list_by_org(
 }
 
 /// List user-level instances for a specific identity.
-pub async fn list_by_user(
+pub(crate) async fn list_by_user(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Uuid,
@@ -195,7 +203,7 @@ pub async fn list_by_user(
 }
 
 /// List all instances available to a caller: user's + org's.
-pub async fn list_available(
+pub(crate) async fn list_available(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
@@ -218,7 +226,7 @@ pub async fn list_available(
 /// User-owned services are always visible. Org-level services are filtered
 /// by the `visible_service_ids` set (derived from group grants).
 /// If `visible_service_ids` is `None`, no group filtering is applied (backward compat).
-pub async fn list_available_with_groups(
+pub(crate) async fn list_available_with_groups(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
@@ -244,26 +252,37 @@ pub async fn list_available_with_groups(
     }
 }
 
-pub async fn update_status(
+/// Update lifecycle status, scoped to an org.
+///
+/// Double-key
+/// update: a row id from another org returns `None` and mutates nothing.
+pub(crate) async fn update_status(
     pool: &PgPool,
+    org_id: Uuid,
     id: Uuid,
     status: &str,
 ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
     sqlx::query_as!(
         ServiceInstanceRow,
-        "UPDATE service_instances SET status = $2, updated_at = now() \
-         WHERE id = $1 \
+        "UPDATE service_instances SET status = $3, updated_at = now() \
+         WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
          template_id, connection_id, secret_name, status, is_system, created_at, updated_at",
         id,
+        org_id,
         status,
     )
     .fetch_optional(pool)
     .await
 }
 
-pub async fn update(
+/// Update mutable fields, scoped to an org.
+///
+/// Double-key
+/// update: a row id from another org returns `None` and mutates nothing.
+pub(crate) async fn update(
     pool: &PgPool,
+    org_id: Uuid,
     id: Uuid,
     input: &UpdateServiceInstance<'_>,
 ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
@@ -276,14 +295,15 @@ pub async fn update(
     sqlx::query_as!(
         ServiceInstanceRow,
         "UPDATE service_instances SET \
-         name = COALESCE($2, name), \
-         connection_id = CASE WHEN $3 THEN $4 ELSE connection_id END, \
-         secret_name = CASE WHEN $5 THEN $6 ELSE secret_name END, \
+         name = COALESCE($3, name), \
+         connection_id = CASE WHEN $4 THEN $5 ELSE connection_id END, \
+         secret_name = CASE WHEN $6 THEN $7 ELSE secret_name END, \
          updated_at = now() \
-         WHERE id = $1 \
+         WHERE id = $1 AND org_id = $2 \
          RETURNING id, org_id, owner_identity_id, name, template_source, template_key, \
          template_id, connection_id, secret_name, status, is_system, created_at, updated_at",
         id,
+        org_id,
         input.name,
         update_conn,
         conn_id,
@@ -294,9 +314,17 @@ pub async fn update(
     .await
 }
 
-pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!("DELETE FROM service_instances WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+/// Delete a service instance, scoped to an org.
+///
+/// Double-key
+/// delete: a row id from another org returns `false` and deletes nothing.
+pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM service_instances WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }

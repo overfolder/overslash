@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) AS count\n         FROM identity_groups ig\n         JOIN groups g ON g.id = ig.group_id\n         WHERE ig.group_id = $1 AND g.org_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3f5e2cc125e25a4c370afc93ba722425e747ff0217113dbac8752a9ab659a7e0"
+}

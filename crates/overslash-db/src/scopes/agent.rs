@@ -64,8 +64,4 @@ impl AgentScope {
     pub fn org(&self) -> OrgScope {
         OrgScope::new(self.org_id, self.db.clone())
     }
-
-    pub(crate) fn db(&self) -> &PgPool {
-        &self.db
-    }
 }

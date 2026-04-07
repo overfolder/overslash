@@ -1,4 +1,3 @@
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use overslash_core::permissions::{
@@ -6,6 +5,7 @@ use overslash_core::permissions::{
 };
 use overslash_core::types::service::Risk;
 
+use overslash_db::OrgScope;
 use overslash_db::repos::identity::IdentityRow;
 
 /// Resolved ceiling data ready for checking.
@@ -28,12 +28,14 @@ pub fn ceiling_user_id_from_identity(
     }
 }
 
-/// Resolve the ceiling user ID by fetching the identity from the database.
+/// Resolve the ceiling user ID by fetching the identity from the database,
+/// bounded to the caller's org via `scope`.
 pub async fn resolve_ceiling_user_id(
-    pool: &PgPool,
+    scope: &OrgScope,
     identity_id: Uuid,
 ) -> Result<Uuid, crate::error::AppError> {
-    let identity = overslash_db::repos::identity::get_by_id(pool, identity_id)
+    let identity = scope
+        .get_identity(identity_id)
         .await?
         .ok_or_else(|| crate::error::AppError::NotFound("identity not found".into()))?;
     ceiling_user_id_from_identity(&identity)
@@ -43,14 +45,13 @@ pub async fn resolve_ceiling_user_id(
 /// `has_groups` reflects user-created group membership only — system groups
 /// (Everyone, Admins) don't count for ceiling enforcement.
 pub async fn load_ceiling(
-    pool: &PgPool,
+    scope: &OrgScope,
     user_identity_id: Uuid,
 ) -> Result<ResolvedCeiling, crate::error::AppError> {
-    let groups =
-        overslash_db::repos::group::list_groups_for_identity(pool, user_identity_id).await?;
+    let groups = scope.list_groups_for_identity(user_identity_id).await?;
     let has_groups = groups.iter().any(|g| !g.is_system);
 
-    let ceiling = overslash_db::repos::group::get_ceiling_for_user(pool, user_identity_id).await?;
+    let ceiling = scope.get_ceiling_for_user(user_identity_id).await?;
 
     let grants = ceiling
         .grants

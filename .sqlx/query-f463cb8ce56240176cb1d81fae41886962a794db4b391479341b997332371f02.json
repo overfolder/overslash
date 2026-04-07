@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE connections SET encrypted_access_token = $3, encrypted_refresh_token = $4,\n         token_expires_at = $5, updated_at = now() WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f463cb8ce56240176cb1d81fae41886962a794db4b391479341b997332371f02"
+}

@@ -64,11 +64,12 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
     // Spawn background tasks
     {
         let db = state.db.clone();
+        let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                match overslash_db::repos::approval::expire_stale(&db).await {
+                match system.expire_stale_approvals().await {
                     Ok(n) if n > 0 => tracing::info!("Expired {n} stale approvals"),
                     Err(e) => tracing::error!("Approval expiry error: {e}"),
                     _ => {}
@@ -78,21 +79,21 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Enrollment expiry error: {e}"),
                     _ => {}
                 }
-                match overslash_db::repos::identity::archive_idle_subagents(&db).await {
+                match system.archive_idle_subagents().await {
                     Ok(n) if n > 0 => {
                         tracing::info!("Archived {n} idle sub-agent identities")
                     }
                     Err(e) => tracing::error!("Sub-agent archive error: {e}"),
                     _ => {}
                 }
-                match overslash_db::repos::identity::purge_archived_subagents(&db).await {
+                match system.purge_archived_subagents().await {
                     Ok(n) if n > 0 => {
                         tracing::info!("Purged {n} archived sub-agent identities")
                     }
                     Err(e) => tracing::error!("Sub-agent purge error: {e}"),
                     _ => {}
                 }
-                match services::permission_chain::process_auto_bubble(&db).await {
+                match services::permission_chain::process_auto_bubble(&system).await {
                     Ok(n) if n > 0 => tracing::info!("Auto-bubbled {n} approvals"),
                     Err(e) => tracing::error!("Auto-bubble error: {e}"),
                     _ => {}

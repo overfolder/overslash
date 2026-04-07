@@ -43,15 +43,31 @@
 //! Calling `OrgScope::new(...)` directly from a handler is a bug — handlers
 //! must obtain scopes through extractors only. This is enforced by code review.
 
-// Several `pub(crate) fn db()` accessors and the private `db` field on
-// `SystemScope` are unused until org-scoped SQL methods are added on top of
-// these types. They exist now so the type API is stable for downstream code.
-#![allow(dead_code)]
-
 pub mod agent;
 pub mod org;
+mod org_api_keys;
+mod org_approvals;
+mod org_audit;
+mod org_byoc;
+mod org_connections;
+mod org_enrollment_tokens;
+mod org_groups;
+mod org_identities;
+mod org_idp_config;
+mod org_permission_rules;
+mod org_rate_limits;
+mod org_secrets;
+mod org_service_instances;
+mod org_webhooks;
 pub mod system;
+mod system_api_keys;
+mod system_approvals;
+mod system_enrollment_tokens;
+mod system_identities;
+mod system_idp_config;
+mod system_webhooks;
 pub mod user;
+mod user_connections;
 
 pub use agent::AgentScope;
 pub use org::OrgScope;
@@ -60,8 +76,9 @@ pub use user::UserScope;
 
 #[cfg(test)]
 mod tests {
-    //! The scope types have no SQL methods yet, so we exercise only what
-    //! exists — the field plumbing and the free downgrade chain. A `PgPool`
+    //! These tests exercise the field plumbing and the free downgrade chain.
+    //! Per-resource SQL methods on scopes are tested in their own modules
+    //! (e.g. `scopes::org_secrets`). A `PgPool`
     //! cannot be constructed without a live server, so these tests use
     //! `PgPool::connect_lazy` against a syntactically valid but unreachable
     //! URL: nothing here ever issues a query, so the connection is never

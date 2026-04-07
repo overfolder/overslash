@@ -6,11 +6,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::OrgScope;
+use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
-    error::Result,
+    error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp},
 };
 
@@ -46,23 +47,17 @@ struct PermissionResponse {
 async fn create_permission(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreatePermissionRequest>,
 ) -> Result<Json<PermissionResponse>> {
     let auth = acl;
-    let row = overslash_db::repos::permission_rule::create(
-        &state.db,
-        auth.org_id,
-        req.identity_id,
-        &req.action_pattern,
-        &req.effect,
-        None,
-    )
-    .await?;
+    let row = scope
+        .create_permission_rule(req.identity_id, &req.action_pattern, &req.effect, None)
+        .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "permission_rule.created",
@@ -75,9 +70,8 @@ async fn create_permission(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(PermissionResponse {
         id: row.id,
@@ -88,15 +82,16 @@ async fn create_permission(
 }
 
 async fn list_permissions(
-    State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
 ) -> Result<Json<Vec<PermissionResponse>>> {
     // For MVP, list all permissions for the calling identity
     let identity_id = auth
         .identity_id
-        .ok_or_else(|| crate::error::AppError::BadRequest("no identity on this key".into()))?;
-    let rows =
-        overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?;
+        .ok_or_else(|| AppError::BadRequest("no identity on this key".into()))?;
+    let rows = scope
+        .list_permission_rules_for_identity(identity_id)
+        .await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| PermissionResponse {
@@ -112,16 +107,16 @@ async fn list_permissions(
 async fn delete_permission(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    let deleted = overslash_db::repos::permission_rule::delete(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_permission_rule(id).await?;
 
     if deleted {
-        let _ = overslash_db::repos::audit::log(
-            &state.db,
-            &overslash_db::repos::audit::AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "permission_rule.deleted",
@@ -130,9 +125,8 @@ async fn delete_permission(
                 detail: serde_json::json!({}),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
