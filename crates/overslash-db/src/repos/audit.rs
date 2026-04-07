@@ -71,7 +71,7 @@ pub async fn query_filtered(
         AuditRow,
         "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at
          FROM audit_log a
-         LEFT JOIN identities i ON i.id = a.identity_id
+         LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id
          WHERE a.org_id = $1
            AND ($2::text IS NULL OR a.action = $2)
            AND ($3::text IS NULL OR a.resource_type = $3)

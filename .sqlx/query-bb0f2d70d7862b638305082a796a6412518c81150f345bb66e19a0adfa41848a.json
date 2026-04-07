@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at\n         FROM audit_log a\n         LEFT JOIN identities i ON i.id = a.identity_id\n         WHERE a.org_id = $1\n           AND ($2::text IS NULL OR a.action = $2)\n           AND ($3::text IS NULL OR a.resource_type = $3)\n           AND ($4::uuid IS NULL OR a.identity_id = $4)\n           AND ($5::timestamptz IS NULL OR a.created_at >= $5)\n           AND ($6::timestamptz IS NULL OR a.created_at <= $6)\n           AND ($7::text IS NULL\n                OR a.action ILIKE $7\n                OR a.description ILIKE $7\n                OR i.name ILIKE $7)\n         ORDER BY a.created_at DESC\n         LIMIT $8 OFFSET $9",
+  "query": "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at\n         FROM audit_log a\n         LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id\n         WHERE a.org_id = $1\n           AND ($2::text IS NULL OR a.action = $2)\n           AND ($3::text IS NULL OR a.resource_type = $3)\n           AND ($4::uuid IS NULL OR a.identity_id = $4)\n           AND ($5::timestamptz IS NULL OR a.created_at >= $5)\n           AND ($6::timestamptz IS NULL OR a.created_at <= $6)\n           AND ($7::text IS NULL\n                OR a.action ILIKE $7\n                OR a.description ILIKE $7\n                OR i.name ILIKE $7)\n         ORDER BY a.created_at DESC\n         LIMIT $8 OFFSET $9",
   "describe": {
     "columns": [
       {
@@ -80,5 +80,5 @@
       false
     ]
   },
-  "hash": "6a6231cbac1227729401328ce3cb5f2cb235e94846ad4b41d868d460ecc45e8c"
+  "hash": "bb0f2d70d7862b638305082a796a6412518c81150f345bb66e19a0adfa41848a"
 }

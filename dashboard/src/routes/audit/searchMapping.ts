@@ -21,31 +21,54 @@ const EVENT_VALUES = [
 	'permission.changed'
 ];
 
-export const AUDIT_SEARCH_KEYS: SearchKey[] = [
-	{ name: 'identity', operators: ['=', '~'], hint: 'identity name or path' },
-	{ name: 'event', operators: ['='], values: EVENT_VALUES, hint: 'event type' },
-	{ name: 'time', operators: ['='], values: Object.keys(TIME_PRESETS), hint: 'time range' }
-];
+export interface IdentitySummary {
+	id: string;
+	name: string;
+}
+
+export function buildAuditSearchKeys(identities: IdentitySummary[]): SearchKey[] {
+	return [
+		{
+			name: 'identity',
+			operators: ['=', '~'],
+			values: identities.map((i) => i.name),
+			hint: 'identity name'
+		},
+		{ name: 'event', operators: ['='], values: EVENT_VALUES, hint: 'event type' },
+		{ name: 'time', operators: ['='], values: Object.keys(TIME_PRESETS), hint: 'time range' }
+	];
+}
 
 /**
  * Convert a SearchBar value into an AuditFilters object the API understands.
  *
  * Mapping rules:
  * - `event = X`        → action=X (exact match on the action column)
- * - `identity = X`     → q="X"   (substring search across identity name/action/description)
- * - `identity ~ X`     → q="X"   (`~` is already substring; same as `=` server-side)
+ * - `identity = NAME`  → identity_id=<resolved UUID> when NAME is known in the
+ *                        caller's org (precise filter); otherwise falls back to
+ *                        q="NAME" (substring across identity name/action/description)
+ * - `identity ~ NAME`  → always substring via q
  * - `time = preset`    → since/until window
- * - free text          → folded into q (joined with identity terms by space)
+ * - free text          → folded into q
+ *
+ * The identities list is org-scoped by the API (`GET /v1/identities` enforces
+ * `OrgAcl`), so name→id resolution can never leak across tenants.
  */
-export function searchToFilters(value: SearchValue): AuditFilters {
+export function searchToFilters(value: SearchValue, identities: IdentitySummary[]): AuditFilters {
 	const filters: AuditFilters = {};
 	const qTerms: string[] = [];
 	if (value.freeText) qTerms.push(value.freeText);
+	const nameToId = new Map(identities.map((i) => [i.name.toLowerCase(), i.id]));
 	for (const expr of value.expressions) {
 		if (expr.key === 'event') {
 			filters.action = expr.value;
 		} else if (expr.key === 'identity') {
-			qTerms.push(expr.value);
+			const id = expr.op === '=' ? nameToId.get(expr.value.toLowerCase()) : undefined;
+			if (id) {
+				filters.identity_id = id;
+			} else {
+				qTerms.push(expr.value);
+			}
 		} else if (expr.key === 'time') {
 			const ms = TIME_PRESETS[expr.value];
 			if (ms !== undefined) {
@@ -59,9 +82,13 @@ export function searchToFilters(value: SearchValue): AuditFilters {
 }
 
 /** Inverse mapping for hydrating the SearchBar from URL query state on load. */
-export function filtersToSearch(filters: AuditFilters): SearchValue {
+export function filtersToSearch(filters: AuditFilters, identities: IdentitySummary[]): SearchValue {
 	const expressions: Expression[] = [];
 	if (filters.action) expressions.push({ key: 'event', op: '=', value: filters.action });
+	if (filters.identity_id) {
+		const match = identities.find((i) => i.id === filters.identity_id);
+		expressions.push({ key: 'identity', op: '=', value: match?.name ?? filters.identity_id });
+	}
 	// We can't reliably reverse `time` from since/until alone (presets are
 	// snapshotted to ISO timestamps); leave it out and let the user re-pick.
 	return { expressions, freeText: filters.q ?? '' };

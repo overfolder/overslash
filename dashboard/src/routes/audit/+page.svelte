@@ -4,7 +4,7 @@
 	import SearchBar, { type SearchValue } from '$lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
 	import { downloadCsv } from './exportCsv';
-	import { AUDIT_SEARCH_KEYS, filtersToSearch, searchToFilters } from './searchMapping';
+	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
 	import {
 		buildQuery,
 		filtersToSearchString,
@@ -17,7 +17,9 @@
 
 	let entries = $state<AuditEntry[]>(data.entries);
 	let filters = $state<AuditFilters>(data.filters);
-	let searchValue = $state<SearchValue>(filtersToSearch(data.filters));
+	const identities = data.identities;
+	const searchKeys = buildAuditSearchKeys(identities);
+	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities));
 	let offset = $state(data.entries.length);
 	let done = $state(data.entries.length < PAGE_LIMIT);
 	let loading = $state(false);
@@ -62,7 +64,7 @@
 
 	function onSearchChange(next: SearchValue) {
 		searchValue = next;
-		applyFilters(searchToFilters(next));
+		applyFilters(searchToFilters(next, identities));
 	}
 
 	function refresh() {
@@ -105,7 +107,7 @@
 
 	<div class="search-wrap">
 		<SearchBar
-			keys={AUDIT_SEARCH_KEYS}
+			keys={searchKeys}
 			value={searchValue}
 			onchange={onSearchChange}
 			placeholder="Search audit log — try `event = action.executed` or free text"
