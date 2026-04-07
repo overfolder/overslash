@@ -95,11 +95,11 @@ schema:
 
 # Regenerate sqlx offline caches
 sqlx-prepare:
-	cargo sqlx prepare --workspace
+	cargo sqlx prepare --workspace -- --tests
 
 # Verify sqlx offline cache is up-to-date
 check-sqlx:
-	cargo sqlx prepare --workspace --check
+	cargo sqlx prepare --workspace --check -- --tests
 
 # Start mock target
 mock-target:

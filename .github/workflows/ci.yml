@@ -114,7 +114,7 @@ jobs:
         run: cargo sqlx migrate run --source crates/overslash-db/migrations
 
       - name: Verify sqlx offline cache
-        run: cargo sqlx prepare --workspace --check
+        run: cargo sqlx prepare --workspace --check -- --tests
 
   test:
     name: Test
