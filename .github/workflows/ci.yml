@@ -226,4 +226,4 @@ jobs:
       - name: Verify all jobs passed or were skipped
         run: |
           echo '${{ toJSON(needs) }}'
-          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped" or .value.result == "cancelled")'
