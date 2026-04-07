@@ -51,3 +51,9 @@ Settled architectural decisions. Don't re-litigate without new information.
 **Date**: 2026-04
 **Decision**: Rate limits use two counters per request: a User-level bucket (shared by all agents under that user) and optional per-identity caps. Not per-agent buckets alone.
 **Rationale**: Per-agent-only limits are easily circumvented by spawning sub-agents. The User bucket ensures a hard ceiling regardless of agent topology. Identity caps are a convenience for isolating misconfigured agents from consuming the entire User budget. See SPEC.md §13.
+
+## D9: Merge queue on `dev`, merge-commits on `master`
+
+**Date**: 2026-04
+**Decision**: PRs target `dev` and merge through GitHub's merge queue (squash, ALLGREEN, required check `ci-ok`, strict-up-to-date off — the queue handles rebasing). `dev` flows to `master` via **merge commits only** (`master` ruleset disallows squash/rebase) so feature history is preserved on `master`. Repo was made public to unlock merge queue without an Enterprise upgrade. The Stop hook arms `gh pr merge --auto --squash` once its three gates pass, but **only when the PR's base branch is `dev`** — never on PRs targeting `master`.
+**Rationale**: Keeping branches up-to-date with base was a recurring source of agent churn. The merge queue serializes PRs and rebases them in-place, eliminating that responsibility. Squash on `dev` keeps feature PRs as single commits; merge-commits on `master` retain the full feature history at release-cut time. See `.claude/hooks/pr-mergeability-gate.sh` and rulesets `dev` (id 14770759) / `master` (id 14707284).

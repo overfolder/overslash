@@ -56,7 +56,7 @@ if [[ -z "$BRANCH" || "$BRANCH" == "HEAD" ]]; then
   exit 0
 fi
 
-PR_JSON="$(gh pr view --json number,mergeable,mergeStateStatus,headRefName 2>/dev/null || true)"
+PR_JSON="$(gh pr view --json number,mergeable,mergeStateStatus,headRefName,baseRefName 2>/dev/null || true)"
 if [[ -z "$PR_JSON" ]]; then
   # No PR for this branch -> nothing to gate
   exit 0
@@ -66,6 +66,7 @@ PR_NUMBER="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; print(json.lo
 if [[ -z "$PR_NUMBER" ]]; then
   exit 0
 fi
+PR_BASE="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("baseRefName",""))')"
 
 # ----- gate 1: CI green (with bounded wait on pending) --------------------
 ci_status() {
@@ -159,9 +160,22 @@ fi
 # Re-fetch PR metadata: the initial $PR_JSON can be up to ~10 minutes stale
 # if we waited for CI above. A conflict introduced during that wait would
 # otherwise be missed (TOCTOU).
-PR_JSON_FRESH="$(gh pr view --json number,mergeable,mergeStateStatus 2>/dev/null || true)"
-[[ -z "$PR_JSON_FRESH" ]] && PR_JSON_FRESH="$PR_JSON"
+PR_JSON_FRESH="$(gh pr view --json number,mergeable,mergeStateStatus,baseRefName 2>/dev/null || true)"
+PR_REFRESH_OK=1
+if [[ -z "$PR_JSON_FRESH" ]]; then
+  PR_JSON_FRESH="$PR_JSON"
+  PR_REFRESH_OK=0
+fi
 MERGE_STATE="$(printf '%s' "$PR_JSON_FRESH" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("mergeStateStatus","")+"|"+str(d.get("mergeable","")))')"
+# Refresh PR_BASE from the same fresh fetch — the base branch can be changed
+# by a user during the CI wait, and the auto-merge decision below must reflect
+# the current target, not the value captured at hook entry. If the refresh
+# failed, leave PR_BASE empty so the auto-merge step skips (fail closed).
+if [[ "$PR_REFRESH_OK" -eq 1 ]]; then
+  PR_BASE="$(printf '%s' "$PR_JSON_FRESH" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("baseRefName",""))')"
+else
+  PR_BASE=""
+fi
 CONFLICTING=0
 if printf '%s' "$MERGE_STATE" | grep -qi 'CONFLICTING'; then
   CONFLICTING=1
@@ -188,6 +202,13 @@ if [[ "$CONFLICTING" -eq 1 ]]; then
 fi
 
 if [[ ${#FAILS[@]} -eq 0 ]]; then
+  # All gates passed: arm auto-merge so the PR enters the merge queue.
+  # ONLY for PRs targeting dev — master uses merge-commits via manual release
+  # cuts, and arming auto-merge there would bypass that workflow.
+  # Best-effort and idempotent — failure here must not block stop.
+  if [[ "$PR_BASE" == "dev" ]]; then
+    gh pr merge "$PR_NUMBER" --auto --squash >/dev/null 2>&1 || true
+  fi
   echo 0 > "$COUNTER_FILE"
   exit 0
 fi
