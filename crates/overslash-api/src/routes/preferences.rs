@@ -33,13 +33,6 @@ fn parse(value: &serde_json::Value) -> UserPreferences {
     serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
-fn merge(existing: UserPreferences, patch: UserPreferences) -> UserPreferences {
-    UserPreferences {
-        time_display: patch.time_display.or(existing.time_display),
-        theme: patch.theme.or(existing.theme),
-    }
-}
-
 fn require_session(state: &AppState, headers: &HeaderMap) -> Result<jwt::Claims> {
     let cookie_header = headers
         .get(header::COOKIE)
@@ -71,13 +64,11 @@ async fn put_preferences(
     Json(patch): Json<UserPreferences>,
 ) -> Result<Json<UserPreferences>> {
     let claims = require_session(&state, &headers)?;
-    let ident = identity::get_by_id(&state.db, claims.sub)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    let merged = merge(parse(&ident.preferences), patch);
-    let value =
-        serde_json::to_value(&merged).map_err(|e| AppError::Internal(format!("serialize: {e}")))?;
-    let updated = identity::update_preferences(&state.db, claims.sub, value)
+    // Atomic server-side merge: avoids the read-modify-write race where two
+    // concurrent PUTs could each load the same row and clobber each other.
+    let patch_value =
+        serde_json::to_value(&patch).map_err(|e| AppError::Internal(format!("serialize: {e}")))?;
+    let updated = identity::merge_preferences(&state.db, claims.sub, patch_value)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     Ok(Json(parse(&updated.preferences)))

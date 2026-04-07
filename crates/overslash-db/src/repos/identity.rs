@@ -221,17 +221,23 @@ pub async fn update_profile(
     .await
 }
 
-pub async fn update_preferences(
+/// Atomically merge a JSON patch into the identity's `preferences` column
+/// using Postgres' `||` operator. The merge happens server-side in a single
+/// statement so concurrent PUTs cannot clobber each other's keys.
+pub async fn merge_preferences(
     pool: &PgPool,
     id: Uuid,
-    preferences: serde_json::Value,
+    patch: serde_json::Value,
 ) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "UPDATE identities SET preferences = $2, updated_at = now() WHERE id = $1
+        "UPDATE identities
+         SET preferences = COALESCE(preferences, '{}'::jsonb) || $2::jsonb,
+             updated_at = now()
+         WHERE id = $1
          RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at",
         id,
-        preferences,
+        patch,
     )
     .fetch_optional(pool)
     .await

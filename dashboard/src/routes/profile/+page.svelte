@@ -1,8 +1,7 @@
 <script lang="ts">
-	import { session, type MeIdentity, type SecretMetadata, type PermissionRule, type EnrollmentTokenItem, type UserPreferences } from '$lib/session';
+	import { session, type MeIdentity, type SecretMetadata, type PermissionRule, type UserPreferences } from '$lib/session';
 	import { theme, timeFormat } from '$lib/stores/shell';
 	import { formatTime, ttlRemaining } from '$lib/utils/time';
-	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { invalidateAll } from '$app/navigation';
 
 	let { data } = $props<{
@@ -10,7 +9,6 @@
 			user: MeIdentity;
 			secrets: SecretMetadata[];
 			permissions: PermissionRule[];
-			enrollmentTokens: EnrollmentTokenItem[];
 			preferences: UserPreferences;
 		};
 	}>();
@@ -28,7 +26,6 @@
 
 	let busy = $state<string | null>(null);
 	let error = $state<string | null>(null);
-	let copiedId = $state<string | null>(null);
 
 	async function deleteSecret(name: string) {
 		if (!confirm(`Delete secret "${name}"? This cannot be undone.`)) return;
@@ -58,29 +55,6 @@
 		}
 	}
 
-	async function revokeEnrollment(id: string) {
-		if (!confirm('Revoke this enrollment token?')) return;
-		busy = `tok:${id}`;
-		error = null;
-		try {
-			await session.delete(`/v1/enrollment-tokens/${id}`);
-			await invalidateAll();
-		} catch (e) {
-			error = `Failed to revoke: ${(e as Error).message}`;
-		} finally {
-			busy = null;
-		}
-	}
-
-	async function copy(id: string, value: string) {
-		const ok = await copyToClipboard(value);
-		if (ok) {
-			copiedId = id;
-			setTimeout(() => {
-				if (copiedId === id) copiedId = null;
-			}, 1500);
-		}
-	}
 </script>
 
 <svelte:head>
@@ -176,42 +150,7 @@
 		{/if}
 	</div>
 
-	<!-- 4. Enrollment tokens -->
-	<div class="card">
-		<h2>Enrollment tokens</h2>
-		<p class="muted small">Active tokens that can enroll a new agent identity.</p>
-		{#if data.enrollmentTokens.length === 0}
-			<p class="empty">No active enrollment tokens.</p>
-		{:else}
-			<ul class="list">
-				{#each data.enrollmentTokens as tok (tok.id)}
-					<li class="row">
-						<div class="row-main">
-							<div class="row-title mono">{tok.token_prefix}…</div>
-							<div class="row-sub">
-								<span>Identity <span class="mono">{tok.identity_id}</span></span>
-								<span>Expires {formatTime(tok.expires_at)}</span>
-							</div>
-						</div>
-						<div class="row-actions">
-							<button class="btn" onclick={() => copy(tok.id, tok.token_prefix)}>
-								{copiedId === tok.id ? 'Copied' : 'Copy'}
-							</button>
-							<button
-								class="btn btn-danger"
-								disabled={busy === `tok:${tok.id}`}
-								onclick={() => revokeEnrollment(tok.id)}
-							>
-								Revoke
-							</button>
-						</div>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</div>
-
-	<!-- 5. Settings -->
+	<!-- 4. Settings -->
 	<div class="card">
 		<h2>Settings</h2>
 		<div class="settings-grid">

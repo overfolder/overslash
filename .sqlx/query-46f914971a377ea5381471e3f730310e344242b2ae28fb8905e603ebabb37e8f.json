@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE identities SET preferences = $2, updated_at = now() WHERE id = $1\n         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at",
+  "query": "UPDATE identities\n         SET preferences = COALESCE(preferences, '{}'::jsonb) || $2::jsonb,\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -115,5 +115,5 @@
       false
     ]
   },
-  "hash": "3c55e0a406a3adb8fa2ed1ebcd42b576eb6d46aa9c211fe877a1d288c1de11f7"
+  "hash": "46f914971a377ea5381471e3f730310e344242b2ae28fb8905e603ebabb37e8f"
 }

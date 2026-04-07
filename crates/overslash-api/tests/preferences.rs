@@ -80,6 +80,41 @@ async fn preferences_put_persists_and_merges_partial_updates() {
 }
 
 #[tokio::test]
+async fn preferences_concurrent_puts_do_not_clobber_each_other() {
+    // Race regression: two concurrent PUTs touching different keys must both
+    // survive. The previous read-modify-write path could lose one update.
+    let (base, client, token) = dev_session().await;
+
+    for _ in 0..5 {
+        let put_theme = client
+            .put(format!("{base}/auth/me/preferences"))
+            .header("cookie", format!("oss_session={token}"))
+            .json(&json!({ "theme": "dark" }))
+            .send();
+        let put_time = client
+            .put(format!("{base}/auth/me/preferences"))
+            .header("cookie", format!("oss_session={token}"))
+            .json(&json!({ "time_display": "absolute" }))
+            .send();
+        let (a, b) = tokio::join!(put_theme, put_time);
+        assert_eq!(a.unwrap().status(), 200);
+        assert_eq!(b.unwrap().status(), 200);
+    }
+
+    let final_state: Value = client
+        .get(format!("{base}/auth/me/preferences"))
+        .header("cookie", format!("oss_session={token}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(final_state["theme"], "dark");
+    assert_eq!(final_state["time_display"], "absolute");
+}
+
+#[tokio::test]
 async fn preferences_get_unauthenticated_returns_401() {
     let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
