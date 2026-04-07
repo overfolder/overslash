@@ -94,8 +94,10 @@
 
 	<!-- 2. Secrets -->
 	<div class="card">
-		<h2>My secrets</h2>
-		<p class="muted small">Secret values are never displayed. Stored in the org vault.</p>
+		<h2>Organization secrets</h2>
+		<p class="muted small">
+			Shared across the org. Values are never displayed. Only org admins can delete.
+		</p>
 		{#if data.secrets.length === 0}
 			<p class="empty">No secrets stored.</p>
 		{:else}
@@ -106,13 +108,15 @@
 							<div class="row-title mono">{secret.name}</div>
 							<div class="row-sub">v{secret.current_version}</div>
 						</div>
-						<button
-							class="btn btn-danger"
-							disabled={busy === `secret:${secret.name}`}
-							onclick={() => deleteSecret(secret.name)}
-						>
-							Delete
-						</button>
+						{#if profile.is_org_admin}
+							<button
+								class="btn btn-danger"
+								disabled={busy === `secret:${secret.name}`}
+								onclick={() => deleteSecret(secret.name)}
+							>
+								Delete
+							</button>
+						{/if}
 					</li>
 				{/each}
 			</ul>
