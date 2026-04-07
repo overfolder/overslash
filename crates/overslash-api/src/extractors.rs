@@ -56,7 +56,9 @@ impl FromRequestParts<AppState> for ClientIp {
 pub struct AuthContext {
     pub org_id: Uuid,
     pub identity_id: Option<Uuid>,
-    pub key_id: Uuid,
+    /// `None` when the caller authenticated via dashboard session cookie
+    /// (no API key was used).
+    pub key_id: Option<Uuid>,
 }
 
 /// Extractor that validates the API key and provides AuthContext.
@@ -67,6 +69,21 @@ impl FromRequestParts<AppState> for AuthContext {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        // Try JWT session cookie first (dashboard users). This mirrors
+        // `UserOrKeyAuth` so any v1 endpoint extracted via `AuthContext`
+        // works for the dashboard without needing an API key.
+        if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
+            let signing_key = hex::decode(&state.config.signing_key)
+                .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+            if let Ok(claims) = jwt::verify(&signing_key, &token) {
+                return Ok(AuthContext {
+                    org_id: claims.org,
+                    identity_id: Some(claims.sub),
+                    key_id: None,
+                });
+            }
+        }
+
         let auth_header = parts
             .headers
             .get("authorization")
@@ -176,7 +193,7 @@ impl FromRequestParts<AppState> for AuthContext {
         Ok(AuthContext {
             org_id: key_row.org_id,
             identity_id: key_row.identity_id,
-            key_id: key_row.id,
+            key_id: Some(key_row.id),
         })
     }
 }

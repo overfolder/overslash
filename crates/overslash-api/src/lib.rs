@@ -9,8 +9,13 @@ pub mod services;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::http::{HeaderValue, Method, header};
 use sqlx::PgPool;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 use crate::config::Config;
 use overslash_core::registry::ServiceRegistry;
@@ -136,13 +141,58 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
             middleware::rate_limit::rate_limit_middleware,
         ));
 
+    // Build allowed-origin matcher. `DASHBOARD_ORIGIN` accepts:
+    //   - "*localhost*" (default): any http(s) localhost / 127.0.0.1 origin on any port
+    //     — needed because worktrees pick dynamic dashboard ports.
+    //   - a comma-separated list of explicit origins (e.g. "https://app.example.com")
+    let allow_origin = {
+        let raw = state.config.dashboard_origin.trim().to_string();
+        if raw == "*localhost*" {
+            AllowOrigin::predicate(|origin: &HeaderValue, _req| {
+                origin
+                    .to_str()
+                    .map(|o| {
+                        o.starts_with("http://localhost:")
+                            || o.starts_with("http://127.0.0.1:")
+                            || o == "http://localhost"
+                            || o == "http://127.0.0.1"
+                    })
+                    .unwrap_or(false)
+            })
+        } else {
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    s.parse::<HeaderValue>()
+                        .map_err(|e| anyhow::anyhow!("invalid DASHBOARD_ORIGIN entry {s:?}: {e}"))
+                })
+                .collect::<anyhow::Result<_>>()?;
+            AllowOrigin::list(origins)
+        }
+    };
+
+    let cors = CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_credentials(true)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+
     let app = Router::new()
         .merge(routes::health::router())
         .merge(rate_limited_routes)
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     Ok(app)
 }

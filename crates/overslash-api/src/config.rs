@@ -17,6 +17,7 @@ pub struct Config {
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
     pub dashboard_url: String,
+    pub dashboard_origin: String,
     pub redis_url: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
@@ -51,6 +52,10 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
+            // "*localhost*" matches any http://localhost:<port> / http://127.0.0.1:<port>
+            // origin so that worktrees with dynamic dashboard ports work out of the box.
+            // In production set this to a comma-separated list of explicit origins.
+            dashboard_origin: env::var("DASHBOARD_ORIGIN").unwrap_or_else(|_| "*localhost*".into()),
             redis_url: env::var("REDIS_URL").ok(),
             default_rate_limit: env::var("DEFAULT_RATE_LIMIT")
                 .ok()
