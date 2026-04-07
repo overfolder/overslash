@@ -144,24 +144,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace
         env:
           RUST_LOG: warn
           # Write-action E2E tests (Resend, X, Google Calendar) are #[ignore]d.
-          # Run manually with: cargo test -- --ignored
+          # Run manually with: cargo nextest run --run-ignored only
 
   coverage:
     name: Coverage
     needs: changes
-    if: |
-      needs.changes.outputs.rust == 'true' && (
-        github.event_name == 'merge_group' ||
-        github.event_name == 'push' ||
-        (github.event_name == 'pull_request' && github.base_ref == 'master')
-      )
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: coverage-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     services:
       postgres:
         image: postgres:16-alpine
