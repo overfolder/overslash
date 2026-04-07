@@ -285,6 +285,7 @@ CREATE TABLE public.pending_enrollments (
     suggested_name text NOT NULL,
     platform text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    requester_ip text,
     status text DEFAULT 'pending'::text NOT NULL,
     approval_token text NOT NULL,
     poll_token_hash text NOT NULL,

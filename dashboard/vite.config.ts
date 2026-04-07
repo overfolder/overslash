@@ -20,6 +20,11 @@ export default defineConfig({
 			'/health': {
 				target: apiTarget,
 				changeOrigin: true
+			},
+			// Backend enrollment approval endpoints (consumed by /enroll/consent SvelteKit page)
+			'/enroll/approve': {
+				target: apiTarget,
+				changeOrigin: true
 			}
 		}
 	}

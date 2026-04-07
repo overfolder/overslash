@@ -17,7 +17,9 @@
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
 	const standalone = $derived(
-		$page.url.pathname === '/login' || $page.url.pathname.startsWith('/approvals/')
+		$page.url.pathname === '/login' ||
+			$page.url.pathname.startsWith('/approvals/') ||
+			$page.url.pathname.startsWith('/enroll/consent/')
 	);
 	const isAdmin = $derived(data?.user?.is_org_admin === true);
 	const collapsed = $derived($sidebarCollapsed);

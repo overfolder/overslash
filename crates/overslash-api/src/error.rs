@@ -24,6 +24,9 @@ pub enum AppError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("gone: {0}")]
+    Gone(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 
@@ -69,6 +72,7 @@ impl IntoResponse for AppError {
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             Self::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            Self::Gone(msg) => (StatusCode::GONE, msg.clone()),
             Self::Internal(msg) => {
                 tracing::error!("Internal error: {msg}");
                 (

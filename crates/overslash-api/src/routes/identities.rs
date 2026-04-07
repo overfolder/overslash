@@ -216,9 +216,12 @@ async fn create_identity(
 
 async fn list_identities(
     State(state): State<AppState>,
-    auth: AuthContext,
+    crate::extractors::OrgAcl { org_id, .. }: crate::extractors::OrgAcl,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    let rows = overslash_db::repos::identity::list_by_org(&state.db, auth.org_id).await?;
+    // Listing identities is a Read operation; OrgAcl resolves at least Read
+    // for any authenticated caller in the org and supports both API keys and
+    // dashboard sessions, so org membership is the right floor here.
+    let rows = overslash_db::repos::identity::list_by_org(&state.db, org_id).await?;
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
