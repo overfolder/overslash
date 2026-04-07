@@ -10,7 +10,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, UserOrKeyAuth, WriteAcl},
 };
 use overslash_core::crypto;
 
@@ -96,7 +96,7 @@ async fn get_secret(
 
 async fn list_secrets(
     State(state): State<AppState>,
-    auth: AuthContext,
+    auth: UserOrKeyAuth,
 ) -> Result<Json<Vec<SecretMetadata>>> {
     let rows = overslash_db::repos::secret::list_by_org(&state.db, auth.org_id).await?;
     Ok(Json(

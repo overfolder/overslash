@@ -13,7 +13,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl},
+    extractors::{AdminAcl, ClientIp, OrgAcl, UserOrKeyAuth},
 };
 
 pub fn router() -> Router<AppState> {
@@ -99,12 +99,12 @@ async fn create_permission(
 
 async fn list_permissions(
     State(state): State<AppState>,
-    auth: AuthContext,
+    auth: UserOrKeyAuth,
 ) -> Result<Json<Vec<PermissionResponse>>> {
     // For MVP, list all permissions for the calling identity
     let identity_id = auth
         .identity_id
-        .ok_or_else(|| crate::error::AppError::BadRequest("no identity on this key".into()))?;
+        .ok_or_else(|| crate::error::AppError::BadRequest("no identity on this caller".into()))?;
     let rows =
         overslash_db::repos::permission_rule::list_by_identity(&state.db, identity_id).await?;
     Ok(Json(
