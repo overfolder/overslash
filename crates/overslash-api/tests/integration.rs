@@ -2452,3 +2452,63 @@ async fn test_resolve_with_unrelated_broader_keys_still_fails() {
         "unrelated broader key should be rejected"
     );
 }
+
+#[tokio::test]
+async fn test_members_list_includes_extended_fields_and_api_keys() {
+    let pool = common::test_pool().await;
+    let (base, key, _org_id, _ident_id, _) = setup(pool).await;
+    let client = Client::new();
+
+    // Identities list should include the user created in setup, with extended fields present
+    let identities: Value = client
+        .get(format!("{base}/v1/identities"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let arr = identities.as_array().expect("array");
+    let user = arr
+        .iter()
+        .find(|i| i["kind"] == "user")
+        .expect("user identity present");
+
+    // Extended fields exist on the response (may be null but the keys must be present)
+    for k in [
+        "email",
+        "provider",
+        "picture",
+        "created_at",
+        "external_id",
+        "owner_id",
+    ] {
+        assert!(user.get(k).is_some(), "missing field {k}");
+    }
+    assert!(user["created_at"].is_string(), "created_at serialized");
+
+    // API keys list endpoint returns the org's keys without exposing raw secrets
+    let keys_resp: Value = client
+        .get(format!("{base}/v1/api-keys"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let keys = keys_resp.as_array().expect("array");
+    assert!(!keys.is_empty(), "should have at least the bootstrap key");
+    for k in keys {
+        assert!(k.get("key").is_none(), "raw key must never be returned");
+        assert!(
+            k.get("key_hash").is_none(),
+            "key_hash must never be returned"
+        );
+        assert!(k["key_prefix"].is_string());
+        assert!(k["created_at"].is_string());
+    }
+}

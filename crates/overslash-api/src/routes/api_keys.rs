@@ -1,5 +1,6 @@
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use overslash_db::repos::audit::{self, AuditEntry};
@@ -7,12 +8,45 @@ use overslash_db::repos::audit::{self, AuditEntry};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, OptionalOrgAcl},
+    extractors::{ClientIp, OptionalOrgAcl, OrgAcl},
 };
 use overslash_core::permissions::AccessLevel;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/api-keys", post(create_api_key))
+    Router::new().route("/v1/api-keys", get(list_api_keys).post(create_api_key))
+}
+
+#[derive(Serialize)]
+struct ApiKeySummary {
+    id: Uuid,
+    identity_id: Option<Uuid>,
+    name: String,
+    key_prefix: String,
+    created_at: OffsetDateTime,
+    last_used_at: Option<OffsetDateTime>,
+    revoked_at: Option<OffsetDateTime>,
+}
+
+impl From<overslash_db::repos::api_key::ApiKeyRow> for ApiKeySummary {
+    fn from(r: overslash_db::repos::api_key::ApiKeyRow) -> Self {
+        Self {
+            id: r.id,
+            identity_id: r.identity_id,
+            name: r.name,
+            key_prefix: r.key_prefix,
+            created_at: r.created_at,
+            last_used_at: r.last_used_at,
+            revoked_at: r.revoked_at,
+        }
+    }
+}
+
+async fn list_api_keys(
+    State(state): State<AppState>,
+    OrgAcl { org_id, .. }: OrgAcl,
+) -> Result<Json<Vec<ApiKeySummary>>> {
+    let rows = overslash_db::repos::api_key::list_by_org(&state.db, org_id).await?;
+    Ok(Json(rows.into_iter().map(ApiKeySummary::from).collect()))
 }
 
 #[derive(Deserialize)]
