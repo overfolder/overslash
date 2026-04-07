@@ -492,7 +492,7 @@ async fn test_org_level_key_acts_as_admin() {
 #[tokio::test]
 async fn test_agent_inherits_owner_acl() {
     let pool = common::test_pool().await;
-    let (base, client, _, write_key, _, org_key, user_ids) = bootstrap_acl(pool).await;
+    let (base, client, _, _write_key, _, org_key, user_ids) = bootstrap_acl(pool).await;
 
     // Create agent under write-level user
     let agent: Value = client
@@ -508,7 +508,7 @@ async fn test_agent_inherits_owner_acl() {
     let agent_id = agent["id"].as_str().unwrap();
 
     // Create agent-bound key
-    let agent_key_resp: Value = client
+    let _agent_key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .header(auth(&org_key).0, auth(&org_key).1)
         .json(&json!({"org_id": user_ids[1], "identity_id": agent_id, "name": "agent-key"}))

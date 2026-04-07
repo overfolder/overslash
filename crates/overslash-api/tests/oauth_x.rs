@@ -77,7 +77,7 @@ async fn test_oauth_x_callback_with_byoc() {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, ident_id, api_key, admin_key) =
+    let (org_id, ident_id, _api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
     // Create org-level BYOC credential for X
