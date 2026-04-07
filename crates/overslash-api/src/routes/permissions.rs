@@ -14,7 +14,7 @@ use overslash_db::repos::audit::AuditEntry;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -117,25 +117,26 @@ async fn list_permissions(
 }
 
 async fn delete_permission(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    acl: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    // Self-service revoke: any authenticated identity may delete a remembered
-    // approval rule that is bound to themselves. Cross-identity deletes still
-    // need an admin path; not exposed here.
-    let caller = auth
-        .identity_id
-        .ok_or_else(|| AppError::Forbidden("identity required".into()))?;
+    use overslash_core::permissions::AccessLevel;
 
     let rule = scope
         .get_permission_rule(id)
         .await?
         .ok_or_else(|| AppError::NotFound("permission rule not found".into()))?;
 
-    if rule.identity_id != caller {
+    // Allowed if (a) the caller owns this rule (self-service revoke from the
+    // profile page) or (b) the caller has admin ACL on the org.
+    let owns_it = acl
+        .identity_id
+        .map(|cid| cid == rule.identity_id)
+        .unwrap_or(false);
+    let is_admin = acl.access_level >= AccessLevel::Admin;
+    if !owns_it && !is_admin {
         return Err(AppError::Forbidden(
             "cannot delete a permission rule you do not own".into(),
         ));
@@ -144,10 +145,10 @@ async fn delete_permission(
     let deleted = scope.delete_permission_rule(id).await?;
 
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = scope
             .log_audit(AuditEntry {
-                org_id: auth.org_id,
-                identity_id: auth.identity_id,
+                org_id: acl.org_id,
+                identity_id: acl.identity_id,
                 action: "permission_rule.deleted",
                 resource_type: Some("permission_rule"),
                 resource_id: Some(id),

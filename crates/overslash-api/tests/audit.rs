@@ -1051,11 +1051,9 @@ async fn test_audit_permission_rule_deleted() {
     let perm: Value = resp.json().await.unwrap();
     let perm_id = perm["id"].as_str().unwrap();
 
-    // Self-service revoke: the user whose identity owns the rule deletes it
-    // with their own (non-admin) key, not the admin key.
     client
         .delete(format!("{base}/v1/permissions/{perm_id}"))
-        .header(auth(&key).0, auth(&key).1)
+        .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
