@@ -280,7 +280,7 @@ async fn execute_action(
                 let webhook_payload = serde_json::json!({
                     "approval_id": approval.id,
                     "identity_id": identity_id,
-                    "gap_identity": gap_identity_id,
+                    "gap_identity_id": gap_identity_id,
                     "current_resolver_identity_id": initial_resolver_id,
                     "action_summary": summary,
                     "permission_keys": keys,
