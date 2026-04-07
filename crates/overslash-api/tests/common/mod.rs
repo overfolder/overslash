@@ -54,17 +54,28 @@ async fn ensure_template(base_url: &str) {
         return;
     }
 
-    // Slow path: take exclusive advisory lock and re-check under the lock.
+    // Slow path: pin a single connection from the pool and take a
+    // session-scoped advisory lock on it. We must use one explicit connection
+    // (not the pool) so the matching unlock runs on the same connection.
+    // CREATE DATABASE cannot run inside a transaction block, so we use a
+    // session lock instead of an xact lock.
+    let mut conn = admin_pool.acquire().await.unwrap();
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(TEMPLATE_LOCK_KEY)
-        .execute(&admin_pool)
+        .execute(&mut *conn)
         .await
         .unwrap();
 
-    let needs_create = !template_exists(&admin_pool).await;
-    if needs_create {
+    let exists: Option<sqlx::postgres::PgRow> =
+        sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+            .bind(TEMPLATE_DB_NAME)
+            .fetch_optional(&mut *conn)
+            .await
+            .unwrap();
+
+    if exists.is_none() {
         sqlx::query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
-            .execute(&admin_pool)
+            .execute(&mut *conn)
             .await
             .unwrap();
         let tpl_url = replace_db_name(base_url, TEMPLATE_DB_NAME);
@@ -75,9 +86,10 @@ async fn ensure_template(base_url: &str) {
 
     sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(TEMPLATE_LOCK_KEY)
-        .execute(&admin_pool)
+        .execute(&mut *conn)
         .await
         .unwrap();
+    drop(conn);
     admin_pool.close().await;
 }
 
