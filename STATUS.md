@@ -4,6 +4,10 @@
 
 ---
 
+## Agent Tooling
+
+- **PR mergeability Stop hook** (`.claude/hooks/pr-mergeability-gate.sh`, wired in `.claude/settings.json`): blocks Claude Code task agents from ending their turn until the current branch's PR satisfies all three mergeability gates — CI green (waits up to 10 min for pending checks via `gh pr checks --watch`), no unresolved review conversations (GraphQL `reviewThreads.isResolved`), and no merge conflicts (`mergeStateStatus != CONFLICTING`). Capped at **N=5** block attempts per turn (tracked via `stop_hook_active` + a per-session counter under `$TMPDIR/overslash-pr-gate/`); after the 5th block the hook surfaces the failing gate(s) on stderr and allows the stop so a human can take over rather than looping forever. If there is no PR for the current branch, the hook is a no-op. The 'behind base' state is intentionally NOT gated — that is the merge queue task's responsibility.
+
 ## What Exists
 
 - [SPEC.md](SPEC.md) — Full product specification
