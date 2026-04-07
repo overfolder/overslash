@@ -39,10 +39,14 @@ struct IdentityResponse {
     name: String,
     kind: String,
     external_id: Option<String>,
+    email: Option<String>,
+    provider: Option<String>,
+    picture: Option<String>,
     parent_id: Option<Uuid>,
     depth: i32,
     owner_id: Option<Uuid>,
     inherit_permissions: bool,
+    created_at: String,
     last_active_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     archived_at: Option<String>,
@@ -57,16 +61,30 @@ fn fmt_rfc3339(t: time::OffsetDateTime) -> String {
 
 impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
     fn from(r: overslash_db::repos::identity::IdentityRow) -> Self {
+        let provider = r
+            .metadata
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let picture = r
+            .metadata
+            .get("picture")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
         Self {
             id: r.id,
             org_id: r.org_id,
             name: r.name,
             kind: r.kind,
             external_id: r.external_id,
+            email: r.email,
+            provider,
+            picture,
             parent_id: r.parent_id,
             depth: r.depth,
             owner_id: r.owner_id,
             inherit_permissions: r.inherit_permissions,
+            created_at: fmt_rfc3339(r.created_at),
             last_active_at: fmt_rfc3339(r.last_active_at),
             archived_at: r.archived_at.map(fmt_rfc3339),
             archived_reason: r.archived_reason,
