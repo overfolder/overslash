@@ -1,5 +1,90 @@
 // Mirrors backend Rust types from overslash-core and overslash-api
 
+// -- Service templates (catalog) --
+
+export type TemplateTier = 'global' | 'org' | 'user';
+
+export interface TemplateSummary {
+  key: string;
+  display_name: string;
+  description?: string | null;
+  category?: string | null;
+  hosts: string[];
+  action_count: number;
+  tier: TemplateTier;
+}
+
+export interface TemplateDetail {
+  key: string;
+  display_name: string;
+  description?: string | null;
+  category?: string | null;
+  hosts: string[];
+  auth: ServiceAuth[];
+  actions: Record<string, ServiceAction>;
+  tier: TemplateTier;
+  id?: string;
+}
+
+export interface ActionSummary {
+  key: string;
+  method: string;
+  path: string;
+  description: string;
+  risk: string;
+}
+
+// -- Service instances --
+
+export type ServiceStatus = 'draft' | 'active' | 'archived';
+
+export interface ServiceInstanceSummary {
+  id: string;
+  name: string;
+  template_source: string;
+  template_key: string;
+  status: ServiceStatus;
+  owner_identity_id?: string;
+  connection_id?: string;
+  secret_name?: string;
+}
+
+export interface ServiceInstanceDetail extends ServiceInstanceSummary {
+  org_id: string;
+  template_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateServiceRequest {
+  template_key: string;
+  name?: string;
+  connection_id?: string;
+  secret_name?: string;
+  status?: ServiceStatus;
+  user_level?: boolean;
+}
+
+export interface UpdateServiceRequest {
+  name?: string;
+  connection_id?: string | null;
+  secret_name?: string | null;
+}
+
+// -- OAuth --
+
+export interface InitiateConnectionRequest {
+  provider: string;
+  scopes?: string[];
+  byoc_credential_id?: string;
+}
+
+export interface InitiateConnectionResponse {
+  auth_url: string;
+  state: string;
+  provider: string;
+}
+
 export interface ServiceSummary {
   key: string;
   display_name: string;
