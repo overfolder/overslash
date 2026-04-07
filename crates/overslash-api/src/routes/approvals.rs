@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -86,11 +86,48 @@ async fn build_response(
     Ok(ApprovalResponse::from_row(row, identity_path))
 }
 
+#[derive(Deserialize)]
+struct ListQuery {
+    /// Optional visibility filter (SPEC §5.3):
+    ///   * `mine` — approvals the caller has requested (`identity_id = caller`)
+    ///   * `actionable` — approvals the caller can act on as the current
+    ///     resolver, or any descendant of theirs is the resolver. Excludes
+    ///     approvals the caller requested themselves.
+    ///
+    /// Unset preserves the legacy org-wide listing.
+    scope: Option<String>,
+}
+
 async fn list_approvals(
     State(state): State<AppState>,
     auth: AuthContext,
+    Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<ApprovalResponse>>> {
-    let rows = overslash_db::repos::approval::list_pending_by_org(&state.db, auth.org_id).await?;
+    let rows = match q.scope.as_deref() {
+        Some("mine") => {
+            let identity_id = auth.identity_id.ok_or_else(|| {
+                AppError::BadRequest("scope=mine requires an identity-bound api key".into())
+            })?;
+            overslash_db::repos::approval::list_mine(&state.db, auth.org_id, identity_id).await?
+        }
+        Some("actionable") => {
+            let identity_id = auth.identity_id.ok_or_else(|| {
+                AppError::BadRequest("scope=actionable requires an identity-bound api key".into())
+            })?;
+            overslash_db::repos::approval::list_actionable_for_identity(
+                &state.db,
+                auth.org_id,
+                identity_id,
+            )
+            .await?
+        }
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "invalid scope '{other}': expected 'mine' or 'actionable'"
+            )));
+        }
+        None => overslash_db::repos::approval::list_pending_by_org(&state.db, auth.org_id).await?,
+    };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         out.push(build_response(&state.db, row).await?);

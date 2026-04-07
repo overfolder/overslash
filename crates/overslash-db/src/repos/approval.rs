@@ -138,6 +138,65 @@ pub async fn list_pending_by_org(
     .await
 }
 
+/// List pending approvals requested by `identity_id` (`?scope=mine`).
+pub async fn list_mine(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+         FROM approvals
+         WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'
+         ORDER BY created_at DESC",
+        org_id,
+        identity_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// List pending approvals the caller can act on (`?scope=actionable`).
+///
+/// An approval is actionable for `caller_id` when:
+///   * `caller_id` is the current resolver, or any descendant of the caller is
+///     the current resolver (an ancestor can always step in for a descendant), AND
+///   * `caller_id` is NOT the requester (an identity may never resolve its own
+///     approval — SPEC §5).
+pub async fn list_actionable_for_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    caller_id: Uuid,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        r#"WITH RECURSIVE descendants AS (
+            SELECT id FROM identities WHERE id = $2
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN descendants d ON i.parent_id = d.id
+        )
+        SELECT a.id as "id!", a.org_id as "org_id!", a.identity_id as "identity_id!",
+               a.current_resolver_identity_id as "current_resolver_identity_id!",
+               a.resolver_assigned_at as "resolver_assigned_at!",
+               a.action_summary as "action_summary!", a.action_detail,
+               a.permission_keys as "permission_keys!", a.status as "status!",
+               a.resolved_at, a.resolved_by, a.remember as "remember!",
+               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!"
+        FROM approvals a
+        WHERE a.org_id = $1
+          AND a.status = 'pending'
+          AND a.identity_id <> $2
+          AND a.current_resolver_identity_id IN (SELECT id FROM descendants)
+        ORDER BY a.created_at DESC"#,
+        org_id,
+        caller_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// List pending approvals whose current resolver has held them longer than
 /// their org's `approval_auto_bubble_secs` setting (and the setting is non-zero).
 pub async fn list_pending_for_auto_bubble(pool: &PgPool) -> Result<Vec<ApprovalRow>, sqlx::Error> {
