@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { replaceState } from '$app/navigation';
 	import { session, ApiError } from '$lib/session';
 	import AuditFiltersBar from './AuditFilters.svelte';
 	import AuditRow from './AuditRow.svelte';
@@ -51,7 +51,10 @@
 
 	function applyFilters(next: AuditFilters) {
 		filters = next;
-		goto(`/audit${filtersToSearchString(next)}`, { keepFocus: true, noScroll: true, replaceState: true });
+		// Update the URL in place so filters are shareable, without re-running
+		// the page `load` function (which would duplicate the network request
+		// triggered by fetchPage below).
+		replaceState(`/audit${filtersToSearchString(next)}`, {});
 		fetchPage(true);
 	}
 
