@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use reqwest::Client;
 use serde_json::{Value, json};
-use sqlx::{PgPool, Row};
+use sqlx::{Connection, PgPool, Row};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -54,28 +54,33 @@ async fn ensure_template(base_url: &str) {
         return;
     }
 
-    // Slow path: pin a single connection from the pool and take a
-    // session-scoped advisory lock on it. We must use one explicit connection
-    // (not the pool) so the matching unlock runs on the same connection.
-    // CREATE DATABASE cannot run inside a transaction block, so we use a
-    // session lock instead of an xact lock.
-    let mut conn = admin_pool.acquire().await.unwrap();
+    // Slow path: take a session-scoped advisory lock on a single connection
+    // that we DETACH from the pool. Detaching is the panic-safety mechanism:
+    // if CREATE DATABASE or MIGRATOR.run() panics, the owned PgConnection is
+    // dropped, the underlying socket is closed, the Postgres session ends, and
+    // session-level advisory locks held by that session are released
+    // automatically. If we used a PoolConnection it would be returned to the
+    // pool on unwind with the lock still held.
+    //
+    // CREATE DATABASE can't run inside a transaction block, so we use a
+    // session lock instead of pg_advisory_xact_lock.
+    let mut conn = admin_pool.acquire().await.unwrap().detach();
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(TEMPLATE_LOCK_KEY)
-        .execute(&mut *conn)
+        .execute(&mut conn)
         .await
         .unwrap();
 
     let exists: Option<sqlx::postgres::PgRow> =
         sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
             .bind(TEMPLATE_DB_NAME)
-            .fetch_optional(&mut *conn)
+            .fetch_optional(&mut conn)
             .await
             .unwrap();
 
     if exists.is_none() {
         sqlx::query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
-            .execute(&mut *conn)
+            .execute(&mut conn)
             .await
             .unwrap();
         let tpl_url = replace_db_name(base_url, TEMPLATE_DB_NAME);
@@ -86,10 +91,10 @@ async fn ensure_template(base_url: &str) {
 
     sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(TEMPLATE_LOCK_KEY)
-        .execute(&mut *conn)
+        .execute(&mut conn)
         .await
         .unwrap();
-    drop(conn);
+    let _ = conn.close().await;
     admin_pool.close().await;
 }
 
