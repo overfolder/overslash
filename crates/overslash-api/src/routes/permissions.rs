@@ -12,7 +12,7 @@ use overslash_db::repos::audit::{self, AuditEntry};
 
 use crate::{
     AppState,
-    error::Result,
+    error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp},
 };
 
@@ -123,11 +123,27 @@ async fn list_permissions(
 
 async fn delete_permission(
     State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    auth: AuthContext,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let auth = acl;
+    // Self-service revoke: any authenticated identity may delete a remembered
+    // approval rule that is bound to themselves. Cross-identity deletes still
+    // need an admin path; not exposed here.
+    let caller = auth
+        .identity_id
+        .ok_or_else(|| AppError::Forbidden("identity required".into()))?;
+
+    let rule = overslash_db::repos::permission_rule::get_by_id(&state.db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("permission rule not found".into()))?;
+
+    if rule.org_id != auth.org_id || rule.identity_id != caller {
+        return Err(AppError::Forbidden(
+            "cannot delete a permission rule you do not own".into(),
+        ));
+    }
+
     let deleted = overslash_db::repos::permission_rule::delete(&state.db, id, auth.org_id).await?;
 
     if deleted {
