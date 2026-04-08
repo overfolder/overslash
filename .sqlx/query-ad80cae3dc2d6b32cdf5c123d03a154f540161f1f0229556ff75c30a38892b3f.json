@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT 1 as exists FROM identities WHERE parent_id = $1 LIMIT 1",
+  "query": "SELECT 1 as exists FROM identities\n         WHERE parent_id = $1 AND org_id = $2 AND archived_at IS NULL\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -11,6 +11,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -18,5 +19,5 @@
       null
     ]
   },
-  "hash": "74f366b404c4167a3bb68a3d57925044d325134d9223cd955efec6b2e9b4e0dc"
+  "hash": "ad80cae3dc2d6b32cdf5c123d03a154f540161f1f0229556ff75c30a38892b3f"
 }

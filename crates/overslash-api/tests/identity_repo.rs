@@ -350,6 +350,36 @@ async fn delete_leaf_blocks_when_children_exist() {
 }
 
 #[tokio::test]
+async fn delete_leaf_ignores_archived_children() {
+    // Archived sub-agents are soft-deleted from the user's perspective and
+    // would cascade-delete with the parent anyway. They must not block an
+    // admin from deleting the parent.
+    let pool = common::test_pool().await;
+    let scope = make_scope(&pool).await;
+    let alice = make_user(&scope, "alice").await;
+    let henry = make_agent(&scope, "henry", &alice).await;
+    let s1 = make_sub(&scope, "s1", &henry, alice.id).await;
+
+    // Manually flip the sub-agent to archived (the production path is
+    // archive_idle_subagents but we just need the column set).
+    sqlx::query!(
+        "UPDATE identities SET archived_at = now(), archived_reason = 'idle_timeout'
+         WHERE id = $1",
+        s1.id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // henry now only has an archived child — leaf delete must succeed.
+    let outcome = scope.delete_identity_leaf(henry.id).await.unwrap();
+    assert!(matches!(outcome, DeleteLeafOutcome::Deleted));
+
+    // The archived sub-agent cascade-deleted with its parent.
+    assert!(scope.get_identity(s1.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn delete_leaf_unknown_id_returns_not_found() {
     let pool = common::test_pool().await;
     let scope = make_scope(&pool).await;

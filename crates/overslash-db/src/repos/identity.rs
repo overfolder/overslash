@@ -593,9 +593,19 @@ pub(crate) async fn delete_leaf(
         return Ok(DeleteLeafOutcome::NotFound);
     }
 
+    // Only *live* children block deletion. Archived children (e.g.
+    // idle-cleanup'd sub-agents in their retention window) are
+    // semantically gone from the user's perspective and would cascade-
+    // delete with the parent via the FK anyway, so they must not block
+    // an admin's intentional delete. Add the `org_id` filter for
+    // defence-in-depth even though the FOR UPDATE on the parent row
+    // already gates cross-tenant access.
     let child = sqlx::query!(
-        "SELECT 1 as exists FROM identities WHERE parent_id = $1 LIMIT 1",
+        "SELECT 1 as exists FROM identities
+         WHERE parent_id = $1 AND org_id = $2 AND archived_at IS NULL
+         LIMIT 1",
         id,
+        org_id,
     )
     .fetch_optional(&mut *tx)
     .await?;
