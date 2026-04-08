@@ -35,7 +35,9 @@ export const getTemplateActions = (key: string) =>
 export const listServices = () => session.get<ServiceInstanceSummary[]>('/v1/services');
 
 export const getService = (name: string) =>
-	session.get<ServiceInstanceDetail>(`/v1/services/${encodeURIComponent(name)}`);
+	session.get<ServiceInstanceDetail>(
+		`/v1/services/${encodeURIComponent(name)}?include_inactive=true`
+	);
 
 export const createService = (req: CreateServiceRequest) =>
 	session.post<ServiceInstanceDetail>('/v1/services', req);

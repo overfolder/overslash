@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, patch, put},
 };
 use serde::{Deserialize, Serialize};
@@ -140,21 +140,36 @@ async fn list_services(
     Ok(Json(services))
 }
 
+#[derive(Deserialize, Default)]
+struct GetServiceQuery {
+    /// When true, also resolve draft and archived instances. Used by the
+    /// dashboard's detail view; execution callers leave this off so the
+    /// active-only contract is preserved.
+    #[serde(default)]
+    include_inactive: bool,
+}
+
 /// Get a service instance by name using user-shadows-org resolution.
+///
+/// By default only resolves active instances (execution semantics). Pass
+/// `?include_inactive=true` to also resolve draft and archived rows.
 async fn get_service(
     State(state): State<AppState>,
     auth: AuthContext,
     Path(name): Path<String>,
+    Query(q): Query<GetServiceQuery>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    // Use the any-status resolver so the dashboard can view draft and archived
-    // instances. resolve_by_name() filters to active and is reserved for execution.
-    let row = service_instance::resolve_by_name_any_status(
-        &state.db,
-        auth.org_id,
-        auth.identity_id,
-        &name,
-    )
-    .await?
+    let row = if q.include_inactive {
+        service_instance::resolve_by_name_any_status(
+            &state.db,
+            auth.org_id,
+            auth.identity_id,
+            &name,
+        )
+        .await?
+    } else {
+        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name).await?
+    }
     .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
     Ok(Json(row_to_detail(row)))
 }
