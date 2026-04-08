@@ -70,7 +70,13 @@ extern "C" fn run_cleanup() {
     let Some(m) = CLEANUP.get() else {
         return;
     };
-    let dbs = std::mem::take(&mut *m.lock().unwrap());
+    // Recover from a poisoned lock: under `cargo test` (multi-thread), a
+    // panic in one test could poison the mutex. We must not panic from this
+    // extern "C" function — that would cross an FFI boundary and abort the
+    // process — so unwrap_or_else into the inner data instead.
+    let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+    let dbs = std::mem::take(&mut *guard);
+    drop(guard);
     if dbs.is_empty() {
         return;
     }
