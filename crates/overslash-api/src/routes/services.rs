@@ -289,9 +289,14 @@ async fn delete_service(
             .filter(|r| r.org_id == auth.org_id)
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
-        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
+        service_instance::resolve_by_name_any_status(
+            &state.db,
+            auth.org_id,
+            auth.identity_id,
+            &name,
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
 
     // Prevent deletion of system services (overslash)
@@ -312,11 +317,16 @@ async fn list_service_actions(
     auth: AuthContext,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
-    // Resolve the instance to get the template key
-    let instance =
-        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    // Resolve the instance to get the template key (any status — dashboard
+    // inspection of draft/archived must also work).
+    let instance = service_instance::resolve_by_name_any_status(
+        &state.db,
+        auth.org_id,
+        auth.identity_id,
+        &name,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
     super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
         .await
