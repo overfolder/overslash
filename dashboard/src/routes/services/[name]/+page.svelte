@@ -191,8 +191,12 @@
 			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `OAuth failed (${e.status})` : 'OAuth failed';
 		} finally {
-			if (reconnectAbort === ctrl) reconnectAbort = null;
-			if (!ctrl.signal.aborted) connecting = false;
+			// Same pattern as services/new: clear connecting on the abort path
+			// too, but only if we're still the active controller.
+			if (reconnectAbort === ctrl) {
+				reconnectAbort = null;
+				connecting = false;
+			}
 		}
 	}
 

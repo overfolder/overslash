@@ -185,8 +185,13 @@
 			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `OAuth failed (${e.status})` : 'OAuth failed';
 		} finally {
-			if (oauthAbort === ctrl) oauthAbort = null;
-			if (!ctrl.signal.aborted) connectingOAuth = false;
+			// If a newer startOAuth call has replaced us, leave its state alone.
+			// Otherwise always clear connectingOAuth — including the abort path,
+			// so the user can retry after clicking Back.
+			if (oauthAbort === ctrl) {
+				oauthAbort = null;
+				connectingOAuth = false;
+			}
 		}
 	}
 
