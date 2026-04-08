@@ -24,19 +24,20 @@ export const listTemplates = () => session.get<TemplateSummary[]>('/v1/templates
 export const searchTemplates = (q: string) =>
 	session.get<TemplateSummary[]>(`/v1/templates/search?q=${encodeURIComponent(q)}`);
 
-export const getTemplate = (key: string) =>
-	session.get<TemplateDetail>(`/v1/templates/${encodeURIComponent(key)}`);
+export const getTemplate = (key: string, signal?: AbortSignal) =>
+	session.get<TemplateDetail>(`/v1/templates/${encodeURIComponent(key)}`, signal);
 
-export const getTemplateActions = (key: string) =>
-	session.get<ActionSummary[]>(`/v1/templates/${encodeURIComponent(key)}/actions`);
+export const getTemplateActions = (key: string, signal?: AbortSignal) =>
+	session.get<ActionSummary[]>(`/v1/templates/${encodeURIComponent(key)}/actions`, signal);
 
 // -- Service instances --
 
 export const listServices = () => session.get<ServiceInstanceSummary[]>('/v1/services');
 
-export const getService = (name: string) =>
+export const getService = (name: string, signal?: AbortSignal) =>
 	session.get<ServiceInstanceDetail>(
-		`/v1/services/${encodeURIComponent(name)}?include_inactive=true`
+		`/v1/services/${encodeURIComponent(name)}?include_inactive=true`,
+		signal
 	);
 
 export const createService = (req: CreateServiceRequest) =>
@@ -48,11 +49,17 @@ export const updateService = (id: string, patch: UpdateServiceRequest) =>
 export const setServiceStatus = (id: string, status: ServiceStatus) =>
 	session.patch<ServiceInstanceDetail>(`/v1/services/${id}/status`, { status });
 
-export const deleteService = (name: string) =>
-	session.delete<{ deleted: boolean }>(`/v1/services/${encodeURIComponent(name)}`);
+/**
+ * Delete a service instance. Always pass the instance UUID — never the name —
+ * because the backend's name-based resolution uses user-shadows-org semantics
+ * and would delete a user-owned instance that happens to share a name with the
+ * org-level row the user actually clicked.
+ */
+export const deleteService = (id: string) =>
+	session.delete<{ deleted: boolean }>(`/v1/services/${id}`);
 
-export const getServiceActions = (name: string) =>
-	session.get<ActionSummary[]>(`/v1/services/${encodeURIComponent(name)}/actions`);
+export const getServiceActions = (name: string, signal?: AbortSignal) =>
+	session.get<ActionSummary[]>(`/v1/services/${encodeURIComponent(name)}/actions`, signal);
 
 // -- OAuth connections --
 
