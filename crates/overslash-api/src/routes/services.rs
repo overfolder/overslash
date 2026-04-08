@@ -141,8 +141,10 @@ async fn get_service(
     scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<ServiceInstanceDetail>> {
+    // Use the any-status resolver so the dashboard can view draft and archived
+    // instances. resolve_by_name filters to active and is reserved for execution.
     let row = scope
-        .resolve_service_instance_by_name(auth.identity_id, &name)
+        .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
     Ok(Json(row_to_detail(row)))
