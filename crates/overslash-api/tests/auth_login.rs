@@ -140,6 +140,58 @@ async fn me_returns_401_with_invalid_token() {
     assert_eq!(resp.status(), 401);
 }
 
+#[tokio::test]
+async fn dev_user_is_org_admin_via_me_identity() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let token_resp: Value = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = token_resp["token"].as_str().unwrap();
+
+    // First call: dev user freshly bootstrapped → should be org admin.
+    let me1: Value = client
+        .get(format!("{base}/auth/me/identity"))
+        .header("cookie", format!("oss_session={token}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me1["is_org_admin"], true);
+    assert_eq!(me1["email"], "dev@overslash.local");
+
+    // Second dev login: existing-user branch must also keep admin status
+    // (verifies the idempotent re-bootstrap on the existing path).
+    let token2: Value = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token2_str = token2["token"].as_str().unwrap();
+    let me2: Value = client
+        .get(format!("{base}/auth/me/identity"))
+        .header("cookie", format!("oss_session={token2_str}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me2["is_org_admin"], true);
+    assert_eq!(me2["identity_id"], me1["identity_id"]);
+}
+
 // --- Google login (without credentials) ---
 
 #[tokio::test]

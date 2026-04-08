@@ -312,6 +312,29 @@ pub(crate) async fn count_members_in_group(
     Ok(row.count.unwrap_or(0))
 }
 
+/// Check whether an identity is a member of the system "Admins" group of an org.
+pub(crate) async fn is_identity_in_admins(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT 1 AS one
+         FROM identity_groups ig
+         JOIN groups g ON g.id = ig.group_id
+         WHERE ig.identity_id = $1
+           AND g.org_id = $2
+           AND g.name = 'Admins'
+           AND g.is_system = true
+         LIMIT 1",
+        identity_id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Find the system group named "Everyone" for an org.
 pub(crate) async fn find_everyone_group(
     pool: &PgPool,

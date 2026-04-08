@@ -394,6 +394,7 @@ async fn me_identity(
         .get_identity(claims.sub)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
 
     let org_row = org::get_by_id(&state.db, ident.org_id).await?;
     let picture = ident
@@ -411,6 +412,7 @@ async fn me_identity(
         "name": ident.name,
         "kind": ident.kind,
         "external_id": ident.external_id,
+        "is_org_admin": is_org_admin,
         "picture": picture,
     })))
 }
@@ -428,6 +430,15 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
     let system = SystemScope::new_internal(state.db.clone());
     let (org_id, identity_id) =
         if let Some(existing) = system.find_user_identity_by_email(dev_email).await? {
+            // Re-run bootstrap so the dev user is always an org admin, even if it
+            // pre-existed the bootstrap logic or was created before joining Admins.
+            // bootstrap_org is idempotent.
+            overslash_db::repos::org_bootstrap::bootstrap_org(
+                &state.db,
+                existing.org_id,
+                Some(existing.id),
+            )
+            .await?;
             (existing.org_id, existing.id)
         } else {
             match org::create(&state.db, "Dev Org", "dev-org").await {
@@ -456,6 +467,12 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                         .find_user_identity_by_email(dev_email)
                         .await?
                         .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
+                    overslash_db::repos::org_bootstrap::bootstrap_org(
+                        &state.db,
+                        existing.org_id,
+                        Some(existing.id),
+                    )
+                    .await?;
                     (existing.org_id, existing.id)
                 }
                 Err(e) => return Err(e.into()),
