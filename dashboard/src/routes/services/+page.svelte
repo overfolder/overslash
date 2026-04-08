@@ -123,7 +123,7 @@
 		const target = pendingDelete;
 		pendingDelete = null;
 		try {
-			await deleteService(target.name);
+			await deleteService(target.id);
 			services = services.filter((s) => s.id !== target.id);
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to delete (${e.status})` : 'Failed to delete service';

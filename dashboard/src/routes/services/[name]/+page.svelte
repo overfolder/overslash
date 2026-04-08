@@ -38,6 +38,7 @@
 	let saving = $state(false);
 	let connecting = $state(false);
 	let reconnectAbort: AbortController | null = null;
+	let loadAbort: AbortController | null = null;
 	let destroyed = false;
 	let confirmDelete = $state(false);
 	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
@@ -58,6 +59,11 @@
 	});
 
 	async function load() {
+		// Cancel any in-flight load from a previous service navigation so
+		// stale responses can't clobber the newly-loaded state.
+		loadAbort?.abort();
+		const ctrl = new AbortController();
+		loadAbort = ctrl;
 		// Reset per-service UI state when navigating between detail pages.
 		reconnectAbort?.abort();
 		reconnectAbort = null;
@@ -66,23 +72,27 @@
 		loading = true;
 		error = null;
 		try {
-			const fresh = await getService(name);
+			const fresh = await getService(name, ctrl.signal);
+			if (ctrl.signal.aborted) return;
 			svc = fresh;
 			editName = fresh.name;
 			editConnection = fresh.connection_id ?? '';
 			editSecret = fresh.secret_name ?? '';
 			const [tpl, acts, conns] = await Promise.all([
-				getTemplate(fresh.template_key).catch(() => null),
-				getServiceActions(fresh.name).catch(() => [] as ActionSummary[]),
-				listConnections().catch(() => [] as ConnectionSummary[])
+				getTemplate(fresh.template_key, ctrl.signal).catch(() => null),
+				getServiceActions(fresh.name, ctrl.signal).catch(() => [] as ActionSummary[]),
+				listConnections(ctrl.signal).catch(() => [] as ConnectionSummary[])
 			]);
+			if (ctrl.signal.aborted) return;
 			template = tpl;
 			actions = acts;
 			connections = conns;
 		} catch (e) {
+			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `Failed to load service (${e.status})` : 'Failed to load service';
 		} finally {
-			loading = false;
+			if (loadAbort === ctrl) loadAbort = null;
+			if (!ctrl.signal.aborted) loading = false;
 		}
 	}
 
@@ -190,7 +200,7 @@
 		if (!svc) return;
 		confirmDelete = false;
 		try {
-			await deleteService(svc.name);
+			await deleteService(svc.id);
 			await goto('/services');
 		} catch (e) {
 			error = e instanceof ApiError ? `Delete failed (${e.status})` : 'Delete failed';
@@ -207,6 +217,7 @@
 	onDestroy(() => {
 		destroyed = true;
 		reconnectAbort?.abort();
+		loadAbort?.abort();
 	});
 </script>
 
