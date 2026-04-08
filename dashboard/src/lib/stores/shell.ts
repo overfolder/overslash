@@ -46,19 +46,31 @@ let suppressSync = false;
 /** Pull user preferences from the backend and apply to local stores. Idempotent. */
 export async function hydrateUserPreferences(): Promise<void> {
 	if (preferencesHydrated) return;
-	preferencesHydrated = true;
+	let prefs: UserPreferences;
 	try {
-		const prefs = await session.get<UserPreferences>('/auth/me/preferences');
-		suppressSync = true;
+		prefs = await session.get<UserPreferences>('/auth/me/preferences');
+	} catch {
+		/* not authenticated or backend down — keep local values, allow retry */
+		return;
+	}
+	// Only mark hydrated once the fetch has actually succeeded, otherwise a
+	// transient backend error would lock the user out of their saved prefs
+	// for the rest of the session.
+	preferencesHydrated = true;
+	suppressSync = true;
+	try {
 		if (prefs.theme === 'light' || prefs.theme === 'dark') {
 			theme.set(prefs.theme);
 		}
 		if (prefs.time_display === 'relative' || prefs.time_display === 'absolute') {
 			timeFormat.set(prefs.time_display);
 		}
+	} finally {
+		// `persisted()` writes to localStorage in its subscriber, which can
+		// throw (quota exceeded, private-mode Safari). Use `finally` so a
+		// throw can't strand `suppressSync = true` and silently disable all
+		// future preference syncing for the session.
 		suppressSync = false;
-	} catch {
-		/* not authenticated or backend down — keep local values */
 	}
 }
 
