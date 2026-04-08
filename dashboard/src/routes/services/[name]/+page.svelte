@@ -80,7 +80,9 @@
 			editSecret = fresh.secret_name ?? '';
 			const [tpl, acts, conns] = await Promise.all([
 				getTemplate(fresh.template_key, ctrl.signal).catch(() => null),
-				getServiceActions(fresh.name, ctrl.signal).catch(() => [] as ActionSummary[]),
+				// Use svc.id (not name) so user-shadows-org can't return actions
+				// from a same-named user instance.
+				getServiceActions(fresh.id, ctrl.signal).catch(() => [] as ActionSummary[]),
 				listConnections(ctrl.signal).catch(() => [] as ConnectionSummary[])
 			]);
 			if (ctrl.signal.aborted) return;

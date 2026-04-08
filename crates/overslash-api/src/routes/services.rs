@@ -154,7 +154,11 @@ async fn get_service(
     Path(name): Path<String>,
     Query(q): Query<GetServiceQuery>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    let row = if q.include_inactive {
+    // Accept either a UUID or a name. Callers that already have the id should
+    // pass it to avoid the user-shadows-org name resolution semantics.
+    let row = if let Ok(uuid) = name.parse::<Uuid>() {
+        scope.get_service_instance(uuid).await?
+    } else if q.include_inactive {
         scope
             .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
             .await?
@@ -321,12 +325,16 @@ async fn list_service_actions(
     scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
-    // Resolve the instance to get the template key (any status — dashboard
-    // inspection of draft/archived must also work).
-    let instance = scope
-        .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    // Accept either a UUID or a name (any status — dashboard inspection of
+    // draft/archived must also work).
+    let instance = if let Ok(uuid) = name.parse::<Uuid>() {
+        scope.get_service_instance(uuid).await?
+    } else {
+        scope
+            .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
+            .await?
+    }
+    .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
     super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
         .await
