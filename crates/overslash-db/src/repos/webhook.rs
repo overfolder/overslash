@@ -93,6 +93,39 @@ pub(crate) async fn find_matching_subscriptions(
     .await
 }
 
+pub(crate) async fn list_deliveries_for_subscription(
+    pool: &PgPool,
+    subscription_id: Uuid,
+    org_id: Uuid,
+    limit: i64,
+) -> Result<Option<Vec<WebhookDeliveryRow>>, sqlx::Error> {
+    // Run ownership check and the delivery fetch in a single transaction so a
+    // concurrent delete cannot turn a 404 into an empty 200.
+    let mut tx = pool.begin().await?;
+    let owner = sqlx::query_scalar!(
+        "SELECT org_id FROM webhook_subscriptions WHERE id = $1 FOR SHARE",
+        subscription_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if owner != Some(org_id) {
+        return Ok(None);
+    }
+    let rows = sqlx::query_as!(
+        WebhookDeliveryRow,
+        "SELECT id, subscription_id, event, payload, status_code, response_body, attempts,
+                next_retry_at, delivered_at, created_at
+         FROM webhook_deliveries WHERE subscription_id = $1
+         ORDER BY created_at DESC LIMIT $2",
+        subscription_id,
+        limit,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(rows))
+}
+
 pub(crate) async fn create_delivery(
     pool: &PgPool,
     subscription_id: Uuid,

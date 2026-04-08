@@ -1,5 +1,46 @@
 // Mirrors backend Rust types from overslash-core and overslash-api
 
+export interface OrgInfo {
+  id: string;
+  name: string;
+  slug: string;
+  subagent_idle_timeout_secs: number;
+  subagent_archive_retention_days: number;
+}
+
+export interface IdpConfig {
+  id?: string;
+  org_id?: string;
+  provider_key: string;
+  display_name: string;
+  source: 'env' | 'db';
+  enabled?: boolean;
+  allowed_email_domains?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface Webhook {
+  id: string;
+  url: string;
+  events: string[];
+  active: boolean;
+}
+
+export interface WebhookCreated extends Webhook {
+  secret?: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  event: string;
+  status_code: number | null;
+  attempts: number;
+  delivered_at: string | null;
+  created_at: string;
+  next_retry_at: string | null;
+}
+
 // -- Service templates (catalog) --
 
 export type TemplateTier = 'global' | 'org' | 'user';

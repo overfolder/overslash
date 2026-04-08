@@ -9,7 +9,7 @@
 
 use uuid::Uuid;
 
-use crate::repos::webhook::WebhookSubscriptionRow;
+use crate::repos::webhook::{WebhookDeliveryRow, WebhookSubscriptionRow};
 use crate::scopes::OrgScope;
 
 impl OrgScope {
@@ -35,6 +35,22 @@ impl OrgScope {
     /// if the id belongs to another tenant.
     pub async fn delete_webhook_subscription(&self, id: Uuid) -> Result<bool, sqlx::Error> {
         crate::repos::webhook::delete_subscription(self.db(), id, self.org_id()).await
+    }
+
+    /// List recent deliveries for a subscription in this org. Returns `None`
+    /// if the subscription does not exist or belongs to another tenant.
+    pub async fn list_webhook_deliveries(
+        &self,
+        subscription_id: Uuid,
+        limit: i64,
+    ) -> Result<Option<Vec<WebhookDeliveryRow>>, sqlx::Error> {
+        crate::repos::webhook::list_deliveries_for_subscription(
+            self.db(),
+            subscription_id,
+            self.org_id(),
+            limit,
+        )
+        .await
     }
 
     /// Find active subscriptions in this org listening for the given event.

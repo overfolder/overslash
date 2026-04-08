@@ -979,6 +979,53 @@ async fn test_webhook_dispatch_on_approval_resolve() {
     );
 }
 
+#[tokio::test]
+async fn test_list_webhook_deliveries_empty_for_new_subscription() {
+    let pool = common::test_pool().await;
+    let (base, _key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let wh: Value = client
+        .post(format!("{base}/v1/webhooks"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "url": "http://example.invalid/hook",
+            "events": ["approval.resolved"]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        wh["secret"].is_string(),
+        "create response must include the signing secret"
+    );
+    let id = wh["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/webhooks/{id}/deliveries"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.is_array());
+    assert_eq!(body.as_array().unwrap().len(), 0);
+
+    // Cross-org / unknown id → 404
+    let bogus = uuid::Uuid::new_v4();
+    let resp = client
+        .get(format!("{base}/v1/webhooks/{bogus}/deliveries"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
 // ============================================================================
 // OAuth Tests
 // ============================================================================
