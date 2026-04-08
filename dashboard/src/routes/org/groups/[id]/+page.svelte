@@ -200,6 +200,13 @@
 			<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
 		</header>
 
+		{#if error}
+			<div class="err" role="alert">
+				<span>{error}</span>
+				<button type="button" class="dismiss" onclick={() => (error = null)}>Dismiss</button>
+			</div>
+		{/if}
+
 		<section class="card">
 			<h2>Details</h2>
 			<form onsubmit={saveMeta} class="form">
@@ -521,5 +528,17 @@
 		background: rgba(230, 56, 54, 0.06);
 		color: var(--color-danger);
 		font: var(--text-body-sm);
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: var(--space-3);
+	}
+	.dismiss {
+		background: none;
+		border: 0;
+		color: var(--color-danger);
+		font: var(--text-body-sm);
+		cursor: pointer;
+		text-decoration: underline;
 	}
 </style>
