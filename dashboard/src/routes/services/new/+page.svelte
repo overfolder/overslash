@@ -348,7 +348,14 @@
 			{/if}
 
 			<div class="actions">
-				<button type="button" class="btn" onclick={() => (step = 'pick')}>Back</button>
+				<button
+					type="button"
+					class="btn"
+					onclick={() => {
+						oauthAbort?.abort();
+						step = 'pick';
+					}}>Back</button
+				>
 				<button
 					type="button"
 					class="btn primary"
