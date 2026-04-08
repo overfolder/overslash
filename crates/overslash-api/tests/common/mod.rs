@@ -182,6 +182,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -253,6 +254,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -711,6 +713,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -779,6 +782,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, created_at, updated_at\n         FROM identities WHERE parent_id = $1 AND org_id = $2 ORDER BY created_at",
+  "query": "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at\n             FROM identities WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -75,11 +75,16 @@
       },
       {
         "ordinal": 14,
+        "name": "preferences",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -106,8 +111,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "a5926e45c5d9c9111ce58dcfe431bdd53141ba60838136c262c0b80e2ed23d05"
+  "hash": "2ae8d37f105aa9aaaba3b905d64af0b238e4785b8067a2ecd1920827dcf5c5bc"
 }

@@ -8,7 +8,8 @@
 		sidebarCollapsed,
 		theme,
 		startNotificationPolling,
-		stopNotificationPolling
+		stopNotificationPolling,
+		hydrateUserPreferences
 	} from '$lib/stores/shell';
 	import Sidebar from '$lib/components/shell/Sidebar.svelte';
 	import TopBar from '$lib/components/shell/TopBar.svelte';
@@ -27,6 +28,12 @@
 	$effect(() => {
 		if (typeof document !== 'undefined') {
 			document.documentElement.dataset.theme = $theme;
+		}
+	});
+
+	$effect(() => {
+		if (data?.user) {
+			void hydrateUserPreferences();
 		}
 	});
 

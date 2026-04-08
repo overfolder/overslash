@@ -396,14 +396,24 @@ async fn me_identity(
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
 
+    let org_row = org::get_by_id(&state.db, ident.org_id).await?;
+    let picture = ident
+        .metadata
+        .get("picture")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
+        "org_name": org_row.as_ref().map(|o| o.name.clone()),
+        "org_slug": org_row.as_ref().map(|o| o.slug.clone()),
         "email": claims.email,
         "name": ident.name,
         "kind": ident.kind,
         "external_id": ident.external_id,
         "is_org_admin": is_org_admin,
+        "picture": picture,
     })))
 }
 

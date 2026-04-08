@@ -53,4 +53,15 @@ impl OrgScope {
     pub async fn delete_permission_rule(&self, id: Uuid) -> Result<bool, sqlx::Error> {
         permission_rule::delete(self.db(), self.org_id(), id).await
     }
+
+    /// Look up a single rule by id, scoped to this org. Used when a handler
+    /// needs to make an authorization decision based on the rule's owner
+    /// (e.g. self-service revoke). A row id belonging to another tenant
+    /// returns `None`.
+    pub async fn get_permission_rule(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<PermissionRuleRow>, sqlx::Error> {
+        permission_rule::get_by_id(self.db(), self.org_id(), id).await
+    }
 }
