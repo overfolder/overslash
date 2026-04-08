@@ -12,8 +12,8 @@ export const NAV_ITEMS: NavItemDef[] = [
 ];
 
 export const ADMIN_NAV_ITEMS: NavItemDef[] = [
-	{ href: '/org', label: 'Org Dashboard', icon: '⚙' },
-	{ href: '/members', label: 'Members', icon: '◉' }
+	{ href: '/members', label: 'Members', icon: '◉' },
+	{ href: '/org/groups', label: 'Groups', icon: '◈' }
 ];
 
 export function isActive(pathname: string, href: string): boolean {
