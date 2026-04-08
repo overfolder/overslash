@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/session';
 	import {
@@ -39,6 +39,7 @@
 	let userLevel = $state(true);
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
+	let oauthAbort: AbortController | null = null;
 
 	const filteredTemplates = $derived(
 		templates.filter((t) => tierFilter === 'all' || t.tier === tierFilter)
@@ -104,24 +105,36 @@
 
 	async function startOAuth() {
 		if (!oauthProvider) return;
+		oauthAbort?.abort();
+		const ctrl = new AbortController();
+		oauthAbort = ctrl;
 		connectingOAuth = true;
 		error = null;
 		try {
 			const beforeIds = new Set(connections.map((c) => c.id));
-			const resp = await initiateOAuth({ provider: oauthProvider.provider });
+			const resp = await initiateOAuth({ provider: oauthProvider.provider }, ctrl.signal);
+			if (ctrl.signal.aborted) return;
 			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
 			if (!popup) {
 				error = 'Pop-up blocked. Allow pop-ups and try again.';
-				connectingOAuth = false;
 				return;
 			}
 			const deadline = Date.now() + 90_000;
 			while (Date.now() < deadline) {
+				if (ctrl.signal.aborted) {
+					try {
+						popup.close();
+					} catch {
+						/* ignore */
+					}
+					return;
+				}
 				await new Promise((r) => setTimeout(r, 1500));
+				if (ctrl.signal.aborted) return;
 				try {
-					connections = await listConnections();
+					connections = await listConnections(ctrl.signal);
 				} catch {
-					/* ignore transient */
+					if (ctrl.signal.aborted) return;
 				}
 				const fresh = connections.find(
 					(c) => !beforeIds.has(c.id) && c.provider_key === oauthProvider.provider
@@ -133,18 +146,25 @@
 					} catch {
 						/* ignore */
 					}
-					connectingOAuth = false;
 					return;
 				}
 				if (popup.closed) break;
 			}
-			error = 'OAuth did not complete in time. Try again.';
+			if (!ctrl.signal.aborted) {
+				error = 'OAuth did not complete in time. Try again.';
+			}
 		} catch (e) {
+			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `OAuth failed (${e.status})` : 'OAuth failed';
 		} finally {
-			connectingOAuth = false;
+			if (oauthAbort === ctrl) oauthAbort = null;
+			if (!ctrl.signal.aborted) connectingOAuth = false;
 		}
 	}
+
+	onDestroy(() => {
+		oauthAbort?.abort();
+	});
 
 	async function submit() {
 		if (!selectedDetail) return;
