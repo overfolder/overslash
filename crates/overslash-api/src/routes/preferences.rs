@@ -34,6 +34,27 @@ fn merge(existing: UserPreferences, patch: UserPreferences) -> UserPreferences {
     }
 }
 
+async fn get_preferences(scope: UserScope) -> Result<Json<UserPreferences>> {
+    let ident = scope
+        .get_self_identity()
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    Ok(Json(parse(&ident.preferences)))
+}
+
+async fn put_preferences(
+    scope: UserScope,
+    Json(patch): Json<UserPreferences>,
+) -> Result<Json<UserPreferences>> {
+    let updated = scope
+        .update_self_preferences(|existing| {
+            let merged = merge(parse(existing), patch.clone());
+            serde_json::to_value(&merged).unwrap_or(serde_json::Value::Null)
+        })
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    Ok(Json(parse(&updated.preferences)))
+}
 #[cfg(test)]
 mod unit {
     use super::*;
@@ -108,26 +129,4 @@ mod unit {
         let s = serde_json::to_string(&UserPreferences::default()).unwrap();
         assert_eq!(s, "{}");
     }
-}
-
-async fn get_preferences(scope: UserScope) -> Result<Json<UserPreferences>> {
-    let ident = scope
-        .get_self_identity()
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    Ok(Json(parse(&ident.preferences)))
-}
-
-async fn put_preferences(
-    scope: UserScope,
-    Json(patch): Json<UserPreferences>,
-) -> Result<Json<UserPreferences>> {
-    let updated = scope
-        .update_self_preferences(|existing| {
-            let merged = merge(parse(existing), patch.clone());
-            serde_json::to_value(&merged).unwrap_or(serde_json::Value::Null)
-        })
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    Ok(Json(parse(&updated.preferences)))
 }
