@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE secret_requests SET fulfilled_at = now() WHERE id = $1 AND fulfilled_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "034de7e5290a1685c645d2f1a4ede3350feb9d68aaf8b1c3decd2c8cfee4e834"
+}

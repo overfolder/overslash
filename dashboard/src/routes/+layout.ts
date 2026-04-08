@@ -10,6 +10,10 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
 	if (url.pathname === '/login') {
 		return { user: null };
 	}
+	// Standalone "Provide Secret" page is unauthenticated (signed URL).
+	if (url.pathname.startsWith('/secrets/provide/')) {
+		return { user: null };
+	}
 
 	try {
 		const res = await fetch('/auth/me/identity', { credentials: 'include' });

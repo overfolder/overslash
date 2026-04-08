@@ -70,7 +70,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] `POST /v1/actions/execute` — raw HTTP with secret injection (`http` pseudo-service)
 - [x] Permission rules (flat per-identity, no chain yet)
 - [x] Approval workflow — create, resolve (allow/deny/allow_remember), expire
-- [ ] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority)
+- [x] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority). Follow-ups: backend `deny` endpoint + audit event; wire `overslash_auth.request_secret` and `create_service_from_template` to mint requests.
 - [x] Audit trail (log every action, approval, secret access)
 - [ ] Agents view: minimal — identity list, inline approval resolution, secret request
 - [x] Webhook delivery (approval.created, approval.resolved)

@@ -123,6 +123,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())
         .merge(routes::secrets::router())
+        .merge(routes::secret_requests::router())
         .merge(routes::permissions::router())
         .merge(routes::actions::router())
         .merge(routes::approvals::router())
