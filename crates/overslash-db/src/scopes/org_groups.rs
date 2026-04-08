@@ -67,6 +67,11 @@ impl OrgScope {
         group::find_everyone_group(self.db(), self.org_id()).await
     }
 
+    /// Whether an identity is a member of the system "Admins" group of this org.
+    pub async fn is_identity_in_admins(&self, identity_id: Uuid) -> Result<bool, sqlx::Error> {
+        group::is_identity_in_admins(self.db(), self.org_id(), identity_id).await
+    }
+
     // ── Grants ───────────────────────────────────────────────────────
 
     /// Add a grant to a group. The group and the service instance must both
