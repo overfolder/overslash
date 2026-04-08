@@ -459,8 +459,10 @@ pub(crate) async fn apply_patch(
 
     if let Some(inherit) = patch.inherit_permissions {
         sqlx::query!(
-            "UPDATE identities SET inherit_permissions = $2, updated_at = now() WHERE id = $1",
+            "UPDATE identities SET inherit_permissions = $3, updated_at = now()
+             WHERE id = $1 AND org_id = $2",
             id,
+            org_id,
             inherit,
         )
         .execute(&mut *tx)
