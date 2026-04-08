@@ -146,10 +146,11 @@
 	async function toggleDeliveries(wh: Webhook) {
 		if (openDeliveriesFor === wh.id) {
 			openDeliveriesFor = null;
+			// Drop the cached rows so reopening fetches fresh data.
+			delete deliveries[wh.id];
 			return;
 		}
 		openDeliveriesFor = wh.id;
-		if (deliveries[wh.id] && Array.isArray(deliveries[wh.id])) return;
 		deliveries[wh.id] = 'loading';
 		try {
 			const rows = await session.get<WebhookDelivery[]>(`/v1/webhooks/${wh.id}/deliveries`);

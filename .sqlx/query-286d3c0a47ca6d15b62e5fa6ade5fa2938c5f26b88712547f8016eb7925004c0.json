@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT org_id FROM webhook_subscriptions WHERE id = $1",
+  "query": "SELECT org_id FROM webhook_subscriptions WHERE id = $1 FOR SHARE",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "74d7d0fddfb97076c27835a24df532861d97ef6ef51da545632909aae4c4c0ee"
+  "hash": "286d3c0a47ca6d15b62e5fa6ade5fa2938c5f26b88712547f8016eb7925004c0"
 }
