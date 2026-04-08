@@ -58,6 +58,11 @@
 	});
 
 	async function load() {
+		// Reset per-service UI state when navigating between detail pages.
+		reconnectAbort?.abort();
+		reconnectAbort = null;
+		connecting = false;
+		activeTab = 'overview';
 		loading = true;
 		error = null;
 		try {
