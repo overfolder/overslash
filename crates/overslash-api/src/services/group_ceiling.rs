@@ -39,6 +39,78 @@ pub async fn resolve_ceiling_user_id(
     ceiling_user_id_from_identity(&identity)
 }
 
+/// Validate that `caller_identity_id` is allowed to act `on_behalf_of` `target_user_id`.
+///
+/// Rules:
+/// - target must exist, belong to `org_id`, be `kind = 'user'`, and not archived
+/// - caller is a User: `caller.id == target_user_id` (self only)
+/// - caller is an Agent/SubAgent: `caller.owner_id == target_user_id`
+pub async fn validate_on_behalf_of(
+    pool: &PgPool,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    target_user_id: Uuid,
+) -> Result<Uuid, crate::error::AppError> {
+    let caller = overslash_db::repos::identity::get_by_id(pool, caller_identity_id)
+        .await?
+        .ok_or_else(|| crate::error::AppError::NotFound("caller identity not found".into()))?;
+    if caller.org_id != org_id {
+        return Err(crate::error::AppError::Forbidden(
+            "caller identity not in org".into(),
+        ));
+    }
+
+    let target = overslash_db::repos::identity::get_by_id(pool, target_user_id)
+        .await?
+        .ok_or_else(|| crate::error::AppError::NotFound("on_behalf_of target not found".into()))?;
+    if target.org_id != org_id {
+        return Err(crate::error::AppError::Forbidden(
+            "on_behalf_of target not in org".into(),
+        ));
+    }
+    if target.kind != "user" {
+        return Err(crate::error::AppError::Forbidden(
+            "on_behalf_of target must be a user identity".into(),
+        ));
+    }
+    if target.archived_at.is_some() {
+        return Err(crate::error::AppError::Forbidden(
+            "on_behalf_of target is archived".into(),
+        ));
+    }
+
+    let allowed_owner = ceiling_user_id_from_identity(&caller)?;
+    if allowed_owner != target.id {
+        return Err(crate::error::AppError::Forbidden(
+            "caller may only act on_behalf_of its owner user".into(),
+        ));
+    }
+    Ok(target.id)
+}
+
+/// Resolve the effective owner identity for a create operation.
+///
+/// - If `on_behalf_of` is `Some`, validate it and return the user id.
+/// - If `None`, return `caller_identity_id` (today's behavior).
+/// - Org-level keys (no caller identity) cannot use `on_behalf_of`.
+pub async fn resolve_owner_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    caller_identity_id: Option<Uuid>,
+    on_behalf_of: Option<Uuid>,
+) -> Result<Option<Uuid>, crate::error::AppError> {
+    match (caller_identity_id, on_behalf_of) {
+        (_, None) => Ok(caller_identity_id),
+        (None, Some(_)) => Err(crate::error::AppError::BadRequest(
+            "on_behalf_of requires an identity-bound API key".into(),
+        )),
+        (Some(caller), Some(target)) => {
+            let resolved = validate_on_behalf_of(pool, org_id, caller, target).await?;
+            Ok(Some(resolved))
+        }
+    }
+}
+
 /// Load and transform the group ceiling for a user identity.
 /// `has_groups` reflects user-created group membership only — system groups
 /// (Everyone, Admins) don't count for ceiling enforcement.

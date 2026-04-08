@@ -24,6 +24,12 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct PutSecretRequest {
     value: String,
+    /// If set, attribute the new secret version to this user identity instead
+    /// of the calling agent. Caller must be the user itself or an agent whose
+    /// owner is this user. Secrets are org-scoped, so this only changes
+    /// `created_by` attribution.
+    #[serde(default)]
+    on_behalf_of: Option<uuid::Uuid>,
 }
 
 #[derive(Serialize)]
@@ -49,14 +55,17 @@ async fn put_secret(
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
 
-    let (secret, _version) = overslash_db::repos::secret::put(
+    let created_by = crate::services::group_ceiling::resolve_owner_identity(
         &state.db,
         auth.org_id,
-        &name,
-        &encrypted,
         auth.identity_id,
+        req.on_behalf_of,
     )
     .await?;
+
+    let (secret, _version) =
+        overslash_db::repos::secret::put(&state.db, auth.org_id, &name, &encrypted, created_by)
+            .await?;
 
     let _ = audit::log(
         &state.db,

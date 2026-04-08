@@ -34,6 +34,11 @@ struct InitiateConnectionRequest {
     /// Pin a specific BYOC credential for this connection. If omitted, the
     /// cascade resolver picks identity-level → org-level → env fallback.
     byoc_credential_id: Option<Uuid>,
+    /// Bind the resulting connection to this user identity instead of the
+    /// calling agent. Caller must be an agent whose owner is this user (or the
+    /// user itself). Lets all agents under the user share the connection.
+    #[serde(default)]
+    on_behalf_of: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -54,9 +59,23 @@ async fn initiate_connection(
         .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", req.provider)))?;
 
     // OAuth connections require an identity-bound API key
-    let identity_id = auth
+    let caller_identity_id = auth
         .identity_id
         .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
+
+    // If on_behalf_of is set, validate it walks the agent's owner chain and
+    // bind the resulting connection to the user instead of the calling agent.
+    let identity_id = if let Some(target) = req.on_behalf_of {
+        crate::services::group_ceiling::validate_on_behalf_of(
+            &state.db,
+            auth.org_id,
+            caller_identity_id,
+            target,
+        )
+        .await?
+    } else {
+        caller_identity_id
+    };
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let creds = client_credentials::resolve(
