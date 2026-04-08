@@ -106,10 +106,19 @@ async fn initiate_connection(
 
     let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
 
-    // State encodes: org_id:identity_id:provider_key:byoc_credential_id:code_verifier
+    // The actor (caller agent) is preserved separately from `identity_id` so the
+    // callback can audit the agent that initiated the OAuth flow even when the
+    // resulting connection is bound to the owner user via on_behalf_of.
+    let actor_segment = if caller_identity_id == identity_id {
+        "_".to_string()
+    } else {
+        caller_identity_id.to_string()
+    };
+
+    // State encodes: org_id:identity_id:provider_key:byoc_credential_id:code_verifier:actor_identity_id
     let oauth_state = format!(
-        "{}:{}:{}:{}:{}",
-        auth.org_id, identity_id, req.provider, byoc_segment, verifier_segment
+        "{}:{}:{}:{}:{}:{}",
+        auth.org_id, identity_id, req.provider, byoc_segment, verifier_segment, actor_segment
     );
 
     let auth_url = oauth::build_auth_url(
@@ -139,8 +148,8 @@ async fn oauth_callback(
     ip: ClientIp,
     Query(params): Query<OAuthCallbackParams>,
 ) -> Result<Json<serde_json::Value>> {
-    // Parse state: org_id:identity_id:provider_key:byoc_credential_id[:code_verifier]
-    let parts: Vec<&str> = params.state.splitn(5, ':').collect();
+    // Parse state: org_id:identity_id:provider_key:byoc_credential_id[:code_verifier[:actor_identity_id]]
+    let parts: Vec<&str> = params.state.splitn(6, ':').collect();
     if parts.len() < 3 {
         return Err(AppError::BadRequest("invalid state parameter".into()));
     }
@@ -157,6 +166,12 @@ async fn oauth_callback(
     let code_verifier: Option<&str> = parts
         .get(4)
         .and_then(|s| if *s == "_" { None } else { Some(*s) });
+    // Actor (agent) for audit attribution. Falls back to identity_id when the
+    // connection wasn't on_behalf_of (i.e. caller == owner).
+    let actor_identity_id: Uuid = parts
+        .get(5)
+        .and_then(|s| if *s == "_" { None } else { s.parse().ok() })
+        .unwrap_or(identity_id);
 
     let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, provider_key)
         .await?
@@ -227,7 +242,7 @@ async fn oauth_callback(
         &state.db,
         &AuditEntry {
             org_id,
-            identity_id: Some(identity_id),
+            identity_id: Some(actor_identity_id),
             action: "connection.created",
             resource_type: Some("connection"),
             resource_id: Some(conn.id),
