@@ -83,11 +83,17 @@
 
 	async function save() {
 		if (!svc) return;
+		const trimmedName = editName.trim();
+		if (!trimmedName) {
+			error = 'Name cannot be empty.';
+			return;
+		}
+		editName = trimmedName;
 		saving = true;
 		error = null;
 		try {
 			const updated = await updateService(svc.id, {
-				name: editName !== svc.name ? editName : undefined,
+				name: trimmedName !== svc.name ? trimmedName : undefined,
 				connection_id:
 					editConnection !== (svc.connection_id ?? '')
 						? editConnection || null
@@ -254,7 +260,7 @@
 			<div class="card">
 				<label class="field">
 					<span class="label">Name</span>
-					<input type="text" bind:value={editName} />
+					<input type="text" bind:value={editName} required minlength="1" />
 				</label>
 				{#if usesApiKey}
 					<label class="field">
