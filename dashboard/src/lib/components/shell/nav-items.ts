@@ -6,6 +6,7 @@ export interface NavItemDef {
 
 export const NAV_ITEMS: NavItemDef[] = [
 	{ href: '/', label: 'Dashboard', icon: '⌂' },
+	{ href: '/identities', label: 'Identities', icon: '⊟' },
 	{ href: '/services', label: 'Services', icon: '◫' },
 	{ href: '/approvals', label: 'Approvals', icon: '✓' },
 	{ href: '/api-explorer', label: 'API Explorer', icon: '⌘' },

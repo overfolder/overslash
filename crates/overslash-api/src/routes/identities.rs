@@ -1,7 +1,8 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    routing::{get, post},
+    http::StatusCode,
+    routing::{get, patch, post},
 };
 use overslash_core::types::IdentityKind;
 use serde::{Deserialize, Serialize};
@@ -14,15 +15,187 @@ use overslash_db::repos::identity::RestoreOutcome;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, WriteAcl},
+    extractors::{AdminAcl, ClientIp, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/identities", post(create_identity).get(list_identities))
+        .route(
+            "/v1/identities/{id}",
+            patch(update_identity).delete(delete_identity),
+        )
         .route("/v1/identities/{id}/children", get(list_children))
         .route("/v1/identities/{id}/chain", get(get_chain))
         .route("/v1/identities/{id}/restore", post(restore_identity))
+}
+
+#[derive(Deserialize)]
+struct UpdateIdentityRequest {
+    name: Option<String>,
+    parent_id: Option<Uuid>,
+    inherit_permissions: Option<bool>,
+}
+
+async fn update_identity(
+    AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateIdentityRequest>,
+) -> Result<Json<IdentityResponse>> {
+    // AdminAcl already enforces admin-level access. Identity-mutation is
+    // intentionally admin-only because it can rewire ownership chains and
+    // delete agents/users.
+    let target = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    // Validate up front so we can run the actual mutations atomically.
+    // Trim leading/trailing whitespace so the persisted value matches what
+    // the user actually meant — `"  alice  "` becomes `"alice"`, and a
+    // whitespace-only name is rejected.
+    let trimmed_name = if let Some(ref name) = req.name {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::BadRequest("name cannot be empty".into()));
+        }
+        Some(trimmed)
+    } else {
+        None
+    };
+
+    // Resolve owner ids from the target's kind. Parent kind is validated
+    // here for a clean error message; the parent's `depth` and the cycle
+    // check are re-done **inside** the apply_patch transaction under
+    // FOR UPDATE on both rows, so a concurrent move of the parent can't
+    // race a stale depth or sneak a cycle past us.
+    let move_to = if let Some(new_parent_id) = req.parent_id {
+        let target_kind: IdentityKind = target
+            .kind
+            .parse()
+            .map_err(|_| AppError::Internal("invalid identity kind".into()))?;
+        let allowed: &[IdentityKind] = match target_kind {
+            IdentityKind::User => {
+                return Err(AppError::BadRequest(
+                    "user identities cannot have a parent".into(),
+                ));
+            }
+            IdentityKind::Agent => &[IdentityKind::User],
+            IdentityKind::SubAgent => &[IdentityKind::Agent, IdentityKind::SubAgent],
+        };
+        let parent = validate_parent(&scope, new_parent_id, allowed, target_kind).await?;
+
+        let new_owner_id = match target_kind {
+            IdentityKind::Agent => parent.id,
+            IdentityKind::SubAgent => parent
+                .owner_id
+                .ok_or_else(|| AppError::BadRequest("new parent has no owner chain".into()))?,
+            IdentityKind::User => unreachable!(),
+        };
+        // For sub_agent descendants of the moved subtree, owner_id must be
+        // the top-level user of the new chain.
+        let descendant_owner_id = match target_kind {
+            IdentityKind::Agent => parent.id,
+            IdentityKind::SubAgent => parent.owner_id.unwrap(),
+            IdentityKind::User => unreachable!(),
+        };
+        Some(overslash_db::repos::identity::MoveTo {
+            parent_id: new_parent_id,
+            new_owner_id,
+            descendant_owner_id,
+        })
+    } else {
+        None
+    };
+
+    use overslash_db::repos::identity::ApplyPatchOutcome;
+    let updated = match scope
+        .apply_identity_patch(
+            id,
+            overslash_db::repos::identity::PatchIdentity {
+                name: trimmed_name,
+                move_to,
+                inherit_permissions: req.inherit_permissions,
+            },
+        )
+        .await?
+    {
+        ApplyPatchOutcome::Updated(row) => *row,
+        ApplyPatchOutcome::NotFound => {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
+        ApplyPatchOutcome::ParentNotFound => {
+            return Err(AppError::NotFound(
+                "new parent identity not found (it may have been deleted)".into(),
+            ));
+        }
+        ApplyPatchOutcome::Cycle => {
+            return Err(AppError::BadRequest(
+                "cannot move identity under one of its descendants".into(),
+            ));
+        }
+    };
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "identity.updated",
+            resource_type: Some("identity"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "name": req.name,
+                "parent_id": req.parent_id,
+                "inherit_permissions": req.inherit_permissions,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(updated.into()))
+}
+
+async fn delete_identity(
+    AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    use overslash_db::repos::identity::DeleteLeafOutcome;
+
+    // Atomic delete: holds FOR UPDATE on the parent row so concurrent
+    // FK-checking inserts can't sneak a child in between the leaf check
+    // and the delete (which would otherwise be silently cascade-deleted).
+    // Cross-tenant ids return NotFound at the SQL boundary.
+    match scope.delete_identity_leaf(id).await? {
+        DeleteLeafOutcome::Deleted => {}
+        DeleteLeafOutcome::HasChildren => {
+            return Err(AppError::Conflict(
+                "identity has children; delete or move them first".into(),
+            ));
+        }
+        DeleteLeafOutcome::NotFound => {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
+    }
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "identity.deleted",
+            resource_type: Some("identity"),
+            resource_id: Some(id),
+            detail: serde_json::json!({}),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -31,6 +204,13 @@ struct CreateIdentityRequest {
     kind: IdentityKind,
     external_id: Option<String>,
     parent_id: Option<Uuid>,
+    /// Optional. Only meaningful for `agent` / `sub_agent`. When set, the
+    /// new row is created and its `inherit_permissions` flag is toggled in
+    /// the same request so the dashboard doesn't have to round-trip a
+    /// follow-up PATCH (which could leave the row half-initialised if it
+    /// fails). Ignored for `user` (no parent to inherit from).
+    #[serde(default)]
+    inherit_permissions: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -160,6 +340,7 @@ async fn create_identity(
                     parent_id,
                     parent.depth + 1,
                     parent.id,
+                    req.inherit_permissions.unwrap_or(false),
                 )
                 .await?
         }
@@ -187,6 +368,7 @@ async fn create_identity(
                     parent_id,
                     parent.depth + 1,
                     owner_id,
+                    req.inherit_permissions.unwrap_or(false),
                 )
                 .await?
         }

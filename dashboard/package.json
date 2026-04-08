@@ -17,6 +17,7 @@
     "@tailwindcss/postcss": "^4.2.2",
     "@types/node": "^25.5.2",
     "autoprefixer": "^10.4.27",
+    "playwright": "^1.59.1",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "tailwindcss": "^4.2.2",
