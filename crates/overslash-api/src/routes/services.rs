@@ -280,7 +280,7 @@ async fn delete_service(
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
         scope
-            .resolve_service_instance_by_name(auth.identity_id, &name)
+            .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
@@ -304,9 +304,10 @@ async fn list_service_actions(
     scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
-    // Resolve the instance to get the template key
+    // Resolve the instance to get the template key (any status — dashboard
+    // inspection of draft/archived must also work).
     let instance = scope
-        .resolve_service_instance_by_name(auth.identity_id, &name)
+        .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
