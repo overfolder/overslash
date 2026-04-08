@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -39,8 +39,71 @@ pub async fn test_pool() -> PgPool {
     .unwrap();
     admin_pool.close().await;
 
+    register_for_cleanup(base_url.clone(), test_db.clone());
+
     let test_url = replace_db_name(&base_url, &test_db);
     PgPool::connect(&test_url).await.unwrap()
+}
+
+/// Per-process registry of test DBs to drop at exit.
+///
+/// Nextest runs each test in a fresh process, so this list typically holds one
+/// entry. We register an `atexit(3)` hook on first use that builds a small
+/// tokio runtime and issues `DROP DATABASE … WITH (FORCE)` for each entry.
+/// Without this, every test leaks ~9 MB into the Postgres data dir, which
+/// blows up disk/tmpfs across a full coverage run.
+static CLEANUP: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
+
+fn register_for_cleanup(base_url: String, db_name: String) {
+    let m = CLEANUP.get_or_init(|| {
+        // SAFETY: atexit is async-signal-safe to register and we only ever
+        // install one handler per process.
+        unsafe {
+            libc::atexit(run_cleanup);
+        }
+        Mutex::new(Vec::new())
+    });
+    m.lock().unwrap().push((base_url, db_name));
+}
+
+extern "C" fn run_cleanup() {
+    let Some(m) = CLEANUP.get() else {
+        return;
+    };
+    // Recover from a poisoned lock: under `cargo test` (multi-thread), a
+    // panic in one test could poison the mutex. We must not panic from this
+    // extern "C" function — that would cross an FFI boundary and abort the
+    // process — so unwrap_or_else into the inner data instead.
+    let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+    let dbs = std::mem::take(&mut *guard);
+    drop(guard);
+    if dbs.is_empty() {
+        return;
+    }
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    rt.block_on(async {
+        // Group by base_url so we open one admin connection per Postgres.
+        let mut by_url: HashMap<String, Vec<String>> = HashMap::new();
+        for (url, db) in dbs {
+            by_url.entry(url).or_default().push(db);
+        }
+        for (url, names) in by_url {
+            let Ok(pool) = PgPool::connect(&url).await else {
+                continue;
+            };
+            for db in names {
+                let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))
+                    .execute(&pool)
+                    .await;
+            }
+            pool.close().await;
+        }
+    });
 }
 
 /// Create+migrate the shared template if it doesn't exist yet.
