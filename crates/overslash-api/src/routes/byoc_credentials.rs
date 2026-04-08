@@ -27,15 +27,17 @@ struct CreateByocRequest {
     provider: String,
     client_id: String,
     client_secret: String,
-    /// If set, scopes the credential to a specific identity. Otherwise org-wide.
-    identity_id: Option<Uuid>,
+    /// Required: BYOC credentials are always identity-bound. The previously
+    /// supported "org-level" credential (identity_id = null) was removed in
+    /// migration 028.
+    identity_id: Uuid,
 }
 
 #[derive(Serialize)]
 struct ByocCredentialResponse {
     id: Uuid,
     org_id: Uuid,
-    identity_id: Option<Uuid>,
+    identity_id: Uuid,
     provider_key: String,
     created_at: String,
     updated_at: String,
@@ -54,13 +56,11 @@ async fn create_byoc(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", req.provider)))?;
 
-    // If identity_id is provided, verify it belongs to the same org
-    if let Some(identity_id) = req.identity_id {
-        scope
-            .get_identity(identity_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    }
+    // Verify the identity belongs to the same org.
+    scope
+        .get_identity(req.identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted_client_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;

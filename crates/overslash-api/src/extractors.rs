@@ -132,11 +132,13 @@ impl FromRequestParts<AppState> for AuthContext {
         // If the key is bound to an identity, check it's not archived (return
         // a clear 403 instead of treating the key as invalid) and stamp
         // last_active_at so the idle-cleanup loop doesn't reap it.
+        // Every API key is identity-bound (migration 028). Check the bound
+        // identity is not archived (return a clear 403 instead of treating
+        // the key as invalid) and stamp last_active_at so the idle-cleanup
+        // loop doesn't reap it.
         let mut identity_archive_error: Option<AppError> = None;
-        if let Some(identity_id) = key_row.identity_id {
-            // Mint a per-key OrgScope so the identity lookup is bounded by
-            // the org the key belongs to (defence in depth — the FK already
-            // pins identity_id to the same org).
+        let identity_id = key_row.identity_id;
+        {
             let key_scope = OrgScope::new(key_row.org_id, state.db.clone());
             let identity = key_scope
                 .get_identity(identity_id)
@@ -198,7 +200,7 @@ impl FromRequestParts<AppState> for AuthContext {
 
         Ok(AuthContext {
             org_id: key_row.org_id,
-            identity_id: key_row.identity_id,
+            identity_id: Some(key_row.identity_id),
             key_id: Some(key_row.id),
         })
     }
@@ -295,14 +297,26 @@ impl FromRequestParts<AppState> for OrgAcl {
     ) -> Result<Self, Self::Rejection> {
         let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
 
-        // Org-level API keys (no identity) are treated as admin
-        let Some(identity_id) = auth.identity_id else {
-            return Ok(OrgAcl {
-                org_id: auth.org_id,
-                identity_id: None,
-                access_level: AccessLevel::Admin,
-            });
-        };
+        // After migration 028 every authenticated caller is identity-bound;
+        // a None here would mean a stale bootstrap key slipped through and
+        // must be refused rather than silently elevated.
+        let identity_id = auth
+            .identity_id
+            .ok_or_else(|| AppError::Forbidden("identity-bound credential required".into()))?;
+
+        // Fast-path: Users with the org-admin flag get Admin without needing
+        // group lookup. Agents and non-admin users still go through the
+        // overslash service group-grant path below.
+        let scope_for_admin = OrgScope::new(auth.org_id, state.db.clone());
+        if let Some(ident) = scope_for_admin.get_identity(identity_id).await? {
+            if ident.is_org_admin {
+                return Ok(OrgAcl {
+                    org_id: auth.org_id,
+                    identity_id: Some(identity_id),
+                    access_level: AccessLevel::Admin,
+                });
+            }
+        }
 
         // Construct an OrgScope inline (extractors are the official scope
         // construction site, per `scopes/mod.rs`) so the identity lookup

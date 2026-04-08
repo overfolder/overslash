@@ -665,8 +665,10 @@ async fn test_delete_parent_cascades_children() {
         .await
         .unwrap();
 
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0]["kind"], "user");
+    // Two users remain: the bootstrap admin (auto-created by the unauth
+    // POST /v1/api-keys path) and "alice", the test's own user.
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().all(|c| c["kind"] == "user"));
 }
 
 #[tokio::test]

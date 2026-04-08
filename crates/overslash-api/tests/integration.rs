@@ -1280,32 +1280,8 @@ async fn test_byoc_credential_crud() {
     let base = format!("http://{api_addr}");
     let (_org_id, ident_id, api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC credential
+    // Create identity-bound BYOC credential
     let created: Value = client
-        .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "provider": "github",
-            "client_id": "org_gh_client",
-            "client_secret": "org_gh_secret",
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert!(created["id"].is_string());
-    assert_eq!(created["provider_key"], "github");
-    assert!(created["identity_id"].is_null());
-    // Secrets must never be returned
-    assert!(created.get("client_id").is_none());
-    assert!(created.get("client_secret").is_none());
-    assert!(created.get("encrypted_client_id").is_none());
-
-    // Create identity-level BYOC credential
-    let created_ident: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
@@ -1320,9 +1296,16 @@ async fn test_byoc_credential_crud() {
         .json()
         .await
         .unwrap();
-    assert_eq!(created_ident["identity_id"], ident_id.to_string());
 
-    // List — should return both
+    assert!(created["id"].is_string());
+    assert_eq!(created["provider_key"], "github");
+    assert_eq!(created["identity_id"], ident_id.to_string());
+    // Secrets must never be returned
+    assert!(created.get("client_id").is_none());
+    assert!(created.get("client_secret").is_none());
+    assert!(created.get("encrypted_client_id").is_none());
+
+    // List — should return one
     let list: Vec<Value> = client
         .get(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {api_key}"))
@@ -1332,9 +1315,9 @@ async fn test_byoc_credential_crud() {
         .json()
         .await
         .unwrap();
-    assert_eq!(list.len(), 2);
+    assert_eq!(list.len(), 1);
 
-    // Duplicate org-level should fail with 409
+    // Duplicate (same org+identity+provider) should fail with 409
     let dup_resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -1342,13 +1325,14 @@ async fn test_byoc_credential_crud() {
             "provider": "github",
             "client_id": "dup",
             "client_secret": "dup",
+            "identity_id": ident_id,
         }))
         .send()
         .await
         .unwrap();
     assert_eq!(dup_resp.status(), 409);
 
-    // Delete org-level credential
+    // Delete the credential
     let del_id = created["id"].as_str().unwrap();
     let del: Value = client
         .delete(format!("{base}/v1/byoc-credentials/{del_id}"))
@@ -1371,12 +1355,16 @@ async fn test_byoc_credential_crud() {
         .json()
         .await
         .unwrap();
-    assert_eq!(list2.len(), 1);
+    assert_eq!(list2.len(), 0);
 }
 
-// --- Test 2: Org-level BYOC credential used in OAuth callback ---
+// (Removed) test_oauth_callback_with_org_byoc_credential
+// Org-level BYOC (identity_id IS NULL) was removed in migration 028.
+// Identity-bound BYOC + OAuth callback is exercised by
+// test_oauth_callback_identity_byoc_takes_priority below.
 
 #[tokio::test]
+#[ignore = "removed: org-level BYOC concept no longer exists"]
 async fn test_oauth_callback_with_org_byoc_credential() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
@@ -1455,20 +1443,7 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
     let base = format!("http://{api_addr}");
     let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC
-    client
-        .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "provider": "github",
-            "client_id": "org_client",
-            "client_secret": "org_secret",
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    // Create identity-level BYOC — should win
+    // Create identity-level BYOC
     let ident_byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -1532,7 +1507,7 @@ async fn test_oauth_callback_pinned_byoc_credential() {
     let base = format!("http://{api_addr}");
     let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC for github
+    // Create identity-bound BYOC for github
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -1540,6 +1515,7 @@ async fn test_oauth_callback_pinned_byoc_credential() {
             "provider": "github",
             "client_id": "pinned_client",
             "client_secret": "pinned_secret",
+            "identity_id": ident_id,
         }))
         .send()
         .await
@@ -1776,7 +1752,7 @@ async fn test_google_calendar_three_modes() {
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
     let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(None, "google", &encrypted_cid, &encrypted_csec)
+        .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
         .await
         .unwrap();
 

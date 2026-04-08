@@ -15,7 +15,7 @@ impl OrgScope {
     /// credential under another tenant.
     pub async fn create_byoc_credential(
         &self,
-        identity_id: Option<Uuid>,
+        identity_id: Uuid,
         provider_key: &str,
         encrypted_client_id: &[u8],
         encrypted_client_secret: &[u8],
@@ -50,12 +50,11 @@ impl OrgScope {
         crate::repos::byoc_credential::delete_by_org(self.db(), id, self.org_id()).await
     }
 
-    /// Resolve the most-specific BYOC credential for the given identity +
-    /// provider in this org. Returns identity-level match first, then the
-    /// org-level fallback.
+    /// Resolve a BYOC credential for the given identity + provider in this org.
+    /// BYOC credentials are always identity-bound.
     pub async fn resolve_byoc_credential(
         &self,
-        identity_id: Option<Uuid>,
+        identity_id: Uuid,
         provider_key: &str,
     ) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
         crate::repos::byoc_credential::resolve(self.db(), self.org_id(), identity_id, provider_key)

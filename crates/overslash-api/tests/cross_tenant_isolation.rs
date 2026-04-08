@@ -387,7 +387,7 @@ async fn cross_tenant_enrollment_token_revoke_returns_404() {
 #[tokio::test]
 async fn cross_tenant_byoc_delete_returns_404() {
     let pool = common::test_pool().await;
-    let (base, client, _ia, _ka, admin_a, _ib, _kb, admin_b) = two_orgs(pool).await;
+    let (base, client, _ia, _ka, admin_a, ib, _kb, admin_b) = two_orgs(pool).await;
 
     let cred: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
@@ -396,6 +396,7 @@ async fn cross_tenant_byoc_delete_returns_404() {
             "provider": "google",
             "client_id": "cid",
             "client_secret": "csec",
+            "identity_id": ib,
         }))
         .send()
         .await

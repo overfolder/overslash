@@ -26,7 +26,13 @@ async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String, String) {
         .json()
         .await
         .unwrap();
-    let user_id = identities.iter().find(|i| i["kind"] == "user").unwrap()["id"]
+    // After migration 028 the unauth bootstrap path mints an "admin" user
+    // automatically; here we want the *test-user* (parent of the test agent),
+    // not the bootstrap admin.
+    let user_id = identities
+        .iter()
+        .find(|i| i["kind"] == "user" && i["name"] == "test-user")
+        .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();

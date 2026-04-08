@@ -10,10 +10,10 @@ use crate::repos::api_key::{self, ApiKeyRow};
 use crate::scopes::OrgScope;
 
 impl OrgScope {
-    /// Create a new API key in this org, optionally bound to an identity.
+    /// Create a new API key in this org, bound to an identity.
     pub async fn create_api_key(
         &self,
-        identity_id: Option<Uuid>,
+        identity_id: Uuid,
         name: &str,
         key_hash: &str,
         key_prefix: &str,

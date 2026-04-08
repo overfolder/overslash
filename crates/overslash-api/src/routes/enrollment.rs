@@ -221,7 +221,7 @@ async fn enroll_with_token(
     let (raw_key, key_hash, key_prefix) = generate_prefixed_token("osk_")?;
     let _key_row = scope
         .create_api_key(
-            Some(token_row.identity_id),
+            token_row.identity_id,
             "enrollment",
             &key_hash,
             &key_prefix,
@@ -595,13 +595,7 @@ async fn resolve_enrollment(
             // Generate API key for the new identity
             let (raw_key, key_hash, key_prefix) = generate_prefixed_token("osk_")?;
             let _key_row = scope
-                .create_api_key(
-                    Some(new_identity.id),
-                    "enrollment",
-                    &key_hash,
-                    &key_prefix,
-                    &[],
-                )
+                .create_api_key(new_identity.id, "enrollment", &key_hash, &key_prefix, &[])
                 .await?;
 
             // Update pending enrollment with approval details
