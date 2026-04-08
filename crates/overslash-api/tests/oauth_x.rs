@@ -457,8 +457,8 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
     );
 
     // State verifier segment should be "_"
-    let segments: Vec<&str> = state.splitn(5, ':').collect();
-    assert_eq!(segments.len(), 5);
+    let segments: Vec<&str> = state.splitn(6, ':').collect();
+    assert_eq!(segments.len(), 6);
     assert_eq!(
         segments[4], "_",
         "github should have '_' as verifier segment"
