@@ -7,17 +7,25 @@
 	} from '$lib/session';
 	import IdentityPath from './IdentityPath.svelte';
 
-	let { approval, onResolved }: {
+	let { approval, onResolved, compact = false }: {
 		approval: ApprovalResponse;
 		onResolved?: (a: ApprovalResponse) => void;
+		compact?: boolean;
 	} = $props();
 
 	let override = $state<ApprovalResponse | null>(null);
 	const current = $derived(override ?? approval);
 	let selectedTier = $state(0);
+	let useCustomKey = $state(false);
+	let customKey = $state('');
 	let ttl = $state('forever');
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
+
+	const hasBubbled = $derived(
+		!!current.current_resolver_identity_id &&
+			current.current_resolver_identity_id !== current.requesting_identity_id
+	);
 
 	const ttlOptions = [
 		{ value: 'forever', label: 'Never' },
@@ -72,13 +80,23 @@
 		try {
 			const body: ResolveApprovalRequest = { resolution };
 			if (resolution === 'allow_remember') {
-				const tier = current.suggested_tiers[selectedTier];
-				if (!tier) {
-					error = 'Select a permission scope to remember.';
-					submitting = false;
-					return;
+				if (useCustomKey) {
+					const k = customKey.trim();
+					if (!k) {
+						error = 'Enter a permission key to remember.';
+						submitting = false;
+						return;
+					}
+					body.remember_keys = [k];
+				} else {
+					const tier = current.suggested_tiers[selectedTier];
+					if (!tier) {
+						error = 'Select a permission scope to remember.';
+						submitting = false;
+						return;
+					}
+					body.remember_keys = tier.keys;
 				}
-				body.remember_keys = tier.keys;
 				if (ttl !== 'forever') body.ttl = ttl;
 			}
 			const updated = await session.post<ApprovalResponse>(
@@ -104,9 +122,11 @@
 	}
 </script>
 
-<div class="card">
-	<h1>Approval Request</h1>
-	<p class="summary">{current.action_summary}</p>
+<div class="root" class:card={!compact}>
+	{#if !compact}
+		<h1>Approval Request</h1>
+		<p class="summary">{current.action_summary}</p>
+	{/if}
 
 	<dl class="meta">
 		<dt>Agent</dt>
@@ -117,6 +137,11 @@
 				<code class="mono mute">{current.identity_id}</code>
 			{/if}
 		</dd>
+
+		{#if hasBubbled}
+			<dt>Resolver</dt>
+			<dd><code class="mono mute">{current.current_resolver_identity_id}</code></dd>
+		{/if}
 
 		<dt>Service</dt>
 		<dd>{serviceLabel}</dd>
@@ -131,6 +156,17 @@
 		<dd>{relativeTime(current.expires_at)}</dd>
 	</dl>
 
+	{#if current.derived_keys.length > 0}
+		<details class="derived">
+			<summary>Derived keys ({current.derived_keys.length})</summary>
+			<ul>
+				{#each current.derived_keys as dk}
+					<li><code class="mono">{dk.service} · {dk.action} · {dk.arg}</code></li>
+				{/each}
+			</ul>
+		</details>
+	{/if}
+
 	{#if !isPending}
 		<div class="banner banner-{current.status}">
 			This approval is <strong>{current.status}</strong>.
@@ -140,13 +176,16 @@
 			<div class="scope-label">Scope</div>
 			<div class="tiers">
 				{#each current.suggested_tiers as tier, i}
-					<label class="tier" class:selected={selectedTier === i}>
+					<label class="tier" class:selected={!useCustomKey && selectedTier === i}>
 						<input
 							type="radio"
 							name="tier"
 							value={i}
-							checked={selectedTier === i}
-							onchange={() => (selectedTier = i)}
+							checked={!useCustomKey && selectedTier === i}
+							onchange={() => {
+								selectedTier = i;
+								useCustomKey = false;
+							}}
 						/>
 						<div class="tier-body">
 							<code class="mono tier-key">{tier.keys[0]}{tier.keys.length > 1
@@ -156,6 +195,25 @@
 						</div>
 					</label>
 				{/each}
+				<label class="tier" class:selected={useCustomKey}>
+					<input
+						type="radio"
+						name="tier"
+						checked={useCustomKey}
+						onchange={() => (useCustomKey = true)}
+					/>
+					<div class="tier-body">
+						<div class="tier-desc">Custom… (advanced)</div>
+						{#if useCustomKey}
+							<input
+								class="custom-key"
+								type="text"
+								placeholder="service:action:arg"
+								bind:value={customKey}
+							/>
+						{/if}
+					</div>
+				</label>
 			</div>
 
 			<div class="expiry-row">
@@ -174,8 +232,15 @@
 
 		<div class="actions">
 			<button
-				class="btn btn-primary"
+				class="btn btn-allow-once"
 				disabled={submitting}
+				onclick={() => resolve('allow')}
+			>
+				Allow once
+			</button>
+			<button
+				class="btn btn-primary"
+				disabled={submitting || (useCustomKey && !customKey.trim())}
 				onclick={() => resolve('allow_remember')}
 			>
 				Allow &amp; Remember
@@ -196,17 +261,46 @@
 </div>
 
 <style>
-	.card {
+	.root {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
 		width: 100%;
+	}
+	.card {
 		max-width: 520px;
 		background: #fff;
 		border: 1px solid var(--color-border);
 		border-radius: 12px;
 		padding: 1.75rem 2rem;
 		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+	}
+	.derived summary {
+		cursor: pointer;
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
+	}
+	.derived ul {
+		margin: 0.4rem 0 0 0;
+		padding: 0;
+		list-style: none;
 		display: flex;
 		flex-direction: column;
-		gap: 1rem;
+		gap: 0.2rem;
+	}
+	.custom-key {
+		margin-top: 0.4rem;
+		width: 100%;
+		padding: 0.35rem 0.5rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+	}
+	.btn-allow-once {
+		background: #fff;
+		color: var(--color-primary);
+		border-color: var(--color-primary);
 	}
 	h1 {
 		margin: 0;
