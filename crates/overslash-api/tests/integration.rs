@@ -998,6 +998,10 @@ async fn test_list_webhook_deliveries_empty_for_new_subscription() {
         .json()
         .await
         .unwrap();
+    assert!(
+        wh["secret"].is_string(),
+        "create response must include the signing secret"
+    );
     let id = wh["id"].as_str().unwrap();
 
     let resp = client
