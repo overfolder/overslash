@@ -52,6 +52,22 @@ impl OrgScope {
         service_instance::resolve_by_name(self.db(), self.org_id(), identity_id, raw_name).await
     }
 
+    /// Resolve a service instance by name without filtering by status. Used by
+    /// the dashboard so draft and archived instances remain viewable.
+    pub async fn resolve_service_instance_by_name_any_status(
+        &self,
+        identity_id: Option<Uuid>,
+        raw_name: &str,
+    ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+        service_instance::resolve_by_name_any_status(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            raw_name,
+        )
+        .await
+    }
+
     /// List org-level service instances in this org.
     pub async fn list_org_service_instances(&self) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
         service_instance::list_by_org(self.db(), self.org_id()).await

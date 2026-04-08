@@ -166,6 +166,60 @@ pub(crate) async fn resolve_by_name(
     .await
 }
 
+/// Resolve a service instance by name with the same user-shadows-org semantics
+/// as [`resolve_by_name`], but without filtering by status. Used by the dashboard
+/// detail view, which must be able to inspect draft and archived instances.
+pub async fn resolve_by_name_any_status(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+    raw_name: &str,
+) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
+    if let Some(name) = raw_name.strip_prefix("org/") {
+        return sqlx::query_as!(
+            ServiceInstanceRow,
+            "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+             template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
+             FROM service_instances \
+             WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
+            org_id,
+            name,
+        )
+        .fetch_optional(pool)
+        .await;
+    }
+
+    if let Some(identity_id) = identity_id {
+        let user_instance = sqlx::query_as!(
+            ServiceInstanceRow,
+            "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+             template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
+             FROM service_instances \
+             WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
+            org_id,
+            identity_id,
+            raw_name,
+        )
+        .fetch_optional(pool)
+        .await?;
+        if user_instance.is_some() {
+            return Ok(user_instance);
+        }
+    }
+
+    sqlx::query_as!(
+        ServiceInstanceRow,
+        "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+         template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
+         FROM service_instances \
+         WHERE org_id = $1 AND owner_identity_id IS NULL AND name = $2",
+        org_id,
+        raw_name,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// List org-level instances.
 pub(crate) async fn list_by_org(
     pool: &PgPool,
