@@ -588,6 +588,7 @@ async fn resolve_enrollment(
                     parent.id,
                     parent.depth + 1,
                     owner_id,
+                    false,
                 )
                 .await?;
 

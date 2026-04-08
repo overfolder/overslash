@@ -119,22 +119,22 @@
 		e.preventDefault();
 		const form = e.target as HTMLFormElement;
 		const fd = new FormData(form);
+		const kind = String(fd.get('kind') ?? 'agent') as 'user' | 'agent' | 'sub_agent';
 		const req: CreateIdentityRequest = {
 			name: String(fd.get('name') ?? '').trim(),
-			kind: String(fd.get('kind') ?? 'agent') as 'user' | 'agent' | 'sub_agent'
+			kind
 		};
 		const parent = String(fd.get('parent_id') ?? '');
 		if (parent) req.parent_id = parent;
+		// Send inherit_permissions in the same request so the row lands in
+		// its final state — no follow-up PATCH that could leave a half-
+		// initialised row if it fails.
+		if (kind !== 'user') {
+			req.inherit_permissions = fd.get('inherit_permissions') === 'on';
+		}
 		try {
 			const created = await createIdentity(req);
 			createOpen = false;
-			// New identities always default to inherit_permissions=false on the
-			// backend, so explicitly PATCH to match the checkbox state for
-			// agents/sub-agents (users have no parent to inherit from).
-			if (created.kind !== 'user') {
-				const inherit = fd.get('inherit_permissions') === 'on';
-				await updateIdentity(created.id, { inherit_permissions: inherit });
-			}
 			await loadAll();
 			selectIdentity(created.id);
 		} catch (e) {

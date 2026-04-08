@@ -26,6 +26,10 @@ export interface CreateIdentityRequest {
 	kind: 'user' | 'agent' | 'sub_agent';
 	parent_id?: string;
 	external_id?: string;
+	/** Optional. Only meaningful for `agent`/`sub_agent` — server ignores
+	 *  it for `user`. Set in the same request so the new row lands in its
+	 *  final state without a follow-up PATCH. */
+	inherit_permissions?: boolean;
 }
 
 export function createIdentity(req: CreateIdentityRequest): Promise<Identity> {

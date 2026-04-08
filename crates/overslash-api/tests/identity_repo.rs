@@ -28,14 +28,30 @@ async fn make_user(scope: &OrgScope, name: &str) -> IdentityRow {
 
 async fn make_agent(scope: &OrgScope, name: &str, parent: &IdentityRow) -> IdentityRow {
     scope
-        .create_identity_with_parent(name, "agent", None, parent.id, parent.depth + 1, parent.id)
+        .create_identity_with_parent(
+            name,
+            "agent",
+            None,
+            parent.id,
+            parent.depth + 1,
+            parent.id,
+            false,
+        )
         .await
         .unwrap()
 }
 
 async fn make_sub(scope: &OrgScope, name: &str, parent: &IdentityRow, owner: Uuid) -> IdentityRow {
     scope
-        .create_identity_with_parent(name, "sub_agent", None, parent.id, parent.depth + 1, owner)
+        .create_identity_with_parent(
+            name,
+            "sub_agent",
+            None,
+            parent.id,
+            parent.depth + 1,
+            owner,
+            false,
+        )
         .await
         .unwrap()
 }
@@ -268,6 +284,39 @@ async fn apply_patch_cycle_rejected_inside_tx() {
         .await
         .unwrap();
     assert!(matches!(outcome, ApplyPatchOutcome::Cycle));
+
+    // henry's parent is unchanged.
+    let henry_re = scope.get_identity(henry.id).await.unwrap().unwrap();
+    assert_eq!(henry_re.parent_id, Some(alice.id));
+}
+
+#[tokio::test]
+async fn apply_patch_parent_not_found_is_domain_outcome() {
+    // The route's pre-tx parent lookup is best-effort: a concurrent
+    // delete can land between then and apply_patch starting. Surface
+    // that as ParentNotFound rather than letting RowNotFound bubble up
+    // as a 500.
+    let pool = common::test_pool().await;
+    let scope = make_scope(&pool).await;
+    let alice = make_user(&scope, "alice").await;
+    let henry = make_agent(&scope, "henry", &alice).await;
+
+    let phantom = Uuid::new_v4();
+    let outcome = scope
+        .apply_identity_patch(
+            henry.id,
+            PatchIdentity {
+                move_to: Some(MoveTo {
+                    parent_id: phantom,
+                    new_owner_id: phantom,
+                    descendant_owner_id: phantom,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ApplyPatchOutcome::ParentNotFound));
 
     // henry's parent is unchanged.
     let henry_re = scope.get_identity(henry.id).await.unwrap().unwrap();

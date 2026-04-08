@@ -61,6 +61,7 @@ impl OrgScope {
         parent_id: Uuid,
         depth: i32,
         owner_id: Uuid,
+        inherit_permissions: bool,
     ) -> Result<IdentityRow, sqlx::Error> {
         identity::create_with_parent(
             self.db(),
@@ -71,6 +72,7 @@ impl OrgScope {
             parent_id,
             depth,
             owner_id,
+            inherit_permissions,
         )
         .await
     }

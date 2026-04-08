@@ -126,6 +126,11 @@ async fn update_identity(
         ApplyPatchOutcome::NotFound => {
             return Err(AppError::NotFound("identity not found".into()));
         }
+        ApplyPatchOutcome::ParentNotFound => {
+            return Err(AppError::NotFound(
+                "new parent identity not found (it may have been deleted)".into(),
+            ));
+        }
         ApplyPatchOutcome::Cycle => {
             return Err(AppError::BadRequest(
                 "cannot move identity under one of its descendants".into(),
@@ -199,6 +204,13 @@ struct CreateIdentityRequest {
     kind: IdentityKind,
     external_id: Option<String>,
     parent_id: Option<Uuid>,
+    /// Optional. Only meaningful for `agent` / `sub_agent`. When set, the
+    /// new row is created and its `inherit_permissions` flag is toggled in
+    /// the same request so the dashboard doesn't have to round-trip a
+    /// follow-up PATCH (which could leave the row half-initialised if it
+    /// fails). Ignored for `user` (no parent to inherit from).
+    #[serde(default)]
+    inherit_permissions: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -328,6 +340,7 @@ async fn create_identity(
                     parent_id,
                     parent.depth + 1,
                     parent.id,
+                    req.inherit_permissions.unwrap_or(false),
                 )
                 .await?
         }
@@ -355,6 +368,7 @@ async fn create_identity(
                     parent_id,
                     parent.depth + 1,
                     owner_id,
+                    req.inherit_permissions.unwrap_or(false),
                 )
                 .await?
         }

@@ -83,11 +83,12 @@ pub async fn create_with_parent(
     parent_id: Uuid,
     depth: i32,
     owner_id: Uuid,
+    inherit_permissions: bool,
 ) -> Result<IdentityRow, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "INSERT INTO identities (org_id, name, kind, external_id, parent_id, depth, owner_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "INSERT INTO identities (org_id, name, kind, external_id, parent_id, depth, owner_id, inherit_permissions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, created_at, updated_at",
         org_id,
         name,
@@ -96,6 +97,7 @@ pub async fn create_with_parent(
         parent_id,
         depth,
         owner_id,
+        inherit_permissions,
     )
     .fetch_one(pool)
     .await
@@ -308,6 +310,7 @@ pub struct PatchIdentity<'a> {
 pub enum ApplyPatchOutcome {
     Updated(Box<IdentityRow>),
     NotFound,
+    ParentNotFound,
     Cycle,
 }
 
@@ -386,14 +389,21 @@ pub(crate) async fn apply_patch(
         // Re-read the parent's depth under the lock. Outside the tx its
         // value could have changed under our feet (a concurrent move of the
         // parent itself), so don't trust the route's pre-tx read.
-        let parent = sqlx::query!(
+        // Parent may have been concurrently deleted between the route's
+        // pre-check and the apply_patch transaction starting, even though
+        // we tried to lock it above (the `FOR UPDATE` lock-set returns
+        // fewer rows when one of the ids is gone). Surface that as a
+        // domain outcome rather than a 500.
+        let Some(parent) = sqlx::query!(
             "SELECT depth FROM identities WHERE id = $1 AND org_id = $2",
             parent_id,
             org_id,
         )
         .fetch_optional(&mut *tx)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        else {
+            return Ok(ApplyPatchOutcome::ParentNotFound);
+        };
         let new_depth = parent.depth + 1;
         let depth_delta = new_depth - current.depth;
 
