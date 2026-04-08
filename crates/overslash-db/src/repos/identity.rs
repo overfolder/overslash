@@ -281,36 +281,88 @@ pub(crate) async fn rename(
     .await
 }
 
+/// Move parameters for `apply_patch`. The caller resolves owner ids from the
+/// `IdentityKind` (Agent vs SubAgent), but the new `depth` is computed
+/// **inside** the transaction from the parent row that's been locked
+/// `FOR UPDATE`, so a concurrent move of the parent can't race in a stale
+/// depth.
+#[derive(Debug, Clone, Copy)]
+pub struct MoveTo {
+    pub parent_id: Uuid,
+    pub new_owner_id: Uuid,
+    pub descendant_owner_id: Uuid,
+}
+
 /// All optional patches to apply to an identity, atomically.
 #[derive(Debug, Default)]
 pub struct PatchIdentity<'a> {
     pub name: Option<&'a str>,
-    /// New (parent_id, depth, owner_id, descendant_owner_id) — caller has
-    /// already validated parent kind, cycle, and resolved depth/owner.
-    pub move_to: Option<(Uuid, i32, Uuid, Uuid)>,
+    pub move_to: Option<MoveTo>,
     pub inherit_permissions: Option<bool>,
 }
 
+/// Outcome of `apply_patch`. `Cycle` indicates the requested move would
+/// have placed the identity under one of its own descendants — refused
+/// inside the transaction so two concurrent moves can't sneak past an
+/// out-of-band cycle check.
+pub enum ApplyPatchOutcome {
+    Updated(Box<IdentityRow>),
+    NotFound,
+    Cycle,
+}
+
+/// Maximum recursive descent for both the cycle check and the descendant
+/// `depth`/`owner_id` cascade. Matches `get_ancestor_chain`'s bound.
+/// Defence-in-depth so a leftover cycle (e.g. from a manual SQL fixup) can't
+/// loop forever inside a recursive CTE.
+const MAX_TREE_DEPTH: i32 = 50;
+
 /// Apply rename + move + inherit toggle in a single transaction so the
-/// patch is atomic — no partial updates if any step fails.
+/// patch is atomic. The transaction holds `FOR UPDATE` on **both** the
+/// moved row and (when moving) the new parent, in id-sorted order to avoid
+/// deadlocks. The cycle check and depth lookup happen inside the lock so
+/// no concurrent move can poison the result.
 pub(crate) async fn apply_patch(
     pool: &PgPool,
     id: Uuid,
     org_id: Uuid,
     patch: PatchIdentity<'_>,
-) -> Result<Option<IdentityRow>, sqlx::Error> {
+) -> Result<ApplyPatchOutcome, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
-    // Lock the row up front so concurrent moves can't race the cycle check.
+    // Lock the moved row + (when moving) the new parent in id-sorted order.
+    // This serialises any pair of concurrent moves that touch the same two
+    // rows and prevents a lock-acquisition deadlock.
+    if let Some(mv) = patch.move_to.as_ref() {
+        let mut to_lock = [id, mv.parent_id];
+        to_lock.sort();
+        sqlx::query!(
+            "SELECT id FROM identities WHERE id = ANY($1) AND org_id = $2 ORDER BY id FOR UPDATE",
+            &to_lock[..],
+            org_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query!(
+            "SELECT id FROM identities WHERE id = $1 AND org_id = $2 FOR UPDATE",
+            id,
+            org_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+    }
+
+    // Re-read the moved row's depth under the lock.
     let current = sqlx::query!(
-        "SELECT depth FROM identities WHERE id = $1 AND org_id = $2 FOR UPDATE",
+        "SELECT depth FROM identities WHERE id = $1 AND org_id = $2",
         id,
         org_id,
     )
     .fetch_optional(&mut *tx)
     .await?;
     let Some(current) = current else {
-        return Ok(None);
+        return Ok(ApplyPatchOutcome::NotFound);
     };
 
     if let Some(name) = patch.name {
@@ -325,8 +377,50 @@ pub(crate) async fn apply_patch(
         .await?;
     }
 
-    if let Some((parent_id, new_depth, owner_id, descendant_owner_id)) = patch.move_to {
+    if let Some(MoveTo {
+        parent_id,
+        new_owner_id,
+        descendant_owner_id,
+    }) = patch.move_to
+    {
+        // Re-read the parent's depth under the lock. Outside the tx its
+        // value could have changed under our feet (a concurrent move of the
+        // parent itself), so don't trust the route's pre-tx read.
+        let parent = sqlx::query!(
+            "SELECT depth FROM identities WHERE id = $1 AND org_id = $2",
+            parent_id,
+            org_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)?;
+        let new_depth = parent.depth + 1;
         let depth_delta = new_depth - current.depth;
+
+        // Cycle guard, also under the lock and bounded so a pre-existing
+        // cycle can't loop the planner forever. Walk parent_id → root and
+        // refuse if we ever see `id`.
+        let cycle = sqlx::query!(
+            r#"WITH RECURSIVE chain(id, parent_id, lvl) AS (
+                SELECT id, parent_id, 1 FROM identities WHERE id = $1 AND org_id = $2
+                UNION ALL
+                SELECT i.id, i.parent_id, c.lvl + 1
+                FROM identities i
+                INNER JOIN chain c ON i.id = c.parent_id
+                WHERE i.org_id = $2 AND c.lvl < $3
+            )
+            SELECT 1 as "hit!" FROM chain WHERE id = $4 LIMIT 1"#,
+            parent_id,
+            org_id,
+            MAX_TREE_DEPTH,
+            id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if cycle.is_some() {
+            return Ok(ApplyPatchOutcome::Cycle);
+        }
+
         sqlx::query!(
             "UPDATE identities SET parent_id = $3, depth = $4, owner_id = $5, updated_at = now()
              WHERE id = $1 AND org_id = $2",
@@ -334,16 +428,20 @@ pub(crate) async fn apply_patch(
             org_id,
             parent_id,
             new_depth,
-            owner_id,
+            new_owner_id,
         )
         .execute(&mut *tx)
         .await?;
+        // Bounded recursive CTE — defends against a corrupt cycle slipping
+        // past the check above.
         sqlx::query!(
-            r#"WITH RECURSIVE subtree AS (
-                SELECT id FROM identities WHERE parent_id = $1
+            r#"WITH RECURSIVE subtree(id, lvl) AS (
+                SELECT id, 1 FROM identities WHERE parent_id = $1
                 UNION ALL
-                SELECT i.id FROM identities i
+                SELECT i.id, s.lvl + 1
+                FROM identities i
                 INNER JOIN subtree s ON i.parent_id = s.id
+                WHERE s.lvl < $4
             )
             UPDATE identities SET
                 depth = depth + $2,
@@ -353,6 +451,7 @@ pub(crate) async fn apply_patch(
             id,
             depth_delta,
             descendant_owner_id,
+            MAX_TREE_DEPTH,
         )
         .execute(&mut *tx)
         .await?;
@@ -379,7 +478,7 @@ pub(crate) async fn apply_patch(
     .await?;
 
     tx.commit().await?;
-    Ok(Some(row))
+    Ok(ApplyPatchOutcome::Updated(Box::new(row)))
 }
 
 /// Move an identity to a new parent and recursively update its descendants.

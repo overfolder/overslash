@@ -66,6 +66,11 @@ async fn update_identity(
         None
     };
 
+    // Resolve owner ids from the target's kind. Parent kind is validated
+    // here for a clean error message; the parent's `depth` and the cycle
+    // check are re-done **inside** the apply_patch transaction under
+    // FOR UPDATE on both rows, so a concurrent move of the parent can't
+    // race a stale depth or sneak a cycle past us.
     let move_to = if let Some(new_parent_id) = req.parent_id {
         let target_kind: IdentityKind = target
             .kind
@@ -82,39 +87,31 @@ async fn update_identity(
         };
         let parent = validate_parent(&scope, new_parent_id, allowed, target_kind).await?;
 
-        // cycle check: walk new parent's ancestor chain — must not include `id`.
-        let chain = scope.get_identity_ancestor_chain(new_parent_id).await?;
-        if chain.iter().any(|r| r.id == id) {
-            return Err(AppError::BadRequest(
-                "cannot move identity under one of its descendants".into(),
-            ));
-        }
-
-        let owner_id = match target_kind {
+        let new_owner_id = match target_kind {
             IdentityKind::Agent => parent.id,
             IdentityKind::SubAgent => parent
                 .owner_id
                 .ok_or_else(|| AppError::BadRequest("new parent has no owner chain".into()))?,
             IdentityKind::User => unreachable!(),
         };
-        // For sub_agent descendants of the moved subtree, owner_id must be the
-        // top-level user of the new chain.
+        // For sub_agent descendants of the moved subtree, owner_id must be
+        // the top-level user of the new chain.
         let descendant_owner_id = match target_kind {
             IdentityKind::Agent => parent.id,
             IdentityKind::SubAgent => parent.owner_id.unwrap(),
             IdentityKind::User => unreachable!(),
         };
-        Some((
-            new_parent_id,
-            parent.depth + 1,
-            owner_id,
+        Some(overslash_db::repos::identity::MoveTo {
+            parent_id: new_parent_id,
+            new_owner_id,
             descendant_owner_id,
-        ))
+        })
     } else {
         None
     };
 
-    let updated = scope
+    use overslash_db::repos::identity::ApplyPatchOutcome;
+    let updated = match scope
         .apply_identity_patch(
             id,
             overslash_db::repos::identity::PatchIdentity {
@@ -124,7 +121,17 @@ async fn update_identity(
             },
         )
         .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    {
+        ApplyPatchOutcome::Updated(row) => *row,
+        ApplyPatchOutcome::NotFound => {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
+        ApplyPatchOutcome::Cycle => {
+            return Err(AppError::BadRequest(
+                "cannot move identity under one of its descendants".into(),
+            ));
+        }
+    };
 
     let _ = scope
         .log_audit(AuditEntry {

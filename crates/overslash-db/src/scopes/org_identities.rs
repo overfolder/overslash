@@ -12,7 +12,9 @@
 
 use uuid::Uuid;
 
-use crate::repos::identity::{self, DeleteLeafOutcome, IdentityRow, PatchIdentity, RestoreOutcome};
+use crate::repos::identity::{
+    self, ApplyPatchOutcome, DeleteLeafOutcome, IdentityRow, PatchIdentity, RestoreOutcome,
+};
 use crate::scopes::OrgScope;
 
 impl OrgScope {
@@ -202,7 +204,7 @@ impl OrgScope {
         &self,
         id: Uuid,
         patch: PatchIdentity<'_>,
-    ) -> Result<Option<IdentityRow>, sqlx::Error> {
+    ) -> Result<ApplyPatchOutcome, sqlx::Error> {
         identity::apply_patch(self.db(), id, self.org_id(), patch).await
     }
 

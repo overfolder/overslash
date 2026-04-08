@@ -8,7 +8,9 @@
 mod common;
 
 use overslash_db::OrgScope;
-use overslash_db::repos::identity::{DeleteLeafOutcome, IdentityRow, PatchIdentity};
+use overslash_db::repos::identity::{
+    ApplyPatchOutcome, DeleteLeafOutcome, IdentityRow, MoveTo, PatchIdentity,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -194,18 +196,25 @@ async fn apply_patch_atomic_combination() {
     let henry = make_agent(&scope, "henry", &alice).await;
     let s1 = make_sub(&scope, "s1", &henry, alice.id).await;
 
-    let updated = scope
+    let outcome = scope
         .apply_identity_patch(
             henry.id,
             PatchIdentity {
                 name: Some("henry2"),
-                move_to: Some((bob.id, 1, bob.id, bob.id)),
+                move_to: Some(MoveTo {
+                    parent_id: bob.id,
+                    new_owner_id: bob.id,
+                    descendant_owner_id: bob.id,
+                }),
                 inherit_permissions: Some(true),
             },
         )
         .await
-        .unwrap()
         .unwrap();
+    let ApplyPatchOutcome::Updated(updated) = outcome else {
+        panic!("expected Updated, got something else");
+    };
+    let updated = *updated;
     assert_eq!(updated.name, "henry2");
     assert_eq!(updated.parent_id, Some(bob.id));
     assert_eq!(updated.owner_id, Some(bob.id));
@@ -220,7 +229,7 @@ async fn apply_patch_atomic_combination() {
 async fn apply_patch_unknown_id_returns_none() {
     let pool = common::test_pool().await;
     let scope = make_scope(&pool).await;
-    let res = scope
+    let outcome = scope
         .apply_identity_patch(
             Uuid::new_v4(),
             PatchIdentity {
@@ -230,7 +239,39 @@ async fn apply_patch_unknown_id_returns_none() {
         )
         .await
         .unwrap();
-    assert!(res.is_none());
+    assert!(matches!(outcome, ApplyPatchOutcome::NotFound));
+}
+
+#[tokio::test]
+async fn apply_patch_cycle_rejected_inside_tx() {
+    // Build alice → henry(agent) → s1(sub_agent). Try to move henry under
+    // s1 — that's a cycle. apply_patch must catch it under FOR UPDATE and
+    // return Cycle, not crash or commit.
+    let pool = common::test_pool().await;
+    let scope = make_scope(&pool).await;
+    let alice = make_user(&scope, "alice").await;
+    let henry = make_agent(&scope, "henry", &alice).await;
+    let s1 = make_sub(&scope, "s1", &henry, alice.id).await;
+
+    let outcome = scope
+        .apply_identity_patch(
+            henry.id,
+            PatchIdentity {
+                move_to: Some(MoveTo {
+                    parent_id: s1.id,
+                    new_owner_id: alice.id,
+                    descendant_owner_id: alice.id,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ApplyPatchOutcome::Cycle));
+
+    // henry's parent is unchanged.
+    let henry_re = scope.get_identity(henry.id).await.unwrap().unwrap();
+    assert_eq!(henry_re.parent_id, Some(alice.id));
 }
 
 #[tokio::test]
