@@ -385,13 +385,34 @@ async fn me_identity(
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
+    let org_row = org::get_by_id(&state.db, ident.org_id).await?;
+
+    // Resolve admin status from group ACL ceiling for the overslash service
+    let ceiling = overslash_db::repos::group::get_ceiling_for_user(&state.db, claims.sub).await?;
+    let is_org_admin = ceiling
+        .grants
+        .iter()
+        .filter(|g| g.template_key == "overslash")
+        .filter_map(|g| overslash_core::permissions::AccessLevel::parse(&g.access_level))
+        .any(|l| l >= overslash_core::permissions::AccessLevel::Admin);
+
+    let picture = ident
+        .metadata
+        .get("picture")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
+        "org_name": org_row.as_ref().map(|o| o.name.clone()),
+        "org_slug": org_row.as_ref().map(|o| o.slug.clone()),
         "email": claims.email,
         "name": ident.name,
         "kind": ident.kind,
         "external_id": ident.external_id,
+        "picture": picture,
+        "is_org_admin": is_org_admin,
     })))
 }
 
