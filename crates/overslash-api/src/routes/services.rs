@@ -146,9 +146,16 @@ async fn get_service(
     auth: AuthContext,
     Path(name): Path<String>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    let row = service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    // Use the any-status resolver so the dashboard can view draft and archived
+    // instances. resolve_by_name() filters to active and is reserved for execution.
+    let row = service_instance::resolve_by_name_any_status(
+        &state.db,
+        auth.org_id,
+        auth.identity_id,
+        &name,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
     Ok(Json(row_to_detail(row)))
 }
 
