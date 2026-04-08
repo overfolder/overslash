@@ -68,6 +68,7 @@ mod system_idp_config;
 mod system_webhooks;
 pub mod user;
 mod user_connections;
+mod user_preferences;
 
 pub use agent::AgentScope;
 pub use org::OrgScope;

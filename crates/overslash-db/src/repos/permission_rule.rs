@@ -74,6 +74,22 @@ pub(crate) async fn list_by_identities(
     .await
 }
 
+pub(crate) async fn get_by_id(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<Option<PermissionRuleRow>, sqlx::Error> {
+    sqlx::query_as!(
+        PermissionRuleRow,
+        "SELECT id, org_id, identity_id, action_pattern, effect, expires_at, created_at
+         FROM permission_rules WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub(crate) async fn delete(pool: &PgPool, org_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "DELETE FROM permission_rules WHERE id = $1 AND org_id = $2",
