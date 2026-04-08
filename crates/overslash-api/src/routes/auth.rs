@@ -467,6 +467,12 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                         .find_user_identity_by_email(dev_email)
                         .await?
                         .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
+                    overslash_db::repos::org_bootstrap::bootstrap_org(
+                        &state.db,
+                        existing.org_id,
+                        Some(existing.id),
+                    )
+                    .await?;
                     (existing.org_id, existing.id)
                 }
                 Err(e) => return Err(e.into()),
