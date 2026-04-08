@@ -15,23 +15,71 @@
 	} from '$lib/types';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
+	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
-	let query = $state('');
-	let statusFilter = $state<ServiceStatus | 'all'>('all');
+	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
 
 	let pendingDelete = $state<ServiceInstanceSummary | null>(null);
 
 	const connectionIds = $derived(new Set(connections.map((c) => c.id)));
 
+	const searchKeys = $derived<SearchKey[]>([
+		{
+			name: 'status',
+			operators: ['=', '!='],
+			values: ['draft', 'active', 'archived'],
+			hint: 'Lifecycle status'
+		},
+		{
+			name: 'name',
+			operators: ['=', '~'],
+			values: () => Promise.resolve(services.map((s) => s.name)),
+			hint: 'Service instance name'
+		},
+		{
+			name: 'template',
+			operators: ['=', '~'],
+			values: () => Promise.resolve([...new Set(services.map((s) => s.template_key))]),
+			hint: 'Template key'
+		},
+		{
+			name: 'owner',
+			operators: ['='],
+			values: ['user', 'org'],
+			hint: 'Ownership scope'
+		}
+	]);
+
+	function matchesExpression(s: ServiceInstanceSummary, expr: { key: string; op: string; value: string }): boolean {
+		const v = expr.value.toLowerCase();
+		let field = '';
+		switch (expr.key) {
+			case 'status': field = s.status; break;
+			case 'name': field = s.name; break;
+			case 'template': field = s.template_key; break;
+			case 'owner': field = s.owner_identity_id ? 'user' : 'org'; break;
+			default: return true;
+		}
+		field = field.toLowerCase();
+		switch (expr.op) {
+			case '=': return field === v;
+			case '!=': return field !== v;
+			case '~': return field.includes(v);
+		}
+		return true;
+	}
+
 	const filtered = $derived(
 		services.filter((s) => {
-			if (statusFilter !== 'all' && s.status !== statusFilter) return false;
-			if (!query.trim()) return true;
-			const q = query.toLowerCase();
+			for (const expr of searchValue.expressions) {
+				if (!matchesExpression(s, expr)) return false;
+			}
+			const q = searchValue.freeText.trim().toLowerCase();
+			if (!q) return true;
 			return (
 				s.name.toLowerCase().includes(q) ||
 				s.template_key.toLowerCase().includes(q) ||
@@ -102,23 +150,12 @@
 
 	{#if !loading && services.length > 0}
 		<div class="filters">
-			<input
-				type="search"
-				placeholder="Search by name, template, owner…"
-				bind:value={query}
+			<SearchBar
+				keys={searchKeys}
+				bind:value={searchValue}
+				placeholder="Search services… (try status=active)"
+				onchange={(next) => (searchValue = next)}
 			/>
-			<div class="status-pills">
-				{#each ['all', 'active', 'draft', 'archived'] as s}
-					<button
-						type="button"
-						class="pill"
-						class:active={statusFilter === s}
-						onclick={() => (statusFilter = s as ServiceStatus | 'all')}
-					>
-						{s}
-					</button>
-				{/each}
-			</div>
 		</div>
 	{/if}
 
@@ -245,41 +282,7 @@
 		font-size: 0.85rem;
 	}
 	.filters {
-		display: flex;
-		gap: 0.75rem;
-		align-items: center;
 		margin-bottom: 0.9rem;
-	}
-	.filters input {
-		flex: 1;
-		max-width: 360px;
-		padding: 0.5rem 0.75rem;
-		border-radius: 6px;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface);
-		color: inherit;
-		font: inherit;
-		font-size: 0.85rem;
-	}
-	.status-pills {
-		display: flex;
-		gap: 0.3rem;
-	}
-	.pill {
-		padding: 0.3rem 0.7rem;
-		border-radius: 999px;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface);
-		color: var(--color-text-muted);
-		cursor: pointer;
-		font: inherit;
-		font-size: 0.78rem;
-		text-transform: capitalize;
-	}
-	.pill.active {
-		background: var(--color-primary, #6366f1);
-		color: white;
-		border-color: var(--color-primary, #6366f1);
 	}
 	.empty {
 		background: var(--color-surface);

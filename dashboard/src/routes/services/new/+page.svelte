@@ -4,28 +4,22 @@
 	import { ApiError } from '$lib/session';
 	import {
 		listTemplates,
-		searchTemplates,
 		getTemplate,
 		listConnections,
 		initiateOAuth,
 		createService
 	} from '$lib/api/services';
-	import type {
-		ConnectionSummary,
-		TemplateDetail,
-		TemplateSummary,
-		TemplateTier
-	} from '$lib/types';
+	import type { ConnectionSummary, TemplateDetail, TemplateSummary } from '$lib/types';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 
 	let templates = $state<TemplateSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
 	let loadingTemplates = $state(true);
 	let error = $state<string | null>(null);
 
-	let query = $state('');
-	let tierFilter = $state<TemplateTier | 'all'>('all');
+	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
 
 	let selectedKey = $state<string | null>(null);
 	let selectedDetail = $state<TemplateDetail | null>(null);
@@ -41,8 +35,54 @@
 	let connectingOAuth = $state(false);
 	let oauthAbort: AbortController | null = null;
 
+	const searchKeys = $derived<SearchKey[]>([
+		{
+			name: 'tier',
+			operators: ['=', '!='],
+			values: ['global', 'org', 'user'],
+			hint: 'Template tier'
+		},
+		{
+			name: 'category',
+			operators: ['=', '~'],
+			values: () =>
+				Promise.resolve([
+					...new Set(templates.map((t) => t.category ?? '').filter((c) => c))
+				]),
+			hint: 'Template category'
+		}
+	]);
+
+	function templateMatches(t: TemplateSummary, expr: { key: string; op: string; value: string }): boolean {
+		const v = expr.value.toLowerCase();
+		let field = '';
+		switch (expr.key) {
+			case 'tier': field = t.tier; break;
+			case 'category': field = (t.category ?? '').toString(); break;
+			default: return true;
+		}
+		field = field.toLowerCase();
+		switch (expr.op) {
+			case '=': return field === v;
+			case '!=': return field !== v;
+			case '~': return field.includes(v);
+		}
+		return true;
+	}
+
 	const filteredTemplates = $derived(
-		templates.filter((t) => tierFilter === 'all' || t.tier === tierFilter)
+		templates.filter((t) => {
+			for (const expr of searchValue.expressions) {
+				if (!templateMatches(t, expr)) return false;
+			}
+			const q = searchValue.freeText.trim().toLowerCase();
+			if (!q) return true;
+			return (
+				t.key.toLowerCase().includes(q) ||
+				t.display_name.toLowerCase().includes(q) ||
+				(t.description ?? '').toLowerCase().includes(q)
+			);
+		})
 	);
 
 	// Auth modes available on the selected template (oauth | api_key)
@@ -70,18 +110,6 @@
 			error = e instanceof ApiError ? `Failed to load templates (${e.status})` : 'Failed to load templates';
 		} finally {
 			loadingTemplates = false;
-		}
-	}
-
-	async function runSearch() {
-		if (!query.trim()) {
-			await loadTemplates();
-			return;
-		}
-		try {
-			templates = await searchTemplates(query.trim());
-		} catch (e) {
-			error = e instanceof ApiError ? `Search failed (${e.status})` : 'Search failed';
 		}
 	}
 
@@ -203,25 +231,12 @@
 
 	{#if step === 'pick'}
 		<div class="filters">
-			<input
-				type="search"
-				placeholder="Search templates…"
-				bind:value={query}
-				onkeydown={(e) => e.key === 'Enter' && runSearch()}
+			<SearchBar
+				keys={searchKeys}
+				bind:value={searchValue}
+				placeholder="Search templates… (try tier=global)"
+				onchange={(next) => (searchValue = next)}
 			/>
-			<button type="button" class="btn" onclick={runSearch}>Search</button>
-			<div class="status-pills">
-				{#each ['all', 'global', 'org', 'user'] as t}
-					<button
-						type="button"
-						class="pill"
-						class:active={tierFilter === t}
-						onclick={() => (tierFilter = t as TemplateTier | 'all')}
-					>
-						{t}
-					</button>
-				{/each}
-			</div>
 		</div>
 
 		<div class="layout">
@@ -379,43 +394,7 @@
 		font-size: 0.85rem;
 	}
 	.filters {
-		display: flex;
-		gap: 0.75rem;
-		align-items: center;
 		margin-bottom: 1rem;
-		flex-wrap: wrap;
-	}
-	.filters input[type='search'] {
-		flex: 1;
-		min-width: 200px;
-		max-width: 320px;
-		padding: 0.5rem 0.75rem;
-		border-radius: 6px;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface);
-		color: inherit;
-		font: inherit;
-		font-size: 0.85rem;
-	}
-	.status-pills {
-		display: flex;
-		gap: 0.3rem;
-	}
-	.pill {
-		padding: 0.3rem 0.7rem;
-		border-radius: 999px;
-		border: 1px solid var(--color-border);
-		background: var(--color-surface);
-		color: var(--color-text-muted);
-		cursor: pointer;
-		font: inherit;
-		font-size: 0.78rem;
-		text-transform: capitalize;
-	}
-	.pill.active {
-		background: var(--color-primary, #6366f1);
-		color: white;
-		border-color: var(--color-primary, #6366f1);
 	}
 	.layout {
 		display: grid;
