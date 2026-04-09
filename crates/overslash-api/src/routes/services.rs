@@ -81,6 +81,11 @@ struct CreateServiceRequest {
     status: String,
     /// If true, create as user-level (requires identity-bound key). Default: true when key is identity-bound.
     user_level: Option<bool>,
+    /// Create the service instance owned by this user identity instead of the
+    /// calling agent. Caller must be the user itself or an agent whose owner
+    /// is this user. Overrides `user_level` when both are set.
+    #[serde(default)]
+    on_behalf_of: Option<Uuid>,
 }
 
 fn default_status() -> String {
@@ -181,14 +186,26 @@ async fn create_service(
     let auth = acl;
     let name = req.name.as_deref().unwrap_or(&req.template_key);
 
-    // Determine if user-level or org-level
-    let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
-    let owner_identity_id = if user_level {
-        Some(auth.identity_id.ok_or_else(|| {
-            AppError::BadRequest("user-level services require an identity-bound API key".into())
-        })?)
+    // Determine the owning identity:
+    //   - on_behalf_of: validate against the caller's owner chain, use the user
+    //   - else: fall back to the legacy `user_level` flag (defaults true when
+    //     the key is identity-bound)
+    let owner_identity_id = if req.on_behalf_of.is_some() {
+        crate::services::group_ceiling::resolve_owner_identity(
+            &scope,
+            auth.identity_id,
+            req.on_behalf_of,
+        )
+        .await?
     } else {
-        None
+        let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
+        if user_level {
+            Some(auth.identity_id.ok_or_else(|| {
+                AppError::BadRequest("user-level services require an identity-bound API key".into())
+            })?)
+        } else {
+            None
+        }
     };
 
     // Resolve the template to determine its source tier
