@@ -155,21 +155,18 @@ pub async fn resolve_identity(
     }
 
     // Resolve owner_user_id from the identity, bounded to the key's org.
-    let owner_user_id = if let Some(identity_id) = key_row.identity_id {
-        let scope = overslash_db::OrgScope::new(key_row.org_id, state.db.clone());
-        match scope.get_identity(identity_id).await {
-            Ok(Some(identity)) => {
-                if identity.kind == "user" {
-                    Some(identity.id)
-                } else {
-                    identity.owner_id
-                }
+    let identity_id = key_row.identity_id;
+    let scope = overslash_db::OrgScope::new(key_row.org_id, state.db.clone());
+    let owner_user_id = match scope.get_identity(identity_id).await {
+        Ok(Some(identity)) => {
+            if identity.kind == "user" {
+                Some(identity.id)
+            } else {
+                identity.owner_id
             }
-            _ => None,
         }
-    } else {
-        None
+        _ => None,
     };
 
-    Some((key_row.org_id, key_row.identity_id, owner_user_id))
+    Some((key_row.org_id, Some(identity_id), owner_user_id))
 }

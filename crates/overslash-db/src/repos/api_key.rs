@@ -9,7 +9,7 @@ pub(crate) const REVOKED_REASON_IDENTITY_ARCHIVED: &str = "identity_archived";
 pub struct ApiKeyRow {
     pub id: Uuid,
     pub org_id: Uuid,
-    pub identity_id: Option<Uuid>,
+    pub identity_id: Uuid,
     pub name: String,
     pub key_hash: String,
     pub key_prefix: String,
@@ -24,7 +24,7 @@ pub struct ApiKeyRow {
 pub(crate) async fn create(
     pool: &PgPool,
     org_id: Uuid,
-    identity_id: Option<Uuid>,
+    identity_id: Uuid,
     name: &str,
     key_hash: &str,
     key_prefix: &str,

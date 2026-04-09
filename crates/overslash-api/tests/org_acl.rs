@@ -296,7 +296,32 @@ async fn test_last_admin_protected() {
         .unwrap()
         .to_string();
 
-    // Try to remove the only admin → should fail
+    // Drop every Admins member except user_ids[0] so the "last admin"
+    // protection has only one row to defend. The unauth bootstrap path now
+    // creates an "admin" user that lands in Admins automatically, so the
+    // Admins group starts with both that user and user_ids[0].
+    let members: Vec<Uuid> = client
+        .get(format!("{base}/v1/groups/{admins_id}/members"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for mid in &members {
+        if *mid == user_ids[0] {
+            continue;
+        }
+        client
+            .delete(format!("{base}/v1/groups/{admins_id}/members/{mid}"))
+            .header(auth(&org_key).0, auth(&org_key).1)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Try to remove the only remaining admin → should fail
     let resp = client
         .delete(format!(
             "{base}/v1/groups/{admins_id}/members/{}",

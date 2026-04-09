@@ -197,31 +197,36 @@ async fn resolve_approval(
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
     // ── Authorize the caller as the current resolver (or an ancestor of them).
-    // Org-level (no identity_id) keys belong to org admins and are allowed for
-    // backward compatibility with the test/admin flows. Identity-bound keys
-    // must match the current resolver or be one of its ancestors.
+    // Org admins (Users with `is_org_admin = true` or Agents with admin grant
+    // on the overslash meta service — both surfaced as `Admin` access level by
+    // the OrgAcl extractor) bypass the chain walk: they can resolve any
+    // approval in their org. Non-admin callers must be the current resolver or
+    // one of its ancestors.
     //
     // SPEC §5: "The requesting agent itself — never. An agent cannot resolve
     // its own approval requests." This catches edge cases (e.g. an orphaned
     // non-user identity ending up as its own resolver after the chain walk
     // falls back) where is_self_or_ancestor would otherwise pass the same id
     // against itself.
+    use overslash_core::permissions::AccessLevel;
     if let Some(caller_identity) = auth.identity_id {
         if caller_identity == approval_pre.identity_id {
             return Err(AppError::Forbidden(
                 "agents cannot resolve their own approval requests".into(),
             ));
         }
-        let allowed = crate::services::permission_chain::is_self_or_ancestor(
-            &scope,
-            caller_identity,
-            approval_pre.current_resolver_identity_id,
-        )
-        .await?;
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "caller is not authorized to resolve this approval".into(),
-            ));
+        if auth.access_level < AccessLevel::Admin {
+            let allowed = crate::services::permission_chain::is_self_or_ancestor(
+                &scope,
+                caller_identity,
+                approval_pre.current_resolver_identity_id,
+            )
+            .await?;
+            if !allowed {
+                return Err(AppError::Forbidden(
+                    "caller is not authorized to resolve this approval".into(),
+                ));
+            }
         }
     }
 

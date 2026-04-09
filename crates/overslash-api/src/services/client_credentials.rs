@@ -19,9 +19,11 @@ pub struct ClientCredentials {
 /// Resolution cascade (first match wins):
 /// 1. Explicit `pinned_byoc_id` or connection's pinned `byoc_credential_id`
 /// 2. Identity-level BYOC credential
-/// 3. Org-level BYOC credential (identity_id IS NULL)
-/// 4. Environment variables (only if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set)
-/// 5. Error
+/// 3. Environment variables (only if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set)
+/// 4. Error
+///
+/// Org-level BYOC credentials (identity_id IS NULL) were removed in
+/// migration 028. BYOC is always identity-bound.
 pub async fn resolve(
     pool: &PgPool,
     enc_key: &[u8; 32],
@@ -46,12 +48,14 @@ pub async fn resolve(
         return decrypt_byoc(&row, enc_key);
     }
 
-    // 2 + 3. Cascade: identity-level → org-level
-    if let Some(row) = scope
-        .resolve_byoc_credential(identity_id, provider_key)
-        .await?
-    {
-        return decrypt_byoc(&row, enc_key);
+    // 2. Identity-level BYOC. BYOC requires an identity-bound caller.
+    if let Some(identity_id) = identity_id {
+        if let Some(row) = scope
+            .resolve_byoc_credential(identity_id, provider_key)
+            .await?
+        {
+            return decrypt_byoc(&row, enc_key);
+        }
     }
 
     // 4. Env var fallback — only with explicit opt-in

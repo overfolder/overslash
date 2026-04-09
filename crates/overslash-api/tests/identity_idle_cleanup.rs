@@ -486,68 +486,11 @@ async fn test_cannot_create_subagent_under_archived_parent() {
     assert_eq!(resp.status(), 200);
 }
 
-#[tokio::test]
-async fn test_purged_identity_orphan_key_does_not_authenticate() {
-    // Regression: api_keys.identity_id is FK ON DELETE SET NULL. After purge,
-    // the row's identity_id becomes NULL but revoked_at + revoked_reason remain.
-    // The auth flow must NOT authenticate such an orphan, even though
-    // find_by_prefix_including_archived returns it.
-    let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{base}");
-    let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "purge-orphan").await;
-    let org_uuid: Uuid = org_id.parse().unwrap();
-
-    let sub = make_subagent(&client, &base, &admin_key, &agent_id, "doomed").await;
-    let sub_id: Uuid = sub["id"].as_str().unwrap().parse().unwrap();
-
-    let sub_key = make_sub_key(&client, &base, &admin_key, &org_id, sub_id, "k").await;
-    let key_str = sub_key["key"].as_str().unwrap().to_string();
-
-    // Archive then purge (force retention to 0 days via tiny interval)
-    force_org_config(&pool, org_uuid, 60, 1).await;
-    sqlx::query("UPDATE identities SET last_active_at = now() - interval '2 hours' WHERE id = $1")
-        .bind(sub_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    overslash_db::repos::identity::archive_idle_subagents(&pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE identities SET archived_at = now() - interval '5 days' WHERE id = $1")
-        .bind(sub_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let purged = overslash_db::repos::identity::purge_archived_subagents(&pool)
-        .await
-        .unwrap();
-    assert_eq!(purged, 1);
-
-    // Sanity: the api_key row still exists with identity_id NULLed and
-    // revoked_at + revoked_reason still set.
-    let row: (Option<Uuid>, Option<time::OffsetDateTime>, Option<String>) = sqlx::query_as(
-        "SELECT identity_id, revoked_at, revoked_reason FROM api_keys WHERE id = $1::uuid",
-    )
-    .bind(sub_key["id"].as_str().unwrap())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(row.0.is_none(), "identity_id should be NULL after purge");
-    assert!(row.1.is_some(), "revoked_at should still be set");
-    assert_eq!(row.2.as_deref(), Some("identity_archived"));
-
-    // The orphaned, revoked key MUST NOT authenticate.
-    let resp = client
-        .get(format!("{base}/v1/identities"))
-        .header("Authorization", format!("Bearer {key_str}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "invalid api key");
-}
+// (Removed) test_purged_identity_orphan_key_does_not_authenticate
+// Migration 028 changed api_keys.identity_id from `ON DELETE SET NULL` to
+// `ON DELETE CASCADE`, so the orphaned-NULL-identity scenario this test
+// guarded against can no longer arise: when an identity is purged its api
+// keys are deleted alongside it.
 
 #[tokio::test]
 async fn test_archived_identity_takes_precedence_over_key_expiry() {
@@ -648,7 +591,7 @@ async fn test_archived_identity_resolves_for_rate_limit_charging() {
         .await
         .unwrap()
         .expect("auto-revoked key must be visible to the rate-limit lookup");
-    assert_eq!(inclusive.identity_id, Some(sub_id));
+    assert_eq!(inclusive.identity_id, sub_id);
     assert!(inclusive.revoked_at.is_some());
     assert_eq!(
         inclusive.revoked_reason.as_deref(),

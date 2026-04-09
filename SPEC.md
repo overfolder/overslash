@@ -34,7 +34,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 2. Multi-tenant — organizations with isolated identities, secrets, and audit
 3. Hierarchical identities — users own agents, agents spawn sub-agents, permissions flow up
 4. Versioned secret vault — encrypted, never returned via API, with version history
-5. OAuth engine — system credentials, org credentials, and BYOC (Bring Your Own Client) per identity
+5. OAuth engine — system credentials and BYOC (Bring Your Own Client) per identity (User or Agent)
 6. Permission chains — every level in the identity hierarchy must authorize an action
 7. Human approval workflows — with expiry, "Allow & Remember" with TTL, approval URLs for any channel
 8. Universal HTTP execution — any REST API, with or without a service definition
@@ -448,7 +448,9 @@ Secret values are encrypted at rest. Access to values depends on the actor:
 |-------|-----------|----------------------|------------------|
 | **User** (dashboard) | read/write | read/write | — |
 | **Agent** (API) | — | — | — |
-| **Org admin** (dashboard) | read/write | read/write | read/write (all org) |
+| **Org admin** (User with `is_org_admin = true`) | read/write | read/write | read/write (all org) |
+
+> **Org admin** is an attribute on a User identity, not a separate principal. There is no standalone "org" identity that can authenticate or hold API keys — every authenticated caller is a User or an Agent. Agents earn admin authority the same way they earn any other permission: by being placed in a group with `admin` access on the **`overslash`** meta service (a system-managed `service_instance` that represents Overslash itself within each org). The `is_org_admin` flag is the fast path for Users and is kept in sync with membership of the system **Admins** group.
 
 - **Users** can view and manage secret values for all secrets in their subtree (their own + their agents' secrets) via the dashboard.
 - **Agents** have **no read access to the secret vault via API key** — not even names or version numbers. Secret values are only injected at action execution time, gated by the permission chain. Listing and inspection of secrets is dashboard-only (JWT session auth), so the secret namespace is never exposed to a compromised agent token. Agents that need to confirm a rotation must rely on the audit trail or on a successful action execution.

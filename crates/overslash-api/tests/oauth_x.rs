@@ -80,7 +80,7 @@ async fn test_oauth_x_callback_with_byoc() {
     let (org_id, ident_id, _api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC credential for X
+    // Create identity-bound BYOC credential for X
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -88,6 +88,7 @@ async fn test_oauth_x_callback_with_byoc() {
             "provider": "x",
             "client_id": "x_byoc_client_id",
             "client_secret": "x_byoc_client_secret",
+            "identity_id": ident_id,
         }))
         .send()
         .await

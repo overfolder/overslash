@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key,\n                encrypted_client_id, encrypted_client_secret, created_at, updated_at\n         FROM byoc_credentials\n         WHERE org_id = $1 AND provider_key = $3\n           AND (identity_id = $2 OR identity_id IS NULL)\n         ORDER BY identity_id IS NOT NULL DESC\n         LIMIT 1",
+  "query": "SELECT id, org_id, identity_id, provider_key,\n                encrypted_client_id, encrypted_client_secret, created_at, updated_at\n         FROM byoc_credentials\n         WHERE org_id = $1 AND provider_key = $3 AND identity_id = $2\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -54,7 +54,7 @@
     "nullable": [
       false,
       false,
-      true,
+      false,
       false,
       false,
       false,
@@ -62,5 +62,5 @@
       false
     ]
   },
-  "hash": "4124ac43ecccb7fcf59fabc357e820d8939ca07817c6eeb572f1f58b84f29f9a"
+  "hash": "dd1fa395349c2829819df2d28cea39991255e5532f249ac6bf86608b99d51555"
 }

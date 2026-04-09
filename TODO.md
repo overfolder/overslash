@@ -105,7 +105,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] Approval bubbling (current_resolver tracking, explicit bubble_up, auto-bubble timer, rule placement on closest non-inherit ancestor)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
 - [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
-- [ ] Org-level ACL — role-based access control for who can manage resources within an org
+- [x] Org-level ACL — role-based access control via group membership on the `overslash` meta service, plus an `is_org_admin` fast-path on User identities. Naked org-level identities/API keys removed (migration 028).
 - [ ] Dashboard: identity hierarchy tree view, agent permission management
 
 ## Phase 4: Polish + Meta Tools

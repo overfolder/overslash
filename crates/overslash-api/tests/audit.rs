@@ -1128,12 +1128,12 @@ async fn test_audit_byoc_credential_created() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"provider": "google", "client_id": "cid", "client_secret": "cs"}))
+        .json(&json!({"provider": "google", "client_id": "cid", "client_secret": "cs", "identity_id": ident_id}))
         .send()
         .await
         .unwrap();
@@ -1154,12 +1154,12 @@ async fn test_audit_byoc_credential_deleted() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"provider": "github", "client_id": "c", "client_secret": "s"}))
+        .json(&json!({"provider": "github", "client_id": "c", "client_secret": "s", "identity_id": ident_id}))
         .send()
         .await
         .unwrap();
@@ -1264,7 +1264,7 @@ async fn test_audit_mixed_events() {
     client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"provider": "spotify", "client_id": "c", "client_secret": "s"}))
+        .json(&json!({"provider": "spotify", "client_id": "c", "client_secret": "s", "identity_id": ident_id}))
         .send()
         .await
         .unwrap();

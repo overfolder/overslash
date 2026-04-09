@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM identity_groups\n             WHERE identity_id = $1\n               AND group_id IN (\n                 SELECT id FROM groups\n                 WHERE org_id = $2 AND name = 'Admins' AND is_system = true\n               )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8db2ed1c8b2920f318c9131f93cfebe2e3da6744310916fd2fbd67ca4504d6c5"
+}

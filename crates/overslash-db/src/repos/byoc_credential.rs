@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub struct ByocCredentialRow {
     pub id: Uuid,
     pub org_id: Uuid,
-    pub identity_id: Option<Uuid>,
+    pub identity_id: Uuid,
     pub provider_key: String,
     pub encrypted_client_id: Vec<u8>,
     pub encrypted_client_secret: Vec<u8>,
@@ -16,7 +16,7 @@ pub struct ByocCredentialRow {
 
 pub struct CreateByocCredential<'a> {
     pub org_id: Uuid,
-    pub identity_id: Option<Uuid>,
+    pub identity_id: Uuid,
     pub provider_key: &'a str,
     pub encrypted_client_id: &'a [u8],
     pub encrypted_client_secret: &'a [u8],
@@ -88,12 +88,13 @@ pub(crate) async fn delete_by_org(
     Ok(result.rows_affected() > 0)
 }
 
-/// Resolve BYOC credential for a given org + optional identity + provider.
-/// Returns identity-level match first, then org-level (identity_id IS NULL).
+/// Resolve BYOC credential for a given org + identity + provider.
+/// BYOC credentials are always identity-bound (org-level/NULL identity rows
+/// were removed in migration 028).
 pub(crate) async fn resolve(
     pool: &PgPool,
     org_id: Uuid,
-    identity_id: Option<Uuid>,
+    identity_id: Uuid,
     provider_key: &str,
 ) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
     sqlx::query_as!(
@@ -101,9 +102,7 @@ pub(crate) async fn resolve(
         "SELECT id, org_id, identity_id, provider_key,
                 encrypted_client_id, encrypted_client_secret, created_at, updated_at
          FROM byoc_credentials
-         WHERE org_id = $1 AND provider_key = $3
-           AND (identity_id = $2 OR identity_id IS NULL)
-         ORDER BY identity_id IS NOT NULL DESC
+         WHERE org_id = $1 AND provider_key = $3 AND identity_id = $2
          LIMIT 1",
         org_id,
         identity_id,
