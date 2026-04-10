@@ -15,9 +15,9 @@ pub struct PkcePair {
 
 /// Generate a PKCE code verifier and its S256 challenge.
 pub fn generate_pkce() -> PkcePair {
-    use rand::RngCore;
+    use rand::RngExt;
     let mut buf = [0u8; 32];
-    rand::rng().fill_bytes(&mut buf);
+    rand::rng().fill(&mut buf);
     let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf);
     let challenge = {
         let digest = Sha256::digest(verifier.as_bytes());

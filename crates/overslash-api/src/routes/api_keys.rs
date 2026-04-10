@@ -157,10 +157,10 @@ async fn create_api_key(
 }
 
 fn generate_api_key() -> std::result::Result<(String, String, String), crate::error::AppError> {
-    use rand::RngCore;
+    use rand::RngExt;
 
     let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     let encoded = hex::encode(bytes);
     let raw_key = format!("osk_{encoded}");
     let key_prefix = raw_key[..12].to_string();

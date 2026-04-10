@@ -942,8 +942,8 @@ async fn resolve_instance_auth(
 }
 
 fn generate_token() -> String {
-    use rand::RngCore;
+    use rand::RngExt;
     let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     hex::encode(bytes)
 }
