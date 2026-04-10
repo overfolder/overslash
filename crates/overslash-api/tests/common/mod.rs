@@ -231,6 +231,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -303,6 +304,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -381,6 +383,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -638,8 +641,9 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    // Org-level key (needed to create identity)
-    let org_key: Value = client
+    // Bootstrap: first API-key call on a fresh org auto-creates an admin
+    // user identity and returns its key (no auth required).
+    let bootstrap_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .json(&json!({"org_id": org_id, "name": "org-admin"}))
         .send()
@@ -648,9 +652,10 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .json()
         .await
         .unwrap();
-    let org_api_key = org_key["key"].as_str().unwrap().to_string();
+    let org_api_key = bootstrap_resp["key"].as_str().unwrap().to_string();
 
-    // Create a user identity first (agents require a parent)
+    // Create a "test-user" under the admin, then an agent under test-user.
+    // This matches the original flow so tests can find identities by name.
     let user_ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
@@ -675,7 +680,7 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
-    // Identity-bound key (requires admin auth now that org has keys)
+    // Identity-bound key for the agent
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .header("Authorization", format!("Bearer {org_api_key}"))
@@ -762,6 +767,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -831,6 +837,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())

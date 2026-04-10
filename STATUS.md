@@ -68,6 +68,7 @@
 - `inherit_permissions` dynamic resolution: when set, identity inherits parent's permission rules at query time (live pointer, not copy); chain walks upward through continuous `inherit_permissions=true` ancestors
 - Ancestor chain query (recursive CTE) and children listing endpoints
 - Enrollment approval auto-assigns parent to approving user
+- Standalone "Provide Secret" page (`/secrets/provide/req_{id}?token=jwt`): JWT-scoped, single-use, no-login secret submission. `secret_requests` table (migration 027), `POST /v1/secrets/requests` (mint), public `GET`/`POST /public/secrets/provide/{req_id}` (verify + submit), SvelteKit standalone route mirroring the enrollment-consent layout.
 - `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
 - Sub-agent idle cleanup with two-phase archive — `last_active_at` touched per request, background loop (60s) archives idle sub-agents (revoking API keys with `revoked_reason='identity_archived'` and expiring pending approvals), then purges archived rows past the retention window. Parents wait for live children before archiving or purging. `POST /v1/identities/{id}/restore` un-archives within the window and resurrects auto-revoked API keys; manually-revoked keys are untouched. Archived identities return `403 identity_archived` from the auth middleware. Idle timeout (`subagent_idle_timeout_secs`, 4h–60d) and retention (`subagent_archive_retention_days`, 1d–60d) are configured per-org via `PATCH /v1/orgs/{id}/subagent-cleanup-config`.
 - Hierarchical permission chain walk (SPEC §5): `execute_action` walks the requester→user chain; each non-user level must authorize via own rules or `inherit_permissions`
@@ -116,7 +117,7 @@
 ### Not Yet Built
 
 - Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
-- Standalone pages: approval resolution, secret request, enrollment consent
+- Standalone pages: approval resolution
 - `on_behalf_of` for agent-initiated connections
 - Three-tier template registry (org + user DB-backed CRUD)
 - Template validation endpoint + OpenAPI import

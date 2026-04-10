@@ -25,6 +25,11 @@ export default defineConfig({
 			'/enroll/approve': {
 				target: apiTarget,
 				changeOrigin: true
+			},
+			// Standalone "Provide Secret" page (unauthenticated, JWT-scoped)
+			'/public/secrets': {
+				target: apiTarget,
+				changeOrigin: true
 			}
 		}
 	}

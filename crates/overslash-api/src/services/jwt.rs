@@ -33,6 +33,44 @@ pub fn verify(secret: &[u8], token: &str) -> Result<Claims, JwtError> {
     Ok(data.claims)
 }
 
+/// Claims for the standalone "Provide Secret" page. Distinct from `Claims`
+/// (user session) so a leaked session cookie cannot be used to satisfy a
+/// secret-request URL — and vice versa. The `kind` field is asserted on
+/// verify as a defense-in-depth check against future claim-shape collisions.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SecretRequestClaims {
+    pub req: String, // "req_<uuid>"
+    pub org: Uuid,
+    pub iat: i64,
+    pub exp: i64,
+    pub kind: String, // always "secret_request"
+}
+
+pub const SECRET_REQUEST_KIND: &str = "secret_request";
+
+pub fn mint_secret_request(
+    secret: &[u8],
+    claims: &SecretRequestClaims,
+) -> Result<String, JwtError> {
+    let key = EncodingKey::from_secret(secret);
+    Ok(jsonwebtoken::encode(&Header::default(), claims, &key)?)
+}
+
+pub fn verify_secret_request(secret: &[u8], token: &str) -> Result<SecretRequestClaims, JwtError> {
+    let key = DecodingKey::from_secret(secret);
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_required_spec_claims(&["exp"]);
+    let data = jsonwebtoken::decode::<SecretRequestClaims>(token, &key, &validation)?;
+    if data.claims.kind != SECRET_REQUEST_KIND {
+        // Map "wrong kind" into the same error type as a bad signature so
+        // callers don't have to special-case it.
+        return Err(JwtError::Token(
+            jsonwebtoken::errors::ErrorKind::InvalidToken.into(),
+        ));
+    }
+    Ok(data.claims)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
