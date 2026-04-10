@@ -20,6 +20,14 @@ async fn mint(base: &str, client: &reqwest::Client, api_key: &str, name: &str) -
         .unwrap()
 }
 
+/// Build the public provide URL with the token as a query param.
+fn provide_url(base: &str, req_id: &str, token: &str) -> String {
+    format!(
+        "{base}/public/secrets/provide/{req_id}?token={token}",
+        token = urlencoding::encode(token)
+    )
+}
+
 #[tokio::test]
 async fn happy_path_mint_get_submit_stored() {
     let pool = common::test_pool().await;
@@ -34,8 +42,7 @@ async fn happy_path_mint_get_submit_stored() {
 
     // GET metadata (no auth)
     let resp = client
-        .get(format!("{base}/public/secrets/provide/{req_id}"))
-        .query(&[("token", token)])
+        .get(provide_url(&base, req_id, token))
         .send()
         .await
         .unwrap();
@@ -117,8 +124,7 @@ async fn tampered_token_rejected() {
     bad.push(if last == 'a' { 'b' } else { 'a' });
 
     let r = client
-        .get(format!("{base}/public/secrets/provide/{req_id}"))
-        .query(&[("token", bad.as_str())])
+        .get(provide_url(&base, req_id, &bad))
         .send()
         .await
         .unwrap();
@@ -135,13 +141,13 @@ async fn mismatched_req_id_rejected() {
 
     let a = mint(&base, &client, &agent_key, "ka").await;
     let b = mint(&base, &client, &agent_key, "kb").await;
+    // Use a's request ID but b's token — should be rejected.
     let r = client
-        .get(format!(
-            "{}/public/secrets/provide/{}",
-            base,
-            a["id"].as_str().unwrap()
+        .get(provide_url(
+            &base,
+            a["id"].as_str().unwrap(),
+            b["token"].as_str().unwrap(),
         ))
-        .query(&[("token", b["token"].as_str().unwrap())])
         .send()
         .await
         .unwrap();
