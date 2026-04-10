@@ -522,7 +522,9 @@ The agent tree supports creating, editing, and deleting agents directly.
 
 The creation flow does NOT include a Kind/type selector. All created identities are agents — parentage determines hierarchy position.
 
-`inherit_permissions` is not offered during enrollment — the user configures this after enrollment in the agent detail panel if desired.
+`inherit_permissions` defaults to **false** for new agents. The create form includes an opt-in checkbox labeled "Inherits Permissions — inherit parent's current and future rules" (unchecked by default). The user can also toggle this later in the agent detail panel.
+
+For enrollment-created agents, `inherit_permissions` is not offered — it stays false, configurable after enrollment in the detail panel.
 
 On submit, shows a **one-time enrollment snippet** designed to be pasted into the agent's conversation:
 
