@@ -388,7 +388,17 @@ async fn list_template_actions(
         }
     }
 
-    let actions = resolve_template_actions(&state, &auth, &key).await?;
+    // When user templates are disabled, mask identity so resolve skips user tier.
+    let effective_auth = if user_templates_allowed {
+        auth.clone()
+    } else {
+        AuthContext {
+            org_id: auth.org_id,
+            identity_id: None,
+            key_id: auth.key_id,
+        }
+    };
+    let actions = resolve_template_actions(&state, &effective_auth, &key).await?;
     Ok(Json(actions))
 }
 
