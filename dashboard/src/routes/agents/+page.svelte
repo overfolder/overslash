@@ -20,6 +20,7 @@
 		CreatedEnrollmentToken
 	} from '$lib/types';
 	import type { ApprovalResponse } from '$lib/session';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let identities = $state<Identity[]>([]);
 	let approvals = $state<ApprovalResponse[]>([]);
@@ -42,6 +43,10 @@
 	let renameOpen = $state(false);
 	let renameValue = $state('');
 	let newToken = $state<CreatedEnrollmentToken | null>(null);
+
+	// Delete confirmation modal state
+	let deleteModalOpen = $state(false);
+	let deleteModalBusy = $state(false);
 
 	const selected = $derived(identities.find((i) => i.id === selectedId) ?? null);
 	const childrenOf = $derived.by(() => {
@@ -119,19 +124,16 @@
 		e.preventDefault();
 		const form = e.target as HTMLFormElement;
 		const fd = new FormData(form);
-		const kind = String(fd.get('kind') ?? 'agent') as 'user' | 'agent' | 'sub_agent';
+		const parentId = String(fd.get('parent_id') ?? '');
+		const parent = identities.find((i) => i.id === parentId);
+		// Kind determined by parent: user→agent, agent/sub_agent→sub_agent
+		const kind: 'agent' | 'sub_agent' = parent?.kind === 'user' ? 'agent' : 'sub_agent';
 		const req: CreateIdentityRequest = {
 			name: String(fd.get('name') ?? '').trim(),
 			kind
 		};
-		const parent = String(fd.get('parent_id') ?? '');
-		if (parent) req.parent_id = parent;
-		// Send inherit_permissions in the same request so the row lands in
-		// its final state — no follow-up PATCH that could leave a half-
-		// initialised row if it fails.
-		if (kind !== 'user') {
-			req.inherit_permissions = fd.get('inherit_permissions') === 'on';
-		}
+		if (parentId) req.parent_id = parentId;
+		req.inherit_permissions = fd.get('inherit_permissions') === 'on';
 		try {
 			const created = await createIdentity(req);
 			createOpen = false;
@@ -169,15 +171,23 @@
 		}
 	}
 
-	async function handleDelete() {
+	function requestDelete() {
+		if (!selected || selected.kind === 'user') return;
+		deleteModalOpen = true;
+	}
+
+	async function confirmDelete() {
 		if (!selected) return;
-		if (!confirm(`Delete ${selected.name}? This cannot be undone.`)) return;
+		deleteModalBusy = true;
 		try {
 			await deleteIdentity(selected.id);
+			deleteModalOpen = false;
 			selectedId = null;
 			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
+		} finally {
+			deleteModalBusy = false;
 		}
 	}
 
@@ -241,13 +251,10 @@
 		return identities.filter((i) => allowed.includes(i.kind) && !descendants.has(i.id));
 	});
 
-	// Eligible parents for the create form, given the chosen kind.
-	let createKind = $state<'user' | 'agent' | 'sub_agent'>('agent');
-	const createEligibleParents = $derived.by(() => {
-		if (createKind === 'user') return [];
-		const allowed = createKind === 'agent' ? ['user'] : ['agent', 'sub_agent'];
-		return identities.filter((i) => allowed.includes(i.kind));
-	});
+	// Eligible parents for the create form — all non-leaf kinds can be parents.
+	const createEligibleParents = $derived(
+		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind))
+	);
 
 	onMount(() => {
 		void loadAll();
@@ -260,24 +267,23 @@
 </script>
 
 <svelte:head>
-	<title>Identities · Overslash</title>
+	<title>Agents · Overslash</title>
 </svelte:head>
 
 <div class="page">
 	<header class="page-header">
 		<div>
-			<h1>Identities</h1>
-			<p class="muted">Users, agents, and sub-agents in your organization.</p>
+			<h1>Agents</h1>
+			<p class="muted">Agents and sub-agents in your organization.</p>
 		</div>
 		<button
 			class="btn primary"
 			onclick={() => {
 				createOpen = true;
 				createParentId = selectedId;
-				createKind = selectedId ? 'agent' : 'user';
 			}}
 		>
-			+ Create
+			+ Add Agent
 		</button>
 	</header>
 
@@ -291,8 +297,8 @@
 				<p class="muted">Loading…</p>
 			{:else if roots.length === 0}
 				<p class="muted">
-					No identities yet. <button class="link" onclick={() => (createOpen = true)}
-						>Create the first one</button
+					No agents found. <button class="link" onclick={() => (createOpen = true)}
+						>Create your first agent</button
 					>.
 				</p>
 			{:else}
@@ -325,7 +331,18 @@
 
 				<section>
 					<h3>Properties</h3>
-					{#if selected.kind !== 'user'}
+					{#if selected.kind === 'user'}
+						<p class="muted small">This is the logged-in user. User identities are read-only.</p>
+						<div class="actions-row">
+							<button
+								class="btn primary"
+								onclick={() => {
+									createOpen = true;
+									createParentId = selected!.id;
+								}}>+ Add Agent</button
+							>
+						</div>
+					{:else}
 						<label class="check">
 							<input
 								type="checkbox"
@@ -334,20 +351,18 @@
 							/>
 							Inherit permissions from parent
 						</label>
-					{/if}
-					<div class="actions-row">
-						<button
-							class="btn"
-							onclick={() => {
-								renameValue = selected!.name;
-								renameOpen = true;
-							}}>Rename</button
-						>
-						{#if selected.kind !== 'user'}
+						<div class="actions-row">
+							<button
+								class="btn"
+								onclick={() => {
+									renameValue = selected!.name;
+									renameOpen = true;
+								}}>Rename</button
+							>
 							<button class="btn" onclick={() => (moveOpen = true)}>Move…</button>
-						{/if}
-						<button class="btn danger" onclick={handleDelete}>Delete</button>
-					</div>
+							<button class="btn danger" onclick={requestDelete}>Delete</button>
+						</div>
+					{/if}
 				</section>
 
 				<section>
@@ -470,33 +485,43 @@
 					<span class="tag" title="Inherits permissions from parent">inherit</span>
 				{/if}
 			</button>
-			<button
-				class="kebab"
-				onclick={(e) => {
-					e.stopPropagation();
-					kebabFor = kebabFor === node.id ? null : node.id;
-				}}
-				aria-label="More">⋮</button
-			>
-			{#if kebabFor === node.id}
-				<div class="menu" role="menu">
-					<button
-						onclick={() => {
-							createOpen = true;
-							createParentId = node.id;
-							createKind = node.kind === 'user' ? 'agent' : 'sub_agent';
-							kebabFor = null;
-						}}>Add child</button
-					>
-					<button
-						onclick={() => {
-							selectIdentity(node.id);
-							renameValue = node.name;
-							renameOpen = true;
-							kebabFor = null;
-						}}>Rename</button
-					>
-					{#if node.kind !== 'user'}
+			{#if node.kind === 'user'}
+				<button
+					class="kebab"
+					onclick={(e) => {
+						e.stopPropagation();
+						createOpen = true;
+						createParentId = node.id;
+					}}
+					aria-label="Add agent"
+					title="Add agent">+</button
+				>
+			{:else}
+				<button
+					class="kebab"
+					onclick={(e) => {
+						e.stopPropagation();
+						kebabFor = kebabFor === node.id ? null : node.id;
+					}}
+					aria-label="More">⋮</button
+				>
+				{#if kebabFor === node.id}
+					<div class="menu" role="menu">
+						<button
+							onclick={() => {
+								createOpen = true;
+								createParentId = node.id;
+								kebabFor = null;
+							}}>Add child</button
+						>
+						<button
+							onclick={() => {
+								selectIdentity(node.id);
+								renameValue = node.name;
+								renameOpen = true;
+								kebabFor = null;
+							}}>Rename</button
+						>
 						<button
 							onclick={() => {
 								selectIdentity(node.id);
@@ -504,16 +529,16 @@
 								kebabFor = null;
 							}}>Move…</button
 						>
-					{/if}
-					<button
-						class="danger"
-						onclick={() => {
-							selectIdentity(node.id);
-							kebabFor = null;
-							void handleDelete();
-						}}>Delete</button
-					>
-				</div>
+						<button
+							class="danger"
+							onclick={() => {
+								selectIdentity(node.id);
+								kebabFor = null;
+								requestDelete();
+							}}>Delete</button
+						>
+					</div>
+				{/if}
 			{/if}
 		</div>
 		{#if !isCollapsed && kids.length > 0}
@@ -529,32 +554,22 @@
 {#if createOpen}
 	<div class="modal-backdrop" onclick={() => (createOpen = false)} role="presentation">
 		<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
-			<h2>Create identity</h2>
+			<h2>Create agent</h2>
 			<form onsubmit={handleCreate}>
 				<label>Name<input name="name" required /></label>
 				<label>
-					Kind
-					<select name="kind" bind:value={createKind}>
-						<option value="user">User</option>
-						<option value="agent">Agent</option>
-						<option value="sub_agent">Sub-agent</option>
+					Parent
+					<select name="parent_id" required value={createParentId ?? ''}>
+						<option value="" disabled>Choose a parent…</option>
+						{#each createEligibleParents as p (p.id)}
+							<option value={p.id}>{kindLabel(p.kind)} · {p.name}</option>
+						{/each}
 					</select>
 				</label>
-				{#if createKind !== 'user'}
-					<label>
-						Parent
-						<select name="parent_id" required value={createParentId ?? ''}>
-							<option value="" disabled>Choose a parent…</option>
-							{#each createEligibleParents as p (p.id)}
-								<option value={p.id}>{kindLabel(p.kind)} · {p.name}</option>
-							{/each}
-						</select>
-					</label>
-					<label class="check">
-						<input type="checkbox" name="inherit_permissions" checked />
-						Inherit permissions from parent
-					</label>
-				{/if}
+				<label class="check">
+					<input type="checkbox" name="inherit_permissions" checked />
+					Inherit permissions from parent
+				</label>
 				<div class="actions-row">
 					<button type="button" class="btn" onclick={() => (createOpen = false)}>Cancel</button>
 					<button type="submit" class="btn primary">Create</button>
@@ -602,6 +617,22 @@
 	</div>
 {/if}
 
+{#if selected}
+	{@const childCount = (childrenOf.get(selected.id) ?? []).length}
+	<ConfirmModal
+		open={deleteModalOpen}
+		title="Delete {selected.name}?"
+		message={childCount > 0
+			? `This will also delete ${childCount} sub-agent${childCount === 1 ? '' : 's'} and revoke all their API keys. This cannot be undone.`
+			: 'This cannot be undone.'}
+		confirmLabel="Delete"
+		destructive={true}
+		busy={deleteModalBusy}
+		onConfirm={confirmDelete}
+		onCancel={() => (deleteModalOpen = false)}
+	/>
+{/if}
+
 <style>
 	.page {
 		padding: 1.5rem;
@@ -617,6 +648,7 @@
 	.page-header h1 {
 		margin: 0;
 		font-size: 1.4rem;
+		color: var(--color-text-heading);
 	}
 	.muted {
 		color: var(--color-text-muted, #737580);
@@ -625,15 +657,15 @@
 		font-size: 0.8rem;
 	}
 	.card {
-		background: #fff;
-		border: 1px solid var(--color-border, #e8e8ee);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
 		border-radius: 10px;
 		padding: 1rem;
 	}
 	.card.error {
-		background: #fff5f5;
-		border-color: #f5c2c2;
-		color: #9b1c1c;
+		background: var(--badge-bg-danger, rgba(229, 56, 54, 0.12));
+		border-color: var(--color-danger, #e53836);
+		color: var(--color-danger, #e53836);
 		margin-bottom: 1rem;
 	}
 	.layout {
@@ -670,7 +702,7 @@
 		position: relative;
 	}
 	.node:hover {
-		background: var(--neutral-100, #f5f5f7);
+		background: var(--neutral-200);
 	}
 	.node.active {
 		background: var(--primary-50, #ededff);
@@ -697,9 +729,11 @@
 		cursor: pointer;
 		font-size: 0.9rem;
 		padding: 0.15rem 0;
+		color: var(--color-text);
 	}
 	.name {
 		font-weight: 500;
+		color: var(--color-text-heading);
 	}
 	.kind-tag {
 		font-size: 0.7rem;
@@ -728,8 +762,8 @@
 		color: var(--neutral-800);
 	}
 	.badge.danger {
-		background: #fde2e2;
-		color: #9b1c1c;
+		background: var(--badge-bg-danger, rgba(229, 56, 54, 0.12));
+		color: var(--color-danger, #e53836);
 	}
 	.kebab {
 		background: none;
@@ -743,10 +777,10 @@
 		position: absolute;
 		right: 0;
 		top: 100%;
-		background: #fff;
+		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+		box-shadow: var(--shadow-lg);
 		z-index: 10;
 		min-width: 140px;
 		display: flex;
@@ -759,12 +793,13 @@
 		padding: 0.5rem 0.75rem;
 		cursor: pointer;
 		font-size: 0.85rem;
+		color: var(--color-text);
 	}
 	.menu button:hover {
-		background: var(--neutral-100);
+		background: var(--neutral-200);
 	}
 	.menu button.danger {
-		color: #b91c1c;
+		color: var(--color-danger, #e53836);
 	}
 
 	/* Detail pane */
@@ -805,6 +840,7 @@
 		cursor: pointer;
 		font-size: 1rem;
 		padding: 0.25rem 0.5rem;
+		color: var(--color-text-muted);
 	}
 	.detail-pane h3 {
 		font-size: 0.85rem;
@@ -829,27 +865,28 @@
 		font-size: 0.9rem;
 	}
 	.btn {
-		background: #fff;
+		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		padding: 0.4rem 0.8rem;
 		cursor: pointer;
 		font-size: 0.85rem;
+		color: var(--color-text);
 	}
 	.btn:hover {
-		background: var(--neutral-100);
+		background: var(--neutral-200);
 	}
 	.btn.primary {
-		background: var(--primary-500, #6359d9);
+		background: var(--color-primary);
 		color: #fff;
-		border-color: var(--primary-500, #6359d9);
+		border-color: var(--color-primary);
 	}
 	.btn.primary:hover {
-		background: var(--primary-600, #4f45c2);
+		background: var(--color-primary-hover);
 	}
 	.btn.danger {
-		color: #b91c1c;
-		border-color: #f5c2c2;
+		color: var(--color-danger, #e53836);
+		border-color: var(--color-danger, #e53836);
 	}
 	.btn.small {
 		padding: 0.2rem 0.5rem;
@@ -865,7 +902,7 @@
 		font: inherit;
 	}
 	.link.danger {
-		color: #b91c1c;
+		color: var(--color-danger, #e53836);
 	}
 	.plain-list {
 		list-style: none;
@@ -920,16 +957,18 @@
 		z-index: 100;
 	}
 	.modal {
-		background: #fff;
-		border-radius: 10px;
-		padding: 1.5rem;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: 16px;
+		padding: 24px 28px;
 		min-width: 360px;
 		max-width: 480px;
-		box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+		box-shadow: var(--shadow-xl);
 	}
 	.modal h2 {
 		margin: 0 0 1rem 0;
 		font-size: 1.05rem;
+		color: var(--color-text-heading);
 	}
 	.modal form {
 		display: flex;
@@ -941,7 +980,7 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.85rem;
-		color: var(--neutral-700);
+		color: var(--color-text-secondary);
 	}
 	.modal input,
 	.modal select {
@@ -949,6 +988,8 @@
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		font-size: 0.9rem;
+		background: var(--color-bg);
+		color: var(--color-text);
 	}
 	.modal label.check {
 		flex-direction: row;
