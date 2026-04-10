@@ -20,10 +20,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use overslash_db::repos::{
-    audit::{self, AuditEntry},
-    identity, secret, secret_request,
-};
+use overslash_db::repos::{audit::AuditEntry, secret_request};
+use overslash_db::scopes::OrgScope;
 
 use crate::{
     AppState,
@@ -83,8 +81,11 @@ async fn create_secret_request(
 
     // Verify the target identity belongs to the same org so a caller cannot
     // mint a request scoped to another tenant.
-    let target = identity::get_by_id(&state.db, target_identity).await?;
-    let _target = crate::ownership::require_org_owned(target, acl.org_id, "identity")?;
+    let scope = OrgScope::new(acl.org_id, state.db.clone());
+    let _target = scope
+        .get_identity(target_identity)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
     let ttl = req.ttl_seconds.unwrap_or(DEFAULT_TTL).clamp(60, MAX_TTL) as i64;
     let now = time::OffsetDateTime::now_utc();
@@ -129,9 +130,8 @@ async fn create_secret_request(
         )
     };
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: Some(caller_identity),
             action: "secret_request.created",
@@ -144,9 +144,8 @@ async fn create_secret_request(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(CreateSecretRequestResponse {
         id: req_id,
@@ -183,11 +182,14 @@ async fn get_provide(
 ) -> Result<Json<ProvideMetadata>> {
     let row = load_and_validate(&state, &req_id, &q.token).await?;
 
-    let identity_label = identity::get_by_id(&state.db, row.identity_id)
+    let scope = OrgScope::new(row.org_id, state.db.clone());
+    let identity_label = scope
+        .get_identity(row.identity_id)
         .await?
         .map(|i| i.name)
         .unwrap_or_else(|| row.identity_id.to_string());
-    let requested_by_label = identity::get_by_id(&state.db, row.requested_by)
+    let requested_by_label = scope
+        .get_identity(row.requested_by)
         .await?
         .map(|i| i.name)
         .unwrap_or_else(|| row.requested_by.to_string());
@@ -245,18 +247,13 @@ async fn submit_provide(
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted = crypto::encrypt(&enc_key, body.value.as_bytes())?;
 
-    let (stored, _ver) = secret::put(
-        &state.db,
-        row.org_id,
-        &row.secret_name,
-        &encrypted,
-        Some(row.identity_id),
-    )
-    .await?;
+    let scope = OrgScope::new(row.org_id, state.db.clone());
+    let (stored, _ver) = scope
+        .put_secret(&row.secret_name, &encrypted, Some(row.identity_id))
+        .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = scope
+        .log_audit(AuditEntry {
             org_id: row.org_id,
             identity_id: Some(row.identity_id),
             action: "secret_request.fulfilled",
@@ -269,9 +266,8 @@ async fn submit_provide(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(SubmitResponse {
         ok: true,
