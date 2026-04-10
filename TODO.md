@@ -32,7 +32,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] Stores: remove `executionMode` (A/B/C), `connections` store; update to unified model
 
 **Medium priority:**
-- [ ] Layout: add nav items (Dashboard, Services, API Explorer, Audit Log, Org Dashboard)
+- [ ] Layout: add nav items (Agents, Services, Secrets, Audit Log; ADMIN: Users, Groups)
 - [ ] Layout: collapsible sidebar (labels+icons expanded, icons-only collapsed)
 - [ ] Layout: notification bell in top bar with badge count
 - [ ] Layout: profile avatar at bottom of sidebar (not a nav item)
@@ -43,6 +43,19 @@ Existing dashboard code predates the unified permission model and template/servi
 **Low priority:**
 - [ ] Profile: expand with API keys, secrets, remembered approvals, enrollment tokens, settings sections
 - [ ] CSS: add light mode + theme toggle (currently dark-only)
+
+### Review Corrections (2026-04-10)
+
+- [ ] Rename: "Dashboard" nav item and view to "Agents" — make it the default landing view
+- [ ] Rename: all UI references from "Identities" to "Agents"
+- [ ] Agents view: User node is tree root, immutable (no delete/rename/move). No adding User identities.
+- [ ] Create agent: remove Kind dropdown. Only agent creation allowed; parent determines hierarchy position.
+- [ ] Dark mode: increase contrast for accent hover states and badge/pill backgrounds (e.g., "inherit" pill). Target WCAG AA (4.5:1) for all badge text in dark mode.
+- [ ] Delete confirmation: replace all `window.confirm()` / browser-native dialogs with styled modal component per UI_SPEC.
+- [ ] Org Settings: fix "Cannot load org settings. Admin access required" for Dev Users. Dev Login users must have org-admin access in development mode.
+- [ ] Docker: cache Rust toolchain layer in dev Dockerfile to avoid re-downloading rustup components on every `make dev` run.
+- [ ] (Backlog) Template Editor: build and make accessible from Services view
+- [ ] (Backlog) API Explorer: ensure accessible and functional for testing the overslash meta-service
 
 ---
 
@@ -59,7 +72,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] Approval workflow — create, resolve (allow/deny/allow_remember), expire
 - [ ] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority)
 - [x] Audit trail (log every action, approval, secret access)
-- [ ] Dashboard: minimal — identity list, inline approval resolution, secret request
+- [ ] Agents view: minimal — identity list, inline approval resolution, secret request
 - [x] Webhook delivery (approval.created, approval.resolved)
 
 ## Phase 2: OAuth + Service Registry (in progress)
@@ -84,7 +97,7 @@ Existing dashboard code predates the unified permission model and template/servi
 ### Dashboard (SvelteKit + TypeScript)
 
 - [ ] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
-- [ ] Org/User/Agent hierarchy view — tree visualization with inline identity management
+- [ ] Agents view (default landing) — tree visualization with inline identity management
 - [ ] Services view — template catalog, service instances, create/manage/connect
 - [x] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
 - [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
@@ -100,13 +113,13 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] `inherit_permissions` — dynamic resolution (live pointer, not copy)
 - [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
 - [x] Sub-agent idle cleanup with two-phase archive (backend) — idle archive, retention purge, restore endpoint, per-org config
-- [ ] Dashboard: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
+- [ ] Agents view: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
 - [x] Permission chain walk (ancestor chain, gap detection)
 - [x] Approval bubbling (current_resolver tracking, explicit bubble_up, auto-bubble timer, rule placement on closest non-inherit ancestor)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
 - [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
 - [x] Org-level ACL — role-based access control via group membership on the `overslash` meta service, plus an `is_org_admin` fast-path on User identities. Naked org-level identities/API keys removed (migration 028).
-- [ ] Dashboard: identity hierarchy tree view, agent permission management
+- [ ] Agents view: identity hierarchy tree view, agent permission management
 
 ## Phase 4: Polish + Meta Tools
 
@@ -115,7 +128,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] Rate limiting per identity — two-tier model (User bucket + identity caps), Redis/Valkey or in-memory
 - [ ] Org billing / usage metering
 - [x] Human-readable audit descriptions — interpolated descriptions for Mode C, method+URL for Mode A, identity name resolution in audit responses
-- [ ] Dashboard: org settings, webhook management, bulk permission operations
+- [ ] Org settings view: org settings, webhook management, bulk permission operations
 - [ ] Global service registry contribution workflow (community PRs)
 - [ ] Documentation site
 

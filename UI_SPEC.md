@@ -26,7 +26,7 @@ This login form has:
 + Login in with ......, same, for custom corporate IDP, Okta, ...
 + On dev(and if enabled via envvar) a "Dev Login" is a different orangish color and with a developer/console icon. This is a debug login
 
-UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /dashboard if no such page or a loop would form
+UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /agents if no such page or a loop would form
 
 ## Global UX Conventions
 
@@ -42,7 +42,7 @@ UNauth users go here, and on auth, they go back to the page they were trying to 
 
 **Empty states**: views with no data show greyed-out text: "No agents found", "No services found", etc. For agents, service templates, and services, the empty state includes a button to create the first one (e.g., `[+ Create your first agent]`).
 
-**Confirmation dialogs**: destructive actions get a modal confirmation. The modal follows a consistent pattern: title ("Delete agent?"), consequence description, two buttons — `[Cancel]` and the destructive action in red.
+**Confirmation dialogs**: destructive actions get a modal confirmation. All destructive confirmations MUST use the application's styled modal component — never `window.confirm()` or browser-native dialogs. The modal follows a consistent pattern: title ("Delete agent?"), consequence description, two buttons — `[Cancel]` and the destructive action in red.
 
 Confirmation required:
 - **Delete agent** — "Delete agent:henry? This will also delete 3 sub-agents and revoke all their API keys."
@@ -107,7 +107,7 @@ Visual foundation for all Overslash UI. Modern SaaS minimal aesthetic — clean,
 | Primary/50 (highlights) | rgba(99,90,217,0.15) | Active state backgrounds |
 | Code editor bg | #0d0e10 | Slightly darker than page bg |
 
-Primary and semantic colors (indigo, green, yellow, red, orange) keep their mid-range values — they already have sufficient contrast on dark backgrounds. Badge backgrounds use the same 12% opacity approach, which works naturally on dark surfaces.
+Primary and semantic colors (indigo, green, yellow, red, orange) keep their mid-range values — they already have sufficient contrast on dark backgrounds. Badge/pill backgrounds must use **18-20% opacity** in dark mode (not the 12% used in light mode) to ensure sufficient visibility. This applies to all status badges, access level pills (`read`, `write`, `admin`), source pills (`inherited`, `remembered`), and origin badges. Hover accent states (e.g., Primary/100 on interactive elements) must also be adjusted for dark backgrounds. All badge text in dark mode must meet WCAG AA contrast ratio (4.5:1 for small text, 3:1 for large text).
 
 **Semantic colors**:
 
@@ -324,7 +324,7 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 
 **Stacked navigation with back gesture**: mobile shows one panel at a time.
 
-- **Dashboard**: default view is the agent tree (full width). Tapping an agent pushes the detail panel as a full-screen view with a `[← Back]` header.
+- **Agents**: default view is the agent tree (full width). Tapping an agent pushes the detail panel as a full-screen view with a `[← Back]` header.
 - **Services**: service list → service detail/editor is a full-screen push. API Explorer is full-screen.
 - **Secrets**: secret list → secret detail is a full-screen push. Version reveal modal works as-is.
 - **Audit log**: event list → event detail is a full-screen push.
@@ -356,7 +356,7 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 All the following pages have this structure.
 There is a collapsable navigation menu on the left bar on desktop, when expanded shows labels and icons, when contracted only icons. On mobile this bar can be shown and hidden using swipes.
 
-Nav items: **Dashboard**, **Services**, **Secrets**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
+Nav items: **Agents**, **Services**, **Secrets**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
 
 Under an "ADMIN" label (org-admins only): **Users**, **Groups**.
 
@@ -364,11 +364,11 @@ At the bottom of the sidebar: **Settings** (gear icon) — opens user settings. 
 
 **Profile is NOT a nav item.** The logged-in user's avatar and name appear at the bottom of the sidebar (desktop) or top-right (mobile). Clicking opens the User Profile view.
 
-**Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Dashboard agent tree.
+**Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Agents view tree.
 
 **Live indicator**: a small dot next to the notification bell shows the SSE/WebSocket connection status — green when connected, yellow when reconnecting, hidden when using polling fallback.
 
-## User Dashboard view
+## Agents view
 
 The default view post-login, unless the user was already trying to go to another route.
 
@@ -387,11 +387,11 @@ User
 |- ⚠ Agent 2              [2 pending]
 |- [-] Agent 3
 |   |
-|   |- Subagent 1 [Last active: ..., Created: ....]
-|   \- Subagent 2
+|   |- Agent 3a [Last active: ..., Created: ....]
+|   \- Agent 3b
 \- [-] SwarmAgent (12)
-    |- Subagent 1
-    |- Subagent 10
+    |- Agent sw-1
+    |- Agent sw-10
     \- [see more]
 ```
 
@@ -402,13 +402,15 @@ User
 
 ### Detail panel (right panel)
 
-When a node is selected, the detail panel shows:
+When an agent node is selected, the detail panel shows:
 
 - **Agent name** — click to edit inline
 - **Origin** — badge: "user-created" or "self-enrolled"
 - **Status**: active / idle / errored (badge)
 - **Parent** — displayed with `[Move]` action to reparent (opens tree picker)
 - **`inherit_permissions`** — toggle, configurable at any time
+
+**User (root) node**: when the root User node is selected, the detail panel shows user info in **read-only** mode. Name is not editable inline. The `[Move]`, `[Delete]`, and origin badge are not shown. The `inherit_permissions` toggle is not applicable. The only action available is `[+ Add Agent]` to create a child agent. This is the logged-in user — it cannot be deleted, renamed, or reparented.
 
 #### Recent Activity
 
@@ -448,7 +450,7 @@ ALL permission keys for a request must be covered for auto-approval. A single mi
 
 #### Actions
 
-- **`[+ Add Subagent]`** — opens the same enrollment flow as `[+ New Agent]` but with parent pre-set to this agent
+- **`[+ Add Agent]`** — opens the same enrollment flow as `[+ New Agent]` but with parent pre-set to this agent
 - **`[Delete Agent]`** — solid Danger button. Confirmation dialog warns about child identities and their API keys being deleted.
 
 ### Approval resolution
@@ -507,7 +509,7 @@ The agent tree supports creating, editing, and deleting agents directly.
 
 - **`[+ New Agent]` button** at the top of the tree panel — starts the user-initiated enrollment flow for a root-level agent
 - **Hover actions** on each agent node — two icons appear on the right side of the row on hover:
-  - **`+` icon** — add a sub-agent under this agent (opens enrollment flow with parent pre-set)
+  - **`+` icon** — add an agent under this agent (opens enrollment flow with parent pre-set)
   - **`⋮` kebab menu** — options: Rename, Move (reparent), Delete
 
 #### User-initiated enrollment
@@ -518,12 +520,14 @@ The agent tree supports creating, editing, and deleting agents directly.
 - **Parent** — defaults to the user, dropdown/tree-picker to choose another position in the user's subtree
 - **TTL** — optional, for ephemeral agents
 
+The creation flow does NOT include a Kind/type selector. All created identities are agents — parentage determines hierarchy position.
+
 `inherit_permissions` is not offered during enrollment — the user configures this after enrollment in the agent detail panel if desired.
 
 On submit, shows a **one-time enrollment snippet** designed to be pasted into the agent's conversation:
 
 ```
-┌─ Enrollment Instructions ───────────────────────┐
+┌─ Enrollment Instructions ────────────────────────┐
 │                                                  │
 │  Agent "henry" created. Paste this into your     │
 │  agent's conversation:                           │
@@ -538,7 +542,7 @@ On submit, shows a **one-time enrollment snippet** designed to be pasted into th
 │  └────────────────────────────────────────────┘  │
 │                                    [Copy] [Done] │
 │                                                  │
-│  ⚠ This token is shown once. The agent          │
+│  ⚠ This token is shown once. The agent           │
 │  exchanges it for a permanent API key.           │
 └──────────────────────────────────────────────────┘
 ```
@@ -568,7 +572,7 @@ After clicking agent-henry:
 ```
 ┌─ Select parent ─────────────┐
 │  ○ alice (you)              │
-│  ● agent-henry   ← selected│
+│  ● agent-henry   ← selected │
 │    ○ sa-researcher          │
 │    ○ sa-emailer             │
 │  ○ agent-builder            │
@@ -598,7 +602,7 @@ Users authenticate to Overslash via OAuth/OIDC only — there are no user API ke
 
 ### Enrollment Tokens
 
-Enrollment tokens are generated via the `[+ New Agent]` flow in the Dashboard agent tree (see **Inline identity management**). This section shows a read-only list of the user's active (unused) tokens with creation date and expiry. Revoke button per token.
+Enrollment tokens are generated via the `[+ New Agent]` flow in the Agents view tree (see **Inline identity management**). This section shows a read-only list of the user's active (unused) tokens with creation date and expiry. Revoke button per token.
 
 ### Settings
 
@@ -638,7 +642,7 @@ Search and filtering via the Search Bar above the table.
 
 ### User detail (click-through)
 
-Clicking a user navigates to their dashboard — this reuses the **User Dashboard view** component, rendered in the context of the selected user. The org-admin sees exactly what that user would see (agent tree, detail panel, live updates), with read access to their agents, approvals, and activity.
+Clicking a user navigates to their agents view — this reuses the **Agents view** component, rendered in the context of the selected user. The org-admin sees exactly what that user would see (agent tree, detail panel, live updates), with read access to their agents, approvals, and activity.
 
 ### Groups
 
@@ -654,9 +658,9 @@ Group: Engineering
 
 Service Grants
 ──────────────────────────────────────────────────────────────────
-github:ANY:*             Full GitHub API access            Auto-approve reads: ✓
-slack:*:*          Slack — any action                 Auto-approve reads: ✓
-stripe:*:*         Stripe — any action                Auto-approve reads: ✗
+github:ANY:*             Full GitHub API access             Auto-approve reads: ✓
+slack:*:*                Slack — any action                 Auto-approve reads: ✓
+stripe:*:*               Stripe — any action                Auto-approve reads: ✗
 google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
 ```
 
@@ -669,6 +673,8 @@ Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known ser
 ### Settings
 
 A section within the Org Dashboard. Single scrollable view with four sections as cards.
+
+**Dev User access**: Dev Users (logged in via Dev Login) have org-admin privileges in development mode. The Org Settings view must be accessible to Dev Users.
 
 #### Identity Providers
 
@@ -747,9 +753,9 @@ Org-level feature flags.
 ```
 Features
 
-Allow user-created templates        [✓]    Users can create personal service templates
-Allow user-created services         [✓]    Users can create personal service instances
-Show API Explorer                   [✓]    API Explorer visible in nav for all users
+Allow user-created templates        [✓]     Users can create personal service templates
+Allow user-created services         [✓]     Users can create personal service instances
+Show API Explorer                   [✓]     API Explorer visible in nav for all users
 Default approval TTL                [24h ▾] Pre-filled expiry for "Allow & Remember"
 ```
 
@@ -803,7 +809,7 @@ Clicking a secret row opens the detail view:
 ```
 Version   Created              Created By        Status
 ───────────────────────────────────────────────────────────
-v3        2026-04-01 10:30     agent:henry       ● current
+v3        2026-04-01 10:30     agent:henry        ● current
 v2        2026-03-20 14:15     user:alice         ○ previous
 v1        2026-03-10 09:00     user:alice         ○ previous
 ```
@@ -1013,7 +1019,7 @@ A code editor showing the full template definition as YAML:
 │  │   keys will use wildcard arg (*)                         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
-│                                         [Test] [Save] [Delete] │
+│                                        [Test] [Save] [Delete] │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -1097,8 +1103,8 @@ Timestamp            Identity (SPIFFE)                                    Event 
   The path is grouped into **logical link units**, each navigating to the corresponding detail view:
   - `acme` — org segment (links to Org page)
   - `user/alice` — user link unit (type + name together, links to that User Profile page)
-  - `agent/henry` — agent link unit (type + name together, links to that agent's Dashboard detail panel)
-  - `agent/researcher` — sub-agent link unit at the next nesting level (recursively the same `agent/<name>` pattern, links to that sub-agent's Dashboard detail panel)
+  - `agent/henry` — agent link unit (type + name together, links to that agent's Agents view detail panel)
+  - `agent/researcher` — sub-agent link unit at the next nesting level (recursively the same `agent/<name>` pattern, links to that sub-agent's Agents view detail panel)
   
   The forward-slash separators between link units stay muted (non-clickable). Hover on a link unit underlines the whole `type/name` pair.
 - **Event type** — action executed, approval created/resolved, secret accessed, connection changed, identity created/deleted, permission changed
@@ -1167,7 +1173,7 @@ When "Raw HTTP" is selected as the service:
 ```
 Service: Raw HTTP
 Method:  [POST ▾]
-URL:     [https://api.example.com/v1/data               ]
+URL:     [https://api.example.com/v1/data                ]
 Headers: [Content-Type: application/json                 ]
 Body:    [{"query": "test", "limit": 10}                 ]
 
@@ -1232,40 +1238,40 @@ Secret requests also appear in the dashboard: as notification bell items, as bad
 Login required. If not logged in → redirect to login → redirect back. If logged in but without authority to resolve → show approval details read-only with: "You don't have permission to resolve this approval."
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Overs/ash                              alice ▾     │
-│                                                     │
-│  Approval Request                                   │
-│                                                     │
-│  agent:henry wants to:                              │
-│  Create pull request "Fix bug" on overfolder/app    │
-│  via: user/github                                   │
-│                                                     │
-│  POST /repos/overfolder/app/pulls                   │
-│  Body: {"title":"Fix bug","head":"fix","base":"main"}│
-│                                                     │
-│  ┌─ Allow & Remember ────────────────────────────┐  │
-│  │  ○ Create pull request on overfolder/app      │  │
-│  │  ○ Create pull request on any repo            │  │
-│  │  ○ Any GitHub action                          │  │
-│  │                                               │  │
-│  │  Expires: [24h ▾]                             │  │
-│  └───────────────────────────────────────────────┘  │
-│                                                     │
-│  [Allow Once]  [Allow & Remember]  [Deny]           │
-│                                                     │
-│  Requested 2m ago · Expires in 14m                  │
-│                                                     │
-│  [← Go to Dashboard]                               │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Overs/ash                              alice ▾       │
+│                                                       │
+│  Approval Request                                     │
+│                                                       │
+│  agent:henry wants to:                                │
+│  Create pull request "Fix bug" on overfolder/app      │
+│  via: user/github                                     │
+│                                                       │
+│  POST /repos/overfolder/app/pulls                     │
+│  Body: {"title":"Fix bug","head":"fix","base":"main"} │
+│                                                       │
+│  ┌─ Allow & Remember ────────────────────────────┐    │
+│  │  ○ Create pull request on overfolder/app      │    │
+│  │  ○ Create pull request on any repo            │    │
+│  │  ○ Any GitHub action                          │    │
+│  │                                               │    │
+│  │  Expires: [24h ▾]                             │    │
+│  └───────────────────────────────────────────────┘    │
+│                                                       │
+│  [Allow Once]  [Allow & Remember]  [Deny]             │
+│                                                       │
+│  Requested 2m ago · Expires in 14m                    │
+│                                                       │
+│  [← Go to Agents]                                     │
+└───────────────────────────────────────────────────────┘
 ```
 
 - Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
 - **Agent (identity)** — rendered as a SPIFFE-style hierarchical path (`acme/user/alice/agent/henry/...`), with the same link-unit treatment as the audit log Identity column (see §"Audit Log"). Backed by `identity_path` on the approval API response. The bare `identity_id` UUID is never shown to end users.
-- Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as dashboard)
-- After resolution → confirmation + link to dashboard
+- Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as Agents view)
+- After resolution → confirmation + link to Agents view
 - **Already resolved** — "This approval was allowed by alice 3m ago." (or denied)
-- `[← Go to Dashboard]` for navigation to the full UI
+- `[← Go to Agents]` for navigation to the full UI
 - Platforms can link users here as a zero-integration-effort path to resolve approvals
 
 ### Agent Enrollment Consent Page (`/enroll/consent/...`)
@@ -1281,13 +1287,13 @@ Login required. An agent generated a consent URL and sent it to a user. Any auth
 │  An agent is requesting to join your org:           │
 │                                                     │
 │  Proposed name: [research-bot        ]  (editable)  │
-│  Requested by: 203.0.113.42 · 5m ago               │
+│  Requested by: 203.0.113.42 · 5m ago                │
 │                                                     │
 │  Parent placement:                                  │
 │  ┌─ Select parent ─────────────────────┐            │
 │  │  ● alice (you)                      │            │
 │  │  ○ agent-henry              ▸       │            │
-│  │  ○ agent-builder             ▸       │            │
+│  │  ○ agent-builder            ▸       │            │
 │  └─────────────────────────────────────┘            │
 │                                                     │
 │  [Approve & Enroll]  [Deny]                         │

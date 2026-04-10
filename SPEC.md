@@ -42,7 +42,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 10. Audit everything — every action, approval, secret access, connection change
 11. Simple REST API — any HTTP client can use Overslash
 12. 3 meta tools — minimal tool interface for LLM agents (search, execute, auth)
-13. Dashboard — web UI for org admins and users to manage everything visually
+13. Web UI — for org admins and users to manage everything visually
 
 ### Non-Goals
 
@@ -63,7 +63,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 | Component | Tech | Purpose |
 |-----------|------|---------|
 | **Backend** | Rust / Axum | REST API, OAuth engine, permission resolver, action executor, audit logger |
-| **Dashboard** | SvelteKit | Web UI for org admins and users |
+| **Web UI** | SvelteKit | Web UI for org admins and users |
 | **PostgreSQL** | — | All persistent state |
 | **Encryption** | AES-256-GCM | Secret storage (key via env var or KMS) |
 | **Redis** (optional) | — | Webhook delivery queue, approval notification pub/sub |
@@ -127,6 +127,7 @@ Org (acme)
 - **Users** created by org-admins (or auto-provisioned on first IdP login)
 - **Agents** created by users
 - **Sub-agents** created by agents — no user intervention needed
+- **UI equivalence**: the UI does not distinguish between Agents and Sub-agents — they are all presented as "Agents" in the tree. The `sub_agent` kind remains an API/backend distinction (for idle cleanup and depth tracking), but the UI treats them identically. The only difference visible to users is who the parent is.
 - Each identity has API keys for authenticating with Overslash
 - Sub-agents are garbage-collected by **idle timeout** (ephemeral workers): if a sub-agent has not made an authenticated request for longer than the org's `subagent_idle_timeout_secs`, it is **archived** in two phases — first its API keys are auto-revoked and pending approvals expired (`archived_at` set), then after `subagent_archive_retention_days` the row is hard-deleted. Archived identities return `403 identity_archived` from the gateway with a `restorable_until` timestamp, and `POST /v1/identities/{id}/restore` un-archives within the retention window and resurrects the auto-revoked API keys (manually-revoked keys stay revoked). Parents never archive while a live sub-agent child exists, so active subtrees outlive idle parents. Org admins configure both knobs in `[4h, 60d]` and `[1d, 60d]` ranges respectively. Users and agents are never auto-archived.
 
@@ -794,14 +795,14 @@ When `notifications.managed_by_platform` is set (§5), Overslash's user-facing n
 
 ---
 
-## 11. Dashboard
+## 11. Web UI
 
 Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 
 ### Core Views
 
+- **Agents** (default landing view) — tree view of the identity hierarchy rooted at the logged-in user. The user node is immutable (cannot be deleted, renamed, or reparented). Agent creation does not offer a Kind selector — all created identities are agents, and parentage determines hierarchy position. Inline management: create, edit, delete agents, enrollment tokens.
 - **User profile** — authenticated user info, API keys, settings
-- **Org/User/Agent hierarchy** — tree view of the identity hierarchy, with inline management (create, edit, delete, enrollment tokens)
 - **Services** — browse templates, create/manage service instances, connect credentials
 - **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and execute. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
 - **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
