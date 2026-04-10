@@ -18,13 +18,15 @@ type LoadResult =
 	| { state: 'expired'; req_id: string }
 	| { state: 'already_fulfilled'; req_id: string }
 	| { state: 'invalid'; req_id: string }
-	| { state: 'missing_token'; req_id: string };
+	| { state: 'missing_token'; req_id: string }
+	| { state: 'server_error'; req_id: string };
 
 function mapError(status: number, body: { error?: string } | null): LoadResult['state'] {
 	const code = body?.error ?? '';
 	if (status === 410 && code.includes('already_fulfilled')) return 'already_fulfilled';
 	if (status === 410) return 'expired';
 	if (status === 400) return 'invalid';
+	if (status >= 500) return 'server_error';
 	return 'invalid';
 }
 

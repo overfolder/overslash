@@ -90,6 +90,9 @@
 		{:else if data.state === 'missing_token'}
 			<h1>Missing token</h1>
 			<p>This link is incomplete. Please use the original URL you were sent.</p>
+		{:else if data.state === 'server_error'}
+			<h1>Something went wrong</h1>
+			<p>The server encountered an error. Please try again in a moment.</p>
 		{:else if data.state === 'invalid'}
 			<h1>Invalid link</h1>
 			<p>This link is invalid or has been tampered with.</p>
