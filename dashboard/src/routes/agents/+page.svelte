@@ -431,20 +431,23 @@
 	{@const isCollapsed = collapsed.has(node.id)}
 	{@const pending = pendingByIdentity.get(node.id) ?? 0}
 	{@const isSelected = selectedId === node.id}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="tree-node"
 		class:selected={isSelected}
 		style:padding-left={`${depth * 20 + 16}px`}
+		role="treeitem"
+		onclick={() => selectIdentity(node.id)}
 	>
-		{#if kids.length > 0}
-			<button class="tree-toggle" onclick={() => toggle(node.id)}>
-				{isCollapsed ? '▶' : '▼'}
-			</button>
-		{/if}
+		<span class="tree-toggle-slot">
+			{#if kids.length > 0}
+				<button class="tree-toggle" onclick={(e) => { e.stopPropagation(); toggle(node.id); }}>
+					{isCollapsed ? '▶' : '▼'}
+				</button>
+			{/if}
+		</span>
 		<span class="status-dot" class:active={node.kind !== 'user' || true}></span>
-		<button class="tree-label" onclick={() => selectIdentity(node.id)}>
-			{node.name}
-		</button>
+		<span class="tree-label">{node.name}</span>
 		{#if node.kind === 'user'}
 			<span class="tree-you">(you)</span>
 		{/if}
@@ -609,6 +612,13 @@
 		color: var(--color-primary);
 		font-weight: 600;
 	}
+	.tree-toggle-slot {
+		width: 12px;
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
 	.tree-toggle {
 		background: none;
 		border: none;
@@ -616,7 +626,6 @@
 		font-size: 0.55rem;
 		color: var(--color-text-muted);
 		padding: 0;
-		width: 12px;
 	}
 	.status-dot {
 		width: 8px;
@@ -629,13 +638,8 @@
 		background: var(--success-500, #21b86b);
 	}
 	.tree-label {
-		background: none;
-		border: none;
-		cursor: pointer;
 		font-size: 13px;
 		color: var(--color-text);
-		padding: 0;
-		text-align: left;
 	}
 	.tree-you {
 		font-size: 12px;
