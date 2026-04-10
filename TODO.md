@@ -53,7 +53,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] Dark mode: increase contrast for accent hover states and badge/pill backgrounds (e.g., "inherit" pill). Target WCAG AA (4.5:1) for all badge text in dark mode.
 - [ ] Delete confirmation: replace all `window.confirm()` / browser-native dialogs with styled modal component per UI_SPEC.
 - [ ] Org Settings: fix "Cannot load org settings. Admin access required" for Dev Users. Dev Login users must have org-admin access in development mode.
-- [ ] Docker: cache Rust toolchain layer in dev Dockerfile to avoid re-downloading rustup components on every `make dev` run.
+- [x] Docker: cache Rust toolchain layer in dev Dockerfile to avoid re-downloading rustup components on every `make dev` run.
 - [ ] (Backlog) Template Editor: build and make accessible from Services view
 - [ ] (Backlog) API Explorer: ensure accessible and functional for testing the overslash meta-service
 
