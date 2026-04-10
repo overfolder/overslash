@@ -56,18 +56,19 @@ async fn happy_path_mint_get_submit_stored() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["version"], 1);
 
-    // Confirm secret exists via authenticated GET
-    let got: Value = client
-        .get(format!("{base}/v1/secrets/openai_api_key"))
+    // Confirm secret exists by writing a second version (PUT uses WriteAcl,
+    // which accepts bearer tokens, unlike GET which is dashboard-only).
+    let resp = client
+        .put(format!("{base}/v1/secrets/openai_api_key"))
         .header(common::auth(&agent_key).0, common::auth(&agent_key).1)
+        .json(&json!({"value": "sk-updated-value"}))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
+    assert_eq!(resp.status(), 200);
+    let got: Value = resp.json().await.unwrap();
     assert_eq!(got["name"], "openai_api_key");
-    assert_eq!(got["current_version"], 1);
+    assert_eq!(got["version"], 2);
 }
 
 #[tokio::test]
