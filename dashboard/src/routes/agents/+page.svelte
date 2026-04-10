@@ -648,6 +648,7 @@
 	.page-header h1 {
 		margin: 0;
 		font-size: 1.4rem;
+		color: var(--color-text-heading);
 	}
 	.muted {
 		color: var(--color-text-muted, #737580);
@@ -656,15 +657,15 @@
 		font-size: 0.8rem;
 	}
 	.card {
-		background: #fff;
-		border: 1px solid var(--color-border, #e8e8ee);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
 		border-radius: 10px;
 		padding: 1rem;
 	}
 	.card.error {
-		background: #fff5f5;
-		border-color: #f5c2c2;
-		color: #9b1c1c;
+		background: var(--badge-bg-danger, rgba(229, 56, 54, 0.12));
+		border-color: var(--color-danger, #e53836);
+		color: var(--color-danger, #e53836);
 		margin-bottom: 1rem;
 	}
 	.layout {
@@ -701,7 +702,7 @@
 		position: relative;
 	}
 	.node:hover {
-		background: var(--neutral-100, #f5f5f7);
+		background: var(--neutral-200);
 	}
 	.node.active {
 		background: var(--primary-50, #ededff);
@@ -728,9 +729,11 @@
 		cursor: pointer;
 		font-size: 0.9rem;
 		padding: 0.15rem 0;
+		color: var(--color-text);
 	}
 	.name {
 		font-weight: 500;
+		color: var(--color-text-heading);
 	}
 	.kind-tag {
 		font-size: 0.7rem;
@@ -759,8 +762,8 @@
 		color: var(--neutral-800);
 	}
 	.badge.danger {
-		background: #fde2e2;
-		color: #9b1c1c;
+		background: var(--badge-bg-danger, rgba(229, 56, 54, 0.12));
+		color: var(--color-danger, #e53836);
 	}
 	.kebab {
 		background: none;
@@ -774,10 +777,10 @@
 		position: absolute;
 		right: 0;
 		top: 100%;
-		background: #fff;
+		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+		box-shadow: var(--shadow-lg);
 		z-index: 10;
 		min-width: 140px;
 		display: flex;
@@ -790,12 +793,13 @@
 		padding: 0.5rem 0.75rem;
 		cursor: pointer;
 		font-size: 0.85rem;
+		color: var(--color-text);
 	}
 	.menu button:hover {
-		background: var(--neutral-100);
+		background: var(--neutral-200);
 	}
 	.menu button.danger {
-		color: #b91c1c;
+		color: var(--color-danger, #e53836);
 	}
 
 	/* Detail pane */
@@ -836,6 +840,7 @@
 		cursor: pointer;
 		font-size: 1rem;
 		padding: 0.25rem 0.5rem;
+		color: var(--color-text-muted);
 	}
 	.detail-pane h3 {
 		font-size: 0.85rem;
@@ -860,27 +865,28 @@
 		font-size: 0.9rem;
 	}
 	.btn {
-		background: #fff;
+		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		padding: 0.4rem 0.8rem;
 		cursor: pointer;
 		font-size: 0.85rem;
+		color: var(--color-text);
 	}
 	.btn:hover {
-		background: var(--neutral-100);
+		background: var(--neutral-200);
 	}
 	.btn.primary {
-		background: var(--primary-500, #6359d9);
+		background: var(--color-primary);
 		color: #fff;
-		border-color: var(--primary-500, #6359d9);
+		border-color: var(--color-primary);
 	}
 	.btn.primary:hover {
-		background: var(--primary-600, #4f45c2);
+		background: var(--color-primary-hover);
 	}
 	.btn.danger {
-		color: #b91c1c;
-		border-color: #f5c2c2;
+		color: var(--color-danger, #e53836);
+		border-color: var(--color-danger, #e53836);
 	}
 	.btn.small {
 		padding: 0.2rem 0.5rem;
@@ -896,7 +902,7 @@
 		font: inherit;
 	}
 	.link.danger {
-		color: #b91c1c;
+		color: var(--color-danger, #e53836);
 	}
 	.plain-list {
 		list-style: none;
@@ -951,16 +957,18 @@
 		z-index: 100;
 	}
 	.modal {
-		background: #fff;
-		border-radius: 10px;
-		padding: 1.5rem;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: 16px;
+		padding: 24px 28px;
 		min-width: 360px;
 		max-width: 480px;
-		box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+		box-shadow: var(--shadow-xl);
 	}
 	.modal h2 {
 		margin: 0 0 1rem 0;
 		font-size: 1.05rem;
+		color: var(--color-text-heading);
 	}
 	.modal form {
 		display: flex;
@@ -972,7 +980,7 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.85rem;
-		color: var(--neutral-700);
+		color: var(--color-text-secondary);
 	}
 	.modal input,
 	.modal select {
@@ -980,6 +988,8 @@
 		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		font-size: 0.9rem;
+		background: var(--color-bg);
+		color: var(--color-text);
 	}
 	.modal label.check {
 		flex-direction: row;
