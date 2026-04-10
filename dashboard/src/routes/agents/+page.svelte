@@ -36,12 +36,8 @@
 	let detailLoading = $state(false);
 	let detailError = $state<string | null>(null);
 
-	let kebabFor = $state<string | null>(null);
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
-	let moveOpen = $state(false);
-	let renameOpen = $state(false);
-	let renameValue = $state('');
 	let newToken = $state<CreatedEnrollmentToken | null>(null);
 
 	// Delete confirmation modal state
@@ -65,13 +61,16 @@
 		return m;
 	});
 
-	function kindIcon(kind: string): string {
-		if (kind === 'user') return '👤';
-		if (kind === 'agent') return '🤖';
-		return '⚙';
-	}
 	function kindLabel(kind: string): string {
 		return kind === 'sub_agent' ? 'sub-agent' : kind;
+	}
+
+	/** Count all descendants of an identity */
+	function descendantCount(id: string): number {
+		const kids = childrenOf.get(id) ?? [];
+		let count = kids.length;
+		for (const k of kids) count += descendantCount(k.id);
+		return count;
 	}
 
 	async function loadAll() {
@@ -126,7 +125,6 @@
 		const fd = new FormData(form);
 		const parentId = String(fd.get('parent_id') ?? '');
 		const parent = identities.find((i) => i.id === parentId);
-		// Kind determined by parent: user→agent, agent/sub_agent→sub_agent
 		const kind: 'agent' | 'sub_agent' = parent?.kind === 'user' ? 'agent' : 'sub_agent';
 		const req: CreateIdentityRequest = {
 			name: String(fd.get('name') ?? '').trim(),
@@ -139,33 +137,6 @@
 			createOpen = false;
 			await loadAll();
 			selectIdentity(created.id);
-		} catch (e) {
-			alert(e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	async function handleRename(e: SubmitEvent) {
-		e.preventDefault();
-		if (!selected) return;
-		try {
-			await updateIdentity(selected.id, { name: renameValue.trim() });
-			renameOpen = false;
-			await loadAll();
-		} catch (e) {
-			alert(e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	async function handleMove(e: SubmitEvent) {
-		e.preventDefault();
-		if (!selected) return;
-		const fd = new FormData(e.target as HTMLFormElement);
-		const parent_id = String(fd.get('parent_id') ?? '');
-		if (!parent_id) return;
-		try {
-			await updateIdentity(selected.id, { parent_id });
-			moveOpen = false;
-			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
 		}
@@ -233,27 +204,14 @@
 		void navigator.clipboard.writeText(text);
 	}
 
-	// Eligible parents for the *currently selected* identity (for the Move modal).
-	const eligibleParents = $derived.by(() => {
-		if (!selected) return [];
-		if (selected.kind === 'user') return [];
-		const allowed: string[] =
-			selected.kind === 'agent' ? ['user'] : ['agent', 'sub_agent'];
-		// Exclude self and descendants to prevent cycles.
-		const descendants = new Set<string>([selected.id]);
-		const walk = (id: string) => {
-			for (const c of childrenOf.get(id) ?? []) {
-				descendants.add(c.id);
-				walk(c.id);
-			}
-		};
-		walk(selected.id);
-		return identities.filter((i) => allowed.includes(i.kind) && !descendants.has(i.id));
-	});
-
-	// Eligible parents for the create form — all non-leaf kinds can be parents.
+	// Eligible parents for the create form — all identities can be parents.
 	const createEligibleParents = $derived(
 		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind))
+	);
+
+	// Parent identity for the selected node
+	const parentIdentity = $derived(
+		selected?.parent_id ? identities.find((i) => i.id === selected.parent_id) ?? null : null
 	);
 
 	onMount(() => {
@@ -271,187 +229,200 @@
 </svelte:head>
 
 <div class="page">
+	<!-- Top bar area with title + button -->
 	<header class="page-header">
-		<div>
-			<h1>Agents</h1>
-			<p class="muted">Agents and sub-agents in your organization.</p>
-		</div>
+		<h1>Agents</h1>
 		<button
-			class="btn primary"
+			class="btn-new"
 			onclick={() => {
 				createOpen = true;
 				createParentId = selectedId;
 			}}
 		>
-			+ Add Agent
+			+ New Agent
 		</button>
 	</header>
 
 	{#if loadError}
-		<div class="card error">{loadError}</div>
+		<div class="error-bar">{loadError}</div>
 	{/if}
 
-	<div class="layout" class:has-detail={!!selected}>
-		<section class="tree-pane card">
+	<div class="panels">
+		<!-- Left: Agent tree -->
+		<aside class="tree-panel">
+			<div class="tree-head">
+				Agents
+				<button
+					class="btn-new btn-new-small"
+					onclick={() => {
+						createOpen = true;
+						createParentId = roots[0]?.id ?? null;
+					}}
+				>
+					+ New Agent
+				</button>
+			</div>
 			{#if loading && identities.length === 0}
-				<p class="muted">Loading…</p>
+				<p class="muted tree-empty">Loading…</p>
 			{:else if roots.length === 0}
-				<p class="muted">
-					No agents found. <button class="link" onclick={() => (createOpen = true)}
-						>Create your first agent</button
-					>.
+				<p class="muted tree-empty">
+					No agents found.
 				</p>
 			{:else}
-				<ul class="tree">
+				<div class="tree">
 					{#each roots as root (root.id)}
 						{@render treeNode(root, 0)}
 					{/each}
-				</ul>
+				</div>
 			{/if}
-		</section>
+			<button
+				class="add-agent-link"
+				onclick={() => {
+					createOpen = true;
+					createParentId = roots[0]?.id ?? null;
+				}}
+			>
+				+ Add Agent
+			</button>
+		</aside>
 
-		{#if selected}
-			<aside class="detail-pane card">
-				<header class="detail-header">
-					<div>
-						<div class="row">
-							<span class="kind-chip">{kindIcon(selected.kind)} {kindLabel(selected.kind)}</span>
-							<h2>{selected.name}</h2>
-						</div>
-						<p class="muted small">id: <code>{selected.id}</code></p>
-					</div>
-					<button class="icon-btn" onclick={() => (selectedId = null)} aria-label="Close">
-						✕
-					</button>
-				</header>
+		<!-- Right: Detail panel -->
+		<main class="detail-panel">
+			{#if selected}
+				<!-- Header -->
+				<div class="detail-header">
+					<span class="status-dot active"></span>
+					<h2 class="detail-name">{selected.kind === 'user' ? selected.name : `agent:${selected.name}`}</h2>
+					{#if selected.kind !== 'user'}
+						<span class="pill pill-active">Active</span>
+						<span class="pill pill-neutral">user-created</span>
+					{/if}
+				</div>
 
 				{#if detailError}
-					<div class="card error">{detailError}</div>
+					<div class="error-bar">{detailError}</div>
 				{/if}
 
-				<section>
-					<h3>Properties</h3>
-					{#if selected.kind === 'user'}
-						<p class="muted small">This is the logged-in user. User identities are read-only.</p>
-						<div class="actions-row">
-							<button
-								class="btn primary"
-								onclick={() => {
-									createOpen = true;
-									createParentId = selected!.id;
-								}}>+ Add Agent</button
-							>
-						</div>
-					{:else}
-						<label class="check">
-							<input
-								type="checkbox"
-								checked={selected.inherit_permissions}
-								onchange={(e) => handleToggleInherit((e.target as HTMLInputElement).checked)}
-							/>
-							Inherit permissions from parent
-						</label>
-						<div class="actions-row">
-							<button
-								class="btn"
-								onclick={() => {
-									renameValue = selected!.name;
-									renameOpen = true;
-								}}>Rename</button
-							>
-							<button class="btn" onclick={() => (moveOpen = true)}>Move…</button>
-							<button class="btn danger" onclick={requestDelete}>Delete</button>
-						</div>
-					{/if}
-				</section>
+				{#if selected.kind === 'user'}
+					<!-- User root: read-only -->
+					<div class="field-row">
+						<span class="field-label">Kind</span>
+						<span class="field-value">user</span>
+					</div>
+					<p class="muted" style="font-size:0.85rem;">This is the logged-in user. User identities are read-only.</p>
+					<div style="margin-top:0.5rem;">
+						<button
+							class="btn-new"
+							onclick={() => {
+								createOpen = true;
+								createParentId = selected!.id;
+							}}
+						>
+							+ Add Agent
+						</button>
+					</div>
+				{:else}
+					<!-- Agent detail fields -->
+					<div class="field-row">
+						<span class="field-label">Parent</span>
+						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.kind === 'user' ? ' (you)' : ''}</span>
+					</div>
+					<div class="field-row">
+						<span class="field-label">inherit_permissions</span>
+						<span class="field-value">
+							<label class="inline-check">
+								<input
+									type="checkbox"
+									checked={selected.inherit_permissions}
+									onchange={(e) => handleToggleInherit((e.target as HTMLInputElement).checked)}
+								/>
+								{selected.inherit_permissions ? 'Enabled' : 'Disabled'}
+							</label>
+						</span>
+					</div>
 
-				<section>
-					<h3>
-						Pending approvals
-						{#if detailApprovals.length > 0}
-							<span class="badge danger">{detailApprovals.length}</span>
-						{/if}
-					</h3>
-					{#if detailLoading && detailApprovals.length === 0}
-						<p class="muted small">Loading…</p>
-					{:else if detailApprovals.length === 0}
-						<p class="muted small">No pending approvals.</p>
-					{:else}
-						<ul class="plain-list">
-							{#each detailApprovals as a (a.id)}
-								<li>
-									<a href={`/approvals/${a.id}`}>{a.action_summary}</a>
-									<span class="muted small">· {new Date(a.created_at).toLocaleString()}</span>
-								</li>
-							{/each}
-						</ul>
+					<!-- Pending Approvals -->
+					{#if detailApprovals.length > 0}
+						<h3 class="section-title">Pending Approvals</h3>
+						{#each detailApprovals as a (a.id)}
+							<div class="approval-card">
+								<div class="approval-main">
+									<div class="approval-summary">{a.action_summary}</div>
+									<div class="approval-meta mono">{a.permission_keys[0] ?? ''}</div>
+									<div class="approval-meta">Requested {new Date(a.created_at).toLocaleString()}</div>
+								</div>
+								<div class="approval-actions">
+									<a href={`/approvals/${a.id}`} class="btn-approve">Allow &amp; Remember</a>
+									<a href={`/approvals/${a.id}`} class="btn-deny-outline">Deny</a>
+								</div>
+							</div>
+						{/each}
 					{/if}
-				</section>
 
-				<section>
-					<h3>Permission rules</h3>
+					<!-- Permission Rules -->
+					<h3 class="section-title">Permission Rules</h3>
 					{#if detailRules.length === 0}
-						<p class="muted small">No rules.</p>
+						<p class="muted" style="font-size:0.85rem;">No rules.</p>
 					{:else}
-						<table class="rules">
+						<table class="rules-table">
 							<thead>
 								<tr>
 									<th>Key</th>
-									<th>Effect</th>
+									<th>Source</th>
+									<th>Approved By</th>
+									<th>Expires</th>
 									<th></th>
 								</tr>
 							</thead>
 							<tbody>
 								{#each detailRules as r (r.id)}
 									<tr>
-										<td><code>{r.action_pattern}</code></td>
-										<td>{r.effect}</td>
+										<td class="mono">{r.action_pattern}</td>
 										<td>
-											<button class="link danger" onclick={() => handleRevokeRule(r.id)}
-												>Revoke</button
-											>
+											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
+										</td>
+										<td>—</td>
+										<td>{(r as unknown as {expires_at?: string}).expires_at ? new Date((r as unknown as {expires_at?: string}).expires_at!).toLocaleDateString() : '—'}</td>
+										<td>
+											<button class="revoke-link" onclick={() => handleRevokeRule(r.id)}>Revoke</button>
 										</td>
 									</tr>
 								{/each}
 							</tbody>
 						</table>
 					{/if}
-				</section>
 
-				{#if selected.kind !== 'user'}
-					<section>
-						<h3>Enrollment</h3>
-						<button class="btn" onclick={handleGenerateToken}>Generate token</button>
+					<!-- Enrollment -->
+						<h3 class="section-title">Enrollment</h3>
+						<button class="btn-secondary" onclick={handleGenerateToken}>Generate token</button>
 						{#if newToken && newToken.identity_id === selected.id}
 							<div class="token-box">
-								<p class="muted small">Copy now — this token is shown only once.</p>
-								<code class="token">overslash enroll {newToken.token}</code>
-								<button
-									class="btn small"
-									onclick={() => copy(`overslash enroll ${newToken!.token}`)}
-									>Copy</button
-								>
+								<p class="muted" style="font-size:0.8rem;">Copy now — this token is shown only once.</p>
+								<code class="token-code">overslash enroll {newToken.token}</code>
+								<button class="btn-secondary small" onclick={() => copy(`overslash enroll ${newToken!.token}`)}>Copy</button>
 							</div>
 						{/if}
 						{#if detailTokens.length > 0}
-							<ul class="plain-list">
+							<div class="token-list">
 								{#each detailTokens as t (t.id)}
-									<li>
-										<code>{t.token_prefix}…</code>
-										<span class="muted small"
-											>· expires {new Date(t.expires_at).toLocaleString()}</span
-										>
-										<button class="link danger" onclick={() => handleRevokeToken(t.id)}
-											>Revoke</button
-										>
-									</li>
+									<div class="token-row">
+										<code class="mono">{t.token_prefix}…</code>
+										<span class="muted" style="font-size:0.8rem;">expires {new Date(t.expires_at).toLocaleString()}</span>
+										<button class="revoke-link" onclick={() => handleRevokeToken(t.id)}>Revoke</button>
+									</div>
 								{/each}
-							</ul>
+							</div>
 						{/if}
-					</section>
+
+					<!-- Delete Agent -->
+					<div class="detail-footer">
+						<button class="btn-delete" onclick={requestDelete}>Delete Agent</button>
+					</div>
 				{/if}
-			</aside>
-		{/if}
+			{:else}
+				<p class="muted detail-empty">Select an agent to view details.</p>
+			{/if}
+		</main>
 	</div>
 </div>
 
@@ -459,158 +430,63 @@
 	{@const kids = childrenOf.get(node.id) ?? []}
 	{@const isCollapsed = collapsed.has(node.id)}
 	{@const pending = pendingByIdentity.get(node.id) ?? 0}
-	<li>
-		<div
-			class="node"
-			class:active={selectedId === node.id}
-			style:padding-left={`${depth * 18 + 8}px`}
-		>
-			{#if kids.length > 0}
-				<button
-					class="chev"
-					onclick={() => toggle(node.id)}
-					aria-label={isCollapsed ? 'Expand' : 'Collapse'}>{isCollapsed ? '▶' : '▼'}</button
-				>
-			{:else}
-				<span class="chev placeholder"></span>
-			{/if}
-			<button class="node-main" onclick={() => selectIdentity(node.id)}>
-				<span class="kind">{kindIcon(node.kind)}</span>
-				<span class="name">{node.name}</span>
-				<span class="kind-tag">{kindLabel(node.kind)}</span>
-				{#if pending > 0}
-					<span class="badge danger" title="Pending approvals">{pending}</span>
-				{/if}
-				{#if node.inherit_permissions && node.kind !== 'user'}
-					<span class="tag" title="Inherits permissions from parent">inherit</span>
-				{/if}
+	{@const isSelected = selectedId === node.id}
+	<div
+		class="tree-node"
+		class:selected={isSelected}
+		style:padding-left={`${depth * 20 + 16}px`}
+	>
+		{#if kids.length > 0}
+			<button class="tree-toggle" onclick={() => toggle(node.id)}>
+				{isCollapsed ? '▶' : '▼'}
 			</button>
-			{#if node.kind === 'user'}
-				<button
-					class="kebab"
-					onclick={(e) => {
-						e.stopPropagation();
-						createOpen = true;
-						createParentId = node.id;
-					}}
-					aria-label="Add agent"
-					title="Add agent">+</button
-				>
-			{:else}
-				<button
-					class="kebab"
-					onclick={(e) => {
-						e.stopPropagation();
-						kebabFor = kebabFor === node.id ? null : node.id;
-					}}
-					aria-label="More">⋮</button
-				>
-				{#if kebabFor === node.id}
-					<div class="menu" role="menu">
-						<button
-							onclick={() => {
-								createOpen = true;
-								createParentId = node.id;
-								kebabFor = null;
-							}}>Add child</button
-						>
-						<button
-							onclick={() => {
-								selectIdentity(node.id);
-								renameValue = node.name;
-								renameOpen = true;
-								kebabFor = null;
-							}}>Rename</button
-						>
-						<button
-							onclick={() => {
-								selectIdentity(node.id);
-								moveOpen = true;
-								kebabFor = null;
-							}}>Move…</button
-						>
-						<button
-							class="danger"
-							onclick={() => {
-								selectIdentity(node.id);
-								kebabFor = null;
-								requestDelete();
-							}}>Delete</button
-						>
-					</div>
-				{/if}
-			{/if}
-		</div>
-		{#if !isCollapsed && kids.length > 0}
-			<ul>
-				{#each kids as child (child.id)}
-					{@render treeNode(child, depth + 1)}
-				{/each}
-			</ul>
 		{/if}
-	</li>
+		<span class="status-dot" class:active={node.kind !== 'user' || true}></span>
+		<button class="tree-label" onclick={() => selectIdentity(node.id)}>
+			{node.name}
+		</button>
+		{#if node.kind === 'user'}
+			<span class="tree-you">(you)</span>
+		{/if}
+		{#if pending > 0}
+			<span class="tree-badge">{pending}</span>
+		{/if}
+	</div>
+	{#if !isCollapsed && kids.length > 0}
+		{#each kids as child (child.id)}
+			{@render treeNode(child, depth + 1)}
+		{/each}
+	{/if}
 {/snippet}
 
 {#if createOpen}
 	<div class="modal-backdrop" onclick={() => (createOpen = false)} role="presentation">
 		<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
-			<h2>Create agent</h2>
+			<div class="modal-head">
+				<h2>New Agent</h2>
+				<button class="modal-close" onclick={() => (createOpen = false)}>✕</button>
+			</div>
 			<form onsubmit={handleCreate}>
-				<label>Name<input name="name" required /></label>
+				<label>
+					Agent Name
+					<input name="name" required placeholder="e.g. henry, research-bot" />
+				</label>
 				<label>
 					Parent
 					<select name="parent_id" required value={createParentId ?? ''}>
 						<option value="" disabled>Choose a parent…</option>
 						{#each createEligibleParents as p (p.id)}
-							<option value={p.id}>{kindLabel(p.kind)} · {p.name}</option>
+							<option value={p.id}>{p.name}{p.kind === 'user' ? ' (you)' : ''}</option>
 						{/each}
 					</select>
 				</label>
 				<label class="check">
-					<input type="checkbox" name="inherit_permissions" checked />
-					Inherit permissions from parent
+					<input type="checkbox" name="inherit_permissions" />
+					inherit_permissions — inherit parent's current and future rules
 				</label>
-				<div class="actions-row">
-					<button type="button" class="btn" onclick={() => (createOpen = false)}>Cancel</button>
-					<button type="submit" class="btn primary">Create</button>
-				</div>
-			</form>
-		</div>
-	</div>
-{/if}
-
-{#if renameOpen && selected}
-	<div class="modal-backdrop" onclick={() => (renameOpen = false)} role="presentation">
-		<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
-			<h2>Rename {selected.name}</h2>
-			<form onsubmit={handleRename}>
-				<label>Name<input bind:value={renameValue} required /></label>
-				<div class="actions-row">
-					<button type="button" class="btn" onclick={() => (renameOpen = false)}>Cancel</button>
-					<button type="submit" class="btn primary">Save</button>
-				</div>
-			</form>
-		</div>
-	</div>
-{/if}
-
-{#if moveOpen && selected}
-	<div class="modal-backdrop" onclick={() => (moveOpen = false)} role="presentation">
-		<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
-			<h2>Move {selected.name}</h2>
-			<form onsubmit={handleMove}>
-				<label>
-					New parent
-					<select name="parent_id" required>
-						<option value="" disabled selected>Choose a parent…</option>
-						{#each eligibleParents as p (p.id)}
-							<option value={p.id}>{kindLabel(p.kind)} · {p.name}</option>
-						{/each}
-					</select>
-				</label>
-				<div class="actions-row">
-					<button type="button" class="btn" onclick={() => (moveOpen = false)}>Cancel</button>
-					<button type="submit" class="btn primary">Move</button>
+				<div class="modal-actions">
+					<button type="button" class="btn-secondary" onclick={() => (createOpen = false)}>Cancel</button>
+					<button type="submit" class="btn-new">Create Agent</button>
 				</div>
 			</form>
 		</div>
@@ -621,11 +497,11 @@
 	{@const childCount = (childrenOf.get(selected.id) ?? []).length}
 	<ConfirmModal
 		open={deleteModalOpen}
-		title="Delete {selected.name}?"
+		title="Delete agent?"
 		message={childCount > 0
-			? `This will also delete ${childCount} sub-agent${childCount === 1 ? '' : 's'} and revoke all their API keys. This cannot be undone.`
-			: 'This cannot be undone.'}
-		confirmLabel="Delete"
+			? `Delete agent:${selected.name}? This will also delete ${childCount} child agent${childCount === 1 ? '' : 's'} and revoke all their API keys.`
+			: `Delete agent:${selected.name}? This cannot be undone.`}
+		confirmLabel="Delete Agent"
 		destructive={true}
 		busy={deleteModalBusy}
 		onConfirm={confirmDelete}
@@ -634,319 +510,405 @@
 {/if}
 
 <style>
+	/* ── Page layout ── */
 	.page {
-		padding: 1.5rem;
-		max-width: 1400px;
-		margin: 0 auto;
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
 	}
 	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 1rem;
+		display: none;
 	}
-	.page-header h1 {
-		margin: 0;
-		font-size: 1.4rem;
-		color: var(--color-text-heading);
-	}
-	.muted {
-		color: var(--color-text-muted, #737580);
-	}
-	.small {
-		font-size: 0.8rem;
-	}
-	.card {
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 10px;
-		padding: 1rem;
-	}
-	.card.error {
+
+	.error-bar {
 		background: var(--badge-bg-danger, rgba(229, 56, 54, 0.12));
-		border-color: var(--color-danger, #e53836);
 		color: var(--color-danger, #e53836);
-		margin-bottom: 1rem;
+		padding: 0.5rem 1rem;
+		font-size: 0.85rem;
+		border-radius: 6px;
+		margin: 0.5rem 1rem;
 	}
-	.layout {
-		display: grid;
-		grid-template-columns: 1fr;
-		gap: 1rem;
+
+	/* ── Two-panel layout (Figma: 320 / flex) ── */
+	.panels {
+		flex: 1;
+		display: flex;
+		min-height: 0;
+		overflow: hidden;
 	}
-	.layout.has-detail {
-		grid-template-columns: 1fr 420px;
+	.tree-panel {
+		width: 320px;
+		min-width: 260px;
+		background: var(--color-surface);
+		border-right: 1px solid var(--color-border);
+		display: flex;
+		flex-direction: column;
+		overflow-y: auto;
 	}
-	@media (max-width: 900px) {
-		.layout.has-detail {
-			grid-template-columns: 1fr;
+	.detail-panel {
+		flex: 1;
+		background: var(--color-surface);
+		overflow-y: auto;
+		padding: 24px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	@media (max-width: 768px) {
+		.panels {
+			flex-direction: column;
+		}
+		.tree-panel {
+			width: 100%;
+			min-width: 0;
+			border-right: none;
+			border-bottom: 1px solid var(--color-border);
+			max-height: 40vh;
 		}
 	}
 
-	/* Tree */
-	.tree {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-	}
-	.tree ul {
-		list-style: none;
-		padding: 0;
-		margin: 0;
-	}
-	.node {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
-		padding: 0.3rem 0.5rem;
-		border-radius: 6px;
-		position: relative;
-	}
-	.node:hover {
-		background: var(--neutral-200);
-	}
-	.node.active {
-		background: var(--primary-50, #ededff);
-	}
-	.chev {
-		background: none;
-		border: none;
-		cursor: pointer;
-		width: 18px;
-		font-size: 0.7rem;
-		color: var(--neutral-500);
-	}
-	.chev.placeholder {
-		display: inline-block;
-	}
-	.node-main {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		background: none;
-		border: none;
-		text-align: left;
-		cursor: pointer;
-		font-size: 0.9rem;
-		padding: 0.15rem 0;
-		color: var(--color-text);
-	}
-	.name {
-		font-weight: 500;
+	/* ── Agent tree ── */
+	.tree-head {
+		font: var(--text-body-medium);
 		color: var(--color-text-heading);
+		padding: 16px 16px 8px;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
 	}
-	.kind-tag {
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		color: var(--neutral-500);
-		letter-spacing: 0.04em;
+	.btn-new-small {
+		font-size: 12px;
+		padding: 4px 10px;
 	}
-	.tag {
-		font-size: 0.7rem;
-		padding: 0.05rem 0.4rem;
-		background: var(--neutral-100);
+	.tree-empty {
+		padding: 16px;
+		font-size: 0.85rem;
+	}
+	.tree {
+		flex: 1;
+		overflow-y: auto;
+	}
+	.tree-node {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 16px;
+		cursor: pointer;
 		border-radius: 4px;
-		color: var(--neutral-600);
+		margin: 0 8px;
 	}
-	.badge {
+	.tree-node:hover {
+		background: var(--neutral-100);
+	}
+	.tree-node.selected {
+		background: var(--primary-50);
+	}
+	.tree-node.selected .tree-label {
+		color: var(--color-primary);
+		font-weight: 600;
+	}
+	.tree-toggle {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font-size: 0.55rem;
+		color: var(--color-text-muted);
+		padding: 0;
+		width: 12px;
+	}
+	.status-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--neutral-400);
+		flex-shrink: 0;
+	}
+	.status-dot.active {
+		background: var(--success-500, #21b86b);
+	}
+	.tree-label {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font-size: 13px;
+		color: var(--color-text);
+		padding: 0;
+		text-align: left;
+	}
+	.tree-you {
+		font-size: 12px;
+		color: var(--color-text-muted);
+	}
+	.tree-badge {
+		margin-left: auto;
+		min-width: 18px;
+		height: 18px;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		min-width: 1.1rem;
-		height: 1.1rem;
-		padding: 0 0.35rem;
+		padding: 0 5px;
 		border-radius: 999px;
-		font-size: 0.7rem;
+		font-size: 10px;
 		font-weight: 600;
-		background: var(--neutral-200);
-		color: var(--neutral-800);
+		background: var(--color-danger, #e53836);
+		color: #fff;
 	}
-	.badge.danger {
-		background: var(--badge-bg-danger, rgba(229, 56, 54, 0.12));
-		color: var(--color-danger, #e53836);
-	}
-	.kebab {
+	.add-agent-link {
 		background: none;
 		border: none;
+		color: var(--color-primary);
+		font-size: 13px;
+		font-weight: 500;
 		cursor: pointer;
-		font-size: 1.1rem;
-		padding: 0 0.4rem;
-		color: var(--neutral-500);
-	}
-	.menu {
-		position: absolute;
-		right: 0;
-		top: 100%;
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		box-shadow: var(--shadow-lg);
-		z-index: 10;
-		min-width: 140px;
-		display: flex;
-		flex-direction: column;
-	}
-	.menu button {
-		background: none;
-		border: none;
+		padding: 12px 36px;
 		text-align: left;
-		padding: 0.5rem 0.75rem;
-		cursor: pointer;
-		font-size: 0.85rem;
-		color: var(--color-text);
-	}
-	.menu button:hover {
-		background: var(--neutral-200);
-	}
-	.menu button.danger {
-		color: var(--color-danger, #e53836);
 	}
 
-	/* Detail pane */
-	.detail-pane {
-		display: flex;
-		flex-direction: column;
-		gap: 1rem;
-		max-height: calc(100vh - 200px);
-		overflow-y: auto;
+	/* ── Detail panel ── */
+	.detail-empty {
+		padding: 2rem;
+		text-align: center;
+		font-size: 0.9rem;
 	}
 	.detail-header {
 		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 12px;
 	}
-	.row {
+	.detail-name {
+		margin: 0;
+		font-size: 18px;
+		font-weight: 600;
+		color: var(--color-text-heading);
+	}
+
+	/* ── Pills / badges ── */
+	.pill {
+		display: inline-block;
+		padding: 2px 8px;
+		border-radius: 9999px;
+		font-size: 11px;
+		font-weight: 500;
+	}
+	.pill-active {
+		background: var(--badge-bg-success, rgba(33, 184, 107, 0.12));
+		color: #15803d;
+	}
+	.pill-neutral {
+		background: var(--badge-bg-muted, #f5f5f7);
+		color: var(--color-text-secondary);
+	}
+	.pill-source {
+		background: rgba(99, 90, 217, 0.12);
+		color: var(--color-primary);
+	}
+
+	/* ── Field rows ── */
+	.field-row {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 8px;
+		padding: 4px 0;
 	}
-	.detail-header h2 {
-		margin: 0;
-		font-size: 1.1rem;
-	}
-	.kind-chip {
-		display: inline-block;
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		background: var(--neutral-100);
-		color: var(--neutral-700);
-		padding: 0.15rem 0.45rem;
-		border-radius: 999px;
-		letter-spacing: 0.04em;
-	}
-	.icon-btn {
-		background: none;
-		border: none;
-		cursor: pointer;
-		font-size: 1rem;
-		padding: 0.25rem 0.5rem;
+	.field-label {
+		width: 170px;
+		flex-shrink: 0;
+		font-size: 13px;
+		font-weight: 500;
 		color: var(--color-text-muted);
 	}
-	.detail-pane h3 {
-		font-size: 0.85rem;
-		text-transform: uppercase;
-		color: var(--neutral-500);
-		margin: 0 0 0.5rem 0;
-		letter-spacing: 0.04em;
-		display: flex;
-		gap: 0.5rem;
-		align-items: center;
-	}
-	.actions-row {
-		display: flex;
-		gap: 0.5rem;
-		margin-top: 0.5rem;
-		flex-wrap: wrap;
-	}
-	.check {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.9rem;
-	}
-	.btn {
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		padding: 0.4rem 0.8rem;
-		cursor: pointer;
-		font-size: 0.85rem;
+	.field-value {
+		font-size: 13px;
 		color: var(--color-text);
 	}
-	.btn:hover {
-		background: var(--neutral-200);
-	}
-	.btn.primary {
-		background: var(--color-primary);
-		color: #fff;
-		border-color: var(--color-primary);
-	}
-	.btn.primary:hover {
-		background: var(--color-primary-hover);
-	}
-	.btn.danger {
-		color: var(--color-danger, #e53836);
-		border-color: var(--color-danger, #e53836);
-	}
-	.btn.small {
-		padding: 0.2rem 0.5rem;
-		font-size: 0.75rem;
-	}
-	.link {
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--primary-600);
+	.inline-check {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
 		cursor: pointer;
-		text-decoration: underline;
-		font: inherit;
 	}
-	.link.danger {
-		color: var(--color-danger, #e53836);
+
+	/* ── Section titles ── */
+	.section-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--color-text-heading);
+		margin: 16px 0 8px;
 	}
-	.plain-list {
-		list-style: none;
-		padding: 0;
-		margin: 0;
+
+	/* ── Approval cards ── */
+	.approval-card {
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		padding: 8px 12px;
+		margin-bottom: 8px;
+		display: flex;
+		align-items: flex-end;
+		justify-content: space-between;
+		gap: 12px;
+	}
+	.approval-main {
 		display: flex;
 		flex-direction: column;
-		gap: 0.4rem;
-		font-size: 0.85rem;
+		gap: 2px;
+		min-width: 0;
 	}
-	.rules {
+	.approval-summary {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-text-heading);
+	}
+	.approval-meta {
+		font-size: 11px;
+		color: var(--color-text-muted);
+	}
+	.approval-actions {
+		display: flex;
+		gap: 6px;
+		flex-shrink: 0;
+	}
+	.btn-approve {
+		background: var(--success-500, #21b86b);
+		color: #fff;
+		padding: 6px 12px;
+		border-radius: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		text-decoration: none;
+		border: none;
+		cursor: pointer;
+	}
+	.btn-deny-outline {
+		background: none;
+		border: 1px solid var(--color-danger, #e53836);
+		color: var(--color-danger, #e53836);
+		padding: 6px 12px;
+		border-radius: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		text-decoration: none;
+		cursor: pointer;
+	}
+
+	/* ── Permission rules table ── */
+	.rules-table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.8rem;
+		font-size: 12px;
 	}
-	.rules th,
-	.rules td {
+	.rules-table th {
 		text-align: left;
-		padding: 0.35rem 0.5rem;
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--color-text-muted);
+		padding: 6px 0;
 		border-bottom: 1px solid var(--color-border);
 	}
-	.rules th {
-		font-weight: 600;
-		color: var(--neutral-500);
-		text-transform: uppercase;
-		font-size: 0.7rem;
+	.rules-table td {
+		padding: 6px 0;
+		color: var(--color-text);
+		vertical-align: middle;
 	}
+	.revoke-link {
+		background: none;
+		border: none;
+		color: var(--color-danger, #e53836);
+		font-size: 12px;
+		font-weight: 500;
+		cursor: pointer;
+		padding: 0;
+	}
+
+	/* ── Delete Agent ── */
+	.detail-footer {
+		display: flex;
+		justify-content: flex-end;
+		margin-top: 24px;
+		padding-top: 16px;
+	}
+	.btn-delete {
+		background: var(--color-danger, #e53836);
+		color: #fff;
+		padding: 6px 12px;
+		border-radius: 6px;
+		border: none;
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+	}
+
+	/* ── Buttons ── */
+	.btn-new {
+		background: var(--color-primary);
+		color: #fff;
+		padding: 6px 12px;
+		border-radius: 6px;
+		border: none;
+		font-size: 13px;
+		font-weight: 500;
+		cursor: pointer;
+	}
+	.btn-secondary {
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
+		padding: 6px 12px;
+		border-radius: 6px;
+		font-size: 13px;
+		cursor: pointer;
+	}
+	.btn-secondary:hover {
+		background: var(--neutral-100);
+	}
+	.btn-secondary.small {
+		padding: 4px 8px;
+		font-size: 12px;
+	}
+
+	/* ── Mono text ── */
+	.mono {
+		font-family: var(--font-mono);
+		font-size: 12px;
+	}
+	.muted {
+		color: var(--color-text-muted);
+	}
+
+	/* ── Token box ── */
 	.token-box {
-		margin-top: 0.5rem;
-		padding: 0.75rem;
+		margin-top: 8px;
+		padding: 12px;
 		background: var(--neutral-50);
 		border: 1px dashed var(--color-border);
 		border-radius: 6px;
 		display: flex;
 		flex-direction: column;
-		gap: 0.4rem;
+		gap: 6px;
 	}
-	.token {
-		font-family: var(--font-mono, monospace);
-		font-size: 0.75rem;
+	.token-code {
+		font-family: var(--font-mono);
+		font-size: 12px;
 		word-break: break-all;
+		color: var(--color-text);
+	}
+	.token-list {
+		margin-top: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.token-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12px;
 	}
 
-	/* Modal */
+	/* ── Modal (matches Figma New Agent modal) ── */
 	.modal-backdrop {
 		position: fixed;
 		inset: 0;
@@ -960,38 +922,65 @@
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 16px;
-		padding: 24px 28px;
-		min-width: 360px;
-		max-width: 480px;
+		padding: 28px;
+		min-width: 400px;
+		max-width: 520px;
+		width: 100%;
 		box-shadow: var(--shadow-xl);
 	}
-	.modal h2 {
-		margin: 0 0 1rem 0;
-		font-size: 1.05rem;
+	.modal-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 20px;
+	}
+	.modal-head h2 {
+		margin: 0;
+		font-size: 18px;
+		font-weight: 700;
 		color: var(--color-text-heading);
+	}
+	.modal-close {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font-size: 18px;
+		color: var(--color-text-muted);
+		padding: 4px;
 	}
 	.modal form {
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		gap: 16px;
 	}
 	.modal label {
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
-		font-size: 0.85rem;
-		color: var(--color-text-secondary);
+		gap: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-text);
 	}
 	.modal input,
 	.modal select {
-		padding: 0.45rem 0.6rem;
+		padding: 10px 12px;
 		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		font-size: 0.9rem;
+		border-radius: 8px;
+		font-size: 14px;
 		background: var(--color-bg);
 		color: var(--color-text);
 	}
 	.modal label.check {
 		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+		font-weight: 400;
+		color: var(--color-text-secondary);
+	}
+	.modal-actions {
+		display: flex;
+		gap: 8px;
+		justify-content: flex-end;
+		margin-top: 8px;
 	}
 </style>
