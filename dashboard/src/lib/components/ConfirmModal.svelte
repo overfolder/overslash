@@ -55,33 +55,35 @@
 	.card {
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg);
-		padding: var(--space-6);
-		max-width: 440px;
+		border-radius: 16px;
+		padding: 24px 28px;
+		max-width: 360px;
 		width: 100%;
-		box-shadow: var(--shadow-xl, 0 20px 60px rgba(0, 0, 0, 0.2));
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-4);
+		gap: 14px;
 	}
 	h2 {
 		margin: 0;
-		font: var(--text-h3);
+		font-weight: 700;
+		font-size: 16px;
+		line-height: 1.25;
 		color: var(--color-text-heading);
 	}
 	p {
 		margin: 0;
 		font: var(--text-body);
-		color: var(--color-text);
+		color: var(--color-text-secondary, var(--color-text));
 	}
 	.actions {
 		display: flex;
-		gap: var(--space-2);
+		gap: 8px;
 		justify-content: flex-end;
 	}
 	.btn {
-		padding: var(--space-2) var(--space-4);
-		border-radius: var(--radius-md);
+		padding: 10px 16px;
+		border-radius: 8px;
 		font: var(--text-body-medium);
 		cursor: pointer;
 		border: 1px solid var(--color-border);
