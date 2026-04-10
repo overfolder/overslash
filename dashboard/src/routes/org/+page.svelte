@@ -8,6 +8,7 @@
 		WebhookDelivery
 	} from '$lib/types';
 	import type { OrgPageData } from './+page';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let { data }: { data: OrgPageData } = $props();
 
@@ -19,6 +20,33 @@
 		idpConfigs = data.idpConfigs;
 		webhooks = data.webhooks;
 	});
+
+	// Confirmation modal state
+	let confirmOpen = $state(false);
+	let confirmTitle = $state('');
+	let confirmMessage = $state('');
+	let confirmLabel = $state('Confirm');
+	let confirmBusy = $state(false);
+	let confirmAction = $state<(() => Promise<void>) | null>(null);
+
+	function openConfirm(title: string, message: string, label: string, action: () => Promise<void>) {
+		confirmTitle = title;
+		confirmMessage = message;
+		confirmLabel = label;
+		confirmAction = action;
+		confirmOpen = true;
+	}
+
+	async function runConfirm() {
+		if (!confirmAction) return;
+		confirmBusy = true;
+		try {
+			await confirmAction();
+			confirmOpen = false;
+		} finally {
+			confirmBusy = false;
+		}
+	}
 
 	// IdP form
 	let showIdpForm = $state(false);
@@ -97,15 +125,21 @@
 		}
 	}
 
-	async function deleteIdp(cfg: IdpConfig) {
+	function deleteIdp(cfg: IdpConfig) {
 		if (!cfg.id) return;
-		if (!confirm(`Delete identity provider "${cfg.display_name}"?`)) return;
-		try {
-			await session.delete(`/v1/org-idp-configs/${cfg.id}`);
-			await refetchIdp();
-		} catch (err) {
-			alert(asMessage(err));
-		}
+		openConfirm(
+			`Delete identity provider "${cfg.display_name}"?`,
+			'Users who rely on this provider will lose access.',
+			'Delete',
+			async () => {
+				try {
+					await session.delete(`/v1/org-idp-configs/${cfg.id}`);
+					await refetchIdp();
+				} catch (err) {
+					alert(asMessage(err));
+				}
+			}
+		);
 	}
 
 	async function submitWebhook(e: Event) {
@@ -133,14 +167,20 @@
 		}
 	}
 
-	async function deleteWebhook(wh: Webhook) {
-		if (!confirm(`Delete webhook ${wh.url}? Pending deliveries will be lost.`)) return;
-		try {
-			await session.delete(`/v1/webhooks/${wh.id}`);
-			await refetchWebhooks();
-		} catch (err) {
-			alert(asMessage(err));
-		}
+	function deleteWebhook(wh: Webhook) {
+		openConfirm(
+			'Remove webhook?',
+			`Delete webhook ${wh.url}? Pending deliveries will be lost.`,
+			'Delete',
+			async () => {
+				try {
+					await session.delete(`/v1/webhooks/${wh.id}`);
+					await refetchWebhooks();
+				} catch (err) {
+					alert(asMessage(err));
+				}
+			}
+		);
 	}
 
 	async function toggleDeliveries(wh: Webhook) {
@@ -457,6 +497,17 @@
 		</section>
 	{/if}
 </div>
+
+<ConfirmModal
+	open={confirmOpen}
+	title={confirmTitle}
+	message={confirmMessage}
+	confirmLabel={confirmLabel}
+	destructive={true}
+	busy={confirmBusy}
+	onConfirm={runConfirm}
+	onCancel={() => (confirmOpen = false)}
+/>
 
 <style>
 	.page {

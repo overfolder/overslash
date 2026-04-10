@@ -20,6 +20,7 @@
 		CreatedEnrollmentToken
 	} from '$lib/types';
 	import type { ApprovalResponse } from '$lib/session';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let identities = $state<Identity[]>([]);
 	let approvals = $state<ApprovalResponse[]>([]);
@@ -42,6 +43,10 @@
 	let renameOpen = $state(false);
 	let renameValue = $state('');
 	let newToken = $state<CreatedEnrollmentToken | null>(null);
+
+	// Delete confirmation modal state
+	let deleteModalOpen = $state(false);
+	let deleteModalBusy = $state(false);
 
 	const selected = $derived(identities.find((i) => i.id === selectedId) ?? null);
 	const childrenOf = $derived.by(() => {
@@ -119,19 +124,16 @@
 		e.preventDefault();
 		const form = e.target as HTMLFormElement;
 		const fd = new FormData(form);
-		const kind = String(fd.get('kind') ?? 'agent') as 'user' | 'agent' | 'sub_agent';
+		const parentId = String(fd.get('parent_id') ?? '');
+		const parent = identities.find((i) => i.id === parentId);
+		// Kind determined by parent: user→agent, agent/sub_agent→sub_agent
+		const kind: 'agent' | 'sub_agent' = parent?.kind === 'user' ? 'agent' : 'sub_agent';
 		const req: CreateIdentityRequest = {
 			name: String(fd.get('name') ?? '').trim(),
 			kind
 		};
-		const parent = String(fd.get('parent_id') ?? '');
-		if (parent) req.parent_id = parent;
-		// Send inherit_permissions in the same request so the row lands in
-		// its final state — no follow-up PATCH that could leave a half-
-		// initialised row if it fails.
-		if (kind !== 'user') {
-			req.inherit_permissions = fd.get('inherit_permissions') === 'on';
-		}
+		if (parentId) req.parent_id = parentId;
+		req.inherit_permissions = fd.get('inherit_permissions') === 'on';
 		try {
 			const created = await createIdentity(req);
 			createOpen = false;
@@ -169,15 +171,23 @@
 		}
 	}
 
-	async function handleDelete() {
+	function requestDelete() {
+		if (!selected || selected.kind === 'user') return;
+		deleteModalOpen = true;
+	}
+
+	async function confirmDelete() {
 		if (!selected) return;
-		if (!confirm(`Delete ${selected.name}? This cannot be undone.`)) return;
+		deleteModalBusy = true;
 		try {
 			await deleteIdentity(selected.id);
+			deleteModalOpen = false;
 			selectedId = null;
 			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
+		} finally {
+			deleteModalBusy = false;
 		}
 	}
 
@@ -241,13 +251,10 @@
 		return identities.filter((i) => allowed.includes(i.kind) && !descendants.has(i.id));
 	});
 
-	// Eligible parents for the create form, given the chosen kind.
-	let createKind = $state<'user' | 'agent' | 'sub_agent'>('agent');
-	const createEligibleParents = $derived.by(() => {
-		if (createKind === 'user') return [];
-		const allowed = createKind === 'agent' ? ['user'] : ['agent', 'sub_agent'];
-		return identities.filter((i) => allowed.includes(i.kind));
-	});
+	// Eligible parents for the create form — all non-leaf kinds can be parents.
+	const createEligibleParents = $derived(
+		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind))
+	);
 
 	onMount(() => {
 		void loadAll();
@@ -260,24 +267,23 @@
 </script>
 
 <svelte:head>
-	<title>Identities · Overslash</title>
+	<title>Agents · Overslash</title>
 </svelte:head>
 
 <div class="page">
 	<header class="page-header">
 		<div>
-			<h1>Identities</h1>
-			<p class="muted">Users, agents, and sub-agents in your organization.</p>
+			<h1>Agents</h1>
+			<p class="muted">Agents and sub-agents in your organization.</p>
 		</div>
 		<button
 			class="btn primary"
 			onclick={() => {
 				createOpen = true;
 				createParentId = selectedId;
-				createKind = selectedId ? 'agent' : 'user';
 			}}
 		>
-			+ Create
+			+ Add Agent
 		</button>
 	</header>
 
@@ -291,8 +297,8 @@
 				<p class="muted">Loading…</p>
 			{:else if roots.length === 0}
 				<p class="muted">
-					No identities yet. <button class="link" onclick={() => (createOpen = true)}
-						>Create the first one</button
+					No agents found. <button class="link" onclick={() => (createOpen = true)}
+						>Create your first agent</button
 					>.
 				</p>
 			{:else}
@@ -325,7 +331,18 @@
 
 				<section>
 					<h3>Properties</h3>
-					{#if selected.kind !== 'user'}
+					{#if selected.kind === 'user'}
+						<p class="muted small">This is the logged-in user. User identities are read-only.</p>
+						<div class="actions-row">
+							<button
+								class="btn primary"
+								onclick={() => {
+									createOpen = true;
+									createParentId = selected!.id;
+								}}>+ Add Agent</button
+							>
+						</div>
+					{:else}
 						<label class="check">
 							<input
 								type="checkbox"
@@ -334,20 +351,18 @@
 							/>
 							Inherit permissions from parent
 						</label>
-					{/if}
-					<div class="actions-row">
-						<button
-							class="btn"
-							onclick={() => {
-								renameValue = selected!.name;
-								renameOpen = true;
-							}}>Rename</button
-						>
-						{#if selected.kind !== 'user'}
+						<div class="actions-row">
+							<button
+								class="btn"
+								onclick={() => {
+									renameValue = selected!.name;
+									renameOpen = true;
+								}}>Rename</button
+							>
 							<button class="btn" onclick={() => (moveOpen = true)}>Move…</button>
-						{/if}
-						<button class="btn danger" onclick={handleDelete}>Delete</button>
-					</div>
+							<button class="btn danger" onclick={requestDelete}>Delete</button>
+						</div>
+					{/if}
 				</section>
 
 				<section>
@@ -470,33 +485,43 @@
 					<span class="tag" title="Inherits permissions from parent">inherit</span>
 				{/if}
 			</button>
-			<button
-				class="kebab"
-				onclick={(e) => {
-					e.stopPropagation();
-					kebabFor = kebabFor === node.id ? null : node.id;
-				}}
-				aria-label="More">⋮</button
-			>
-			{#if kebabFor === node.id}
-				<div class="menu" role="menu">
-					<button
-						onclick={() => {
-							createOpen = true;
-							createParentId = node.id;
-							createKind = node.kind === 'user' ? 'agent' : 'sub_agent';
-							kebabFor = null;
-						}}>Add child</button
-					>
-					<button
-						onclick={() => {
-							selectIdentity(node.id);
-							renameValue = node.name;
-							renameOpen = true;
-							kebabFor = null;
-						}}>Rename</button
-					>
-					{#if node.kind !== 'user'}
+			{#if node.kind === 'user'}
+				<button
+					class="kebab"
+					onclick={(e) => {
+						e.stopPropagation();
+						createOpen = true;
+						createParentId = node.id;
+					}}
+					aria-label="Add agent"
+					title="Add agent">+</button
+				>
+			{:else}
+				<button
+					class="kebab"
+					onclick={(e) => {
+						e.stopPropagation();
+						kebabFor = kebabFor === node.id ? null : node.id;
+					}}
+					aria-label="More">⋮</button
+				>
+				{#if kebabFor === node.id}
+					<div class="menu" role="menu">
+						<button
+							onclick={() => {
+								createOpen = true;
+								createParentId = node.id;
+								kebabFor = null;
+							}}>Add child</button
+						>
+						<button
+							onclick={() => {
+								selectIdentity(node.id);
+								renameValue = node.name;
+								renameOpen = true;
+								kebabFor = null;
+							}}>Rename</button
+						>
 						<button
 							onclick={() => {
 								selectIdentity(node.id);
@@ -504,16 +529,16 @@
 								kebabFor = null;
 							}}>Move…</button
 						>
-					{/if}
-					<button
-						class="danger"
-						onclick={() => {
-							selectIdentity(node.id);
-							kebabFor = null;
-							void handleDelete();
-						}}>Delete</button
-					>
-				</div>
+						<button
+							class="danger"
+							onclick={() => {
+								selectIdentity(node.id);
+								kebabFor = null;
+								requestDelete();
+							}}>Delete</button
+						>
+					</div>
+				{/if}
 			{/if}
 		</div>
 		{#if !isCollapsed && kids.length > 0}
@@ -529,32 +554,22 @@
 {#if createOpen}
 	<div class="modal-backdrop" onclick={() => (createOpen = false)} role="presentation">
 		<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
-			<h2>Create identity</h2>
+			<h2>Create agent</h2>
 			<form onsubmit={handleCreate}>
 				<label>Name<input name="name" required /></label>
 				<label>
-					Kind
-					<select name="kind" bind:value={createKind}>
-						<option value="user">User</option>
-						<option value="agent">Agent</option>
-						<option value="sub_agent">Sub-agent</option>
+					Parent
+					<select name="parent_id" required value={createParentId ?? ''}>
+						<option value="" disabled>Choose a parent…</option>
+						{#each createEligibleParents as p (p.id)}
+							<option value={p.id}>{kindLabel(p.kind)} · {p.name}</option>
+						{/each}
 					</select>
 				</label>
-				{#if createKind !== 'user'}
-					<label>
-						Parent
-						<select name="parent_id" required value={createParentId ?? ''}>
-							<option value="" disabled>Choose a parent…</option>
-							{#each createEligibleParents as p (p.id)}
-								<option value={p.id}>{kindLabel(p.kind)} · {p.name}</option>
-							{/each}
-						</select>
-					</label>
-					<label class="check">
-						<input type="checkbox" name="inherit_permissions" checked />
-						Inherit permissions from parent
-					</label>
-				{/if}
+				<label class="check">
+					<input type="checkbox" name="inherit_permissions" checked />
+					Inherit permissions from parent
+				</label>
 				<div class="actions-row">
 					<button type="button" class="btn" onclick={() => (createOpen = false)}>Cancel</button>
 					<button type="submit" class="btn primary">Create</button>
@@ -600,6 +615,22 @@
 			</form>
 		</div>
 	</div>
+{/if}
+
+{#if selected}
+	{@const childCount = (childrenOf.get(selected.id) ?? []).length}
+	<ConfirmModal
+		open={deleteModalOpen}
+		title="Delete {selected.name}?"
+		message={childCount > 0
+			? `This will also delete ${childCount} sub-agent${childCount === 1 ? '' : 's'} and revoke all their API keys. This cannot be undone.`
+			: 'This cannot be undone.'}
+		confirmLabel="Delete"
+		destructive={true}
+		busy={deleteModalBusy}
+		onConfirm={confirmDelete}
+		onCancel={() => (deleteModalOpen = false)}
+	/>
 {/if}
 
 <style>
