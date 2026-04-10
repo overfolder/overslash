@@ -1,4 +1,4 @@
-.PHONY: local local-down dev dev-api dev-dashboard dev-down down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean
 
@@ -33,10 +33,6 @@ WT_ENV = bash bin/worktree-env.sh && set -a && { [ -f .env.local ] && . ./.env.l
 local:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
 
-# Stop local infra
-local-down:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down
-
 # Start all dev services (postgres + api with cargo-watch + dashboard)
 dev:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans 2>/dev/null; \
@@ -47,17 +43,13 @@ dev-api:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans 2>/dev/null; \
 	$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build postgres api
 
-# Stop dev services (useful after Ctrl-C leaves containers in a bad state)
-dev-down:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans
-
 # Start only the dashboard dev server (no container)
 dev-dashboard:
 	cd dashboard && npm run dev
 
 # Stop services
 down:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans
 
 # Remove worktree containers and volumes
 worktree-clean:
