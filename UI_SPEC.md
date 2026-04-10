@@ -527,7 +527,7 @@ The creation flow does NOT include a Kind/type selector. All created identities 
 On submit, shows a **one-time enrollment snippet** designed to be pasted into the agent's conversation:
 
 ```
-┌─ Enrollment Instructions ───────────────────────┐
+┌─ Enrollment Instructions ────────────────────────┐
 │                                                  │
 │  Agent "henry" created. Paste this into your     │
 │  agent's conversation:                           │
@@ -542,7 +542,7 @@ On submit, shows a **one-time enrollment snippet** designed to be pasted into th
 │  └────────────────────────────────────────────┘  │
 │                                    [Copy] [Done] │
 │                                                  │
-│  ⚠ This token is shown once. The agent          │
+│  ⚠ This token is shown once. The agent           │
 │  exchanges it for a permanent API key.           │
 └──────────────────────────────────────────────────┘
 ```
@@ -572,7 +572,7 @@ After clicking agent-henry:
 ```
 ┌─ Select parent ─────────────┐
 │  ○ alice (you)              │
-│  ● agent-henry   ← selected│
+│  ● agent-henry   ← selected │
 │    ○ sa-researcher          │
 │    ○ sa-emailer             │
 │  ○ agent-builder            │
@@ -658,9 +658,9 @@ Group: Engineering
 
 Service Grants
 ──────────────────────────────────────────────────────────────────
-github:ANY:*             Full GitHub API access            Auto-approve reads: ✓
-slack:*:*          Slack — any action                 Auto-approve reads: ✓
-stripe:*:*         Stripe — any action                Auto-approve reads: ✗
+github:ANY:*             Full GitHub API access             Auto-approve reads: ✓
+slack:*:*                Slack — any action                 Auto-approve reads: ✓
+stripe:*:*               Stripe — any action                Auto-approve reads: ✗
 google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
 ```
 
@@ -753,9 +753,9 @@ Org-level feature flags.
 ```
 Features
 
-Allow user-created templates        [✓]    Users can create personal service templates
-Allow user-created services         [✓]    Users can create personal service instances
-Show API Explorer                   [✓]    API Explorer visible in nav for all users
+Allow user-created templates        [✓]     Users can create personal service templates
+Allow user-created services         [✓]     Users can create personal service instances
+Show API Explorer                   [✓]     API Explorer visible in nav for all users
 Default approval TTL                [24h ▾] Pre-filled expiry for "Allow & Remember"
 ```
 
@@ -809,7 +809,7 @@ Clicking a secret row opens the detail view:
 ```
 Version   Created              Created By        Status
 ───────────────────────────────────────────────────────────
-v3        2026-04-01 10:30     agent:henry       ● current
+v3        2026-04-01 10:30     agent:henry        ● current
 v2        2026-03-20 14:15     user:alice         ○ previous
 v1        2026-03-10 09:00     user:alice         ○ previous
 ```
@@ -1019,7 +1019,7 @@ A code editor showing the full template definition as YAML:
 │  │   keys will use wildcard arg (*)                         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
-│                                         [Test] [Save] [Delete] │
+│                                        [Test] [Save] [Delete] │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -1173,7 +1173,7 @@ When "Raw HTTP" is selected as the service:
 ```
 Service: Raw HTTP
 Method:  [POST ▾]
-URL:     [https://api.example.com/v1/data               ]
+URL:     [https://api.example.com/v1/data                ]
 Headers: [Content-Type: application/json                 ]
 Body:    [{"query": "test", "limit": 10}                 ]
 
@@ -1238,32 +1238,32 @@ Secret requests also appear in the dashboard: as notification bell items, as bad
 Login required. If not logged in → redirect to login → redirect back. If logged in but without authority to resolve → show approval details read-only with: "You don't have permission to resolve this approval."
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Overs/ash                              alice ▾     │
-│                                                     │
-│  Approval Request                                   │
-│                                                     │
-│  agent:henry wants to:                              │
-│  Create pull request "Fix bug" on overfolder/app    │
-│  via: user/github                                   │
-│                                                     │
-│  POST /repos/overfolder/app/pulls                   │
-│  Body: {"title":"Fix bug","head":"fix","base":"main"}│
-│                                                     │
-│  ┌─ Allow & Remember ────────────────────────────┐  │
-│  │  ○ Create pull request on overfolder/app      │  │
-│  │  ○ Create pull request on any repo            │  │
-│  │  ○ Any GitHub action                          │  │
-│  │                                               │  │
-│  │  Expires: [24h ▾]                             │  │
-│  └───────────────────────────────────────────────┘  │
-│                                                     │
-│  [Allow Once]  [Allow & Remember]  [Deny]           │
-│                                                     │
-│  Requested 2m ago · Expires in 14m                  │
-│                                                     │
-│  [← Go to Agents]                                  │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Overs/ash                              alice ▾       │
+│                                                       │
+│  Approval Request                                     │
+│                                                       │
+│  agent:henry wants to:                                │
+│  Create pull request "Fix bug" on overfolder/app      │
+│  via: user/github                                     │
+│                                                       │
+│  POST /repos/overfolder/app/pulls                     │
+│  Body: {"title":"Fix bug","head":"fix","base":"main"} │
+│                                                       │
+│  ┌─ Allow & Remember ────────────────────────────┐    │
+│  │  ○ Create pull request on overfolder/app      │    │
+│  │  ○ Create pull request on any repo            │    │
+│  │  ○ Any GitHub action                          │    │
+│  │                                               │    │
+│  │  Expires: [24h ▾]                             │    │
+│  └───────────────────────────────────────────────┘    │
+│                                                       │
+│  [Allow Once]  [Allow & Remember]  [Deny]             │
+│                                                       │
+│  Requested 2m ago · Expires in 14m                    │
+│                                                       │
+│  [← Go to Agents]                                     │
+└───────────────────────────────────────────────────────┘
 ```
 
 - Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
@@ -1287,13 +1287,13 @@ Login required. An agent generated a consent URL and sent it to a user. Any auth
 │  An agent is requesting to join your org:           │
 │                                                     │
 │  Proposed name: [research-bot        ]  (editable)  │
-│  Requested by: 203.0.113.42 · 5m ago               │
+│  Requested by: 203.0.113.42 · 5m ago                │
 │                                                     │
 │  Parent placement:                                  │
 │  ┌─ Select parent ─────────────────────┐            │
 │  │  ● alice (you)                      │            │
 │  │  ○ agent-henry              ▸       │            │
-│  │  ○ agent-builder             ▸       │            │
+│  │  ○ agent-builder            ▸       │            │
 │  └─────────────────────────────────────┘            │
 │                                                     │
 │  [Approve & Enroll]  [Deny]                         │
