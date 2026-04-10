@@ -24,8 +24,8 @@ anyhow = { workspace = true }
 dotenvy = { workspace = true }
 rand = { workspace = true }
 argon2 = "0.5"
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 hex = "0.4"
 urlencoding = "2"
 base64 = "0.22"

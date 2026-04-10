@@ -19,12 +19,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "uuid", "time", "json", "migrate"] }
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 anyhow = "1"
 dotenvy = "0.15"
-rand = "0.9"
-jsonwebtoken = "9"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+rand = "0.10"
+jsonwebtoken = "10"
+redis = { version = "1.2", features = ["tokio-comp", "connection-manager"] }
 dashmap = "6"
 
 # Fast dev builds: minimal debug info
