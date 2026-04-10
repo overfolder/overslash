@@ -152,13 +152,13 @@
 		deleteModalBusy = true;
 		try {
 			await deleteIdentity(selected.id);
-			deleteModalOpen = false;
 			selectedId = null;
 			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
 		} finally {
 			deleteModalBusy = false;
+			deleteModalOpen = false;
 		}
 	}
 
