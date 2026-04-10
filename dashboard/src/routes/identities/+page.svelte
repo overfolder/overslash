@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 	import {
 		listIdentities,
 		listPermissions,
@@ -59,6 +60,9 @@
 		for (const a of approvals) m.set(a.identity_id, (m.get(a.identity_id) ?? 0) + 1);
 		return m;
 	});
+
+	// The logged-in user's identity id (from layout data).
+	const meIdentityId = $derived(($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null);
 
 	function kindIcon(kind: string): string {
 		if (kind === 'user') return '👤';
@@ -269,16 +273,6 @@
 			<h1>Identities</h1>
 			<p class="muted">Users, agents, and sub-agents in your organization.</p>
 		</div>
-		<button
-			class="btn primary"
-			onclick={() => {
-				createOpen = true;
-				createParentId = selectedId;
-				createKind = selectedId ? 'agent' : 'user';
-			}}
-		>
-			+ Create
-		</button>
 	</header>
 
 	{#if loadError}
@@ -291,9 +285,7 @@
 				<p class="muted">Loading…</p>
 			{:else if roots.length === 0}
 				<p class="muted">
-					No identities yet. <button class="link" onclick={() => (createOpen = true)}
-						>Create the first one</button
-					>.
+					No identities yet.
 				</p>
 			{:else}
 				<ul class="tree">
@@ -302,6 +294,20 @@
 					{/each}
 				</ul>
 			{/if}
+			<button
+				class="add-row"
+				onclick={() => {
+					createOpen = true;
+					createParentId = selectedId ?? meIdentityId;
+					createKind = selectedId
+						? identities.find((i) => i.id === selectedId)?.kind === 'user'
+							? 'agent'
+							: 'sub_agent'
+						: 'agent';
+				}}
+			>
+				<span class="add-icon">+</span> Add agent…
+			</button>
 		</section>
 
 		{#if selected}
@@ -471,7 +477,18 @@
 				{/if}
 			</button>
 			<button
-				class="kebab"
+				class="node-action add-child"
+				onclick={(e) => {
+					e.stopPropagation();
+					createOpen = true;
+					createParentId = node.id;
+					createKind = node.kind === 'user' ? 'agent' : 'sub_agent';
+				}}
+				aria-label="Add child"
+				title={node.kind === 'user' ? 'Add agent' : 'Add sub-agent'}>+</button
+			>
+			<button
+				class="node-action kebab"
 				onclick={(e) => {
 					e.stopPropagation();
 					kebabFor = kebabFor === node.id ? null : node.id;
@@ -480,14 +497,6 @@
 			>
 			{#if kebabFor === node.id}
 				<div class="menu" role="menu">
-					<button
-						onclick={() => {
-							createOpen = true;
-							createParentId = node.id;
-							createKind = node.kind === 'user' ? 'agent' : 'sub_agent';
-							kebabFor = null;
-						}}>Add child</button
-					>
 					<button
 						onclick={() => {
 							selectIdentity(node.id);
@@ -668,6 +677,10 @@
 		padding: 0.3rem 0.5rem;
 		border-radius: 6px;
 		position: relative;
+		border-bottom: 1px solid var(--color-border, #e8e8ee);
+	}
+	.tree > li:last-child > .node {
+		border-bottom: none;
 	}
 	.node:hover {
 		background: var(--neutral-100, #f5f5f7);
@@ -731,13 +744,53 @@
 		background: #fde2e2;
 		color: #9b1c1c;
 	}
-	.kebab {
+	.node-action {
 		background: none;
 		border: none;
 		cursor: pointer;
-		font-size: 1.1rem;
 		padding: 0 0.4rem;
 		color: var(--neutral-500);
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+	.node:hover .node-action,
+	.node-action:focus-visible {
+		opacity: 1;
+	}
+	.kebab {
+		font-size: 1.1rem;
+	}
+	.add-child {
+		font-size: 1.1rem;
+		font-weight: 600;
+	}
+	.add-child:hover {
+		color: var(--primary-500, #6359d9);
+	}
+	.add-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.45rem 0.75rem;
+		margin-top: 0.25rem;
+		background: none;
+		border: 1px dashed var(--color-border, #e8e8ee);
+		border-radius: 6px;
+		cursor: pointer;
+		font-size: 0.85rem;
+		color: var(--neutral-500, #737580);
+		transition: background 0.1s, color 0.1s;
+	}
+	.add-row:hover {
+		background: var(--neutral-50, #fafafa);
+		color: var(--primary-500, #6359d9);
+		border-color: var(--primary-300, #b0abef);
+	}
+	.add-icon {
+		font-size: 1rem;
+		font-weight: 600;
+		line-height: 1;
 	}
 	.menu {
 		position: absolute;
