@@ -52,7 +52,7 @@ cargo fmt --check || {
 }
 
 echo "  cargo clippy"
-cargo clippy --workspace -- -D warnings || {
+cargo clippy --workspace --all-targets -- -D warnings || {
     echo "ERROR: Clippy warnings found. Fix them before committing."
     exit 1
 }
@@ -61,8 +61,8 @@ cargo clippy --workspace -- -D warnings || {
 if [ "$SQLX_OFFLINE" = "true" ]; then
     echo "  sqlx prepare --check skipped (DB not reachable)"
 else
-    echo "  cargo sqlx prepare --check"
-    cargo sqlx prepare --workspace --check || {
+    echo "  cargo sqlx prepare --check (with --tests)"
+    cargo sqlx prepare --workspace --check -- --tests || {
         echo "ERROR: sqlx offline cache is stale. Run 'make sqlx-prepare' and stage .sqlx/."
         exit 1
     }
