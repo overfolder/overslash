@@ -312,12 +312,18 @@ async fn get_template(
     auth: AuthContext,
     Path(key): Path<String>,
 ) -> Result<Json<TemplateDetail>> {
-    // Try user tier first
+    // Try user tier first (only if user templates are enabled)
     if let Some(identity_id) = auth.identity_id {
-        if let Some(t) =
-            service_template::get_by_key(&state.db, auth.org_id, Some(identity_id), &key).await?
-        {
-            return Ok(Json(db_template_to_detail(t, "user")));
+        let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+            .await?
+            .unwrap_or(false);
+        if user_templates_allowed {
+            if let Some(t) =
+                service_template::get_by_key(&state.db, auth.org_id, Some(identity_id), &key)
+                    .await?
+            {
+                return Ok(Json(db_template_to_detail(t, "user")));
+            }
         }
     }
 
@@ -361,8 +367,11 @@ async fn list_template_actions(
     Path(key): Path<String>,
 ) -> Result<Json<Vec<ActionSummary>>> {
     // Check if the template would be visible (same rules as get_template).
-    // If it falls through to global tier, apply the visibility filter.
-    let in_user_tier = auth.identity_id.is_some()
+    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+        .await?
+        .unwrap_or(false);
+    let in_user_tier = user_templates_allowed
+        && auth.identity_id.is_some()
         && service_template::get_by_key(&state.db, auth.org_id, auth.identity_id, &key)
             .await?
             .is_some();
