@@ -218,16 +218,19 @@ async fn list_templates(
     }
 
     // Org + user tiers (DB)
+    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+        .await?
+        .unwrap_or(false);
     let db_templates =
         service_template::list_available(&state.db, auth.org_id, auth.identity_id).await?;
     for t in db_templates {
+        let is_user_tier = t.owner_identity_id.is_some();
+        if is_user_tier && !user_templates_allowed {
+            continue;
+        }
         let actions: serde_json::Map<String, serde_json::Value> =
             serde_json::from_value(t.actions).unwrap_or_default();
-        let tier = if t.owner_identity_id.is_some() {
-            "user"
-        } else {
-            "org"
-        };
+        let tier = if is_user_tier { "user" } else { "org" };
         templates.push(TemplateSummary {
             key: t.key,
             display_name: t.display_name,
@@ -270,20 +273,23 @@ async fn search_templates(
     }
 
     // Search DB templates (simple substring match on key/display_name)
+    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+        .await?
+        .unwrap_or(false);
     let db_templates =
         service_template::list_available(&state.db, auth.org_id, auth.identity_id).await?;
     for t in db_templates {
+        let is_user_tier = t.owner_identity_id.is_some();
+        if is_user_tier && !user_templates_allowed {
+            continue;
+        }
         if t.key.to_lowercase().contains(&q)
             || t.display_name.to_lowercase().contains(&q)
             || t.description.to_lowercase().contains(&q)
         {
             let actions: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_value(t.actions).unwrap_or_default();
-            let tier = if t.owner_identity_id.is_some() {
-                "user"
-            } else {
-                "org"
-            };
+            let tier = if is_user_tier { "user" } else { "org" };
             results.push(TemplateSummary {
                 key: t.key,
                 display_name: t.display_name,

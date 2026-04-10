@@ -14,6 +14,7 @@ pub mod orgs;
 pub mod permissions;
 pub mod preferences;
 pub mod rate_limits;
+pub mod secret_requests;
 pub mod secrets;
 pub mod services;
 pub mod templates;

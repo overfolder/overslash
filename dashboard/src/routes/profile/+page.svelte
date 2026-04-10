@@ -4,6 +4,7 @@
 	import { formatTime, ttlRemaining } from '$lib/utils/time';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { invalidateAll } from '$app/navigation';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let { data } = $props<{
 		data: {
@@ -30,46 +31,91 @@
 	let error = $state<string | null>(null);
 	let copiedId = $state<string | null>(null);
 
-	async function deleteSecret(name: string) {
-		if (!confirm(`Delete secret "${name}"? This cannot be undone.`)) return;
-		busy = `secret:${name}`;
-		error = null;
+	// Confirmation modal state
+	let confirmOpen = $state(false);
+	let confirmTitle = $state('');
+	let confirmMessage = $state('');
+	let confirmLabel = $state('Confirm');
+	let confirmBusy = $state(false);
+	let confirmAction = $state<(() => Promise<void>) | null>(null);
+
+	function openConfirm(title: string, message: string, label: string, action: () => Promise<void>) {
+		confirmTitle = title;
+		confirmMessage = message;
+		confirmLabel = label;
+		confirmAction = action;
+		confirmOpen = true;
+	}
+
+	async function runConfirm() {
+		if (!confirmAction) return;
+		confirmBusy = true;
 		try {
-			await session.delete(`/v1/secrets/${encodeURIComponent(name)}`);
-			await invalidateAll();
-		} catch (e) {
-			error = `Failed to delete secret: ${(e as Error).message}`;
+			await confirmAction();
+			confirmOpen = false;
 		} finally {
-			busy = null;
+			confirmBusy = false;
 		}
 	}
 
-	async function revokePermission(id: string) {
-		if (!confirm('Revoke this remembered approval?')) return;
-		busy = `perm:${id}`;
-		error = null;
-		try {
-			await session.delete(`/v1/permissions/${id}`);
-			await invalidateAll();
-		} catch (e) {
-			error = `Failed to revoke: ${(e as Error).message}`;
-		} finally {
-			busy = null;
-		}
+	function deleteSecret(name: string) {
+		openConfirm(
+			`Delete secret "${name}"?`,
+			'This cannot be undone.',
+			'Delete',
+			async () => {
+				busy = `secret:${name}`;
+				error = null;
+				try {
+					await session.delete(`/v1/secrets/${encodeURIComponent(name)}`);
+					await invalidateAll();
+				} catch (e) {
+					error = `Failed to delete secret: ${(e as Error).message}`;
+				} finally {
+					busy = null;
+				}
+			}
+		);
 	}
 
-	async function revokeEnrollment(id: string) {
-		if (!confirm('Revoke this enrollment token?')) return;
-		busy = `tok:${id}`;
-		error = null;
-		try {
-			await session.delete(`/v1/enrollment-tokens/${id}`);
-			await invalidateAll();
-		} catch (e) {
-			error = `Failed to revoke: ${(e as Error).message}`;
-		} finally {
-			busy = null;
-		}
+	function revokePermission(id: string) {
+		openConfirm(
+			'Revoke remembered approval?',
+			'This approval rule will be removed. The action will require re-approval next time.',
+			'Revoke',
+			async () => {
+				busy = `perm:${id}`;
+				error = null;
+				try {
+					await session.delete(`/v1/permissions/${id}`);
+					await invalidateAll();
+				} catch (e) {
+					error = `Failed to revoke: ${(e as Error).message}`;
+				} finally {
+					busy = null;
+				}
+			}
+		);
+	}
+
+	function revokeEnrollment(id: string) {
+		openConfirm(
+			'Revoke enrollment token?',
+			'This token will no longer be usable for agent enrollment.',
+			'Revoke',
+			async () => {
+				busy = `tok:${id}`;
+				error = null;
+				try {
+					await session.delete(`/v1/enrollment-tokens/${id}`);
+					await invalidateAll();
+				} catch (e) {
+					error = `Failed to revoke: ${(e as Error).message}`;
+				} finally {
+					busy = null;
+				}
+			}
+		);
 	}
 
 	async function copy(id: string, value: string) {
@@ -233,6 +279,17 @@
 		<p class="muted small">Synced to your account.</p>
 	</div>
 </div>
+
+<ConfirmModal
+	open={confirmOpen}
+	title={confirmTitle}
+	message={confirmMessage}
+	confirmLabel={confirmLabel}
+	destructive={true}
+	busy={confirmBusy}
+	onConfirm={runConfirm}
+	onCancel={() => (confirmOpen = false)}
+/>
 
 <style>
 	.page {

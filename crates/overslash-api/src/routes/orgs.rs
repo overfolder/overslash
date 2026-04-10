@@ -213,20 +213,14 @@ async fn patch_template_settings(
         return Err(AppError::BadRequest("no fields supplied".into()));
     }
 
-    if let Some(allow) = req.allow_user_templates {
-        overslash_db::repos::org::set_allow_user_templates(&state.db, id, allow).await?;
-    }
-    if let Some(enabled) = req.global_templates_enabled {
-        overslash_db::repos::org::set_global_templates_enabled(&state.db, id, enabled).await?;
-    }
-
-    // Read back current values
-    let allow = overslash_db::repos::org::get_allow_user_templates(&state.db, id)
-        .await?
-        .unwrap_or(false);
-    let globals = overslash_db::repos::org::get_global_templates_enabled(&state.db, id)
-        .await?
-        .unwrap_or(true);
+    let (allow, globals) = overslash_db::repos::org::update_template_settings(
+        &state.db,
+        id,
+        req.allow_user_templates,
+        req.global_templates_enabled,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {

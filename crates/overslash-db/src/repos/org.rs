@@ -124,6 +124,29 @@ pub async fn set_global_templates_enabled(
     Ok(result.rows_affected() > 0)
 }
 
+/// Atomically update template settings and return the new values.
+pub async fn update_template_settings(
+    pool: &PgPool,
+    id: Uuid,
+    allow_user_templates: Option<bool>,
+    global_templates_enabled: Option<bool>,
+) -> Result<Option<(bool, bool)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "UPDATE orgs SET \
+         allow_user_templates = COALESCE($2, allow_user_templates), \
+         global_templates_enabled = COALESCE($3, global_templates_enabled), \
+         updated_at = now() \
+         WHERE id = $1 \
+         RETURNING allow_user_templates, global_templates_enabled",
+        id,
+        allow_user_templates,
+        global_templates_enabled,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.allow_user_templates, r.global_templates_enabled)))
+}
+
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
