@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 	import {
 		listIdentities,
 		listPermissions,
@@ -39,6 +40,8 @@
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
 	let newToken = $state<CreatedEnrollmentToken | null>(null);
+	let kebabFor = $state<string | null>(null);
+	let moveOpen = $state(false);
 
 	// Delete confirmation modal state
 	let deleteModalOpen = $state(false);
@@ -60,6 +63,8 @@
 		for (const a of approvals) m.set(a.identity_id, (m.get(a.identity_id) ?? 0) + 1);
 		return m;
 	});
+
+	const meIdentityId = $derived(($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null);
 
 	function kindLabel(kind: string): string {
 		return kind === 'sub_agent' ? 'sub-agent' : kind;
@@ -229,18 +234,8 @@
 </svelte:head>
 
 <div class="page">
-	<!-- Top bar area with title + button -->
 	<header class="page-header">
 		<h1>Agents</h1>
-		<button
-			class="btn-new"
-			onclick={() => {
-				createOpen = true;
-				createParentId = selectedId;
-			}}
-		>
-			+ New Agent
-		</button>
 	</header>
 
 	{#if loadError}
@@ -250,24 +245,11 @@
 	<div class="panels">
 		<!-- Left: Agent tree -->
 		<aside class="tree-panel">
-			<div class="tree-head">
-				Agents
-				<button
-					class="btn-new btn-new-small"
-					onclick={() => {
-						createOpen = true;
-						createParentId = roots[0]?.id ?? null;
-					}}
-				>
-					+ New Agent
-				</button>
-			</div>
+			<div class="tree-head">Agents</div>
 			{#if loading && identities.length === 0}
 				<p class="muted tree-empty">Loading…</p>
 			{:else if roots.length === 0}
-				<p class="muted tree-empty">
-					No agents found.
-				</p>
+				<p class="muted tree-empty">No agents found.</p>
 			{:else}
 				<div class="tree">
 					{#each roots as root (root.id)}
@@ -276,13 +258,13 @@
 				</div>
 			{/if}
 			<button
-				class="add-agent-link"
+				class="add-row"
 				onclick={() => {
 					createOpen = true;
-					createParentId = roots[0]?.id ?? null;
+					createParentId = selectedId ?? meIdentityId;
 				}}
 			>
-				+ Add Agent
+				<span class="add-icon">+</span> Add agent…
 			</button>
 		</aside>
 
@@ -454,6 +436,32 @@
 		{#if pending > 0}
 			<span class="tree-badge">{pending}</span>
 		{/if}
+		<button
+			class="node-action add-child"
+			onclick={(e) => {
+				e.stopPropagation();
+				createOpen = true;
+				createParentId = node.id;
+			}}
+			aria-label="Add child"
+			title={node.kind === 'user' ? 'Add agent' : 'Add sub-agent'}>+</button
+		>
+		{#if node.kind !== 'user'}
+			<button
+				class="node-action kebab"
+				onclick={(e) => {
+					e.stopPropagation();
+					kebabFor = kebabFor === node.id ? null : node.id;
+				}}
+				aria-label="More">⋮</button
+			>
+			{#if kebabFor === node.id}
+				<div class="menu" role="menu">
+					<button onclick={() => { selectIdentity(node.id); moveOpen = true; kebabFor = null; }}>Move…</button>
+					<button class="danger" onclick={() => { selectIdentity(node.id); kebabFor = null; requestDelete(); }}>Delete</button>
+				</div>
+			{/if}
+		{/if}
 	</div>
 	{#if !isCollapsed && kids.length > 0}
 		{#each kids as child (child.id)}
@@ -601,6 +609,11 @@
 		cursor: pointer;
 		border-radius: 4px;
 		margin: 0 8px;
+		border-bottom: 1px solid var(--color-border, #e8e8ee);
+		position: relative;
+	}
+	.tree > .tree-node:last-child {
+		border-bottom: none;
 	}
 	.tree-node:hover {
 		background: var(--neutral-100);
@@ -659,15 +672,81 @@
 		background: var(--color-danger, #e53836);
 		color: #fff;
 	}
-	.add-agent-link {
+	.node-action {
 		background: none;
 		border: none;
-		color: var(--color-primary);
-		font-size: 13px;
-		font-weight: 500;
 		cursor: pointer;
-		padding: 12px 36px;
+		padding: 0 0.4rem;
+		color: var(--color-text-muted);
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+	.tree-node:hover .node-action,
+	.node-action:focus-visible {
+		opacity: 1;
+	}
+	.kebab {
+		font-size: 1.1rem;
+	}
+	.add-child {
+		font-size: 1.1rem;
+		font-weight: 600;
+	}
+	.add-child:hover {
+		color: var(--color-primary);
+	}
+	.menu {
+		position: absolute;
+		right: 8px;
+		top: 100%;
+		background: var(--color-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		box-shadow: var(--shadow-lg, 0 4px 12px rgba(0, 0, 0, 0.08));
+		z-index: 10;
+		min-width: 120px;
+		display: flex;
+		flex-direction: column;
+	}
+	.menu button {
+		background: none;
+		border: none;
 		text-align: left;
+		padding: 0.5rem 0.75rem;
+		cursor: pointer;
+		font-size: 0.85rem;
+		color: var(--color-text);
+	}
+	.menu button:hover {
+		background: var(--neutral-100);
+	}
+	.menu button.danger {
+		color: var(--color-danger, #e53836);
+	}
+	.add-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: calc(100% - 16px);
+		padding: 0.45rem 0.75rem;
+		margin: 0.25rem 8px 0;
+		background: none;
+		border: 1px dashed var(--color-border, #e8e8ee);
+		border-radius: 6px;
+		cursor: pointer;
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
+		transition: background 0.1s, color 0.1s;
+	}
+	.add-row:hover {
+		background: var(--neutral-50, #fafafa);
+		color: var(--color-primary);
+		border-color: var(--primary-300, #b0abef);
+	}
+	.add-icon {
+		font-size: 1rem;
+		font-weight: 600;
+		line-height: 1;
 	}
 
 	/* ── Detail panel ── */

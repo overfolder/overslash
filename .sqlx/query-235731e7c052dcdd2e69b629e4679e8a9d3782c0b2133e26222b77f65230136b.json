@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orgs SET allow_user_templates = COALESCE($2, allow_user_templates), global_templates_enabled = COALESCE($3, global_templates_enabled), updated_at = now() WHERE id = $1 RETURNING allow_user_templates, global_templates_enabled",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allow_user_templates",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "global_templates_enabled",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "235731e7c052dcdd2e69b629e4679e8a9d3782c0b2133e26222b77f65230136b"
+}
