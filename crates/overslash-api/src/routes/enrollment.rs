@@ -674,10 +674,10 @@ async fn resolve_enrollment(
 fn generate_prefixed_token(
     prefix: &str,
 ) -> std::result::Result<(String, String, String), AppError> {
-    use rand::RngCore;
+    use rand::RngExt;
 
     let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     let encoded = hex::encode(bytes);
     let raw = format!("{prefix}{encoded}");
     let key_prefix = raw[..12].to_string();
@@ -701,7 +701,7 @@ fn verify_argon2_hash(raw: &str, stored_hash: &str) -> std::result::Result<(), A
 }
 
 fn generate_approval_token(signing_key: &str) -> std::result::Result<String, AppError> {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, Mac, digest::KeyInit};
     use sha2::Sha256;
 
     let id = Uuid::new_v4();

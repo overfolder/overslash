@@ -55,9 +55,9 @@ async fn create_webhook(
 ) -> Result<Json<WebhookCreatedResponse>> {
     let auth = acl;
     // Generate a signing secret for this subscription
-    use rand::RngCore;
+    use rand::RngExt;
     let mut secret_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut secret_bytes);
+    rand::rng().fill(&mut secret_bytes);
     let secret = hex::encode(secret_bytes);
 
     let row = scope

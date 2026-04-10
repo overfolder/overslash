@@ -3,6 +3,7 @@
 
 mod common;
 
+use rand::RngExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -652,8 +653,6 @@ async fn spawn_middleware_app(state: overslash_api::AppState) -> SocketAddr {
 /// Create an org + user identity + user-bound API key directly in the DB.
 /// Returns (org_id, user_id, raw_api_key).
 async fn make_org_user_key(pool: &PgPool) -> (Uuid, Uuid, String) {
-    use rand::Rng;
-
     let org_id = Uuid::new_v4();
     sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
         .bind(org_id)
