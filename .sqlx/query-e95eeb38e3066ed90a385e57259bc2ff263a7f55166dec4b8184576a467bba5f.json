@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE approvals SET resolver_assigned_at = now() - interval '10 seconds' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e95eeb38e3066ed90a385e57259bc2ff263a7f55166dec4b8184576a467bba5f"
+}
