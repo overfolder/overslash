@@ -641,8 +641,9 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    // Org-level key (needed to create identity)
-    let org_key: Value = client
+    // Bootstrap: first API-key call on a fresh org auto-creates an admin
+    // user identity and returns its key (no auth required).
+    let bootstrap_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .json(&json!({"org_id": org_id, "name": "org-admin"}))
         .send()
@@ -651,25 +652,34 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .json()
         .await
         .unwrap();
-    let org_api_key = org_key["key"].as_str().unwrap().to_string();
+    let org_api_key = bootstrap_resp["key"].as_str().unwrap().to_string();
 
-    // Create a user identity first (agents require a parent)
-    let user_ident: Value = client
-        .post(format!("{base}/v1/identities"))
+    // Create an agent identity under the auto-created admin user.
+    // The bootstrap admin identity is retrieved from the identities list.
+    let identities: Value = client
+        .get(format!("{base}/v1/identities?org_id={org_id}"))
         .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-user", "kind": "user"}))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let user_id: Uuid = user_ident["id"].as_str().unwrap().parse().unwrap();
+    let admin_user_id: Uuid = identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"].as_str() == Some("user"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
 
     let ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
-        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": admin_user_id}))
         .send()
         .await
         .unwrap()
@@ -678,7 +688,7 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
-    // Identity-bound key (requires admin auth now that org has keys)
+    // Identity-bound key for the agent
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .header("Authorization", format!("Bearer {org_api_key}"))
