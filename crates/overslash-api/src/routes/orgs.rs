@@ -22,6 +22,10 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{id}/subagent-cleanup-config",
             patch(patch_subagent_cleanup_config),
         )
+        .route(
+            "/v1/orgs/{id}/template-settings",
+            patch(patch_template_settings),
+        )
 }
 
 // Bounds for sub-agent idle cleanup config (per replan).
@@ -178,4 +182,70 @@ async fn patch_subagent_cleanup_config(
         .await;
 
     Ok(Json(org.into()))
+}
+
+#[derive(Deserialize)]
+struct PatchTemplateSettingsRequest {
+    allow_user_templates: Option<bool>,
+    global_templates_enabled: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct TemplateSettingsResponse {
+    allow_user_templates: bool,
+    global_templates_enabled: bool,
+}
+
+async fn patch_template_settings(
+    State(state): State<AppState>,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchTemplateSettingsRequest>,
+) -> Result<Json<TemplateSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    if req.allow_user_templates.is_none() && req.global_templates_enabled.is_none() {
+        return Err(AppError::BadRequest("no fields supplied".into()));
+    }
+
+    if let Some(allow) = req.allow_user_templates {
+        overslash_db::repos::org::set_allow_user_templates(&state.db, id, allow).await?;
+    }
+    if let Some(enabled) = req.global_templates_enabled {
+        overslash_db::repos::org::set_global_templates_enabled(&state.db, id, enabled).await?;
+    }
+
+    // Read back current values
+    let allow = overslash_db::repos::org::get_allow_user_templates(&state.db, id)
+        .await?
+        .unwrap_or(false);
+    let globals = overslash_db::repos::org::get_global_templates_enabled(&state.db, id)
+        .await?
+        .unwrap_or(true);
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.template_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "allow_user_templates": allow,
+                "global_templates_enabled": globals,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(TemplateSettingsResponse {
+        allow_user_templates: allow,
+        global_templates_enabled: globals,
+    }))
 }

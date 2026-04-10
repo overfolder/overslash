@@ -20,6 +20,7 @@ pub mod approval;
 pub mod audit;
 pub mod byoc_credential;
 pub mod connection;
+pub mod enabled_global_template;
 pub mod enrollment_token;
 pub mod group;
 pub mod identity;

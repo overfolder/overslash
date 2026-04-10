@@ -153,6 +153,23 @@ pub async fn list_available(
     .await
 }
 
+/// List ALL templates in an org (org-level + all users'), for admin compliance view.
+pub async fn list_all_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<ServiceTemplateRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceTemplateRow,
+        "SELECT id, org_id, owner_identity_id, key, display_name, description, \
+         category, hosts, auth, actions, created_at, updated_at \
+         FROM service_templates \
+         WHERE org_id = $1 ORDER BY key",
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn update(
     pool: &PgPool,
     id: Uuid,

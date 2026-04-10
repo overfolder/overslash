@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT template_key FROM enabled_global_templates WHERE org_id = $1 ORDER BY template_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "template_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6430f87d0b3a4cbba9c2c1d289a18932624112d475137953980c2fcbd58f761b"
+}
