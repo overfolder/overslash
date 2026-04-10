@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { NAV_ITEMS, ADMIN_NAV_ITEMS, isActive } from './nav-items';
+	import { NAV_ITEMS, ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM, isActive } from './nav-items';
 	import ProfileAvatar from './ProfileAvatar.svelte';
 
 	let {
@@ -8,7 +8,9 @@
 		isAdmin = false
 	}: { user: { name?: string; email?: string } | null; isAdmin?: boolean } = $props();
 
-	const items = $derived(isAdmin ? [...NAV_ITEMS, ...ADMIN_NAV_ITEMS] : NAV_ITEMS);
+	const items = $derived(
+		isAdmin ? [...NAV_ITEMS, ...ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM] : NAV_ITEMS
+	);
 </script>
 
 <nav class="tabbar">

@@ -23,10 +23,14 @@ export interface OrgPageData {
 export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 	const layoutData = (await parent()) as { user: MeIdentity | null };
 	const orgId = layoutData.user?.org_id;
+	const isOrgAdmin = layoutData.user?.is_org_admin === true;
 
 	try {
 		const me = await session.get<MeAcl>('/auth/me');
-		if (me.acl_level !== 'Admin') {
+		// Allow access if either the ACL endpoint says Admin or the identity
+		// endpoint says is_org_admin (covers Dev Login users whose overslash
+		// grants may not be set up but who are in the Admins group).
+		if (me.acl_level !== 'Admin' && !isOrgAdmin) {
 			return {
 				me,
 				org: null,
