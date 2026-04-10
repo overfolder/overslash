@@ -164,7 +164,16 @@ async fn test_create_and_get_org_template() {
 #[tokio::test]
 async fn test_create_user_template() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    let (base, client, org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+
+    // Enable user-level templates (gated by org setting)
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"allow_user_templates": true}))
+        .send()
+        .await
+        .unwrap();
 
     let resp = client
         .post(format!("{base}/v1/templates"))
