@@ -497,12 +497,12 @@
 {/if}
 
 {#if selected}
-	{@const childCount = (childrenOf.get(selected.id) ?? []).length}
+	{@const totalDescendants = descendantCount(selected.id)}
 	<ConfirmModal
 		open={deleteModalOpen}
 		title="Delete agent?"
-		message={childCount > 0
-			? `Delete agent:${selected.name}? This will also delete ${childCount} child agent${childCount === 1 ? '' : 's'} and revoke all their API keys.`
+		message={totalDescendants > 0
+			? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
 			: `Delete agent:${selected.name}? This cannot be undone.`}
 		confirmLabel="Delete Agent"
 		destructive={true}
