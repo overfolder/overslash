@@ -18,7 +18,9 @@ async fn setup() -> (String, reqwest::Client, Uuid, Uuid, Uuid, String, String) 
     let (org_id, agent_id, agent_key, org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // The bootstrapped agent has a parent user — fetch it.
+    // The bootstrapped agent's parent is "test-user". After PR #91, bootstrap
+    // also auto-creates an admin user, so we must match by name to get the
+    // correct parent rather than picking the first user.
     let identities: Vec<Value> = client
         .get(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_admin_key}"))
@@ -28,7 +30,10 @@ async fn setup() -> (String, reqwest::Client, Uuid, Uuid, Uuid, String, String) 
         .json()
         .await
         .unwrap();
-    let user_id: Uuid = identities.iter().find(|i| i["kind"] == "user").unwrap()["id"]
+    let user_id: Uuid = identities
+        .iter()
+        .find(|i| i["name"] == "test-user")
+        .expect("test-user identity not found")["id"]
         .as_str()
         .unwrap()
         .parse()
@@ -157,9 +162,22 @@ async fn agent_cannot_create_service_on_behalf_of_self() {
 }
 
 #[tokio::test]
-async fn org_level_key_cannot_use_on_behalf_of() {
-    let (base, client, _org, user_id, _agent, _agent_key, admin_key) = setup().await;
+async fn admin_user_cannot_use_on_behalf_of_other_user() {
+    let (base, client, _org, _user, _agent, _agent_key, admin_key) = setup().await;
     create_template(&base, &client, &admin_key, "tpl-obo-4").await;
+
+    // Create another user the admin cannot impersonate.
+    let other: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name": "other-user-admin", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_id: Uuid = other["id"].as_str().unwrap().parse().unwrap();
 
     let resp = client
         .post(format!("{base}/v1/services"))
@@ -168,13 +186,13 @@ async fn org_level_key_cannot_use_on_behalf_of() {
             "template_key": "tpl-obo-4",
             "name": "svc-obo-4",
             "status": "active",
-            "on_behalf_of": user_id,
+            "on_behalf_of": other_id,
         }))
         .send()
         .await
         .unwrap();
-    // Org-level keys have no caller identity → BadRequest
-    assert_eq!(resp.status(), 400);
+    // Users can only act on_behalf_of themselves, not other users
+    assert_eq!(resp.status(), 403);
 }
 
 // -- Secrets --
