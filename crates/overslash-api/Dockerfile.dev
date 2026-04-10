@@ -1,10 +1,10 @@
 # Stage 1: generate a dependency recipe
 FROM rust:1.94-slim-trixie AS chef
+WORKDIR /app
 # Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
-COPY rust-toolchain.toml /app/
+COPY rust-toolchain.toml ./
 RUN rustup show
 RUN cargo install cargo-chef --locked
-WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
@@ -22,11 +22,12 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: build dependencies (cached image layer)
 FROM rust:1.94-slim-trixie AS deps
-COPY rust-toolchain.toml /app/
+WORKDIR /app
+# Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
+COPY rust-toolchain.toml ./
 RUN rustup show
 RUN apt-get update && apt-get install -y pkg-config libssl-dev clang mold && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
-WORKDIR /app
 
 COPY --from=chef /app/recipe.json recipe.json
 COPY crates/overslash-db/migrations crates/overslash-db/migrations
