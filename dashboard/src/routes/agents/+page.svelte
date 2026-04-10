@@ -328,7 +328,7 @@
 						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.kind === 'user' ? ' (you)' : ''}</span>
 					</div>
 					<div class="field-row">
-						<span class="field-label">inherit_permissions</span>
+						<span class="field-label">Inherits Permissions</span>
 						<span class="field-value">
 							<label class="inline-check">
 								<input
@@ -485,7 +485,7 @@
 				</label>
 				<label class="check">
 					<input type="checkbox" name="inherit_permissions" />
-					inherit_permissions — inherit parent's current and future rules
+					Inherits Permissions — inherit parent's current and future rules
 				</label>
 				<div class="modal-actions">
 					<button type="button" class="btn-secondary" onclick={() => (createOpen = false)}>Cancel</button>
