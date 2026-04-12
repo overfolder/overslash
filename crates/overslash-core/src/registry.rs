@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(feature = "yaml")]
 use std::path::Path;
 
 use crate::types::ServiceDefinition;
@@ -11,6 +12,13 @@ pub struct ServiceRegistry {
 
 impl ServiceRegistry {
     /// Load all .yaml/.yml files from a directory.
+    ///
+    /// Each file is parsed as a [`ServiceDefinition`] and then linted by
+    /// [`crate::template_validation::validate_service_definition`]. Invalid
+    /// templates are skipped with a loud `tracing` error so a single broken
+    /// shipped template can't take down the whole process — CI catches the
+    /// same cases via the `shipped_services_validate_clean` test below.
+    #[cfg(feature = "yaml")]
     pub fn load_from_dir(dir: &Path) -> Result<Self, RegistryError> {
         let mut services = HashMap::new();
 
@@ -35,6 +43,23 @@ impl ServiceRegistry {
                     file: path.display().to_string(),
                     error: e.to_string(),
                 })?;
+
+            // Lint the shipped template before inserting. Duplicate-key
+            // detection is a YAML-source-level concern handled by the YAML
+            // entry point of `template_validation`; by the time we get here,
+            // the YAML has already round-tripped through `serde_yaml` (which
+            // rejects duplicate mapping keys at parse time), so we pass an
+            // empty raw-key list — there are no duplicates left to find.
+            let report = crate::template_validation::validate_service_definition(&def, &[]);
+            if !report.valid {
+                tracing::error!(
+                    file = %path.display(),
+                    key = %def.key,
+                    errors = ?report.errors,
+                    "shipped service template failed validation; skipping"
+                );
+                continue;
+            }
 
             services.insert(def.key.clone(), def);
         }
@@ -102,7 +127,7 @@ pub enum RegistryError {
     Parse { file: String, error: String },
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -249,8 +274,13 @@ actions:
   explicit_delete:
     method: DELETE
     path: /items/{id}
-    description: Explicit delete
+    description: "Explicit delete of {id}"
     risk: delete
+    scope_param: id
+    params:
+      id:
+        type: string
+        required: true
 "#,
         );
 

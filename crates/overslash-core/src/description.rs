@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::description_grammar::find_closing_bracket;
+
 /// Interpolate an action description template with parameter values.
 ///
 /// Supports two forms:
@@ -78,13 +80,6 @@ fn resolve_optional_segments(
     }
 
     result
-}
-
-/// Find the index of the closing `]` for an opening `[` at `start`.
-fn find_closing_bracket(template: &str, start: usize) -> Option<usize> {
-    template[start + 1..]
-        .find(']')
-        .map(|offset| start + 1 + offset)
 }
 
 /// Check if every `{param}` placeholder in `segment` has a present, non-null value.

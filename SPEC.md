@@ -718,11 +718,59 @@ Upload an OpenAPI 3.x spec (file or URL) → Overslash parses it and generates a
 
 ### Template Validation
 
-The template YAML is parsed and validated by a Rust parser (`overslash-core`). The same parser is used by:
-- **Backend**: `POST /v1/templates/validate` — accepts YAML, returns structured errors and warnings
-- **Dashboard**: calls the validate endpoint for linting. Future: ship the parser as WASM for instant client-side validation without a round-trip.
+The template YAML is parsed and validated by a pure-Rust linter in `overslash-core::template_validation`. The same linter is used by:
+- **Backend**: `POST /v1/templates/validate` — accepts raw YAML in the request body, always returns HTTP 200 with a `ValidationReport`. YAML parse errors and duplicate mapping keys are themselves reported as validation issues rather than transport-level 4xx responses, so the dashboard editor can render diagnostics inline on every keystroke.
+- **CRUD hook**: `POST /v1/templates` and `PUT /v1/templates/{id}/manage` run the same validator over the JSON-encoded `auth` / `actions` fields before writing to the database. A rejected save returns `400` with a `{"error": "validation_failed", "report": {…}}` body matching the validate-endpoint shape.
+- **Registry loader**: shipped `services/*.yaml` files are validated at startup; a broken template is logged loudly and skipped (CI also runs a smoke test asserting every shipped template validates clean).
+- **Dashboard**: calls the validate endpoint for linting. The linter core has no YAML, DB, or I/O dependencies — a WASM feature gate (`overslash-core/yaml`) is already in place so the module can be compiled to WASM for instant client-side validation once the dashboard wires it up.
 
-Validation checks: required fields, valid auth types, valid HTTP methods, path template syntax (`{param}` matches defined params), parameter type consistency, duplicate action keys, etc.
+**Response shape** (same for the endpoint and the CRUD error body under `report`):
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "code": "unknown_scope_param", "message": "...", "path": "actions.list_events.scope_param" }
+  ],
+  "warnings": [
+    { "code": "risk_method_mismatch", "message": "...", "path": "actions.list_events.risk" }
+  ]
+}
+```
+
+**Rules** (errors unless marked *warning*):
+
+| Code | What it catches |
+|---|---|
+| `missing_field` | required field (`key`, `display_name`, `description`, `resolver.pick`, path on HTTP actions) is empty |
+| `invalid_key` | service `key` does not match `^[a-z][a-z0-9_-]*$` |
+| `invalid_action_key` | action key does not match `^[a-z][a-z0-9_]*$` |
+| `invalid_host` | host is empty, contains scheme, path, or whitespace |
+| `unknown_auth_type` | `auth[i].type` is not `oauth` or `api_key` (also surfaces as a `schema_error` on JSON input) |
+| `incomplete_token_injection` | `token_injection.as="header"` without `header_name`, or `"query"` without `query_param` |
+| `invalid_token_injection` | `token_injection.as` is not `"header"` or `"query"` |
+| `invalid_http_method` | action `method` is not one of GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS |
+| `invalid_path_syntax` | action `path` does not start with `/` or has an unclosed `{` placeholder |
+| `unknown_path_param` | `{param}` in `path` does not reference a defined param |
+| `path_param_not_required` | `{param}` in `path` references a param not marked `required: true` |
+| `invalid_param_type` | `params.<name>.type` is not one of `string`, `number`, `integer`, `boolean`, `array`, `object` |
+| `invalid_enum_values` | `enum` is empty, or `default` is set but not a member of `enum` |
+| `unbalanced_brackets` | description has an unbalanced or nested `[` (segments are flat only) |
+| `invalid_description_syntax` | description has an unclosed `{` placeholder |
+| `unknown_description_param` | `{param}` in description does not reference a defined param |
+| `unknown_resolver_param` | `{param}` in `resolve.get` does not reference a defined param on the same action |
+| `unknown_scope_param` | `scope_param` does not reference a defined param |
+| `invalid_response_type` | `response_type` is set to something other than `"json"` or `"binary"` |
+| `duplicate_action_key` | the `actions:` mapping in YAML defines the same key twice |
+| `yaml_parse` | YAML source could not be parsed (wrapped serde_yaml error) |
+| `schema_error` | JSON input (CRUD path) for `auth` or `actions` is structurally malformed |
+| `risk_method_mismatch` *(warning)* | read-only HTTP method (GET/HEAD/OPTIONS) is annotated with `risk: write` or `risk: delete` |
+
+**Grammar notes.** `[optional segment]` in descriptions is **flat only** — nested `[` inside `[...]` is rejected. A `{param}` placeholder inside a description or `[...]` segment must reference a param defined on the same action. The runtime interpolator in `overslash-core::description` uses the same shared grammar primitives (`overslash-core::description_grammar`) as the linter, so "runtime accepts it but linter doesn't" drift is not possible.
+
+**Platform namespace templates.** Services with empty `hosts` and actions that omit `method`/`path` (e.g. shipped `services/overslash.yaml`) are explicitly supported. An action with an empty `method` is treated as a non-HTTP permission anchor and the HTTP-specific rules are skipped for it — `description` and `scope_param` are still validated.
+
+**Request body size.** `POST /v1/templates/validate` caps the body at 512 KiB. Larger payloads return `400 Bad Request` without running the validator.
 
 ---
 
