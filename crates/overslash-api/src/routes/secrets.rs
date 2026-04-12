@@ -64,7 +64,12 @@ async fn put_secret(
     )
     .await?;
 
-    let (secret, _version) = scope.put_secret(&name, &encrypted, created_by).await?;
+    // API-driven writes: `created_by` already names the caller, so there is
+    // no distinct "provisioning user" to record. That column is reserved for
+    // the standalone secret-provide page flow.
+    let (secret, _version) = scope
+        .put_secret(&name, &encrypted, created_by, None)
+        .await?;
 
     let _ = OrgScope::new(auth.org_id, state.db.clone())
         .log_audit(AuditEntry {

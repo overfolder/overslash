@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
@@ -16,7 +16,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, ClientIp},
-    services::jwt,
+    services::session::extract_session,
 };
 
 pub fn router() -> Router<AppState> {
@@ -711,16 +711,6 @@ fn generate_approval_token(signing_key: &str) -> std::result::Result<String, App
     mac.update(id.as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
     Ok(format!("{}-{}", id, &sig[..16]))
-}
-
-fn extract_session(state: &AppState, headers: &HeaderMap) -> Option<jwt::Claims> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    let token = cookie_header
-        .split(';')
-        .find_map(|pair| pair.trim().strip_prefix("oss_session="))?;
-    let signing_key = hex::decode(&state.config.signing_key)
-        .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
-    jwt::verify(&signing_key, token).ok()
 }
 
 /// Encrypt the raw API key so it can be stored in the pending_enrollments row

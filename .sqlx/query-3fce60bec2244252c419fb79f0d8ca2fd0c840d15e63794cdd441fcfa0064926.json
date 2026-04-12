@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO secret_versions (secret_id, version, encrypted_value, created_by)\n         VALUES ($1, $2, $3, $4)\n         RETURNING id, secret_id, version, encrypted_value, created_at, created_by",
+  "query": "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by, sv.provisioned_by_user_id\n         FROM secret_versions sv\n         JOIN secrets s ON sv.secret_id = s.id\n         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL AND sv.version = s.current_version",
   "describe": {
     "columns": [
       {
@@ -32,14 +32,17 @@
         "ordinal": 5,
         "name": "created_by",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "provisioned_by_user_id",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Int4",
-        "Bytea",
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -48,8 +51,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "ad3bf72313024f516cc72d1f4fab1637d3541e22073c6fcfe668185b64286c59"
+  "hash": "3fce60bec2244252c419fb79f0d8ca2fd0c840d15e63794cdd441fcfa0064926"
 }

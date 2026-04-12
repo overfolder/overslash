@@ -10,13 +10,28 @@ use crate::scopes::OrgScope;
 
 impl OrgScope {
     /// Store or update a secret. Creates a new version each time.
+    ///
+    /// `created_by` names the identity the secret slot *belongs to* (API
+    /// writes: the caller; request fulfillment: the target identity).
+    /// `provisioned_by_user_id` names the human who physically pasted the
+    /// value on the standalone provide page — only set by the secret-request
+    /// flow, and only when a same-org session cookie was present.
     pub async fn put_secret(
         &self,
         name: &str,
         encrypted_value: &[u8],
         created_by: Option<Uuid>,
+        provisioned_by_user_id: Option<Uuid>,
     ) -> Result<(SecretRow, SecretVersionRow), sqlx::Error> {
-        crate::repos::secret::put(self.db(), self.org_id(), name, encrypted_value, created_by).await
+        crate::repos::secret::put(
+            self.db(),
+            self.org_id(),
+            name,
+            encrypted_value,
+            created_by,
+            provisioned_by_user_id,
+        )
+        .await
     }
 
     /// Look up a secret's metadata by name within this org.

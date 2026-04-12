@@ -124,6 +124,36 @@ pub async fn set_global_templates_enabled(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `allow_unsigned_secret_provide` setting for an org.
+pub async fn get_allow_unsigned_secret_provide(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_unsigned_secret_provide FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.allow_unsigned_secret_provide))
+}
+
+/// Update the `allow_unsigned_secret_provide` setting for an org.
+pub async fn set_allow_unsigned_secret_provide(
+    pool: &PgPool,
+    id: Uuid,
+    allow: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET allow_unsigned_secret_provide = $2, updated_at = now() WHERE id = $1",
+        id,
+        allow,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Atomically update template settings and return the new values.
 pub async fn update_template_settings(
     pool: &PgPool,

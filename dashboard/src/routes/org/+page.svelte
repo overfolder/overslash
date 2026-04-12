@@ -3,6 +3,7 @@
 	import type {
 		IdpConfig,
 		OrgInfo,
+		SecretRequestSettings,
 		Webhook,
 		WebhookCreated,
 		WebhookDelivery
@@ -15,10 +16,14 @@
 	let org = $state<OrgInfo | null>(null);
 	let idpConfigs = $state<IdpConfig[]>([]);
 	let webhooks = $state<Webhook[]>([]);
+	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
+	let secretRequestSaving = $state(false);
+	let secretRequestError = $state<string | null>(null);
 	$effect(() => {
 		org = data.org;
 		idpConfigs = data.idpConfigs;
 		webhooks = data.webhooks;
+		secretRequestSettings = data.secretRequestSettings;
 	});
 
 	// Confirmation modal state
@@ -122,6 +127,24 @@
 			await refetchIdp();
 		} catch (err) {
 			alert(asMessage(err));
+		}
+	}
+
+	async function toggleAllowUnsignedSecretProvide() {
+		if (!org || !secretRequestSettings) return;
+		const next = !secretRequestSettings.allow_unsigned_secret_provide;
+		secretRequestSaving = true;
+		secretRequestError = null;
+		try {
+			const updated = await session.patch<SecretRequestSettings>(
+				`/v1/orgs/${org.id}/secret-request-settings`,
+				{ allow_unsigned_secret_provide: next }
+			);
+			secretRequestSettings = updated;
+		} catch (err) {
+			secretRequestError = asMessage(err);
+		} finally {
+			secretRequestSaving = false;
 		}
 	}
 
@@ -251,6 +274,42 @@
 						<span class="field-value mono">{org.id}</span>
 					</div>
 				</div>
+			{/if}
+		</section>
+
+		<!-- Secret requests (User Signed Mode) -->
+		<section class="card">
+			<h2>Secret requests</h2>
+			<p class="section-desc">
+				Controls how users can fulfill standalone secret-request URLs
+				(<code>/secrets/provide/req_…</code>).
+			</p>
+			{#if secretRequestSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Allow unsigned secret provisioning</div>
+						<div class="toggle-help">
+							When on, recipients can submit a secret via the signed URL without
+							logging in — the capability comes entirely from the URL token. When
+							off, every newly-issued URL will require the recipient to be signed
+							in to Overslash before submitting. Existing outstanding URLs are
+							unaffected — the toggle is forward-only.
+						</div>
+					</div>
+					<button
+						type="button"
+						class="btn-toggle"
+						class:on={secretRequestSettings.allow_unsigned_secret_provide}
+						disabled={secretRequestSaving}
+						onclick={toggleAllowUnsignedSecretProvide}
+						aria-pressed={secretRequestSettings.allow_unsigned_secret_provide}
+					>
+						{secretRequestSettings.allow_unsigned_secret_provide ? 'On' : 'Off'}
+					</button>
+				</div>
+				{#if secretRequestError}
+					<div class="form-error">{secretRequestError}</div>
+				{/if}
 			{/if}
 		</section>
 
@@ -718,5 +777,60 @@
 		border-radius: 4px;
 		flex: 1;
 		overflow-x: auto;
+	}
+
+	.section-desc {
+		margin: 0 0 1rem;
+		color: var(--color-text-muted);
+		font-size: 0.88rem;
+	}
+	.section-desc code {
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		padding: 0.08rem 0.3rem;
+		border-radius: 3px;
+		background: var(--color-bg);
+	}
+	.toggle-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 1rem;
+		justify-content: space-between;
+	}
+	.toggle-body {
+		flex: 1;
+		min-width: 0;
+	}
+	.toggle-label {
+		font-weight: 600;
+		font-size: 0.95rem;
+		margin-bottom: 0.25rem;
+	}
+	.toggle-help {
+		color: var(--color-text-muted);
+		font-size: 0.82rem;
+		line-height: 1.45;
+	}
+	.btn-toggle {
+		flex: 0 0 auto;
+		min-width: 72px;
+		padding: 0.45rem 0.9rem;
+		border-radius: 999px;
+		border: 1px solid var(--color-border);
+		background: var(--color-bg);
+		color: var(--color-text-muted);
+		font: inherit;
+		font-weight: 600;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.btn-toggle.on {
+		background: var(--color-primary, #5b50d8);
+		color: #fff;
+		border-color: var(--color-primary, #5b50d8);
+	}
+	.btn-toggle:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>

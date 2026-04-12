@@ -21,6 +21,12 @@ pub struct SecretVersionRow {
     pub encrypted_value: Vec<u8>,
     pub created_at: OffsetDateTime,
     pub created_by: Option<Uuid>,
+    /// The identity of the *human* who actually provisioned this value on
+    /// the standalone `/secrets/provide` page, captured from a same-org
+    /// session cookie. Distinct from `created_by` (the target identity that
+    /// owns the secret slot). NULL for anonymous URL fulfillment and for
+    /// API-driven writes (where `created_by` already names the caller).
+    pub provisioned_by_user_id: Option<Uuid>,
 }
 
 /// Store or update a secret. Creates a new version each time.
@@ -30,6 +36,7 @@ pub(crate) async fn put(
     name: &str,
     encrypted_value: &[u8],
     created_by: Option<Uuid>,
+    provisioned_by_user_id: Option<Uuid>,
 ) -> Result<(SecretRow, SecretVersionRow), sqlx::Error> {
     let mut tx = pool.begin().await?;
 
@@ -51,13 +58,14 @@ pub(crate) async fn put(
     // Insert the version
     let version = sqlx::query_as!(
         SecretVersionRow,
-        "INSERT INTO secret_versions (secret_id, version, encrypted_value, created_by)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, secret_id, version, encrypted_value, created_at, created_by",
+        "INSERT INTO secret_versions (secret_id, version, encrypted_value, created_by, provisioned_by_user_id)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, secret_id, version, encrypted_value, created_at, created_by, provisioned_by_user_id",
         secret.id,
         secret.current_version,
         encrypted_value,
         created_by,
+        provisioned_by_user_id,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -89,7 +97,7 @@ pub(crate) async fn get_current_value(
 ) -> Result<Option<SecretVersionRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretVersionRow,
-        "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by
+        "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by, sv.provisioned_by_user_id
          FROM secret_versions sv
          JOIN secrets s ON sv.secret_id = s.id
          WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL AND sv.version = s.current_version",

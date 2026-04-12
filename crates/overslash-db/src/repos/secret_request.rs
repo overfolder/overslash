@@ -14,6 +14,12 @@ pub struct SecretRequestRow {
     pub expires_at: OffsetDateTime,
     pub fulfilled_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
+    /// Captured at mint time from the org's `allow_unsigned_secret_provide`
+    /// setting. When true, the public `submit_provide` handler requires a
+    /// same-org `oss_session` cookie — anonymous signed-URL submission alone
+    /// is rejected. Forward-only: flipping the org setting does not mutate
+    /// this row.
+    pub require_user_session: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -27,12 +33,13 @@ pub async fn create(
     reason: Option<&str>,
     token_hash: &[u8],
     expires_at: OffsetDateTime,
+    require_user_session: bool,
 ) -> Result<SecretRequestRow, sqlx::Error> {
     sqlx::query_as!(
         SecretRequestRow,
-        "INSERT INTO secret_requests (id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at",
+        "INSERT INTO secret_requests (id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, require_user_session)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at, require_user_session",
         id,
         org_id,
         identity_id,
@@ -41,6 +48,7 @@ pub async fn create(
         reason,
         token_hash,
         expires_at,
+        require_user_session,
     )
     .fetch_one(pool)
     .await
@@ -49,7 +57,7 @@ pub async fn create(
 pub async fn get(pool: &PgPool, id: &str) -> Result<Option<SecretRequestRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretRequestRow,
-        "SELECT id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at
+        "SELECT id, org_id, identity_id, secret_name, requested_by, reason, token_hash, expires_at, fulfilled_at, created_at, require_user_session
          FROM secret_requests WHERE id = $1",
         id,
     )
