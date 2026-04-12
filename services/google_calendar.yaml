@@ -121,7 +121,7 @@ actions:
         type: array
         description: "List of attendees: [{email}]"
   update_event:
-    method: PUT
+    method: PATCH
     path: /calendar/v3/calendars/{calendarId}/events/{eventId}
     description: "Update event {eventId} on calendar {calendarId}"
     risk: write
