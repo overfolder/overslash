@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict PoNQ2g6Ub70cpB53XNupqXZUBvsJBZz80zpBlBkBEcfgAH9sbCJGvpoadlYok7l
+\restrict LBlcC7r6hFd7ZA9Dj2EatGVrLNbuR3zTMnQmGA1BLmClVUxEAOAhSjUeYvWN2GN
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -43,7 +43,7 @@ SET default_table_access_method = heap;
 CREATE TABLE public.api_keys (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,
-    identity_id uuid,
+    identity_id uuid NOT NULL,
     name text NOT NULL,
     key_hash text NOT NULL,
     key_prefix text NOT NULL,
@@ -105,7 +105,7 @@ CREATE TABLE public.audit_log (
 CREATE TABLE public.byoc_credentials (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,
-    identity_id uuid,
+    identity_id uuid NOT NULL,
     provider_key text NOT NULL,
     encrypted_client_id bytea NOT NULL,
     encrypted_client_secret bytea NOT NULL,
@@ -132,6 +132,18 @@ CREATE TABLE public.connections (
     is_default boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: enabled_global_templates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.enabled_global_templates (
+    org_id uuid NOT NULL,
+    template_key text NOT NULL,
+    enabled_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -205,6 +217,8 @@ CREATE TABLE public.identities (
     archived_at timestamp with time zone,
     archived_reason text,
     preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
+    is_org_admin boolean DEFAULT false NOT NULL,
+    CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
 
@@ -273,6 +287,9 @@ CREATE TABLE public.orgs (
     subagent_idle_timeout_secs integer DEFAULT 14400 NOT NULL,
     subagent_archive_retention_days integer DEFAULT 30 NOT NULL,
     approval_auto_bubble_secs integer DEFAULT 300 NOT NULL,
+    allow_user_templates boolean DEFAULT false NOT NULL,
+    global_templates_enabled boolean DEFAULT true NOT NULL,
+    allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
 );
 
@@ -339,6 +356,25 @@ CREATE TABLE public.rate_limits (
 
 
 --
+-- Name: secret_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.secret_requests (
+    id text NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    secret_name text NOT NULL,
+    requested_by uuid NOT NULL,
+    reason text,
+    token_hash bytea NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    fulfilled_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    require_user_session boolean DEFAULT false NOT NULL
+);
+
+
+--
 -- Name: secret_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -348,7 +384,8 @@ CREATE TABLE public.secret_versions (
     version integer NOT NULL,
     encrypted_value bytea NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_by uuid
+    created_by uuid,
+    provisioned_by_user_id uuid
 );
 
 
@@ -500,6 +537,14 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: enabled_global_templates enabled_global_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enabled_global_templates
+    ADD CONSTRAINT enabled_global_templates_pkey PRIMARY KEY (org_id, template_key);
+
+
+--
 -- Name: enrollment_tokens enrollment_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -636,6 +681,14 @@ ALTER TABLE ONLY public.rate_limits
 
 
 --
+-- Name: secret_requests secret_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: secret_versions secret_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -697,13 +750,6 @@ ALTER TABLE ONLY public.webhook_deliveries
 
 ALTER TABLE ONLY public.webhook_subscriptions
     ADD CONSTRAINT webhook_subscriptions_pkey PRIMARY KEY (id);
-
-
---
--- Name: byoc_credentials_org_provider_null_identity; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX byoc_credentials_org_provider_null_identity ON public.byoc_credentials USING btree (org_id, provider_key) WHERE (identity_id IS NULL);
 
 
 --
@@ -938,6 +984,27 @@ CREATE UNIQUE INDEX idx_rate_limits_user ON public.rate_limits USING btree (org_
 
 
 --
+-- Name: idx_secret_requests_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_requests_org ON public.secret_requests USING btree (org_id);
+
+
+--
+-- Name: idx_secret_requests_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_requests_pending ON public.secret_requests USING btree (expires_at) WHERE (fulfilled_at IS NULL);
+
+
+--
+-- Name: idx_secret_versions_provisioned_by; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_versions_provisioned_by ON public.secret_versions USING btree (provisioned_by_user_id) WHERE (provisioned_by_user_id IS NOT NULL);
+
+
+--
 -- Name: idx_secret_versions_secret; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1005,7 +1072,7 @@ CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btr
 --
 
 ALTER TABLE ONLY public.api_keys
-    ADD CONSTRAINT api_keys_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+    ADD CONSTRAINT api_keys_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --
@@ -1110,6 +1177,22 @@ ALTER TABLE ONLY public.connections
 
 ALTER TABLE ONLY public.connections
     ADD CONSTRAINT connections_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: enabled_global_templates enabled_global_templates_enabled_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enabled_global_templates
+    ADD CONSTRAINT enabled_global_templates_enabled_by_fkey FOREIGN KEY (enabled_by) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: enabled_global_templates enabled_global_templates_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enabled_global_templates
+    ADD CONSTRAINT enabled_global_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --
@@ -1281,11 +1364,43 @@ ALTER TABLE ONLY public.rate_limits
 
 
 --
+-- Name: secret_requests secret_requests_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: secret_requests secret_requests_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: secret_requests secret_requests_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.identities(id);
+
+
+--
 -- Name: secret_versions secret_versions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.secret_versions
     ADD CONSTRAINT secret_versions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: secret_versions secret_versions_provisioned_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_versions
+    ADD CONSTRAINT secret_versions_provisioned_by_user_id_fkey FOREIGN KEY (provisioned_by_user_id) REFERENCES public.identities(id) ON DELETE SET NULL;
 
 
 --
@@ -1372,5 +1487,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict PoNQ2g6Ub70cpB53XNupqXZUBvsJBZz80zpBlBkBEcfgAH9sbCJGvpoadlYok7l
+\unrestrict LBlcC7r6hFd7ZA9Dj2EatGVrLNbuR3zTMnQmGA1BLmClVUxEAOAhSjUeYvWN2GN
 

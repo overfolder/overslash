@@ -3,6 +3,11 @@ import type { PageLoad } from './$types';
 export const ssr = false;
 export const prerender = false;
 
+export interface ViewerInfo {
+	identity_id: string;
+	email: string;
+}
+
 export interface ProvideMetadata {
 	id: string;
 	secret_name: string;
@@ -11,6 +16,17 @@ export interface ProvideMetadata {
 	reason: string | null;
 	expires_at: string;
 	created_at: string;
+	/**
+	 * True iff the request was minted while the org had
+	 * `allow_unsigned_secret_provide = false`. When set, submission requires
+	 * a same-org session and the page must gate the input accordingly.
+	 */
+	require_user_session: boolean;
+	/**
+	 * Opportunistic session binding: populated iff the visitor already
+	 * holds a valid `oss_session` cookie for this request's org.
+	 */
+	viewer: ViewerInfo | null;
 }
 
 type LoadResult =
@@ -21,6 +37,11 @@ type LoadResult =
 	| { state: 'missing_token'; req_id: string }
 	| { state: 'server_error'; req_id: string };
 
+// The GET `/public/secrets/provide/{req_id}` handler never returns 401 —
+// `require_user_session` is surfaced as a metadata flag on the 200 response
+// body, not as a load-time error, so the `ready` branch in +page.svelte can
+// render the request details and inline the sign-in CTA. 401 is reserved
+// for the POST submit handler.
 function mapError(status: number, body: { error?: string } | null): LoadResult['state'] {
 	const code = body?.error ?? '';
 	if (status === 410 && code.includes('already_fulfilled')) return 'already_fulfilled';
@@ -35,10 +56,13 @@ export const load: PageLoad = async ({ params, url, fetch }): Promise<LoadResult
 	const token = url.searchParams.get('token');
 	if (!token) return { state: 'missing_token', req_id };
 
-	// Plain fetch — must NOT send credentials. This page is unauthenticated.
+	// `same-origin` (not `omit`) so the dashboard session cookie travels
+	// when the visitor already has one. The cookie is purely additive — the
+	// URL JWT is still the capability gate. Cross-origin embeds never send
+	// the cookie, so this remains safe for the anonymous case.
 	const r = await fetch(
 		`/public/secrets/provide/${encodeURIComponent(req_id)}?token=${encodeURIComponent(token)}`,
-		{ method: 'GET', credentials: 'omit' }
+		{ method: 'GET', credentials: 'same-origin' }
 	);
 	if (!r.ok) {
 		const body = await r.json().catch(() => null);

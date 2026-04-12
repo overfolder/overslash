@@ -674,7 +674,7 @@ Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known ser
 
 ### Settings
 
-A section within the Org Dashboard. Single scrollable view with four sections as cards.
+A section within the Org Dashboard. Single scrollable view with sections as cards. Subsections below are documented in intended order; some (notably *Features*) are not yet implemented in the dashboard.
 
 **Dev User access**: Dev Users (logged in via Dev Login) have org-admin privileges in development mode. The Org Settings view must be accessible to Dev Users.
 
@@ -762,6 +762,28 @@ Default approval TTL                [24h ▾] Pre-filled expiry for "Allow & Rem
 ```
 
 Each with a toggle or dropdown. Settings configured via environment variables are shown as read-only with an "env" badge.
+
+#### Secret requests
+
+Controls how users can fulfill standalone secret-request URLs (`/secrets/provide/req_…`).
+
+```
+Secret requests
+
+Allow unsigned secret provisioning                                  [● On]
+When on, recipients can submit a secret via the signed URL without
+logging in — the capability comes entirely from the URL token. When
+off, every newly-issued URL will require the recipient to be signed
+in to Overslash before submitting. Existing outstanding URLs are
+unaffected — the toggle is forward-only.
+```
+
+- **Pill toggle** (rounded, filled when on, outlined when off) backed by `PATCH /v1/orgs/{id}/secret-request-settings`.
+- **Default: on.** Existing orgs keep their current open behavior across the upgrade.
+- **Forward-only semantics.** Flipping the toggle off stamps `secret_requests.require_user_session = true` on new rows only; URLs minted before the flip keep working as they were issued.
+- Cross-tenant sessions are ignored — a session for org B cannot be used to provision a secret in org A, regardless of token validity.
+
+See SPEC §11 *Standalone Pages → User Signed Mode* for the full policy spec and the flow through the provide page.
 
 #### Org Info
 
@@ -1203,7 +1225,7 @@ Standalone pages have a minimal layout: Overslash logo at top, no sidebar, no na
 
 ### Secret Request Page (`/secrets/provide/req_...?token=jwt`)
 
-No login required — the JWT in the URL authenticates the request. Safe because providing a secret doesn't grant the agent any authority (the agent still needs a separate approval to use it).
+No login required *by default* — the JWT in the URL authenticates the request. Safe because providing a secret doesn't grant the agent any authority (the agent still needs a separate approval to use it). Orgs that need a named human on every submission can turn on **User Signed Mode** (see below) via the org settings page.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -1215,6 +1237,11 @@ No login required — the JWT in the URL authenticates the request. Safe because
 │                                                     │
 │  Name: openai_api_key                               │
 │  Description: "OpenAI API key with GPT-4 access"    │
+│                                                     │
+│  ┌─ ✓ Signed in as jane@acme.com ──────────────┐   │ ← viewer banner
+│  │ Your name will be recorded on the audit     │   │ (shown only when
+│  │ trail for this submission.                  │   │ the visitor has a
+│  └─────────────────────────────────────────────┘   │ same-org session)
 │                                                     │
 │  ┌───────────────────────────────────────────────┐  │
 │  │ ••••••••••••••••••••••                        │  │
@@ -1232,6 +1259,14 @@ No login required — the JWT in the URL authenticates the request. Safe because
 - **Deny** — dismisses the request. Shows: "Request denied. The agent has been notified."
 - **Expired** — "This request has expired." No form shown.
 - **Already provided** — "This secret has already been provided."
+- **Viewer banner** (green, above the input) — shown when the visitor's browser already has a valid `oss_session` cookie for the request's org. Identifies the human whose name will be recorded as `provisioned_by_user_id` on the resulting `secret_versions` row. The visitor did not have to log in — they already were.
+- **Sign-in gate** (yellow warning, replaces the input) — shown in the same `ready` page state when the request was minted under the stricter *require user session* mode but the visitor has no session. The page still renders the request metadata (name, requester, reason) so the visitor understands what they're being asked for, but the input is replaced with a "Sign in to continue" link. A POST attempt without a session would be rejected server-side with `401 user_session_required` anyway — the gate is purely a UX optimization to avoid wasting the visitor's time.
+
+#### User Signed Mode (two strictly additive layers)
+
+1. **Opportunistic session binding** — always on. If the visitor is already signed in to the same org as the request (detected via the `oss_session` cookie, sent because the public page uses `credentials: 'same-origin'`), the backend stamps `secret_versions.provisioned_by_user_id` and attributes the `secret_request.fulfilled` audit row to that human instead of the target identity. The URL JWT is still the capability gate; the session is a pure identity attestation layered on top. Cross-tenant sessions are silently ignored.
+
+2. **Required user session** — opt-in via the org settings toggle *Allow unsigned secret provisioning* (default: on). When off, every newly-minted secret-request URL is stamped `require_user_session = true` at mint time; the public page renders the sign-in gate for anyone without a matching session, and the backend rejects anonymous submission with `401 user_session_required`. The toggle is forward-only — outstanding URLs minted before the flip keep the policy they were issued under, so flipping the toggle never breaks in-flight links.
 
 Secret requests also appear in the dashboard: as notification bell items, as badges on the agent tree, and as inline `[Provide]` / `[Deny]` actions in the agent detail panel. The standalone page is for resolving from outside the dashboard (e.g., a link in Telegram or email).
 

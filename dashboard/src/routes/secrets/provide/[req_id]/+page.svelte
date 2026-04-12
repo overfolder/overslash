@@ -42,10 +42,14 @@
 		submitting = true;
 		errorMsg = null;
 		try {
+			// `same-origin` so the dashboard session cookie travels if the
+			// visitor is signed in. Server still validates the URL JWT; the
+			// session is a purely additive identity attestation (see SPEC §11
+			// User Signed Mode).
 			const r = await fetch(`/public/secrets/provide/${encodeURIComponent(data.req_id)}`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				credentials: 'omit',
+				credentials: 'same-origin',
 				body: JSON.stringify({ token: data.token, value })
 			});
 			if (!r.ok) {
@@ -55,6 +59,9 @@
 					errorMsg = 'This request was already fulfilled.';
 				} else if (r.status === 410) {
 					errorMsg = 'This link has expired.';
+				} else if (r.status === 401 && code.includes('user_session_required')) {
+					errorMsg =
+						'This organization requires you to be signed in to provide this secret.';
 				} else if (r.status === 400) {
 					errorMsg = 'This link is invalid or tampered.';
 				} else {
@@ -69,6 +76,15 @@
 		} finally {
 			submitting = false;
 		}
+	}
+
+	function loginUrl(): string {
+		// Round-trip back to this page after signing in. We intentionally
+		// don't try to preserve the query string via the redirect layer —
+		// the visitor's original URL (with token) is already in their tab
+		// history, and after login SvelteKit will re-run this load.
+		if (typeof window === 'undefined') return '/login';
+		return `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
 	}
 </script>
 
@@ -126,47 +142,66 @@
 				{/if}
 			</div>
 
-			<label class="field">
-				<span>Secret value</span>
-				<div class="input-wrap">
-					<!-- svelte-ignore a11y_autofocus -->
-					<input
-						type={reveal ? 'text' : 'password'}
-						bind:value
-						disabled={submitting}
-						autocomplete="off"
-						spellcheck="false"
-						autocapitalize="off"
-						autocorrect="off"
-						placeholder="Paste secret value"
-					/>
-					<button
-						type="button"
-						class="reveal"
-						onclick={() => (reveal = !reveal)}
-						aria-label={reveal ? 'Hide value' : 'Show value'}
-						disabled={submitting}
-					>
-						{reveal ? 'Hide' : 'Show'}
-					</button>
+			{#if m.viewer}
+				<div class="viewer-banner">
+					Signed in as <strong>{m.viewer.email}</strong>. Your name will be recorded on the
+					audit trail for this submission.
 				</div>
-			</label>
-
-			{#if errorMsg}
-				<div class="error">{errorMsg}</div>
+			{:else if m.require_user_session}
+				<!-- Edge case: the row was minted under user-signed-required mode,
+				     but the visitor loaded the page without a matching session.
+				     GET still succeeds (metadata is not sensitive), but POST will
+				     be rejected server-side. Gate the UI here so the visitor
+				     doesn't waste time pasting a value first. -->
+				<div class="viewer-banner warn">
+					This organization requires you to be signed in to Overslash to provide this secret.
+					<a href={loginUrl()}>Sign in to continue</a>.
+				</div>
 			{/if}
 
-			<div class="actions">
-				<button class="btn primary" onclick={submit} disabled={submitting || !value}>
-					{submitting ? 'Submitting…' : 'Provide'}
-				</button>
-				<!-- TODO(secret-request-deny): wire to a backend deny endpoint so the
-				     requesting agent gets notified. For now Deny only flips local
-				     state — the request row remains pending until it expires. -->
-				<button class="btn secondary" onclick={() => (denied = true)} disabled={submitting}>
-					Deny
-				</button>
-			</div>
+			{#if !m.require_user_session || m.viewer}
+				<label class="field">
+					<span>Secret value</span>
+					<div class="input-wrap">
+						<!-- svelte-ignore a11y_autofocus -->
+						<input
+							type={reveal ? 'text' : 'password'}
+							bind:value
+							disabled={submitting}
+							autocomplete="off"
+							spellcheck="false"
+							autocapitalize="off"
+							autocorrect="off"
+							placeholder="Paste secret value"
+						/>
+						<button
+							type="button"
+							class="reveal"
+							onclick={() => (reveal = !reveal)}
+							aria-label={reveal ? 'Hide value' : 'Show value'}
+							disabled={submitting}
+						>
+							{reveal ? 'Hide' : 'Show'}
+						</button>
+					</div>
+				</label>
+
+				{#if errorMsg}
+					<div class="error">{errorMsg}</div>
+				{/if}
+
+				<div class="actions">
+					<button class="btn primary" onclick={submit} disabled={submitting || !value}>
+						{submitting ? 'Submitting…' : 'Provide'}
+					</button>
+					<!-- TODO(secret-request-deny): wire to a backend deny endpoint so the
+					     requesting agent gets notified. For now Deny only flips local
+					     state — the request row remains pending until it expires. -->
+					<button class="btn secondary" onclick={() => (denied = true)} disabled={submitting}>
+						Deny
+					</button>
+				</div>
+			{/if}
 
 			<p class="footnote">
 				Requested {fmtRelative(m.created_at)} · Expires in {fmtCountdown(m.expires_at)}
@@ -291,6 +326,24 @@
 		border-radius: 6px;
 		font-size: 0.85rem;
 		margin-bottom: 0.75rem;
+	}
+	.viewer-banner {
+		background: rgba(60, 140, 90, 0.08);
+		border: 1px solid rgba(60, 140, 90, 0.25);
+		color: var(--color-text);
+		padding: 0.65rem 0.85rem;
+		border-radius: 8px;
+		font-size: 0.82rem;
+		margin-bottom: 1rem;
+		line-height: 1.45;
+	}
+	.viewer-banner.warn {
+		background: rgba(235, 170, 50, 0.1);
+		border-color: rgba(235, 170, 50, 0.35);
+	}
+	.viewer-banner a {
+		color: var(--color-primary);
+		font-weight: 600;
 	}
 	.actions {
 		display: flex;

@@ -14,6 +14,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,7 @@ use crate::{
     error::{AppError, Result},
     extractors::{ClientIp, WriteAcl},
     services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims},
+    services::session::extract_session,
 };
 use overslash_core::crypto;
 
@@ -93,6 +95,16 @@ async fn create_secret_request(
 
     let req_id = format!("req_{}", Uuid::new_v4().simple());
 
+    // Capture the org's User-Signed-Mode policy at *mint* time so flipping
+    // the toggle later never retroactively breaks in-flight URLs. Default to
+    // allowing unsigned if the org has no explicit setting (backwards
+    // compat: existing orgs keep their current open behavior).
+    let allow_unsigned =
+        overslash_db::repos::org::get_allow_unsigned_secret_provide(&state.db, acl.org_id)
+            .await?
+            .unwrap_or(true);
+    let require_user_session = !allow_unsigned;
+
     // Mint the JWT first so we can hash it before persisting.
     let signing_key = signing_key_bytes(&state);
     let claims = SecretRequestClaims {
@@ -116,6 +128,7 @@ async fn create_secret_request(
         req.reason.as_deref(),
         &token_hash,
         expires_at,
+        require_user_session,
     )
     .await?;
 
@@ -141,6 +154,7 @@ async fn create_secret_request(
                 "id": &req_id,
                 "secret_name": &req.secret_name,
                 "target_identity_id": target_identity,
+                "require_user_session": require_user_session,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -173,10 +187,26 @@ struct ProvideMetadata {
     reason: Option<String>,
     expires_at: String,
     created_at: String,
+    /// True iff the request was minted while the org had
+    /// `allow_unsigned_secret_provide = false`. When set, the page must
+    /// refuse to submit unless a same-org session is also present.
+    require_user_session: bool,
+    /// Populated iff the visitor carried a valid `oss_session` cookie for
+    /// the same org as this request. Lets the page render a "Signed in as
+    /// …" banner so the visitor knows their identity will be captured on
+    /// the audit trail. Cross-tenant sessions are silently ignored.
+    viewer: Option<ViewerInfo>,
+}
+
+#[derive(Serialize)]
+struct ViewerInfo {
+    identity_id: Uuid,
+    email: String,
 }
 
 async fn get_provide(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(req_id): Path<String>,
     Query(q): Query<TokenQuery>,
 ) -> Result<Json<ProvideMetadata>> {
@@ -194,6 +224,17 @@ async fn get_provide(
         .map(|i| i.name)
         .unwrap_or_else(|| row.requested_by.to_string());
 
+    // Opportunistic session binding: if the visitor happens to already be
+    // signed in to the same org, surface that so the page can show a banner.
+    // Cross-tenant sessions are discarded — never echo identity from another
+    // tenant on a public page.
+    let viewer = extract_session(&state, &headers)
+        .filter(|s| s.org == row.org_id)
+        .map(|s| ViewerInfo {
+            identity_id: s.sub,
+            email: s.email,
+        });
+
     Ok(Json(ProvideMetadata {
         id: row.id,
         secret_name: row.secret_name,
@@ -208,6 +249,8 @@ async fn get_provide(
             .created_at
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| row.created_at.to_string()),
+        require_user_session: row.require_user_session,
+        viewer,
     }))
 }
 
@@ -228,6 +271,7 @@ struct SubmitResponse {
 
 async fn submit_provide(
     State(state): State<AppState>,
+    headers: HeaderMap,
     ip: ClientIp,
     Path(req_id): Path<String>,
     Json(body): Json<SubmitBody>,
@@ -237,8 +281,24 @@ async fn submit_provide(
     }
     let row = load_and_validate(&state, &req_id, &body.token).await?;
 
+    // Resolve any same-org session cookie the visitor happens to carry.
+    // Cross-tenant sessions are discarded (treated as anonymous). We do NOT
+    // trust a session alone — the URL JWT is always the capability gate. The
+    // session is purely an identity attestation layered on top.
+    let session = extract_session(&state, &headers).filter(|s| s.org == row.org_id);
+
+    // Policy gate: if the row was minted under User-Signed-Mode-required,
+    // a same-org session is mandatory. This is the only path by which the
+    // public endpoint rejects an otherwise-valid JWT.
+    if row.require_user_session && session.is_none() {
+        return Err(AppError::Unauthorized("user_session_required".into()));
+    }
+
+    let provisioned_by_user_id = session.as_ref().map(|s| s.sub);
+
     // Single-use guard *before* writing to the vault. If a parallel request
-    // already fulfilled this row, abort.
+    // already fulfilled this row, abort. Done *after* the policy check so a
+    // rejected submission does not burn the request.
     if !secret_request::mark_fulfilled(&state.db, &req_id).await? {
         return Err(AppError::Gone("already_fulfilled".into()));
     }
@@ -249,13 +309,23 @@ async fn submit_provide(
 
     let scope = OrgScope::new(row.org_id, state.db.clone());
     let (stored, _ver) = scope
-        .put_secret(&row.secret_name, &encrypted, Some(row.identity_id))
+        .put_secret(
+            &row.secret_name,
+            &encrypted,
+            Some(row.identity_id),
+            provisioned_by_user_id,
+        )
         .await?;
 
+    // When a session is present, attribute the audit entry to the human who
+    // pasted the value. Otherwise fall back to the target identity (the one
+    // that owns the secret slot) to keep the audit row anchored to *some*
+    // identity for compliance queries.
+    let audit_identity = provisioned_by_user_id.or(Some(row.identity_id));
     let _ = scope
         .log_audit(AuditEntry {
             org_id: row.org_id,
-            identity_id: Some(row.identity_id),
+            identity_id: audit_identity,
             action: "secret_request.fulfilled",
             resource_type: Some("secret_request"),
             resource_id: None,
@@ -263,6 +333,9 @@ async fn submit_provide(
                 "id": &row.id,
                 "name": &stored.name,
                 "version": stored.current_version,
+                "provisioned_by_user_id": provisioned_by_user_id,
+                "user_signed": provisioned_by_user_id.is_some(),
+                "require_user_session": row.require_user_session,
             }),
             description: None,
             ip_address: ip.0.as_deref(),

@@ -8,6 +8,16 @@ export interface OrgInfo {
   subagent_archive_retention_days: number;
 }
 
+/**
+ * Shape of GET/PATCH /v1/orgs/{id}/secret-request-settings. Lives in its
+ * own type (not on `OrgInfo`) because the endpoint is distinct, mirrors
+ * the backend's `SecretRequestSettingsResponse`, and keeps the base org
+ * fetch stable.
+ */
+export interface SecretRequestSettings {
+  allow_unsigned_secret_provide: boolean;
+}
+
 export interface IdpConfig {
   id?: string;
   org_id?: string;

@@ -822,9 +822,19 @@ Overslash provides built-in standalone pages for common user interactions. These
 Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, enrollment consent payloads. The built-in pages are a convenience, not a requirement.
 
 - **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
-- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required for the *user landing on the page* (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
+- **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
 
   **The API calls that generate these URLs always require an authenticated identity** — typically an enrolled agent acting `on_behalf_of` its owner-user, or a user acting through the dashboard. There is no path for an unenrolled or anonymous caller to issue a secret-provide URL. The "no login" property describes only the user-facing redemption step, not the issuance step.
+
+  #### User Signed Mode
+
+  The signed URL is anonymous by default — the JWT in the URL is the sole capability gate. Two strictly additive enhancements raise the bar for orgs that need a named human on every secret provision:
+
+  1. **Opportunistic session binding.** If the visitor's browser already holds a valid `oss_session` cookie for the same org as the request, the page captures that identity on the `secret_versions.provisioned_by_user_id` column and on the audit-log `detail` JSON (`user_signed: true`, `provisioned_by_user_id: <uuid>`). The visitor does not have to log in — but if they're already logged in, we record *who* they were. The signed URL remains the capability gate; the session is purely an identity attestation. When both are present, the session is the primary identity for the audit row (`identity_id` on the audit entry is the session user, not the target identity).
+
+  2. **Required user session (org setting).** Org admins can set `allow_unsigned_secret_provide = false` via `PATCH /v1/orgs/{id}/secret-request-settings`. New secret requests minted while the toggle is off are stamped `require_user_session = true` at mint time and **must** be redeemed by a visitor with a same-org session — anonymous submission is rejected with `401 user_session_required`. The toggle is forward-only: outstanding URLs minted before the flip continue to honor the policy they were issued under, so flipping the toggle never breaks in-flight requests.
+
+  **Cross-tenant sessions are ignored** (treated as anonymous). A session in org A cannot be used to provision a secret in org B, regardless of token validity — the standalone page silently drops the cookie in that case.
 - **Enrollment consent** (`/enroll/consent/...`) — requires login. Agent-initiated enrollment approval with name editing and parent placement.
 
 ---

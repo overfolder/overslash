@@ -26,6 +26,10 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{id}/template-settings",
             patch(patch_template_settings),
         )
+        .route(
+            "/v1/orgs/{id}/secret-request-settings",
+            get(get_secret_request_settings).patch(patch_secret_request_settings),
+        )
 }
 
 // Bounds for sub-agent idle cleanup config (per replan).
@@ -241,5 +245,80 @@ async fn patch_template_settings(
     Ok(Json(TemplateSettingsResponse {
         allow_user_templates: allow,
         global_templates_enabled: globals,
+    }))
+}
+
+// ─── Secret-request settings (User Signed Mode) ───────────────────────
+
+#[derive(Serialize)]
+struct SecretRequestSettingsResponse {
+    /// When false, every newly-minted secret-request URL will carry
+    /// `require_user_session = true`, blocking anonymous submission on the
+    /// public provide page. Outstanding URLs minted while this was true
+    /// remain anonymous-capable — the toggle is forward-only.
+    allow_unsigned_secret_provide: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchSecretRequestSettingsRequest {
+    allow_unsigned_secret_provide: bool,
+}
+
+async fn get_secret_request_settings(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SecretRequestSettingsResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let allow = overslash_db::repos::org::get_allow_unsigned_secret_provide(&state.db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(SecretRequestSettingsResponse {
+        allow_unsigned_secret_provide: allow,
+    }))
+}
+
+async fn patch_secret_request_settings(
+    State(state): State<AppState>,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchSecretRequestSettingsRequest>,
+) -> Result<Json<SecretRequestSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let updated = overslash_db::repos::org::set_allow_unsigned_secret_provide(
+        &state.db,
+        id,
+        req.allow_unsigned_secret_provide,
+    )
+    .await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.secret_request_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "allow_unsigned_secret_provide": req.allow_unsigned_secret_provide,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(SecretRequestSettingsResponse {
+        allow_unsigned_secret_provide: req.allow_unsigned_secret_provide,
     }))
 }
