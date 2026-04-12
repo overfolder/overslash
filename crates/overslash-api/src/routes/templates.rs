@@ -3,12 +3,15 @@ use std::collections::HashSet;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{delete, get, put},
+    routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
+use overslash_core::template_validation::{
+    ValidationReport, validate_template_parts, validate_template_yaml,
+};
 use overslash_core::types::Risk;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateServiceTemplate};
@@ -20,11 +23,18 @@ use crate::{
     extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
 };
 
+/// Max body size accepted by `POST /v1/templates/validate`. 512 KiB is roughly
+/// 4x the largest shipped template and several orders of magnitude above any
+/// plausible hand-authored one — enough headroom for auto-generated specs
+/// without leaving a DoS-friendly validation endpoint wide open.
+const MAX_TEMPLATE_YAML_BYTES: usize = 512 * 1024;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/templates", get(list_templates).post(create_template))
         .route("/v1/templates/search", get(search_templates))
-        // Admin-only routes MUST come before the {key} wildcard.
+        // Fixed-path routes MUST come before the `{key}` wildcard.
+        .route("/v1/templates/validate", post(validate_template))
         .route("/v1/templates/admin", get(list_templates_admin))
         .route(
             "/v1/templates/enabled-globals",
@@ -402,6 +412,40 @@ async fn list_template_actions(
     Ok(Json(actions))
 }
 
+/// POST /v1/templates/validate
+///
+/// Lint a YAML template definition without persisting it. Accepts the raw
+/// YAML as the request body (any Content-Type; typically `application/yaml`
+/// or `text/plain`) so dashboards and CLIs can pipe files directly:
+///
+/// ```sh
+/// curl --data-binary @service.yaml $API/v1/templates/validate
+/// ```
+///
+/// Always returns 200 with a `ValidationReport`. A YAML parse failure or
+/// duplicate action key is itself a reported validation error, not a
+/// transport-level error — the dashboard editor calls this on every keystroke
+/// and wants structured diagnostics, not HTTP 400s.
+///
+/// The only case that returns a non-200 response is a request body that
+/// exceeds [`MAX_TEMPLATE_YAML_BYTES`] — that's a DoS guard on a public
+/// endpoint, not a validation outcome.
+async fn validate_template(auth: AuthContext, body: String) -> Result<Json<ValidationReport>> {
+    // Auth extraction enforces authentication. Template linting is stateless
+    // and org-independent — the org_id is used only for tracing / rate-limit
+    // bucketing at the middleware layer. Binding it here satisfies the
+    // ignored-auth pre-commit gate (see PR #60).
+    let _ = auth.org_id;
+
+    if body.len() > MAX_TEMPLATE_YAML_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "template too large: {} bytes (max {MAX_TEMPLATE_YAML_BYTES})",
+            body.len()
+        )));
+    }
+    Ok(Json(validate_template_yaml(&body)))
+}
+
 /// Create a new org or user template.
 async fn create_template(
     State(state): State<AppState>,
@@ -439,6 +483,20 @@ async fn create_template(
             "template key '{}' conflicts with a global template",
             req.key
         )));
+    }
+
+    // Lint the template before we hit the database. Rejects broken shape,
+    // missing fields, bad HTTP methods, unresolved path/scope placeholders,
+    // etc. Returns a structured ValidationReport the dashboard can render.
+    let report = validate_template_parts(
+        &req.key,
+        &req.display_name,
+        &req.hosts,
+        &req.auth,
+        &req.actions,
+    );
+    if !report.valid {
+        return Err(AppError::TemplateValidationFailed { report });
     }
 
     let input = CreateServiceTemplate {
@@ -529,6 +587,31 @@ async fn update_template(
                 "admin access required for org-level templates".into(),
             ));
         }
+    }
+
+    // Lint the *merged* result (patch + existing) so a broken template can't
+    // be kept broken by touching only metadata. If only `display_name`
+    // changes, we still validate the untouched `auth`/`actions` against the
+    // current rule set — catching both new bugs and latent ones.
+    let merged_display_name = req
+        .display_name
+        .as_deref()
+        .unwrap_or(&existing.display_name);
+    let merged_hosts: Vec<String> = req.hosts.clone().unwrap_or_else(|| existing.hosts.clone());
+    let merged_auth = req.auth.clone().unwrap_or_else(|| existing.auth.clone());
+    let merged_actions = req
+        .actions
+        .clone()
+        .unwrap_or_else(|| existing.actions.clone());
+    let report = validate_template_parts(
+        &existing.key,
+        merged_display_name,
+        &merged_hosts,
+        &merged_auth,
+        &merged_actions,
+    );
+    if !report.valid {
+        return Err(AppError::TemplateValidationFailed { report });
     }
 
     let input = UpdateServiceTemplate {

@@ -1,8 +1,10 @@
 pub mod crypto;
 pub mod description;
+pub(crate) mod description_grammar;
 pub mod identity_path;
 pub mod param_resolver;
 pub mod permissions;
 pub mod registry;
 pub mod secret_injection;
+pub mod template_validation;
 pub mod types;

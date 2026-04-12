@@ -119,8 +119,7 @@
 - Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
 - Standalone pages: approval resolution
 - `on_behalf_of` for agent-initiated connections
-- Three-tier template registry (org + user DB-backed CRUD)
-- Template validation endpoint + OpenAPI import
+- OpenAPI import
 - Org-level ACL (role-based access control for who can manage groups, services, etc.)
 - Phase 3: TTL-based sub-identity auto-cleanup, approval visibility scoping
 - Phase 4: Meta tools, semantic search, billing, documentation site

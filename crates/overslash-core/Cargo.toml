@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["yaml"]
+# Enables YAML parsing support in the registry loader and the template
+# validator's YAML entry point. Disable for WASM builds that only need to
+# validate pre-parsed (JSON / struct) template definitions.
+yaml = ["dep:serde_yaml"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -14,7 +21,8 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 aes-gcm = "0.10"
 glob-match = "0.2"
-serde_yaml = "0.9"
+serde_yaml = { version = "0.9", optional = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -84,9 +84,9 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] Global service template registry — YAML loader for shipped definitions
 - [ ] Ship top 20 service templates — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
 - [x] Template/service split — templates (YAML blueprints) + services (named instances with credentials) (PR #31)
-- [ ] Three-tier template registry — global (YAML, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting)
+- [x] Three-tier template registry — global (YAML, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting) (PR #100)
 - [x] Service instances — create from template, bind credentials, assign to groups (PR #31)
-- [ ] Template validation endpoint (`POST /v1/templates/validate`)
+- [x] Template validation endpoint (`POST /v1/templates/validate`) — pure-Rust linter in `overslash-core::template_validation` + CRUD hook + registry-loader smoke test. WASM feature gate in place for client-side reuse.
 - [ ] OpenAPI import (`POST /v1/templates/import`) — parse OpenAPI 3.x, generate template + actions
 - [ ] User-to-org template sharing (propose, approve/deny)
 - [x] Service + action execution (registry-resolved, auth auto-resolve)

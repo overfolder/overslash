@@ -62,6 +62,11 @@ pub enum AppError {
         reason: String,
         restorable_until: time::OffsetDateTime,
     },
+
+    #[error("template validation failed")]
+    TemplateValidationFailed {
+        report: overslash_core::template_validation::ValidationReport,
+    },
 }
 
 impl IntoResponse for AppError {
@@ -153,6 +158,16 @@ impl IntoResponse for AppError {
                         "hint": format!(
                             "POST /v1/identities/{identity_id}/restore to recover within the retention window"
                         ),
+                    })),
+                )
+                    .into_response();
+            }
+            Self::TemplateValidationFailed { report } => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "validation_failed",
+                        "report": report,
                     })),
                 )
                     .into_response();
