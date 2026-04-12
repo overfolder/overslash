@@ -430,12 +430,16 @@ pub async fn start_mock() -> SocketAddr {
 
     type S = Arc<Mutex<MockState>>;
 
-    async fn echo(headers: HeaderMap, body: Bytes) -> Json<Value> {
+    async fn echo(uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
         let h: serde_json::Map<String, Value> = headers
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
             .collect();
-        Json(json!({ "headers": h, "body": String::from_utf8_lossy(&body).to_string() }))
+        Json(json!({
+            "headers": h,
+            "body": String::from_utf8_lossy(&body).to_string(),
+            "uri": uri.to_string(),
+        }))
     }
 
     async fn receive_webhook(
@@ -604,7 +608,10 @@ pub async fn start_mock() -> SocketAddr {
 
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
-        .route("/echo", post(echo))
+        .route(
+            "/echo",
+            get(echo).post(echo).put(echo).delete(echo).patch(echo),
+        )
         .route("/large-file", get(large_file))
         .route("/drive/files/download", get(drive_download))
         .route("/drive/files/content", get(drive_content))
@@ -619,6 +626,7 @@ pub async fn start_mock() -> SocketAddr {
             "/github/user/emails-none-verified",
             get(github_user_emails_none_verified),
         )
+        .fallback(echo)
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
