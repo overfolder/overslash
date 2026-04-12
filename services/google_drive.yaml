@@ -1,0 +1,288 @@
+key: google_drive
+display_name: Google Drive
+description: Google Drive API — files, folders, permissions, and sharing.
+category: productivity
+hosts:
+  - www.googleapis.com
+auth:
+  - type: oauth
+    provider: google
+    token_injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+  - type: api_key
+    default_secret_name: google_drive_token
+    injection:
+      as: header
+      header_name: Authorization
+      prefix: "Bearer "
+actions:
+  get_about:
+    method: GET
+    path: /drive/v3/about
+    description: Get information about the authenticated user and their Drive
+    risk: read
+    params:
+      fields:
+        type: string
+        description: "Selector specifying which fields to return (e.g. 'user,storageQuota')"
+        default: "user,storageQuota"
+  list_files:
+    method: GET
+    path: /drive/v3/files
+    description: "List files in the user's Drive[ matching query {q}]"
+    risk: read
+    params:
+      q:
+        type: string
+        description: "Query string for filtering results (e.g. \"mimeType='application/vnd.google-apps.folder'\")"
+      pageSize:
+        type: integer
+        description: Maximum number of files to return (1-1000, default 100)
+      pageToken:
+        type: string
+        description: Page token for continuing a previous list request
+      orderBy:
+        type: string
+        description: "Comma-separated list of sort keys (e.g. 'modifiedTime desc,name')"
+      fields:
+        type: string
+        description: "Selector specifying which fields to include in the response (e.g. 'files(id,name,mimeType)')"
+      spaces:
+        type: string
+        description: "Comma-separated list of spaces to query"
+        enum: [drive, appDataFolder, photos]
+      corpora:
+        type: string
+        description: "Bodies of items the query applies to"
+        enum: [user, domain, drive, allDrives]
+      includeItemsFromAllDrives:
+        type: boolean
+        description: Whether items from shared drives are included in results
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  get_file:
+    method: GET
+    path: /drive/v3/files/{fileId}
+    description: "Get metadata for file {fileId}"
+    risk: read
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      fields:
+        type: string
+        description: "Selector specifying which fields to return (e.g. 'id,name,mimeType,parents')"
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  get_file_content:
+    method: GET
+    path: /drive/v3/files/{fileId}
+    description: "Download the binary content of file {fileId}"
+    risk: read
+    response_type: binary
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file to download
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      alt:
+        type: string
+        description: Must be 'media' to return file content
+        default: media
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  create_folder:
+    method: POST
+    path: /drive/v3/files
+    description: "Create folder '{name}'"
+    risk: write
+    params:
+      name:
+        type: string
+        required: true
+        description: Name of the folder to create
+      mimeType:
+        type: string
+        description: MIME type for the new item (leave as default for a folder)
+        default: application/vnd.google-apps.folder
+      parents:
+        type: array
+        description: "List of parent folder IDs (e.g. ['root'] or a specific folder id)"
+      description:
+        type: string
+        description: Description of the folder
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  update_file_metadata:
+    method: PATCH
+    path: /drive/v3/files/{fileId}
+    description: "Update metadata for file {fileId}[: rename to '{name}']"
+    risk: write
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file to update
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      name:
+        type: string
+        description: New name for the file
+      description:
+        type: string
+        description: New description for the file
+      starred:
+        type: boolean
+        description: Whether the file is starred
+      trashed:
+        type: boolean
+        description: Whether the file is in the trash
+      mimeType:
+        type: string
+        description: New MIME type for the file
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  copy_file:
+    method: POST
+    path: /drive/v3/files/{fileId}/copy
+    description: "Copy file {fileId}[ as '{name}']"
+    risk: write
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file to copy
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      name:
+        type: string
+        description: Name for the new copy
+      parents:
+        type: array
+        description: List of parent folder IDs for the new copy
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  delete_file:
+    method: DELETE
+    path: /drive/v3/files/{fileId}
+    description: "Permanently delete file {fileId}"
+    risk: delete
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file to delete
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  list_permissions:
+    method: GET
+    path: /drive/v3/files/{fileId}/permissions
+    description: "List permissions on file {fileId}"
+    risk: read
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      pageSize:
+        type: integer
+        description: Maximum number of permissions to return
+      pageToken:
+        type: string
+        description: Page token for continuing a previous list request
+      fields:
+        type: string
+        description: Selector specifying which fields to return
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  create_permission:
+    method: POST
+    path: /drive/v3/files/{fileId}/permissions
+    description: "Grant {role} permission on file {fileId}[ to {emailAddress}]"
+    risk: write
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file to share
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      role:
+        type: string
+        required: true
+        description: The role granted by this permission
+        enum: [reader, commenter, writer, fileOrganizer, organizer, owner]
+      type:
+        type: string
+        required: true
+        description: The type of grantee
+        enum: [user, group, domain, anyone]
+      emailAddress:
+        type: string
+        description: Email address of the user or group (required when type is 'user' or 'group')
+      domain:
+        type: string
+        description: Domain name (required when type is 'domain')
+      sendNotificationEmail:
+        type: boolean
+        description: Whether to send a notification email when sharing
+      transferOwnership:
+        type: boolean
+        description: Whether to transfer ownership to the specified user (required when changing owner)
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
+  delete_permission:
+    method: DELETE
+    path: /drive/v3/files/{fileId}/permissions/{permissionId}
+    description: "Revoke permission {permissionId} from file {fileId}"
+    risk: delete
+    scope_param: fileId
+    params:
+      fileId:
+        type: string
+        required: true
+        description: The ID of the file
+        resolve:
+          get: /drive/v3/files/{fileId}
+          pick: name
+      permissionId:
+        type: string
+        required: true
+        description: The ID of the permission to revoke
+      supportsAllDrives:
+        type: boolean
+        description: Whether the requesting application supports both My Drives and shared drives
