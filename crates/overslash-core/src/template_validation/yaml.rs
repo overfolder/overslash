@@ -34,12 +34,25 @@ pub fn validate_template_yaml(source: &str) -> ValidationReport {
     if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(source) {
         let msg = e.to_string();
         let mut issues = Issues::default();
-        if let Some(key) = parse_duplicate_key_error(&msg) {
-            issues.err(
-                "duplicate_action_key",
-                format!("action key {key:?} is defined more than once"),
-                format!("actions.{key}"),
-            );
+        if let Some((parent, key)) = parse_duplicate_key_error(&msg) {
+            // Only report as `duplicate_action_key` when the parent context
+            // is the `actions` mapping. Duplicates at any other level (top-
+            // level `key:`, `auth:`, etc.) fall through as generic
+            // `yaml_parse` with the raw error text — which already includes
+            // the duplicate key name and position.
+            if parent.as_deref() == Some("actions") {
+                issues.err(
+                    "duplicate_action_key",
+                    format!("action key {key:?} is defined more than once"),
+                    format!("actions.{key}"),
+                );
+            } else {
+                issues.err(
+                    "yaml_parse",
+                    format!("duplicate key {key:?} in the YAML document"),
+                    parent.unwrap_or_default(),
+                );
+            }
         } else {
             issues.err("yaml_parse", format!("could not parse YAML: {msg}"), "");
         }
@@ -60,17 +73,37 @@ pub fn validate_template_yaml(source: &str) -> ValidationReport {
     validate_service_definition(&def, &[])
 }
 
-/// Extract the key name from a `serde_yaml` duplicate-key error string.
+/// Extract the parent context and key name from a `serde_yaml` duplicate-key
+/// error string.
 ///
 /// Expected format: `"<parent>: duplicate entry with key \"<name>\""`.
-/// Returns `None` if the string doesn't match that shape.
-fn parse_duplicate_key_error(s: &str) -> Option<String> {
+/// When the duplicate is at the top level, `parent` may be empty or missing.
+///
+/// Returns `(Some(parent) | None, key_name)` on match, or `None` if the
+/// string doesn't look like a duplicate-key error at all.
+fn parse_duplicate_key_error(s: &str) -> Option<(Option<String>, String)> {
     const NEEDLE: &str = "duplicate entry with key ";
     let idx = s.find(NEEDLE)?;
     let rest = &s[idx + NEEDLE.len()..];
     let rest = rest.strip_prefix('"')?;
     let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let key = rest[..end].to_string();
+
+    // Everything before the needle, minus trailing ": " separator.
+    let prefix = s[..idx].trim_end_matches(": ");
+    let parent = if prefix.is_empty() || prefix == s[..idx].trim() {
+        // No parent context or it's the raw prefix itself.
+        let trimmed = s[..idx].trim().trim_end_matches(':').trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        Some(prefix.to_string())
+    };
+
+    Some((parent, key))
 }
 
 #[cfg(test)]
@@ -127,14 +160,48 @@ actions:
     }
 
     #[test]
-    fn parse_duplicate_key_error_extracts_name() {
+    fn parse_duplicate_key_error_extracts_parent_and_name() {
         let s = r#"actions: duplicate entry with key "foo" at line 3 column 1"#;
-        assert_eq!(parse_duplicate_key_error(s).as_deref(), Some("foo"));
+        let (parent, key) = parse_duplicate_key_error(s).unwrap();
+        assert_eq!(parent.as_deref(), Some("actions"));
+        assert_eq!(key, "foo");
+    }
+
+    #[test]
+    fn parse_duplicate_key_error_top_level_has_no_parent() {
+        // When the duplicate is at the YAML root, serde_yaml produces a
+        // message with no explicit parent prefix.
+        let s = r#"duplicate entry with key "key" at line 2 column 1"#;
+        let (parent, key) = parse_duplicate_key_error(s).unwrap();
+        assert!(parent.is_none(), "expected no parent, got {parent:?}");
+        assert_eq!(key, "key");
     }
 
     #[test]
     fn parse_duplicate_key_error_non_match_returns_none() {
         assert!(parse_duplicate_key_error("something else went wrong").is_none());
+    }
+
+    #[test]
+    fn top_level_duplicate_key_is_yaml_parse_not_action_duplicate() {
+        // A duplicate top-level key (e.g. `key:` twice) must NOT be reported
+        // as a `duplicate_action_key` — that code is reserved for the
+        // `actions:` mapping. It should be a generic `yaml_parse` instead.
+        let src = "key: svc\nkey: other\ndisplay_name: X\nhosts: []\n";
+        let report = validate_template_yaml(src);
+        assert!(!report.valid);
+        assert!(
+            report.errors.iter().any(|e| e.code == "yaml_parse"),
+            "expected yaml_parse error for top-level duplicate; got {:?}",
+            report.errors
+        );
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|e| e.code == "duplicate_action_key"),
+            "top-level duplicate must not be reported as duplicate_action_key"
+        );
     }
 
     #[test]
