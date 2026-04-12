@@ -21,6 +21,25 @@ const TEMPLATE_DB_NAME: &str = "overslash_test_template";
 /// Arbitrary key for the advisory lock used to serialize template creation.
 const TEMPLATE_LOCK_KEY: i64 = 0x0_5_0_E_5_7_5_7;
 
+/// Second-tier template: migration template + standard org/user/key/group
+/// bootstrap already applied. Tests clone from this to skip the 11 HTTP
+/// requests that `run_standard_bootstrap` performs.
+const BOOTSTRAPPED_DB_NAME: &str = "overslash_test_bootstrapped";
+const BOOTSTRAPPED_LOCK_KEY: i64 = 0x0_5_B_0_0_7;
+
+/// Fixtures baked into the bootstrapped template.
+#[derive(Clone, Debug)]
+pub struct BootstrapFixtures {
+    pub org_id: Uuid,
+    pub org_key: String,
+    pub admin_key: String,
+    pub write_key: String,
+    pub read_key: String,
+    pub user_ids: [Uuid; 3],
+}
+
+static BOOTSTRAP_FIXTURES: OnceLock<BootstrapFixtures> = OnceLock::new();
+
 /// Returns a fresh `PgPool` backed by a clone of the migrated template database.
 /// nextest-safe: each test runs in its own process, all sharing one template.
 pub async fn test_pool() -> PgPool {
@@ -43,6 +62,64 @@ pub async fn test_pool() -> PgPool {
 
     let test_url = replace_db_name(&base_url, &test_db);
     PgPool::connect(&test_url).await.unwrap()
+}
+
+/// Returns a pool cloned from the bootstrapped template + cached fixtures.
+/// Each clone has an org, 3 users (admin/write/read-only), keys, and groups
+/// already set up — no HTTP bootstrap needed.
+pub async fn test_pool_bootstrapped() -> (PgPool, BootstrapFixtures) {
+    let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    ensure_template(&base_url).await;
+    ensure_bootstrapped(&base_url).await;
+
+    let test_db = format!("test_{}", Uuid::new_v4().simple());
+    let admin_pool = PgPool::connect(&base_url).await.unwrap();
+    sqlx::query(&format!(
+        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{BOOTSTRAPPED_DB_NAME}\""
+    ))
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    admin_pool.close().await;
+
+    register_for_cleanup(base_url.clone(), test_db.clone());
+
+    let test_url = replace_db_name(&base_url, &test_db);
+    let pool = PgPool::connect(&test_url).await.unwrap();
+
+    let fixtures = if let Some(f) = BOOTSTRAP_FIXTURES.get() {
+        f.clone()
+    } else {
+        let f = read_fixtures(&pool).await;
+        let _ = BOOTSTRAP_FIXTURES.set(f.clone());
+        f
+    };
+
+    (pool, fixtures)
+}
+
+async fn read_fixtures(pool: &PgPool) -> BootstrapFixtures {
+    let rows = sqlx::query("SELECT key, value FROM _test_fixtures")
+        .fetch_all(pool)
+        .await
+        .unwrap();
+    let map: HashMap<String, String> = rows
+        .iter()
+        .map(|r| (r.get::<String, _>("key"), r.get::<String, _>("value")))
+        .collect();
+    BootstrapFixtures {
+        org_id: map["org_id"].parse().unwrap(),
+        org_key: map["org_key"].clone(),
+        admin_key: map["admin_key"].clone(),
+        write_key: map["write_key"].clone(),
+        read_key: map["read_key"].clone(),
+        user_ids: [
+            map["user_id_0"].parse().unwrap(),
+            map["user_id_1"].parse().unwrap(),
+            map["user_id_2"].parse().unwrap(),
+        ],
+    }
 }
 
 /// Per-process registry of test DBs to drop at exit.
@@ -106,13 +183,31 @@ extern "C" fn run_cleanup() {
     });
 }
 
+async fn db_exists(pool: &PgPool, name: &str) -> bool {
+    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+async fn db_exists_conn(conn: &mut sqlx::PgConnection, name: &str) -> bool {
+    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+        .bind(name)
+        .fetch_optional(&mut *conn)
+        .await
+        .unwrap()
+        .is_some()
+}
+
 /// Create+migrate the shared template if it doesn't exist yet.
 /// Uses a Postgres advisory lock to serialize concurrent processes.
 async fn ensure_template(base_url: &str) {
     let admin_pool = PgPool::connect(base_url).await.unwrap();
 
     // Fast path: template already exists.
-    if template_exists(&admin_pool).await {
+    if db_exists(&admin_pool, TEMPLATE_DB_NAME).await {
         admin_pool.close().await;
         return;
     }
@@ -134,14 +229,7 @@ async fn ensure_template(base_url: &str) {
         .await
         .unwrap();
 
-    let exists: Option<sqlx::postgres::PgRow> =
-        sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
-            .bind(TEMPLATE_DB_NAME)
-            .fetch_optional(&mut conn)
-            .await
-            .unwrap();
-
-    if exists.is_none() {
+    if !db_exists_conn(&mut conn, TEMPLATE_DB_NAME).await {
         sqlx::query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
             .execute(&mut conn)
             .await
@@ -161,16 +249,6 @@ async fn ensure_template(base_url: &str) {
     admin_pool.close().await;
 }
 
-async fn template_exists(admin_pool: &PgPool) -> bool {
-    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
-        .bind(TEMPLATE_DB_NAME)
-        .fetch_optional(admin_pool)
-        .await
-        .unwrap()
-        .map(|r| r.try_get::<i32, _>(0).unwrap_or(0) == 1)
-        .unwrap_or(false)
-}
-
 /// Replace the database name in a Postgres URL.
 /// Handles both `postgres://user:pass@host:port/dbname` and with query params.
 fn replace_db_name(url: &str, new_db: &str) -> String {
@@ -183,6 +261,241 @@ fn replace_db_name(url: &str, new_db: &str) -> String {
         result.push_str(query);
     }
     result
+}
+
+/// Create the bootstrapped template if it doesn't exist yet.
+/// Clones from the migration template, starts a temp API server, runs the
+/// standard org/user/key/group bootstrap, stores fixtures, then terminates
+/// all connections so the DB can serve as a template.
+async fn ensure_bootstrapped(base_url: &str) {
+    let admin_pool = PgPool::connect(base_url).await.unwrap();
+
+    // Fast path: template already exists.
+    if db_exists(&admin_pool, BOOTSTRAPPED_DB_NAME).await {
+        admin_pool.close().await;
+        return;
+    }
+
+    // Slow path — advisory lock (same pattern as ensure_template).
+    let mut conn = admin_pool.acquire().await.unwrap().detach();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(BOOTSTRAPPED_LOCK_KEY)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    if !db_exists_conn(&mut conn, BOOTSTRAPPED_DB_NAME).await {
+        // Clone from migration template
+        sqlx::query(&format!(
+            "CREATE DATABASE \"{BOOTSTRAPPED_DB_NAME}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let bs_url = replace_db_name(base_url, BOOTSTRAPPED_DB_NAME);
+        let bs_pool = PgPool::connect(&bs_url).await.unwrap();
+
+        // Create fixtures table (test-only, not a migration)
+        sqlx::query("CREATE TABLE _test_fixtures (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&bs_pool)
+            .await
+            .unwrap();
+
+        // Start temp server and run the standard bootstrap via HTTP
+        let (addr, client) = start_api(bs_pool.clone()).await;
+        let base = format!("http://{addr}");
+        let fixtures = run_standard_bootstrap(&base, &client).await;
+
+        // Persist fixtures into the template DB
+        for (k, v) in [
+            ("org_id", fixtures.org_id.to_string()),
+            ("org_key", fixtures.org_key.clone()),
+            ("admin_key", fixtures.admin_key.clone()),
+            ("write_key", fixtures.write_key.clone()),
+            ("read_key", fixtures.read_key.clone()),
+            ("user_id_0", fixtures.user_ids[0].to_string()),
+            ("user_id_1", fixtures.user_ids[1].to_string()),
+            ("user_id_2", fixtures.user_ids[2].to_string()),
+        ] {
+            sqlx::query("INSERT INTO _test_fixtures (key, value) VALUES ($1, $2)")
+                .bind(k)
+                .bind(&v)
+                .execute(&bs_pool)
+                .await
+                .unwrap();
+        }
+
+        // Close our pool, then terminate the server's lingering connections
+        // so Postgres allows using this DB as a template.
+        bs_pool.close().await;
+        sqlx::query(&format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = '{BOOTSTRAPPED_DB_NAME}' AND pid <> pg_backend_pid()"
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
+
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(BOOTSTRAPPED_LOCK_KEY)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let _ = conn.close().await;
+    admin_pool.close().await;
+}
+
+/// Run the standard 3-user org bootstrap via HTTP.
+/// Creates: org, org-level key, admin/write/read-only users with keys,
+/// admin→Admins group, read-only→Viewers group with read access.
+async fn run_standard_bootstrap(base: &str, client: &Client) -> BootstrapFixtures {
+    // Create org
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "Tpl Test Org", "slug": format!("tpl-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    // Org-level key
+    let org_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "name": "org-admin"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
+
+    // Find system groups
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups.iter().find(|g| g["name"] == "Admins").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let everyone_id = groups.iter().find(|g| g["name"] == "Everyone").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Create 3 users: admin, write, read-only
+    let mut user_ids = [Uuid::nil(); 3];
+    let mut keys = vec![];
+    for (i, name) in ["admin-user", "write-user", "readonly-user"]
+        .iter()
+        .enumerate()
+    {
+        let user: Value = client
+            .post(format!("{base}/v1/identities"))
+            .header("Authorization", format!("Bearer {org_key}"))
+            .json(&json!({"name": name, "kind": "user"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let uid: Uuid = user["id"].as_str().unwrap().parse().unwrap();
+        user_ids[i] = uid;
+
+        let key_resp: Value = client
+            .post(format!("{base}/v1/api-keys"))
+            .header("Authorization", format!("Bearer {org_key}"))
+            .json(&json!({"org_id": org_id, "identity_id": uid, "name": format!("{name}-key")}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        keys.push(key_resp["key"].as_str().unwrap().to_string());
+    }
+
+    // Admin user -> Admins group
+    client
+        .post(format!("{base}/v1/groups/{admins_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_ids[0]}))
+        .send()
+        .await
+        .unwrap();
+
+    // Fetch overslash service instance
+    let overslash_svc: Value = client
+        .get(format!("{base}/v1/services/overslash"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_svc_id = overslash_svc["id"].as_str().unwrap().to_string();
+
+    // Remove read-only user from Everyone
+    client
+        .delete(format!(
+            "{base}/v1/groups/{everyone_id}/members/{}",
+            user_ids[2]
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+
+    // Create Viewers group with read access
+    let viewers: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Viewers"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let viewers_id = viewers["id"].as_str().unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{viewers_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"service_instance_id": overslash_svc_id, "access_level": "read"}))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{viewers_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_ids[2]}))
+        .send()
+        .await
+        .unwrap();
+
+    BootstrapFixtures {
+        org_id,
+        org_key,
+        admin_key: keys[0].clone(),
+        write_key: keys[1].clone(),
+        read_key: keys[2].clone(),
+        user_ids,
+    }
 }
 
 /// Start the Overslash API server in-process on a random port.
