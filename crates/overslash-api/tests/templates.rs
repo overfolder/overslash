@@ -12,9 +12,10 @@ fn auth(key: &str) -> (&'static str, String) {
 }
 
 /// Bootstrap an org with admin, write, and read-only users + keys.
+/// Clones from a pre-bootstrapped DB template so the 11 setup HTTP requests
+/// only run once per test suite, not once per test.
 /// Returns (base_url, client, org_id, admin_key, write_key, read_key, org_key, user_ids).
 async fn bootstrap(
-    pool: sqlx::PgPool,
     with_registry: bool,
 ) -> (
     String,
@@ -26,6 +27,8 @@ async fn bootstrap(
     String,
     [Uuid; 3],
 ) {
+    let (pool, fixtures) = common::test_pool_bootstrapped().await;
+
     let (base, client) = if with_registry {
         common::start_api_with_registry(pool, None).await
     } else {
@@ -33,151 +36,15 @@ async fn bootstrap(
         (format!("http://{addr}"), client)
     };
 
-    // Create org
-    let org: Value = client
-        .post(format!("{base}/v1/orgs"))
-        .json(&json!({"name": "Tpl Test Org", "slug": format!("tpl-{}", Uuid::new_v4())}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-
-    // Bootstrap org-level key
-    let org_key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
-
-    // Find system groups
-    let groups: Vec<Value> = client
-        .get(format!("{base}/v1/groups"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admins_id = groups.iter().find(|g| g["name"] == "Admins").unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let everyone_id = groups.iter().find(|g| g["name"] == "Everyone").unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // Create 3 users: admin, write, read-only
-    let mut user_ids = [Uuid::nil(); 3];
-    let mut keys = vec![];
-
-    for (i, name) in ["admin-user", "write-user", "readonly-user"]
-        .iter()
-        .enumerate()
-    {
-        let user: Value = client
-            .post(format!("{base}/v1/identities"))
-            .header(auth(&org_key).0, auth(&org_key).1)
-            .json(&json!({"name": name, "kind": "user"}))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let uid: Uuid = user["id"].as_str().unwrap().parse().unwrap();
-        user_ids[i] = uid;
-
-        let key_resp: Value = client
-            .post(format!("{base}/v1/api-keys"))
-            .header(auth(&org_key).0, auth(&org_key).1)
-            .json(&json!({"org_id": org_id, "identity_id": uid, "name": format!("{name}-key")}))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        keys.push(key_resp["key"].as_str().unwrap().to_string());
-    }
-
-    // Admin user -> Admins group
-    client
-        .post(format!("{base}/v1/groups/{admins_id}/members"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({"identity_id": user_ids[0]}))
-        .send()
-        .await
-        .unwrap();
-
-    // Read-only user: remove from Everyone, add to a Viewers group with read access
-    let overslash_svc: Value = client
-        .get(format!("{base}/v1/services/overslash"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let overslash_svc_id = overslash_svc["id"].as_str().unwrap().to_string();
-
-    client
-        .delete(format!(
-            "{base}/v1/groups/{everyone_id}/members/{}",
-            user_ids[2]
-        ))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .send()
-        .await
-        .unwrap();
-
-    let viewers: Value = client
-        .post(format!("{base}/v1/groups"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({"name": "Viewers"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let viewers_id = viewers["id"].as_str().unwrap();
-
-    client
-        .post(format!("{base}/v1/groups/{viewers_id}/grants"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({"service_instance_id": overslash_svc_id, "access_level": "read"}))
-        .send()
-        .await
-        .unwrap();
-
-    client
-        .post(format!("{base}/v1/groups/{viewers_id}/members"))
-        .header(auth(&org_key).0, auth(&org_key).1)
-        .json(&json!({"identity_id": user_ids[2]}))
-        .send()
-        .await
-        .unwrap();
-
     (
         base,
         client,
-        org_id,
-        keys[0].clone(), // admin
-        keys[1].clone(), // write
-        keys[2].clone(), // read-only
-        org_key,
-        user_ids,
+        fixtures.org_id,
+        fixtures.admin_key,
+        fixtures.write_key,
+        fixtures.read_key,
+        fixtures.org_key,
+        fixtures.user_ids,
     )
 }
 
@@ -187,8 +54,7 @@ async fn bootstrap(
 
 #[tokio::test]
 async fn test_user_template_blocked_when_setting_off() {
-    let pool = common::test_pool().await;
-    let (base, client, _org_id, _admin_key, write_key, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, _org_id, _admin_key, write_key, _, _, _) = bootstrap(false).await;
 
     // Default: allow_user_templates is false
     let resp = client
@@ -207,8 +73,7 @@ async fn test_user_template_blocked_when_setting_off() {
 
 #[tokio::test]
 async fn test_user_template_crud_when_setting_on() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(false).await;
 
     // Admin enables user templates
     let resp = client
@@ -269,8 +134,7 @@ async fn test_user_template_crud_when_setting_on() {
 
 #[tokio::test]
 async fn test_write_user_cannot_create_org_template() {
-    let pool = common::test_pool().await;
-    let (base, client, _, _, write_key, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, _, _, write_key, _, _, _) = bootstrap(false).await;
 
     let resp = client
         .post(format!("{base}/v1/templates"))
@@ -292,8 +156,7 @@ async fn test_write_user_cannot_create_org_template() {
 
 #[tokio::test]
 async fn test_admin_creates_org_template() {
-    let pool = common::test_pool().await;
-    let (base, client, _, admin_key, _, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(false).await;
 
     let resp = client
         .post(format!("{base}/v1/templates"))
@@ -317,9 +180,7 @@ async fn test_admin_creates_org_template() {
 
 #[tokio::test]
 async fn test_user_cannot_modify_other_users_template() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, write_key, _, _, _user_ids) =
-        bootstrap(pool, false).await;
+    let (base, client, org_id, admin_key, write_key, _, _, _user_ids) = bootstrap(false).await;
 
     // Enable user templates
     client
@@ -410,8 +271,7 @@ async fn test_user_cannot_modify_other_users_template() {
 
 #[tokio::test]
 async fn test_global_templates_visible_by_default() {
-    let pool = common::test_pool().await;
-    let (base, client, _, admin_key, _, _, _, _) = bootstrap(pool, true).await;
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(true).await;
 
     let resp = client
         .get(format!("{base}/v1/templates"))
@@ -429,8 +289,7 @@ async fn test_global_templates_visible_by_default() {
 
 #[tokio::test]
 async fn test_global_templates_hidden_when_disabled() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(pool, true).await;
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
     // Disable global templates
     let resp = client
@@ -465,8 +324,7 @@ async fn test_global_templates_hidden_when_disabled() {
 
 #[tokio::test]
 async fn test_selective_global_enable() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(pool, true).await;
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
     // Disable all globals
     client
@@ -544,8 +402,7 @@ async fn test_selective_global_enable() {
 
 #[tokio::test]
 async fn test_admin_compliance_view() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(pool, true).await;
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
     // Enable user templates and create one
     client
@@ -646,8 +503,7 @@ async fn test_admin_compliance_view() {
 
 #[tokio::test]
 async fn test_template_operations_produce_audit_entries() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, _, _, _, _) = bootstrap(pool, true).await;
+    let (base, client, org_id, admin_key, _, _, _, _) = bootstrap(true).await;
 
     // Create org template (generates audit)
     let resp = client
@@ -738,8 +594,7 @@ async fn test_template_operations_produce_audit_entries() {
 
 #[tokio::test]
 async fn test_template_settings_no_fields_returns_400() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, _, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, org_id, admin_key, _, _, _, _) = bootstrap(false).await;
 
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
@@ -753,8 +608,7 @@ async fn test_template_settings_no_fields_returns_400() {
 
 #[tokio::test]
 async fn test_template_settings_write_user_forbidden() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, _, write_key, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, org_id, _, write_key, _, _, _) = bootstrap(false).await;
 
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
@@ -772,8 +626,7 @@ async fn test_template_settings_write_user_forbidden() {
 
 #[tokio::test]
 async fn test_template_actions_respects_global_filter() {
-    let pool = common::test_pool().await;
-    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(pool, true).await;
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
     // Disable global templates
     client
@@ -827,8 +680,7 @@ async fn test_template_actions_respects_global_filter() {
 
 #[tokio::test]
 async fn test_enable_nonexistent_global_returns_404() {
-    let pool = common::test_pool().await;
-    let (base, client, _, admin_key, _, _, _, _) = bootstrap(pool, false).await;
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(false).await;
 
     let resp = client
         .post(format!("{base}/v1/templates/enabled-globals"))
