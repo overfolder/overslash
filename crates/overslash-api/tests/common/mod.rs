@@ -75,12 +75,24 @@ pub async fn test_pool_bootstrapped() -> (PgPool, BootstrapFixtures) {
 
     let test_db = format!("test_{}", Uuid::new_v4().simple());
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
-    sqlx::query(&format!(
-        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{BOOTSTRAPPED_DB_NAME}\""
-    ))
-    .execute(&admin_pool)
-    .await
-    .unwrap();
+    // pg_terminate_backend is async — the template may briefly have lingering
+    // sessions right after ensure_bootstrapped returns.  Retry a few times.
+    let mut retries = 0u32;
+    loop {
+        match sqlx::query(&format!(
+            "CREATE DATABASE \"{test_db}\" TEMPLATE \"{BOOTSTRAPPED_DB_NAME}\""
+        ))
+        .execute(&admin_pool)
+        .await
+        {
+            Ok(_) => break,
+            Err(e) if retries < 20 && format!("{e}").contains("being accessed") => {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("clone bootstrapped template: {e}"),
+        }
+    }
     admin_pool.close().await;
 
     register_for_cleanup(base_url.clone(), test_db.clone());
@@ -270,13 +282,10 @@ fn replace_db_name(url: &str, new_db: &str) -> String {
 async fn ensure_bootstrapped(base_url: &str) {
     let admin_pool = PgPool::connect(base_url).await.unwrap();
 
-    // Fast path: template already exists.
-    if db_exists(&admin_pool, BOOTSTRAPPED_DB_NAME).await {
-        admin_pool.close().await;
-        return;
-    }
-
-    // Slow path — advisory lock (same pattern as ensure_template).
+    // No fast path here — unlike the migration template, the bootstrapped
+    // template has a window where the DB row exists but connections are still
+    // being torn down.  The advisory lock guarantees callers don't try to
+    // clone until the creating process is fully done.
     let mut conn = admin_pool.acquire().await.unwrap().detach();
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(BOOTSTRAPPED_LOCK_KEY)
@@ -336,6 +345,21 @@ async fn ensure_bootstrapped(base_url: &str) {
         .execute(&mut conn)
         .await
         .unwrap();
+
+        // pg_terminate_backend is asynchronous — wait until the backends
+        // are actually gone before releasing the advisory lock.
+        for _ in 0..50 {
+            let row = sqlx::query("SELECT count(*) AS n FROM pg_stat_activity WHERE datname = $1")
+                .bind(BOOTSTRAPPED_DB_NAME)
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+            let n: i64 = row.get("n");
+            if n == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     sqlx::query("SELECT pg_advisory_unlock($1)")
