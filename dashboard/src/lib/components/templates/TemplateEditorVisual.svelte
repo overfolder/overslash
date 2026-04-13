@@ -22,8 +22,12 @@
 	let auth = $state<ServiceAuth[]>(data.auth ?? []);
 	let actions = $state<Record<string, ServiceAction>>(data.actions ?? {});
 
+	// Prevent $effect from overwriting local state during self-initiated updates
+	let suppressSync = false;
+
 	// Re-sync when data prop changes (e.g. after YAML tab edit)
 	$effect(() => {
+		if (suppressSync) return;
 		key = data.key;
 		displayName = data.display_name;
 		description = data.description ?? '';
@@ -39,6 +43,8 @@
 	let showActionModal = $state(false);
 
 	function emit() {
+		suppressSync = true;
+		queueMicrotask(() => (suppressSync = false));
 		onchange({
 			...data,
 			key,
