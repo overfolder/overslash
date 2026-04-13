@@ -16,6 +16,11 @@ auth:
       header_name: Authorization
       prefix: "Bearer "
 actions:
+  get_authenticated_user:
+    method: GET
+    path: /user
+    description: Get the authenticated user's profile
+    risk: read
   list_repos:
     method: GET
     path: /user/repos
@@ -26,6 +31,36 @@ actions:
         type: string
         description: Sort by created, updated, pushed, full_name
         enum: [created, updated, pushed, full_name]
+      per_page:
+        type: integer
+        description: Results per page (max 100)
+        default: 30
+  get_repo:
+    method: GET
+    path: /repos/{repo}
+    description: "Get repository {repo}"
+    risk: read
+    scope_param: repo
+    params:
+      repo:
+        type: string
+        required: true
+        description: "owner/repo"
+  list_issues:
+    method: GET
+    path: /repos/{repo}/issues
+    description: "List issues on {repo}[ (state={state})]"
+    risk: read
+    scope_param: repo
+    params:
+      repo:
+        type: string
+        required: true
+        description: "owner/repo"
+      state:
+        type: string
+        description: Filter by state
+        enum: [open, closed, all]
       per_page:
         type: integer
         description: Results per page (max 100)
