@@ -33,6 +33,12 @@ variable "dashboard_url" {
   default     = "/"
 }
 
+variable "enable_dev_auth" {
+  description = "Enable DEV_AUTH bypass login on Cloud Run (dev only)"
+  type        = bool
+  default     = false
+}
+
 # --- Feature flags ---
 
 variable "use_private_vpc" {

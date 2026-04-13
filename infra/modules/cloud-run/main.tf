@@ -95,6 +95,11 @@ variable "dashboard_url" {
   default = "/"
 }
 
+variable "enable_dev_auth" {
+  type    = bool
+  default = false
+}
+
 variable "redis_host" {
   type    = string
   default = ""
@@ -119,6 +124,7 @@ locals {
       SERVICES_DIR              = "/app/services"
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
+    var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
   )
 
