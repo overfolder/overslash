@@ -10,11 +10,12 @@ interface Provider {
 }
 
 export const load: PageLoad = async ({ url, fetch }) => {
+	const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
 	const org = url.searchParams.get('org');
 	const qs = org ? `?org=${encodeURIComponent(org)}` : '';
 	let providers: Provider[] = [];
 	try {
-		const res = await fetch(`/auth/providers${qs}`);
+		const res = await fetch(`${apiBase}/auth/providers${qs}`);
 		if (res.ok) {
 			const body = await res.json();
 			providers = body.providers ?? [];

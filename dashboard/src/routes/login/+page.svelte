@@ -9,12 +9,14 @@
 	const returnTo = $derived(data.returnTo as string);
 	const reason = $derived(data.reason as string | null);
 
+	const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
+
 	function loginUrl(key: string): string {
-		return `/auth/login/${encodeURIComponent(key)}`;
+		return `${apiBase}/auth/login/${encodeURIComponent(key)}`;
 	}
 
 	async function devLogin() {
-		const res = await fetch('/auth/dev/token', { credentials: 'include' });
+		const res = await fetch(`${apiBase}/auth/dev/token`, { credentials: 'include' });
 		if (res.ok) {
 			await goto(returnTo);
 		}

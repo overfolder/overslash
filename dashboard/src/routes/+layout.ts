@@ -16,7 +16,8 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
 	}
 
 	try {
-		const res = await fetch('/auth/me/identity', { credentials: 'include' });
+		const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
+		const res = await fetch(`${apiBase}/auth/me/identity`, { credentials: 'include' });
 		if (res.status === 401) {
 			throw redirect(302, `/login?return_to=${encodeURIComponent(url.pathname + url.search)}`);
 		}
