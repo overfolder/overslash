@@ -21,6 +21,18 @@ variable "domain" {
   default     = ""
 }
 
+variable "dashboard_origin" {
+  description = "Comma-separated allowed CORS origins for the dashboard (e.g. https://app.overslash.com)"
+  type        = string
+  default     = "*localhost*"
+}
+
+variable "dashboard_url" {
+  description = "URL to redirect to after OAuth login (e.g. https://app.overslash.com)"
+  type        = string
+  default     = "/"
+}
+
 # --- Feature flags ---
 
 variable "use_private_vpc" {

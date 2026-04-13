@@ -2,7 +2,9 @@ project_id = "overslash-dev"
 region     = "europe-west1"
 env        = "dev"
 
-domain = "api.dev.overslash.com"
+domain           = "api.dev.overslash.com"
+dashboard_origin = "https://app.dev.overslash.com"
+dashboard_url    = "https://app.dev.overslash.com"
 
 # Cloud SQL — minimum viable
 cloud_sql_tier         = "db-f1-micro"
