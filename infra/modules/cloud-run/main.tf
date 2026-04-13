@@ -118,7 +118,7 @@ locals {
       RUST_LOG                  = "info"
       SERVICES_DIR              = "/app/services"
     },
-    var.domain != "" ? { PUBLIC_URL = "https://${var.domain}" } : {},
+    var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
   )
 
