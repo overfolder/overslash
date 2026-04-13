@@ -77,6 +77,37 @@ export interface TemplateDetail {
   id?: string;
 }
 
+export interface CreateTemplateRequest {
+  key: string;
+  display_name: string;
+  description?: string;
+  category?: string;
+  hosts: string[];
+  auth: ServiceAuth[];
+  actions: Record<string, ServiceAction>;
+  user_level?: boolean;
+}
+
+export interface UpdateTemplateRequest {
+  display_name?: string;
+  description?: string;
+  category?: string;
+  hosts?: string[];
+  auth?: ServiceAuth[];
+  actions?: Record<string, ServiceAction>;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: ValidationMessage[];
+  warnings: ValidationMessage[];
+}
+
+export interface ValidationMessage {
+  path?: string;
+  message: string;
+}
+
 export interface ActionSummary {
   key: string;
   method: string;

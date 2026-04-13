@@ -23,5 +23,11 @@
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2",
     "vite": "^8.0.8"
+  },
+  "dependencies": {
+    "@codemirror/lang-yaml": "^6.1.3",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "codemirror": "^6.0.2",
+    "yaml": "^2.8.3"
   }
 }

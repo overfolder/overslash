@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
 	import {
 		listServices,
@@ -16,6 +17,12 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import TemplateCatalog from '$lib/components/templates/TemplateCatalog.svelte';
+
+	let activeTab = $state<'instances' | 'catalog'>('instances');
+
+	// Derive isAdmin from layout data
+	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
@@ -141,79 +148,106 @@
 			<h1>Services</h1>
 			<p class="sub">Service instances bind a template to credentials your agents can use.</p>
 		</div>
-		<button type="button" class="btn primary" onclick={() => goto('/services/new')}>+ New service</button>
+		{#if activeTab === 'instances'}
+			<button type="button" class="btn primary" onclick={() => goto('/services/new')}>+ New service</button>
+		{/if}
 	</header>
 
-	{#if error}
-		<div class="error">{error}</div>
-	{/if}
+	<div class="tabs" role="tablist">
+		<button
+			type="button"
+			role="tab"
+			class="tab"
+			aria-selected={activeTab === 'instances'}
+			onclick={() => (activeTab = 'instances')}
+		>
+			Instances
+		</button>
+		<button
+			type="button"
+			role="tab"
+			class="tab"
+			aria-selected={activeTab === 'catalog'}
+			onclick={() => (activeTab = 'catalog')}
+		>
+			Template Catalog
+		</button>
+	</div>
 
-	{#if !loading && services.length > 0}
-		<div class="filters">
-			<SearchBar
-				keys={searchKeys}
-				bind:value={searchValue}
-				placeholder="Search services… (try status=active)"
-				onchange={(next) => (searchValue = next)}
-			/>
-		</div>
-	{/if}
+	{#if activeTab === 'instances'}
+		{#if error}
+			<div class="error">{error}</div>
+		{/if}
 
-	{#if loading}
-		<div class="empty">Loading…</div>
-	{:else if services.length === 0}
-		<div class="empty">
-			<h2>No services yet</h2>
-			<p>Pick a template to wire up credentials and start making authenticated calls.</p>
-			<button type="button" class="btn primary" onclick={() => goto('/services/new')}>
-				+ Create your first service
-			</button>
-		</div>
-	{:else if filtered.length === 0}
-		<div class="empty">No services match your filters.</div>
-	{:else}
-		<div class="table-wrap">
-			<table>
-				<thead>
-					<tr>
-						<th>Name</th>
-						<th>Template</th>
-						<th>Status</th>
-						<th>Credentials</th>
-						<th>Owner</th>
-						<th class="actions-col"></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each filtered as s (s.id)}
+		{#if !loading && services.length > 0}
+			<div class="filters">
+				<SearchBar
+					keys={searchKeys}
+					bind:value={searchValue}
+					placeholder="Search services… (try status=active)"
+					onchange={(next) => (searchValue = next)}
+				/>
+			</div>
+		{/if}
+
+		{#if loading}
+			<div class="empty">Loading…</div>
+		{:else if services.length === 0}
+			<div class="empty">
+				<h2>No services yet</h2>
+				<p>Pick a template to wire up credentials and start making authenticated calls.</p>
+				<button type="button" class="btn primary" onclick={() => goto('/services/new')}>
+					+ Create your first service
+				</button>
+			</div>
+		{:else if filtered.length === 0}
+			<div class="empty">No services match your filters.</div>
+		{:else}
+			<div class="table-wrap">
+				<table>
+					<thead>
 						<tr>
-							<td>
-								<a href={`/services/${encodeURIComponent(s.name)}`} class="link">{s.name}</a>
-							</td>
-							<td>
-								<span class="mono">{s.template_key}</span>
-								<StatusBadge variant={s.template_source as 'global' | 'org' | 'user'} />
-							</td>
-							<td><StatusBadge variant={s.status} /></td>
-							<td><StatusBadge variant={credentialStatus(s)} /></td>
-							<td class="mono muted">{s.owner_identity_id ? 'user' : 'org'}</td>
-							<td class="actions-col">
-								<button type="button" class="btn small" onclick={() => archive(s)}>
-									{s.status === 'archived' ? 'Restore' : 'Archive'}
-								</button>
-								<button
-									type="button"
-									class="btn small danger"
-									onclick={() => (pendingDelete = s)}
-								>
-									Delete
-								</button>
-							</td>
+							<th>Name</th>
+							<th>Template</th>
+							<th>Status</th>
+							<th>Credentials</th>
+							<th>Owner</th>
+							<th class="actions-col"></th>
 						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
+					</thead>
+					<tbody>
+						{#each filtered as s (s.id)}
+							<tr>
+								<td>
+									<a href={`/services/${encodeURIComponent(s.name)}`} class="link">{s.name}</a>
+								</td>
+								<td>
+									<span class="mono">{s.template_key}</span>
+									<StatusBadge variant={s.template_source as 'global' | 'org' | 'user'} />
+								</td>
+								<td><StatusBadge variant={s.status} /></td>
+								<td><StatusBadge variant={credentialStatus(s)} /></td>
+								<td class="mono muted">{s.owner_identity_id ? 'user' : 'org'}</td>
+								<td class="actions-col">
+									<button type="button" class="btn small" onclick={() => archive(s)}>
+										{s.status === 'archived' ? 'Restore' : 'Archive'}
+									</button>
+									<button
+										type="button"
+										class="btn small danger"
+										onclick={() => (pendingDelete = s)}
+									>
+										Delete
+									</button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+	{:else}
+		<TemplateCatalog {isAdmin} />
 	{/if}
 </div>
 
@@ -232,6 +266,31 @@
 <style>
 	.page {
 		max-width: 1100px;
+	}
+	.tabs {
+		display: flex;
+		gap: 0;
+		border-bottom: 1px solid var(--color-border);
+		margin-bottom: 1.25rem;
+	}
+	.tab {
+		padding: 0.6rem 1.1rem;
+		font: inherit;
+		font-size: 0.88rem;
+		font-weight: 500;
+		color: var(--color-text-muted);
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		cursor: pointer;
+		transition: color 0.1s ease, border-color 0.1s ease;
+	}
+	.tab:hover {
+		color: var(--color-text);
+	}
+	.tab[aria-selected='true'] {
+		color: var(--color-primary, #6366f1);
+		border-bottom-color: var(--color-primary, #6366f1);
 	}
 	.page-head {
 		display: flex;
