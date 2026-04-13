@@ -52,12 +52,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SQLX_OFFLINE: "true"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Format check
         run: cargo fmt --check
@@ -143,10 +145,12 @@ jobs:
       SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
       SQLX_OFFLINE: "true"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
