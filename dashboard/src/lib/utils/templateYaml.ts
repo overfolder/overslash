@@ -20,15 +20,21 @@ export function yamlToTemplate(
 	try {
 		const parsed = yamlParse(yaml);
 		if (!parsed || typeof parsed !== 'object') return null;
+		const actions = parsed.actions;
+		const validActions =
+			actions && typeof actions === 'object' && !Array.isArray(actions)
+				? actions
+				: {};
+
 		return {
 			...base,
 			key: parsed.key ?? base.key,
 			display_name: parsed.display_name ?? base.display_name,
 			description: parsed.description || null,
 			category: parsed.category || null,
-			hosts: parsed.hosts ?? [],
-			auth: parsed.auth ?? [],
-			actions: parsed.actions ?? {}
+			hosts: Array.isArray(parsed.hosts) ? parsed.hosts : [],
+			auth: Array.isArray(parsed.auth) ? parsed.auth : [],
+			actions: validActions
 		};
 	} catch {
 		return null;

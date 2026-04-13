@@ -124,6 +124,8 @@
 		}
 	}
 
+	// Backend requires AdminAcl for template CRUD — non-admins cannot
+	// create/update/delete via the API, so we gate UI controls on isAdmin.
 	function canEdit(t: TemplateSummary): boolean {
 		if (t.tier === 'global') return false;
 		return isAdmin;
