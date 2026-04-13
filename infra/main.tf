@@ -107,6 +107,7 @@ module "cloud_run" {
   # Secret references
   db_password_secret_id         = module.secret_manager.db_password_secret_id
   encryption_key_secret_id      = module.secret_manager.encryption_key_secret_id
+  signing_key_secret_id         = module.secret_manager.signing_key_secret_id
   oauth_client_id_secret_id     = module.secret_manager.oauth_client_id_secret_id
   oauth_client_secret_secret_id = module.secret_manager.oauth_client_secret_secret_id
 

@@ -60,6 +60,10 @@ variable "encryption_key_secret_id" {
   type = string
 }
 
+variable "signing_key_secret_id" {
+  type = string
+}
+
 variable "oauth_client_id_secret_id" {
   type = string
 }
@@ -187,6 +191,15 @@ resource "google_cloud_run_v2_service" "api" {
         value_source {
           secret_key_ref {
             secret  = var.encryption_key_secret_id
+            version = "latest"
+          }
+        }
+      }
+      env {
+        name = "SIGNING_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = var.signing_key_secret_id
             version = "latest"
           }
         }

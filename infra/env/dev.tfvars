@@ -2,7 +2,7 @@ project_id = "overslash-dev"
 region     = "europe-west1"
 env        = "dev"
 
-domain = ""
+domain = "api.dev.overslash.com"
 
 # Cloud SQL — minimum viable
 cloud_sql_tier         = "db-f1-micro"

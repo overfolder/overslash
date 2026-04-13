@@ -49,6 +49,25 @@ resource "google_secret_manager_secret_version" "encryption_key" {
   secret_data = random_id.encryption_key.hex
 }
 
+# --- Signing key (HMAC for API tokens = 32 bytes = 64 hex chars) ---
+
+resource "google_secret_manager_secret" "signing_key" {
+  secret_id = "${var.base_prefix}-signing-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "random_id" "signing_key" {
+  byte_length = 32
+}
+
+resource "google_secret_manager_secret_version" "signing_key" {
+  secret      = google_secret_manager_secret.signing_key.id
+  secret_data = random_id.signing_key.hex
+}
+
 # --- OAuth client ID (placeholder - set real value via gcloud) ---
 
 resource "google_secret_manager_secret" "oauth_client_id" {
@@ -90,6 +109,10 @@ output "db_password_value" {
 
 output "encryption_key_secret_id" {
   value = google_secret_manager_secret.encryption_key.secret_id
+}
+
+output "signing_key_secret_id" {
+  value = google_secret_manager_secret.signing_key.secret_id
 }
 
 output "oauth_client_id_secret_id" {
