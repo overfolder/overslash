@@ -66,8 +66,8 @@ actions:
         type: string
         description: "Search query (Gmail search syntax, e.g. 'from:user@example.com subject:hello')"
       labelIds:
-        type: array
-        description: Only return messages with labels matching all of the specified label IDs
+        type: string
+        description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED')"
       maxResults:
         type: integer
         description: Maximum number of messages to return (default 100, max 500)
@@ -101,8 +101,8 @@ actions:
         description: The format to return the message in
         enum: [full, metadata, minimal, raw]
       metadataHeaders:
-        type: array
-        description: "When format is 'metadata', only include these headers"
+        type: string
+        description: "When format is 'metadata', a header name to include (e.g. 'Subject', 'From')"
   send_message:
     method: POST
     path: /gmail/v1/users/{userId}/messages/send
