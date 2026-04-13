@@ -11,7 +11,8 @@
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 
 	let activeTab = $state<'visual' | 'yaml'>('visual');
-	let userLevel = $state(false);
+	// Default to user-level when non-admin (they can't create org templates)
+	let userLevel = $state(!isAdmin);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 	let syncError = $state<string | null>(null);
