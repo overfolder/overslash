@@ -44,8 +44,7 @@ export interface UpdateIdentityRequest {
 
 export function updateIdentity(id: string, req: UpdateIdentityRequest): Promise<Identity> {
 	// session helper has no PATCH; do it manually via fetch.
-	const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
-	return fetch(`${apiBase}/v1/identities/${id}`, {
+	return fetch(`/v1/identities/${id}`, {
 		method: 'PATCH',
 		credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },

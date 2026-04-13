@@ -46,8 +46,7 @@
 			// visitor is signed in. Server still validates the URL JWT; the
 			// session is a purely additive identity attestation (see SPEC §11
 			// User Signed Mode).
-			const apiBase = import.meta.env.VITE_API_BASE_URL ?? '';
-			const r = await fetch(`${apiBase}/public/secrets/provide/${encodeURIComponent(data.req_id)}`, {
+			const r = await fetch(`/public/secrets/provide/${encodeURIComponent(data.req_id)}`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				credentials: 'same-origin',

@@ -2,11 +2,9 @@
  * Cookie-based API client for authenticated dashboard pages.
  *
  * In dev, Vite proxies /v1 and /auth to the Rust backend on :3000.
- * In production (Vercel), VITE_API_BASE_URL points to the API origin.
+ * On Vercel, vercel.json rewrites proxy API paths to the backend.
  * Auth relies on the `oss_session` HttpOnly cookie set by the backend.
  */
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export class ApiError extends Error {
 	constructor(
@@ -34,7 +32,7 @@ async function request<T>(
 		init.body = JSON.stringify(body);
 	}
 
-	const res = await fetch(`${API_BASE}${path}`, init);
+	const res = await fetch(path, init);
 
 	if (!res.ok) {
 		let errorBody: unknown;
