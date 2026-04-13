@@ -202,13 +202,6 @@ if [[ "$CONFLICTING" -eq 1 ]]; then
 fi
 
 if [[ ${#FAILS[@]} -eq 0 ]]; then
-  # All gates passed: arm auto-merge so the PR enters the merge queue.
-  # ONLY for PRs targeting dev — master uses merge-commits via manual release
-  # cuts, and arming auto-merge there would bypass that workflow.
-  # Best-effort and idempotent — failure here must not block stop.
-  if [[ "$PR_BASE" == "dev" ]]; then
-    gh pr merge "$PR_NUMBER" --auto --squash >/dev/null 2>&1 || true
-  fi
   echo 0 > "$COUNTER_FILE"
   exit 0
 fi
