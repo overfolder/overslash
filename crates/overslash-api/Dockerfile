@@ -21,7 +21,7 @@ RUN mkdir -p crates/overslash-core/src \
     && echo "fn main() {}" > tests/mock-target/src/main.rs
 
 # Build dependencies only (cached layer)
-RUN cargo build --release --package overslash-api 2>/dev/null || true
+RUN cargo build --release --package overslash-api
 
 # Copy actual source code
 COPY crates/ crates/
