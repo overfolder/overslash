@@ -27,7 +27,7 @@
 	let responseType = $state(action?.response_type ?? '');
 	let params = $state<{ name: string; type: string; required: boolean; description: string; enumValues: string }[]>(
 		action
-			? Object.entries(action.params).map(([name, p]) => ({
+			? Object.entries(action.params ?? {}).map(([name, p]) => ({
 					name,
 					type: p.type,
 					required: p.required,
