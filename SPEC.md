@@ -110,6 +110,8 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 
 **Configuration sources:** IdPs can be configured via environment variables or in-database settings. Env vars take precedence — an IdP set via env var cannot be disabled or modified from the dashboard (shown as read-only with an "env" badge). This includes dev login: if `DEV_LOGIN=true` is set, it's active regardless of DB settings. In-database IdPs are managed by org-admins in the Org Dashboard settings.
 
+**IdP credential resolution.** Each IdP config stores its own `client_id` and `client_secret`. However, when org-level OAuth App Credentials exist for the same provider (§7), the IdP config defaults to those — the `[+ Add Provider]` flow pre-populates the fields from `OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET` org secrets. The org-admin can accept the defaults (sharing one OAuth app for both login and API access) or override with dedicated credentials (e.g., a separate GCP project for login with a narrower consent screen). IdP configs that use the org defaults stay in sync — updating the org OAuth App Credential updates the IdP automatically. IdP configs with overrides are independent.
+
 **Per-org IdP configuration:** Each org configures its own IdPs. An org can enable multiple IdPs simultaneously (e.g., Google for convenience + corporate Okta for SSO).
 
 **User provisioning:** On first login via an IdP, Overslash creates the user identity in the org (matched by email domain or explicit org assignment). Subsequent logins update the user's profile (name, avatar) from the IdP's claims.

@@ -696,7 +696,7 @@ Dev Login         Debug       ● Active    —         env (read-only)
 
 `[+ Add Provider]` flow:
 - **Type**: Google / GitHub / OIDC (custom)
-- **Google/GitHub**: client ID + client secret (endpoints are well-known)
+- **Google/GitHub**: client ID + client secret (endpoints are well-known). If org-level OAuth App Credentials exist for this provider (see below), the fields are pre-populated with those values and a note reads "Using org OAuth credentials". The admin can accept the defaults (credentials stay linked — updating the org OAuth App Credential updates the IdP) or clear and provide dedicated credentials (IdP becomes independent).
 - **Custom OIDC**: issuer URL (auto-discovers via `.well-known/openid-configuration`) + client ID + client secret
 - **Dev Login**: toggle on/off. Warning badge when enabled in production.
 
@@ -716,12 +716,12 @@ Below the Identity Providers table, an **OAuth App Credentials** section manages
 ```
 OAuth App Credentials
 
-Provider          Client ID               Configured    Used By                 Actions
-──────────────────────────────────────────────────────────────────────────────────────────
-Google            7293...apps.google…      ● Secrets     Login, Calendar, Drive  [Edit] [Remove]
-GitHub            Iv1.a8b2c3...            ● Secrets     Login, GitHub           [Edit] [Remove]
+Provider          Client ID               Configured    Actions
+────────────────────────────────────────────────────────────────
+Google            7293...apps.google…      ● Secrets     [Edit] [Remove]
+GitHub            Iv1.a8b2c3...            ● Secrets     [Edit] [Remove]
 
-                                                                    [+ Add Provider Credentials]
+                                                         [+ Add Provider Credentials]
 ```
 
 `[+ Add Provider Credentials]` flow:
@@ -729,8 +729,6 @@ GitHub            Iv1.a8b2c3...            ● Secrets     Login, GitHub        
 - **Client ID**: text input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_ID`
 - **Client Secret**: password input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_SECRET`
 - On save, creates (or updates) two org-level secrets with the well-known names.
-
-**"Used By"** column shows which features use these credentials: "Login" if the provider is also configured as an IdP, plus the names of services whose template references this provider. This makes the reuse between IdP and services visible.
 
 Credentials configured via environment variables show an "env" badge and are read-only (same pattern as IdP env overrides).
 
