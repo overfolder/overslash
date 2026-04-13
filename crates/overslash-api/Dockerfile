@@ -26,11 +26,13 @@ RUN cargo build --release --package overslash-api 2>/dev/null || true
 # Copy actual source code
 COPY crates/ crates/
 COPY services/ services/
+COPY .sqlx/ .sqlx/
 
 # Touch source files to invalidate the dummy builds
 RUN find crates/ -name "*.rs" -exec touch {} +
 
-# sqlx uses runtime query functions (not compile-time macros), so no DB needed
+# sqlx offline mode: use cached query metadata from .sqlx/ instead of a live DB
+ENV SQLX_OFFLINE=true
 RUN cargo build --release --package overslash-api
 
 # --- Runtime stage ---
