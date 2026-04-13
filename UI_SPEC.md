@@ -696,7 +696,7 @@ Dev Login         Debug       ● Active    —         env (read-only)
 
 `[+ Add Provider]` flow:
 - **Type**: Google / GitHub / OIDC (custom)
-- **Google/GitHub**: client ID + client secret (endpoints are well-known)
+- **Google/GitHub**: client ID + client secret (endpoints are well-known). If org-level OAuth App Credentials exist for this provider (see below), the fields are pre-populated with those values and a note reads "Using org OAuth credentials". The admin can accept the defaults (credentials stay linked — updating the org OAuth App Credential updates the IdP) or clear and provide dedicated credentials (IdP becomes independent).
 - **Custom OIDC**: issuer URL (auto-discovers via `.well-known/openid-configuration`) + client ID + client secret
 - **Dev Login**: toggle on/off. Warning badge when enabled in production.
 
@@ -708,6 +708,29 @@ Per-provider settings:
 - **Default group**: which group new users join on first login
 
 SAML 2.0: future concern. "SAML" appears greyed out in the type dropdown with a "coming soon" tooltip.
+
+#### OAuth App Credentials
+
+Below the Identity Providers table, an **OAuth App Credentials** section manages org-level OAuth client credentials shared across IdP login and service connections.
+
+```
+OAuth App Credentials
+
+Provider          Client ID               Configured    Actions
+────────────────────────────────────────────────────────────────
+Google            7293...apps.google…      ● Secrets     [Edit] [Remove]
+GitHub            Iv1.a8b2c3...            ● Secrets     [Edit] [Remove]
+
+                                                         [+ Add Provider Credentials]
+```
+
+`[+ Add Provider Credentials]` flow:
+- **Provider**: dropdown of known OAuth providers (Google, GitHub, Slack, etc.)
+- **Client ID**: text input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_ID`
+- **Client Secret**: password input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_SECRET`
+- On save, creates (or updates) two org-level secrets with the well-known names.
+
+Credentials configured via environment variables show an "env" badge and are read-only (same pattern as IdP env overrides).
 
 #### Webhooks
 
@@ -916,11 +939,11 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 1. **Pick a template** — dropdown or pre-selected from catalog
 2. **Name the instance** — defaults to the template key (e.g., `google-calendar`). The user can rename to create multiple instances (e.g., `google-calendar`, `personal-calendar`). This name is used in permission keys and by agents.
 3. **Connect credentials** — depends on the template's auth config:
-   - *OAuth*: shows requested scopes → Connect → OAuth redirect → callback → done
+   - *OAuth*: shows requested scopes and a `[Connect]` button that starts the OAuth redirect. Below the connect button, a collapsible **"Use your own OAuth app"** section (collapsed by default). When expanded, shows two text inputs: **Client ID** and **Client Secret** (password-masked with show/hide toggle). If the user fills these in and clicks `[Connect]`, Overslash creates two secrets in the user's vault — `OAUTH_{PROVIDER}_CLIENT_ID` and `OAUTH_{PROVIDER}_CLIENT_SECRET` — and uses them for the OAuth redirect instead of org/system credentials. A help link explains why a user might want this (e.g., "Use credentials from your own GCP project"). If org-level or system credentials are not configured for this provider, the collapsible section starts **expanded** and the fields are required — there's nothing to fall back to.
+   - *Org service with per-user OAuth*: OAuth redirect using the org's app credentials (resolved from org-level secrets). No BYOC option — the org controls the app.
    - *API key*: form to paste the key → stored as a versioned secret → done
    - *Both available*: user picks which auth method
    - *Org service with shared credential*: one-click, no auth needed
-   - *Org service with per-user OAuth*: OAuth redirect using the org's app
 4. **Status**: starts as Active (or Draft if the user wants to test first)
 
 ### Manage service
@@ -971,7 +994,7 @@ A form-based editor for the template definition:
 - Key, display name, description, base URL
 - **Auth config**: method picker (`API Key` / `OAuth 2.0` / `Bearer Token` / `Basic Auth` / `None`) + relevant fields per method:
   - **API Key**: header/query name, injection location (`header` / `query`), and a **Secret picker** for the key value (see below).
-  - **OAuth 2.0**: authorize URL, token URL, scopes (multi-input), and **Secret pickers** for `client_id` and `client_secret`.
+  - **OAuth 2.0**: **Provider** dropdown (built-in providers: Google, GitHub, Slack, etc., plus "Custom"). Scopes (multi-input). Token injection config (header name, prefix). For "Custom" provider: additionally shows authorize URL and token URL fields. Client credentials are **not** configured here — they resolve via the three-tier cascade (§7 in SPEC): user BYOC secrets → org-level secrets → system env vars. A status line below the provider picker shows where credentials will come from (e.g., "Using org credentials" or "No credentials configured — user must provide via BYOC on connect").
   - **Bearer Token**: **Secret picker** for the token.
   - **Basic Auth**: username field + **Secret picker** for the password.
   
@@ -1066,7 +1089,7 @@ Org-admins see additional capabilities:
 
 **Org services:**
 - Create org-level service instances from any template, assign to groups
-- For OAuth templates: configure the org's OAuth app credentials (client ID/secret). Users in assigned groups complete their own OAuth flow using the org's app.
+- For OAuth templates: the org's OAuth app credentials are resolved from org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET`, configured in Org Settings → OAuth App Credentials). If no org credentials exist for the template's provider, the create flow prompts the admin to configure them first (link to Org Settings). Users in assigned groups complete their own OAuth flow using the org's app.
 - For API key templates: optionally provide a shared credential, or let each user provide their own.
 
 **Org templates:**
