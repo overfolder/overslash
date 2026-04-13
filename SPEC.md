@@ -463,14 +463,23 @@ Secret values are encrypted at rest. Access to values depends on the actor:
 
 Overslash handles OAuth flows (authorization URL generation, code exchange, token storage, automatic refresh) for services that use OAuth authentication. The OAuth engine is internal machinery — not a user-facing concept. Users interact with **services** (§9), which encapsulate their credentials.
 
-OAuth client credentials can come from three sources:
+OAuth client credentials resolve via a three-tier cascade. At execution time, the OAuth engine walks the cascade top-to-bottom and uses the first match:
 
-1. **Service-level** — credentials configured on the service instance itself
-2. **Overslash system credentials** — managed by Overslash operators, used as defaults for global templates
+1. **User-level BYOC** — the user provides their own OAuth app credentials for a provider, stored as versioned secrets in the user's vault with well-known names: `OAUTH_{PROVIDER}_CLIENT_ID` and `OAUTH_{PROVIDER}_CLIENT_SECRET` (e.g., `OAUTH_GOOGLE_CLIENT_ID`). This lets power users or contractors use their own GCP/GitHub/etc. project without touching org config.
+
+2. **Org-level** — org-admins configure OAuth app credentials for a provider at the org level, stored as org-level secrets with the same well-known naming convention. All users in the org inherit these credentials for services that use the provider. This is the recommended path for Google Workspace customers (see below).
+
+3. **Overslash system credentials** — managed by instance operators via environment variables, used as defaults for all orgs. Covers consumer accounts and low-stakes scopes where a shared Overslash-verified app is acceptable.
+
+If no credentials are found at any level, the connect flow shows an error explaining that no OAuth app is configured for this provider.
 
 When a user creates a service from a template that uses OAuth, the connect flow walks them through the OAuth redirect. The resulting token is stored encrypted and bound to that service instance.
 
-**System credentials and verification.** Overslash system credentials are subject to the upstream IdP's app-verification process. For Google in particular, sensitive scopes (Calendar, basic Gmail/Drive) require Google brand verification, and restricted scopes (full Gmail/Drive) require an annual CASA assessment by an authorized lab. This is expensive, slow, and recurs yearly. For Google Workspace customers, **prefer per-org BYOC (bring-your-own client) credentials configured at the service-template level** — each Workspace admin creates their own GCP project, marks its OAuth consent screen as Internal, and provides client ID + secret to Overslash. Internal-tier clients require no Google verification regardless of scope. System credentials remain available as a default for low-stakes scopes and consumer accounts, but Workspace orgs should be onboarded via BYOC. (See [docs/design/google-workspace-oauth.md](docs/design/google-workspace-oauth.md) for the full analysis.)
+**Provider-level credentials, not service-level.** OAuth client credentials are scoped to the *provider* (e.g., `google`), not to individual services. Google Calendar, Google Drive, and Gmail all reference `provider: google` in their templates — they all share the same OAuth app credentials. Scopes differ per service, but the OAuth client is the same. This means an org that configures org-level Google credentials gets Calendar, Drive, and Gmail working with one setup.
+
+**IdP and service credential reuse.** When an org configures Google as an IdP for login (§3) and also uses Google-based services (Calendar, Drive, Gmail), the same org-level secrets can serve both purposes. The IdP config (§3 `org_idp_configs`) and the OAuth engine both resolve to the same `OAUTH_GOOGLE_CLIENT_ID` / `OAUTH_GOOGLE_CLIENT_SECRET` org secrets. Org-admins configure Google credentials once — in Org Settings — and both login and service connections use them. This is intentional: a single GCP project with the right scopes covers both OIDC login and API access.
+
+**System credentials and verification.** Overslash system credentials are subject to the upstream IdP's app-verification process. For Google in particular, sensitive scopes (Calendar, basic Gmail/Drive) require Google brand verification, and restricted scopes (full Gmail/Drive) require an annual CASA assessment by an authorized lab. This is expensive, slow, and recurs yearly. For Google Workspace customers, **prefer per-org credentials** — each Workspace admin creates their own GCP project, marks its OAuth consent screen as Internal, and provides client ID + secret to Overslash via Org Settings. Internal-tier clients require no Google verification regardless of scope. System credentials remain available as a default for low-stakes scopes and consumer accounts, but Workspace orgs should be onboarded via org-level credentials. (See [docs/design/google-workspace-oauth.md](docs/design/google-workspace-oauth.md) for the full analysis.)
 
 ---
 
@@ -691,10 +700,11 @@ There is intentionally **no `Draft` state**. A service is either configured-and-
 
 1. Pick a template (from global/org/user templates)
 2. Name the service instance — defaults to the template key (e.g., `google-calendar`). Rename to create additional instances (e.g., `personal-calendar`).
-3. Connect credentials — OAuth flow, API key input, or shared credential (for org services)
-4. Optionally assign to groups (org-admin only)
+3. OAuth client override (optional) — for templates that use OAuth, the user can optionally provide their own OAuth app credentials (client ID + client secret). If provided, these are stored as secrets `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET` in the user's vault and used instead of org or system credentials for this user's connections to this provider. If omitted, the cascade (§7) resolves credentials normally.
+4. Connect credentials — OAuth flow, API key input, or shared credential (for org services)
+5. Optionally assign to groups (org-admin only)
 
-For org services with OAuth (per-user tokens): the org-admin creates the service with the org's OAuth app credentials. Users in the assigned groups see the service and complete their individual OAuth flow to get their own token. The service is shared, but each user has their own credential.
+For org services with OAuth (per-user tokens): the org-admin configures the org's OAuth app credentials as org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET`, configured in Org Settings → OAuth App Credentials). Users in the assigned groups see the service and complete their individual OAuth flow using the org's app credentials. The service is shared, but each user has their own token.
 
 ### Programmatic Service Creation (Agent-Led)
 
