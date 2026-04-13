@@ -71,7 +71,7 @@ async fn test_github_e2e() {
         .unwrap();
 
     // ===== TEST 1: get_authenticated_user (Mode C) =====
-    eprintln!("  [1/3] get_authenticated_user ...");
+    eprintln!("  [1/4] get_authenticated_user ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
@@ -99,7 +99,7 @@ async fn test_github_e2e() {
     eprintln!("  get_authenticated_user: {login} (id={})", user["id"]);
 
     // ===== TEST 2: list_repos (Mode C) =====
-    eprintln!("  [2/3] list_repos ...");
+    eprintln!("  [2/4] list_repos ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
@@ -123,8 +123,38 @@ async fn test_github_e2e() {
     );
     eprintln!("  list_repos: {} repos (per_page=5)", repos_arr.len());
 
-    // ===== TEST 3: get_repo (Mode C) =====
-    eprintln!("  [3/3] get_repo ({test_repo}) ...");
+    // ===== TEST 3: list_issues (Mode C) =====
+    eprintln!("  [3/4] list_issues ({test_repo}) ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "github",
+            "action": "list_issues",
+            "params": {"repo": test_repo, "state": "all", "per_page": 5}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let issues: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let issues_arr = issues
+        .as_array()
+        .expect("list_issues should return an array");
+    assert!(
+        issues_arr.len() <= 5,
+        "per_page=5 but got {} issues",
+        issues_arr.len()
+    );
+    eprintln!(
+        "  list_issues: {} issues (state=all, per_page=5)",
+        issues_arr.len()
+    );
+
+    // ===== TEST 4: get_repo (Mode C) =====
+    eprintln!("  [4/4] get_repo ({test_repo}) ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
