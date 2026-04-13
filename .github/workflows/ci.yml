@@ -118,10 +118,49 @@ jobs:
       - name: Verify sqlx offline cache
         run: cargo sqlx prepare --workspace --check -- --tests
 
+  test:
+    name: Test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: overslash
+          POSTGRES_PASSWORD: overslash
+          POSTGRES_DB: overslash
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
+      SECRETS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests
+        run: cargo nextest run --workspace
+        env:
+          RUST_LOG: warn
+
   coverage:
     name: Coverage
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: >-
+      needs.changes.outputs.rust == 'true'
+      && (github.event_name != 'pull_request' || github.event.pull_request.draft != true)
     runs-on: ubuntu-latest
     concurrency:
       group: coverage-${{ github.workflow }}-${{ github.ref }}
@@ -222,7 +261,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, sqlx-check, coverage, infra, dashboard]
+    needs: [changes, lint, sqlx-check, test, coverage, infra, dashboard]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped
