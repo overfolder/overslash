@@ -2,11 +2,12 @@
  * API client wrappers for the Services view: templates, service instances,
  * and OAuth connections.
  */
-import { session } from '$lib/session';
+import { ApiError, session } from '$lib/session';
 import type {
 	ActionSummary,
 	ConnectionSummary,
 	CreateServiceRequest,
+	CreateTemplateRequest,
 	InitiateConnectionRequest,
 	InitiateConnectionResponse,
 	ServiceInstanceDetail,
@@ -14,7 +15,9 @@ import type {
 	ServiceStatus,
 	TemplateDetail,
 	TemplateSummary,
-	UpdateServiceRequest
+	UpdateServiceRequest,
+	UpdateTemplateRequest,
+	ValidationResult
 } from '$lib/types';
 
 // -- Templates --
@@ -29,6 +32,30 @@ export const getTemplate = (key: string, signal?: AbortSignal) =>
 
 export const getTemplateActions = (key: string, signal?: AbortSignal) =>
 	session.get<ActionSummary[]>(`/v1/templates/${encodeURIComponent(key)}/actions`, signal);
+
+// -- Template CRUD --
+
+export const createTemplate = (req: CreateTemplateRequest) =>
+	session.post<TemplateDetail>('/v1/templates', req);
+
+export const updateTemplate = (id: string, patch: UpdateTemplateRequest) =>
+	session.put<TemplateDetail>(`/v1/templates/${id}/manage`, patch);
+
+export const deleteTemplate = (id: string) =>
+	session.delete<{ deleted: boolean }>(`/v1/templates/${id}/manage`);
+
+// -- Template validation (pending endpoint, graceful 404) --
+
+export async function validateTemplate(
+	body: Record<string, unknown>
+): Promise<ValidationResult | null> {
+	try {
+		return await session.post<ValidationResult>('/v1/templates/validate', body);
+	} catch (e) {
+		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
+		throw e;
+	}
+}
 
 // -- Service instances --
 

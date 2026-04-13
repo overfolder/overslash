@@ -270,6 +270,12 @@
 					<div class="preview-head">
 						<h2>{selectedDetail.display_name}</h2>
 						<StatusBadge variant={selectedDetail.tier} />
+						<a
+							href="/services/templates/{encodeURIComponent(selectedDetail.key)}"
+							class="edit-template-link"
+						>
+							Edit template &rarr;
+						</a>
 					</div>
 					<div class="mono muted">{selectedDetail.key}</div>
 					{#if selectedDetail.description}
@@ -440,6 +446,16 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+	.edit-template-link {
+		font-size: 0.78rem;
+		color: var(--color-primary, #6366f1);
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.edit-template-link:hover {
+		text-decoration: underline;
 	}
 	.row {
 		display: flex;
