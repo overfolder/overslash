@@ -120,10 +120,14 @@ jobs:
         run: cargo sqlx prepare --workspace --check -- --tests
 
   test:
-    name: Test
+    name: Test (${{ matrix.partition }}/3)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest-4-cores
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
     services:
       postgres:
         image: postgres:16-alpine
@@ -151,8 +155,8 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: Run tests
-        run: cargo nextest run --workspace
+      - name: Run tests (shard ${{ matrix.partition }}/3)
+        run: cargo nextest run --workspace --partition count:${{ matrix.partition }}/3
         env:
           RUST_LOG: warn
 
