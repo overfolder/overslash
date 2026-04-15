@@ -70,11 +70,13 @@ async fn test_put_creates_two_org_secrets_and_lists() {
             .is_some()
     );
 
-    // GET list returns the row.
+    // GET list returns the row. Filter to db-sourced entries because
+    // concurrent tests may set env vars that surface as read-only rows
+    // (std::env is process-global).
     let rows = list_creds(&base, &client, &admin_key).await;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["provider_key"], "google");
-    assert_eq!(rows[0]["source"], "db");
+    let db_rows: Vec<_> = rows.iter().filter(|r| r["source"] == "db").collect();
+    assert_eq!(db_rows.len(), 1);
+    assert_eq!(db_rows[0]["provider_key"], "google");
     let _ = ident_id; // silence unused warning — fixture keeps the value
 }
 
@@ -97,7 +99,8 @@ async fn test_delete_removes_both_secrets() {
     assert_eq!(del.status(), 200);
 
     let rows = list_creds(&base, &client, &admin_key).await;
-    assert!(rows.is_empty(), "rows after delete: {rows:?}");
+    let db_rows: Vec<_> = rows.iter().filter(|r| r["source"] == "db").collect();
+    assert!(db_rows.is_empty(), "rows after delete: {rows:?}");
 
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
     assert!(
@@ -130,6 +133,146 @@ async fn test_delete_unknown_provider_returns_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_put_rejects_when_service_oauth_env_var_set() {
+    // When the tier-3 env-var scheme (OAUTH_*_CLIENT_ID/_SECRET) is set
+    // AND the DANGER opt-in is on, the admin should not be able to
+    // override via the dashboard — the env scheme is operator-managed.
+    // SAFETY: env var mutation is process-global, but these tests already
+    // share env via the test harness and this test runs serially enough.
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_SPOTIFY_CLIENT_ID", "env-spotify-id");
+        std::env::set_var("OAUTH_SPOTIFY_CLIENT_SECRET", "env-spotify-secret");
+    }
+
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .put(format!("{base}/v1/org-oauth-credentials/spotify"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "client_id": "dashboard-id", "client_secret": "dashboard-secret" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+
+    // Clean up so we don't pollute later tests.
+    unsafe {
+        std::env::remove_var("OAUTH_SPOTIFY_CLIENT_ID");
+        std::env::remove_var("OAUTH_SPOTIFY_CLIENT_SECRET");
+    }
+}
+
+#[tokio::test]
+async fn test_cascade_errors_on_half_configured_env_pair() {
+    // Operator misconfig: OAUTH_MICROSOFT_CLIENT_ID set but no _SECRET.
+    // Cascade used to silently skip the env tier — now it surfaces which
+    // variable is missing. This is a user-facing guardrail for tier 3.
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_MICROSOFT_CLIENT_ID", "half-configured-id");
+        std::env::remove_var("OAUTH_MICROSOFT_CLIENT_SECRET");
+    }
+
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, ident_id, _agent_key, _admin) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let err = match overslash_api::services::client_credentials::resolve(
+        &pool,
+        &enc_key,
+        org_id,
+        Some(ident_id),
+        "microsoft",
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(_) => panic!("half-configured env pair should error"),
+        Err(e) => format!("{e}"),
+    };
+    assert!(
+        err.contains("OAUTH_MICROSOFT_CLIENT_SECRET") && err.contains("missing"),
+        "expected missing-secret error, got: {err}"
+    );
+
+    unsafe {
+        std::env::remove_var("OAUTH_MICROSOFT_CLIENT_ID");
+    }
+}
+
+#[tokio::test]
+async fn test_list_preview_never_leaks_client_secret() {
+    // Regression: the response must never echo the secret value. Also
+    // asserts that the preview helper truncates long client_ids.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    put_google_creds(&base, &client, &admin_key).await;
+    let rows = list_creds(&base, &client, &admin_key).await;
+
+    let raw = serde_json::to_string(&rows).unwrap();
+    assert!(
+        !raw.contains("GOCSPX-dummy"),
+        "list response must not include the client_secret value: {raw}"
+    );
+    // Full client_id is also truncated.
+    assert!(
+        !raw.contains("fakegoogleclientid"),
+        "full client_id leaked in list response: {raw}"
+    );
+    let preview = rows[0]["client_id_preview"].as_str().unwrap();
+    assert!(preview.contains('…'));
+}
+
+#[tokio::test]
+async fn test_put_creates_new_secret_version_on_update() {
+    // Editing an existing provider should bump the secret version rather
+    // than fail (upsert semantics). Verifies the versioned-secrets contract.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    put_google_creds(&base, &client, &admin_key).await;
+    // Second PUT with different values.
+    let resp = client
+        .put(format!("{base}/v1/org-oauth-credentials/google"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "client_id": "rotated-client-id.apps.googleusercontent.com",
+            "client_secret": "rotated-secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let scope = overslash_db::scopes::OrgScope::new(org_id, pool);
+    let row = scope
+        .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.current_version, 2,
+        "second PUT should bump the version to 2"
+    );
 }
 
 #[tokio::test]
@@ -184,9 +327,12 @@ async fn test_cross_tenant_isolation() {
 
     put_google_creds(&base, &client, &admin_a).await;
 
-    // Org B sees nothing — org B's admin key only reaches org B's secrets.
+    // Org B sees no db-sourced rows — org B's admin key only reaches org B's
+    // secrets. (Env-sourced rows are a platform-wide concern and may be
+    // present from other tests running in parallel.)
     let rows = list_creds(&base, &client, &admin_b).await;
-    assert!(rows.is_empty(), "org B leaked org A creds: {rows:?}");
+    let db_rows: Vec<_> = rows.iter().filter(|r| r["source"] == "db").collect();
+    assert!(db_rows.is_empty(), "org B leaked org A creds: {rows:?}");
 
     // Direct secret lookup scoped to org B also misses.
     let scope_b = overslash_db::scopes::OrgScope::new(org_b, pool);

@@ -128,12 +128,27 @@ async fn put_credentials(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
-    // Reject when tier 3 (env vars) is already serving this provider — those
-    // are operator-managed and must not be overridden via the dashboard.
+    // Reject when env vars already serve this provider — either the tier-3
+    // service-OAuth scheme (`OAUTH_{PROVIDER}_CLIENT_ID`, which the cascade
+    // reads) or the legacy IdP-login scheme (`{PROVIDER}_AUTH_CLIENT_ID`,
+    // which `auth.rs` reads for IdP login). If the admin sets org-level
+    // creds while an env var is live, the org creds get silently ignored
+    // by whichever path is env-backed — surface the conflict up front.
+    // See TECH_DEBT.md for the env-var naming split.
     if env_provides(&provider_key) {
         return Err(AppError::Conflict(format!(
-            "provider '{provider_key}' is configured via environment variables \
-             and cannot be overridden from the dashboard"
+            "provider '{provider_key}' is configured via OAUTH_{}_CLIENT_ID / _SECRET \
+             environment variables and cannot be overridden from the dashboard",
+            provider_key.to_uppercase()
+        )));
+    }
+    if state.config.env_auth_credentials(&provider_key).is_some() {
+        return Err(AppError::Conflict(format!(
+            "provider '{provider_key}' is configured via legacy IdP environment \
+             variables (e.g. {}_AUTH_CLIENT_ID). The org-level credential would be \
+             silently ignored by the login flow. Unset the env vars first or \
+             configure the IdP with dedicated credentials.",
+            provider_key.to_uppercase()
         )));
     }
 
@@ -236,7 +251,7 @@ fn env_provides(provider_key: &str) -> bool {
 /// Client IDs are not secret but they're long; show a stable fingerprint
 /// that's recognizable without leaking extra detail. Short inputs fall back
 /// to the full value to avoid meaningless previews.
-fn preview(client_id: &str) -> String {
+pub(crate) fn preview(client_id: &str) -> String {
     const HEAD: usize = 8;
     const TAIL: usize = 4;
     let len = client_id.chars().count();
@@ -253,4 +268,52 @@ fn preview(client_id: &str) -> String {
         .rev()
         .collect();
     format!("{head}…{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_returns_full_value_for_short_inputs() {
+        assert_eq!(preview(""), "");
+        assert_eq!(preview("abc"), "abc");
+        // HEAD + TAIL + 1 = 13 — boundary case returns the full value
+        // because truncation wouldn't save meaningful space.
+        assert_eq!(preview("1234567890abc"), "1234567890abc");
+    }
+
+    #[test]
+    fn preview_truncates_long_ids_with_ellipsis() {
+        let out = preview("72999888-dummygoogleclient.apps.googleusercontent.com");
+        assert_eq!(out, "72999888….com");
+        // Head length is exactly 8 chars; tail length is exactly 4.
+        let (head, rest) = out.split_once('…').unwrap();
+        assert_eq!(head.chars().count(), 8);
+        assert_eq!(rest.chars().count(), 4);
+    }
+
+    #[test]
+    fn preview_handles_multibyte_characters() {
+        // chars().count() — not bytes — drives the length check. Greek
+        // letters are multi-byte in UTF-8, so using byte length would
+        // double-count and trigger truncation too early.
+        let input = "αβγδεζηθικλμνξοπ"; // 15 chars, over the 13-char threshold
+        let out = preview(input);
+        assert!(out.contains('…'), "expected truncation in {out}");
+        assert!(out.starts_with('α'));
+        assert!(out.ends_with('π'));
+    }
+
+    #[test]
+    fn oauth_secret_names_uppercases_provider() {
+        let (id, secret) = oauth_secret_names("google");
+        assert_eq!(id, "OAUTH_GOOGLE_CLIENT_ID");
+        assert_eq!(secret, "OAUTH_GOOGLE_CLIENT_SECRET");
+
+        // Mixed case input is normalized.
+        let (id, secret) = oauth_secret_names("GitHub");
+        assert_eq!(id, "OAUTH_GITHUB_CLIENT_ID");
+        assert_eq!(secret, "OAUTH_GITHUB_CLIENT_SECRET");
+    }
 }
