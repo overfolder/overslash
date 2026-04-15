@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
 use overslash_core::template_validation::{
-    ValidationReport, validate_template_parts, validate_template_yaml,
+    ValidationReport, parse_template_parts, validate_template_yaml,
 };
 use overslash_core::types::Risk;
 use overslash_db::repos::audit::AuditEntry;
@@ -485,19 +485,29 @@ async fn create_template(
         )));
     }
 
-    // Lint the template before we hit the database. Rejects broken shape,
-    // missing fields, bad HTTP methods, unresolved path/scope placeholders,
-    // etc. Returns a structured ValidationReport the dashboard can render.
-    let report = validate_template_parts(
+    // Parse the template at the boundary. On success we get a typed
+    // ServiceDefinition — serialize it back to JSON for storage so we
+    // guarantee only valid, round-tripped data hits the database.
+    let desc = if req.description.is_empty() {
+        None
+    } else {
+        Some(req.description.as_str())
+    };
+    let cat = if req.category.is_empty() {
+        None
+    } else {
+        Some(req.category.as_str())
+    };
+    let (def, _report) = parse_template_parts(
         &req.key,
         &req.display_name,
+        desc,
+        cat,
         &req.hosts,
         &req.auth,
         &req.actions,
-    );
-    if !report.valid {
-        return Err(AppError::TemplateValidationFailed { report });
-    }
+    )
+    .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     let input = CreateServiceTemplate {
         org_id: acl.org_id,
@@ -507,16 +517,8 @@ async fn create_template(
         description: &req.description,
         category: &req.category,
         hosts: &req.hosts,
-        auth: if req.auth.is_null() {
-            serde_json::Value::Array(vec![])
-        } else {
-            req.auth
-        },
-        actions: if req.actions.is_null() {
-            serde_json::Value::Object(Default::default())
-        } else {
-            req.actions
-        },
+        auth: serde_json::to_value(&def.auth).unwrap(),
+        actions: serde_json::to_value(&def.actions).unwrap(),
     };
 
     let row = service_template::create(&state.db, &input)
@@ -589,38 +591,58 @@ async fn update_template(
         }
     }
 
-    // Lint the *merged* result (patch + existing) so a broken template can't
-    // be kept broken by touching only metadata. If only `display_name`
-    // changes, we still validate the untouched `auth`/`actions` against the
-    // current rule set — catching both new bugs and latent ones.
+    // Parse the *merged* result (patch + existing) so a broken template can't
+    // be kept broken by touching only metadata. On success, store the
+    // round-tripped auth/actions from the parsed definition.
     let merged_display_name = req
         .display_name
         .as_deref()
         .unwrap_or(&existing.display_name);
+    let merged_desc = req.description.as_deref().unwrap_or(&existing.description);
+    let merged_desc = if merged_desc.is_empty() {
+        None
+    } else {
+        Some(merged_desc)
+    };
+    let merged_cat = req.category.as_deref().unwrap_or(&existing.category);
+    let merged_cat = if merged_cat.is_empty() {
+        None
+    } else {
+        Some(merged_cat)
+    };
     let merged_hosts: Vec<String> = req.hosts.clone().unwrap_or_else(|| existing.hosts.clone());
     let merged_auth = req.auth.clone().unwrap_or_else(|| existing.auth.clone());
     let merged_actions = req
         .actions
         .clone()
         .unwrap_or_else(|| existing.actions.clone());
-    let report = validate_template_parts(
+    let (def, _report) = parse_template_parts(
         &existing.key,
         merged_display_name,
+        merged_desc,
+        merged_cat,
         &merged_hosts,
         &merged_auth,
         &merged_actions,
-    );
-    if !report.valid {
-        return Err(AppError::TemplateValidationFailed { report });
-    }
+    )
+    .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
+    // Store the round-tripped auth/actions from the parsed definition, but
+    // only for fields the request actually patched. Unpatched fields keep
+    // their existing DB value (which was itself round-tripped on creation).
     let input = UpdateServiceTemplate {
         display_name: req.display_name.as_deref(),
         description: req.description.as_deref(),
         category: req.category.as_deref(),
         hosts: req.hosts.as_deref(),
-        auth: req.auth,
-        actions: req.actions,
+        auth: req
+            .auth
+            .as_ref()
+            .map(|_| serde_json::to_value(&def.auth).unwrap()),
+        actions: req
+            .actions
+            .as_ref()
+            .map(|_| serde_json::to_value(&def.actions).unwrap()),
     };
 
     let row = service_template::update(&state.db, id, &input)
@@ -936,9 +958,10 @@ fn db_row_to_definition(
     use overslash_core::types::{ServiceAction, ServiceAuth, ServiceDefinition};
     use std::collections::HashMap;
 
-    let auth: Vec<ServiceAuth> = serde_json::from_value(t.auth).unwrap_or_default();
-    let actions: HashMap<String, ServiceAction> =
-        serde_json::from_value(t.actions).unwrap_or_default();
+    let auth: Vec<ServiceAuth> = serde_json::from_value(t.auth)
+        .map_err(|e| AppError::Internal(format!("corrupt template auth in '{}': {e}", t.key)))?;
+    let actions: HashMap<String, ServiceAction> = serde_json::from_value(t.actions)
+        .map_err(|e| AppError::Internal(format!("corrupt template actions in '{}': {e}", t.key)))?;
 
     Ok(ServiceDefinition {
         key: t.key,

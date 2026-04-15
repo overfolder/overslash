@@ -58,10 +58,45 @@ async function request<T>(
 	return res.json();
 }
 
+/** POST with a raw text body (Content-Type: text/plain). */
+async function requestText<T>(path: string, text: string, signal?: AbortSignal): Promise<T> {
+	const res = await fetch(path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'text/plain' },
+		credentials: 'include',
+		body: text,
+		signal
+	});
+
+	if (!res.ok) {
+		let errorBody: unknown;
+		try {
+			errorBody = await res.json();
+		} catch {
+			errorBody = await res.text();
+		}
+		if (res.status === 401 && typeof window !== 'undefined') {
+			const here = window.location.pathname + window.location.search;
+			if (window.location.pathname !== '/login') {
+				window.location.href = `/login?reason=expired&return_to=${encodeURIComponent(here)}`;
+			}
+		}
+		throw new ApiError(res.status, errorBody);
+	}
+
+	if (res.status === 204) {
+		return undefined as T;
+	}
+
+	return res.json();
+}
+
 export const session = {
 	get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
 	post: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
 		request<T>('POST', path, body, signal),
+	postText: <T>(path: string, text: string, signal?: AbortSignal) =>
+		requestText<T>(path, text, signal),
 	put: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
 		request<T>('PUT', path, body, signal),
 	patch: <T>(path: string, body?: unknown, signal?: AbortSignal) =>

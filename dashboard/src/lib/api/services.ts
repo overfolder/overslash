@@ -46,11 +46,9 @@ export const deleteTemplate = (id: string) =>
 
 // -- Template validation (pending endpoint, graceful 404) --
 
-export async function validateTemplate(
-	body: Record<string, unknown>
-): Promise<ValidationResult | null> {
+export async function validateTemplate(yaml: string): Promise<ValidationResult | null> {
 	try {
-		return await session.post<ValidationResult>('/v1/templates/validate', body);
+		return await session.postText<ValidationResult>('/v1/templates/validate', yaml);
 	} catch (e) {
 		if (e instanceof ApiError && (e.status === 404 || e.status === 501)) return null;
 		throw e;

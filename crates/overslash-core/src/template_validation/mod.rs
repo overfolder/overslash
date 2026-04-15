@@ -36,7 +36,7 @@ pub mod json;
 pub mod yaml;
 
 pub use core::validate_service_definition;
-pub use json::validate_template_parts;
+pub use json::{parse_template_parts, validate_template_parts};
 #[cfg(feature = "yaml")]
 pub use yaml::validate_template_yaml;
 
