@@ -60,9 +60,10 @@ pub struct ApproveArgs {
     /// Permission keys to remember (only used with `allow_remember`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remember_keys: Option<Vec<String>>,
-    /// Optional TTL in seconds for the remembered rule.
+    /// Optional TTL for the remembered rule as a duration string, e.g.
+    /// `"24h"`, `"30m"`, `"7d"`. Omit for a permanent rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ttl: Option<u64>,
+    pub ttl: Option<String>,
 }
 
 #[tool_router]
@@ -220,9 +221,11 @@ pub fn auth_route(args: &AuthArgs) -> Result<AuthRoute, McpError> {
                 .ok_or_else(|| {
                     McpError::invalid_params("service_status requires `service`", None)
                 })?;
+            // REST endpoint `GET /v1/services/{name}` returns the full
+            // service instance, including its lifecycle status.
             (
                 HttpMethod::Get,
-                format!("/v1/services/{}/status", urlencode(name)),
+                format!("/v1/services/{}", urlencode(name)),
                 Cred::Agent,
             )
         }
@@ -295,13 +298,13 @@ mod tests {
     fn service_status_interpolates_name() {
         let r = auth_route(&args("service_status", json!({"service": "github"}))).unwrap();
         assert_eq!(r.method, HttpMethod::Get);
-        assert_eq!(r.path, "/v1/services/github/status");
+        assert_eq!(r.path, "/v1/services/github");
     }
 
     #[test]
     fn service_status_url_encodes_dangerous_chars() {
         let r = auth_route(&args("service_status", json!({"service": "../admin"}))).unwrap();
-        assert_eq!(r.path, "/v1/services/..%2Fadmin/status");
+        assert_eq!(r.path, "/v1/services/..%2Fadmin");
     }
 
     #[test]
