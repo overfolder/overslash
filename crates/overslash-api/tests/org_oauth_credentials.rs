@@ -111,6 +111,28 @@ async fn test_delete_removes_both_secrets() {
 }
 
 #[tokio::test]
+async fn test_delete_unknown_provider_returns_404() {
+    // Mirror the PUT contract: unknown provider returns 404 rather than
+    // silently reporting deleted=false (ambiguous with "provider exists
+    // but has no org secrets yet").
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/org-oauth-credentials/not-a-real-provider"
+        ))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
 async fn test_non_admin_cannot_list_credentials() {
     // Defense in depth: listing configured providers leaks which OAuth
     // providers the org uses and their client_id fingerprints. Only

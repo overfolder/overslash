@@ -182,11 +182,19 @@ async fn put_credentials(
 }
 
 async fn delete_credentials(
+    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(provider_key): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
+    // Match the put_credentials contract: unknown provider → 404 so a
+    // typo'd path doesn't silently return `{"deleted": false}` (which is
+    // indistinguishable from "nothing to delete").
+    oauth_provider::get_by_key(&state.db, &provider_key)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
+
     let (id_name, secret_name) = oauth_secret_names(&provider_key);
 
     let deleted_id = scope.soft_delete_secret(&id_name).await?;
