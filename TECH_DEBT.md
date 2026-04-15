@@ -12,6 +12,18 @@ Scoped feature gate (`overslash-core/yaml`) already isolates the dependency so s
 
 ---
 
+## Dashboard: Identity Providers have no edit UI
+
+The Org Settings → Identity Providers table only exposes toggle (enable/disable) and delete actions. The backend `PUT /v1/org-idp-configs/{id}` fully supports updating client_id/secret and flipping between dedicated credentials and `use_org_credentials` mode (see `CredentialsUpdate` in `crates/overslash-db/src/repos/org_idp_config.rs`), but the dashboard currently has no Edit action on existing rows — admins must delete and recreate. Add a full edit flow when we touch this page next.
+
+---
+
+## IdP env-var naming differs from service-OAuth env-var naming
+
+IdP credentials fall back to `GOOGLE_AUTH_CLIENT_ID` / `GITHUB_AUTH_CLIENT_ID` (see `crates/overslash-api/src/config.rs` `env_auth_credentials`), while service OAuth (tier 3 of the SPEC §7 cascade) falls back to `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET` (see `crates/overslash-api/src/services/client_credentials.rs`). The UI mirrors the service-OAuth naming for the new Org Settings → OAuth App Credentials section. Unifying the two env-var schemes is out of scope for the three-tier cascade PR but should happen together with a deprecation window.
+
+---
+
 ## Dashboard: Org Groups page
 
 - **Auto-approve toggle uses DELETE + POST.** `/v1/groups/{id}/grants` has no PATCH endpoint, so toggling `auto_approve_reads` removes the grant and re-adds it with the new value. Add a PATCH route and switch the dashboard to use it.

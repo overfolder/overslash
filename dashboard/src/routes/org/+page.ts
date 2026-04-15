@@ -1,6 +1,12 @@
 import type { PageLoad } from './$types';
 import { ApiError, session, type MeIdentity } from '$lib/session';
-import type { IdpConfig, OrgInfo, SecretRequestSettings, Webhook } from '$lib/types';
+import type {
+	IdpConfig,
+	OAuthCredential,
+	OrgInfo,
+	SecretRequestSettings,
+	Webhook
+} from '$lib/types';
 
 export const ssr = false;
 export const prerender = false;
@@ -16,6 +22,7 @@ export interface OrgPageData {
 	me: MeAcl | null;
 	org: OrgInfo | null;
 	idpConfigs: IdpConfig[];
+	oauthCredentials: OAuthCredential[];
 	webhooks: Webhook[];
 	secretRequestSettings: SecretRequestSettings | null;
 	error: { status: number; message: string } | null;
@@ -36,23 +43,33 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				me,
 				org: null,
 				idpConfigs: [],
+				oauthCredentials: [],
 				webhooks: [],
 				secretRequestSettings: null,
 				error: { status: 403, message: 'Admin access required to view org settings.' }
 			};
 		}
 
-		const [org, idpConfigs, webhooks, secretRequestSettings] = await Promise.all([
+		const [org, idpConfigs, oauthCredentials, webhooks, secretRequestSettings] = await Promise.all([
 			orgId
 				? session.get<OrgInfo>(`/v1/orgs/${orgId}`)
 				: Promise.resolve(null as unknown as OrgInfo),
 			session.get<IdpConfig[]>('/v1/org-idp-configs'),
+			session.get<OAuthCredential[]>('/v1/org-oauth-credentials'),
 			session.get<Webhook[]>('/v1/webhooks'),
 			orgId
 				? session.get<SecretRequestSettings>(`/v1/orgs/${orgId}/secret-request-settings`)
 				: Promise.resolve(null)
 		]);
-		return { me, org, idpConfigs, webhooks, secretRequestSettings, error: null };
+		return {
+			me,
+			org,
+			idpConfigs,
+			oauthCredentials,
+			webhooks,
+			secretRequestSettings,
+			error: null
+		};
 	} catch (e) {
 		const status = e instanceof ApiError ? e.status : 0;
 		const message =
@@ -61,6 +78,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			me: null,
 			org: null,
 			idpConfigs: [],
+			oauthCredentials: [],
 			webhooks: [],
 			secretRequestSettings: null,
 			error: { status, message }

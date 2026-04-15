@@ -517,7 +517,9 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
 
 /// Resolve auth credentials for a provider. Precedence:
 /// 1. Environment variables (e.g. GOOGLE_AUTH_CLIENT_ID)
-/// 2. DB-stored org_idp_config (requires org context via slug)
+/// 2. DB-stored org_idp_config (requires org context via slug). When the
+///    config has NULL `encrypted_client_*` fields, it defers to the org's
+///    OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
 async fn resolve_auth_credentials(
     state: &AppState,
     provider_key: &str,
@@ -553,18 +555,41 @@ async fn resolve_auth_credentials(
 
         let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
             .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
-        let client_id = String::from_utf8(
-            crypto::decrypt(&enc_key, &config.encrypted_client_id)
-                .map_err(|e| AppError::Internal(format!("decrypt client_id: {e}")))?,
-        )
-        .map_err(|_| AppError::Internal("invalid client_id utf-8".into()))?;
-        let client_secret = String::from_utf8(
-            crypto::decrypt(&enc_key, &config.encrypted_client_secret)
-                .map_err(|e| AppError::Internal(format!("decrypt client_secret: {e}")))?,
-        )
-        .map_err(|_| AppError::Internal("invalid client_secret utf-8".into()))?;
 
-        return Ok((client_id, client_secret));
+        // IdP uses its own dedicated credentials — decrypt them directly.
+        if let (Some(enc_id), Some(enc_secret)) = (
+            config.encrypted_client_id.as_deref(),
+            config.encrypted_client_secret.as_deref(),
+        ) {
+            let client_id = String::from_utf8(
+                crypto::decrypt(&enc_key, enc_id)
+                    .map_err(|e| AppError::Internal(format!("decrypt client_id: {e}")))?,
+            )
+            .map_err(|_| AppError::Internal("invalid client_id utf-8".into()))?;
+            let client_secret = String::from_utf8(
+                crypto::decrypt(&enc_key, enc_secret)
+                    .map_err(|e| AppError::Internal(format!("decrypt client_secret: {e}")))?,
+            )
+            .map_err(|_| AppError::Internal("invalid client_secret utf-8".into()))?;
+            return Ok((client_id, client_secret));
+        }
+
+        // IdP defers to org-level OAuth App Credentials (SPEC §3).
+        let creds = crate::services::client_credentials::resolve_org_oauth_secrets(
+            &bootstrap_scope,
+            &enc_key,
+            provider_key,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "IdP for provider '{provider_key}' is configured to use org OAuth App \
+                 Credentials, but no org-level credentials are set. \
+                 Add them in Org Settings → OAuth App Credentials, or reconfigure \
+                 the IdP with dedicated credentials."
+            ))
+        })?;
+        return Ok((creds.client_id, creds.client_secret));
     }
 
     Err(AppError::NotFound(format!(
