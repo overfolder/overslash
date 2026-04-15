@@ -10,9 +10,7 @@ mod embed {
         response::{IntoResponse, Response},
         routing::get,
     };
-    use rust_embed::RustEmbed;
-
-    #[derive(RustEmbed)]
+    #[derive(rust_embed::RustEmbed)]
     #[folder = "$CARGO_MANIFEST_DIR/../../dashboard/build/"]
     struct Asset;
 
@@ -21,11 +19,9 @@ mod embed {
     }
 
     async fn serve_path(Path(path): Path<String>) -> Response {
-        // Strip query/fragment defensively (axum already does, but be safe).
         let clean = path.split(['?', '#']).next().unwrap_or("");
         let resp = serve(clean).await;
         if resp.status() == StatusCode::NOT_FOUND {
-            // SPA fallback for client-side routes.
             serve("index.html").await
         } else {
             resp
@@ -77,7 +73,6 @@ pub async fn run(host: String, port: u16) -> anyhow::Result<()> {
     config.dashboard_url = config.public_url.clone();
 
     let addr = format!("{}:{}", config.host, config.port);
-    tracing::info!("Starting Overslash (web mode) on {addr}");
     tracing::info!(
         host = %config.host,
         port = %config.port,
@@ -86,8 +81,14 @@ pub async fn run(host: String, port: u16) -> anyhow::Result<()> {
         "Config loaded"
     );
 
+    common::preflight_database(&config.database_url).await?;
+
+    let public = config.public_url.clone();
     let app = overslash_api::create_app(config)
         .await?
         .merge(embed::fallback_router());
+
+    let health = format!("{}/health", public.trim_end_matches('/'));
+    common::print_banner("web", &public, &health, cfg!(feature = "embed-dashboard"));
     common::serve_router(&addr, app).await
 }
