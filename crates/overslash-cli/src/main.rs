@@ -8,6 +8,7 @@ mod web;
 #[derive(Parser)]
 #[command(
     name = "overslash",
+    bin_name = "overslash",
     version,
     about = "Overslash — identity & authentication gateway for AI agents",
     long_about = "Overslash ships as a single binary with three integration surfaces: \
@@ -90,5 +91,116 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap_or_else(|e| panic!("parse {args:?}: {e}"))
+    }
+
+    #[test]
+    fn serve_parses_with_defaults() {
+        let cli = parse(&["overslash", "serve"]);
+        if let Command::Serve { host, port } = cli.command {
+            assert_eq!(host, "0.0.0.0");
+            assert_eq!(port, 8080);
+        } else {
+            panic!("expected Serve");
+        }
+    }
+
+    #[test]
+    fn serve_parses_flags() {
+        let cli = parse(&[
+            "overslash",
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9001",
+        ]);
+        if let Command::Serve { host, port } = cli.command {
+            assert_eq!(host, "127.0.0.1");
+            assert_eq!(port, 9001);
+        } else {
+            panic!("expected Serve");
+        }
+    }
+
+    #[test]
+    fn web_parses() {
+        let cli = parse(&["overslash", "web", "--port", "18080"]);
+        if let Command::Web { port, .. } = cli.command {
+            assert_eq!(port, 18080);
+        } else {
+            panic!("expected Web");
+        }
+    }
+
+    #[test]
+    fn mcp_bare_has_no_subcommand() {
+        let cli = parse(&["overslash", "mcp"]);
+        if let Command::Mcp {
+            command, profile, ..
+        } = cli.command
+        {
+            assert!(command.is_none());
+            assert!(profile.is_none());
+        } else {
+            panic!("expected Mcp");
+        }
+    }
+
+    #[test]
+    fn mcp_setup_with_profile_and_server() {
+        let cli = parse(&[
+            "overslash",
+            "mcp",
+            "--profile",
+            "work",
+            "setup",
+            "--server",
+            "https://x.y",
+        ]);
+        if let Command::Mcp {
+            command, profile, ..
+        } = cli.command
+        {
+            assert_eq!(profile.as_deref(), Some("work"));
+            match command {
+                Some(McpCommand::Setup { server, re_auth }) => {
+                    assert_eq!(server.as_deref(), Some("https://x.y"));
+                    assert!(!re_auth);
+                }
+                _ => panic!("expected Setup"),
+            }
+        } else {
+            panic!("expected Mcp");
+        }
+    }
+
+    #[test]
+    fn mcp_setup_reauth_flag() {
+        let cli = parse(&["overslash", "mcp", "setup", "--re-auth"]);
+        if let Command::Mcp {
+            command: Some(McpCommand::Setup { re_auth, .. }),
+            ..
+        } = cli.command
+        {
+            assert!(re_auth);
+        } else {
+            panic!("expected Setup re-auth");
+        }
+    }
+
+    #[test]
+    fn bad_subcommand_errors() {
+        let r = Cli::try_parse_from(["overslash", "bogus"]);
+        assert!(r.is_err());
     }
 }
