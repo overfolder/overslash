@@ -40,9 +40,10 @@ Overslash extracts all of this into a single service with a clean REST API that 
 8. Universal HTTP execution — any REST API, with or without a service definition
 9. Service registry — YAML-defined services (global + org-extensible) with human-readable action descriptions
 10. Audit everything — every action, approval, secret access, connection change
-11. Simple REST API — any HTTP client can use Overslash
-12. 3 meta tools — minimal tool interface for LLM agents (search, execute, auth)
-13. Web UI — for org admins and users to manage everything visually
+11. Three integration surfaces over one backend — REST API, CLI (`overslash`), and MCP server, so any HTTP client, shell-capable agent, or MCP-aware editor can use Overslash without rebuilding the same plumbing
+12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_execute`, `overslash_auth`, plus `overslash_approve` in the MCP surface for inline user approvals)
+13. Web UI — for org admins and users to manage everything visually, served by Vercel in cloud mode and embedded same-origin in self-hosted mode (`overslash web`)
+14. Single-binary self-hosting — `overslash` ships everything (API, dashboard, MCP server) so an org can run the entire product from one executable
 
 ### Non-Goals
 
@@ -91,6 +92,45 @@ Any Caller (agent platform, CI, human, script)
          External Service
     (GitHub, Google, Stripe, ...)
 ```
+
+### Integration Surfaces
+
+Overslash exposes three peer surfaces over the same backend. The REST API is canonical; the CLI and MCP server are thin wrappers that hold credentials locally and call the REST API on the user's or agent's behalf.
+
+| Surface | Audience | Transport | Credentials held | Distribution |
+|---|---|---|---|---|
+| **REST API** | Platforms, CI, custom integrations, agents capable of HTTP | HTTPS / JSON | Caller's choice (per-request `Authorization: Bearer ...`) | Hosted at the org's Overslash domain |
+| **CLI (`overslash`)** | Developers, shell-capable agents, ops/admin scripting | Local process invocation, REST under the hood | One identity at a time, from `~/.config/overslash/` or env | Single static binary |
+| **MCP server** | LLM agents inside MCP-aware editors (Claude Code, Cursor, Windsurf, ...) | JSON-RPC over stdio (MCP) | **Two** credentials in one process: an **agent key** for execution and a **user token** for inline approval resolution | Same `overslash` binary, started by the MCP client as `overslash mcp` |
+
+The MCP server is the only surface that holds two credentials at once. This is intentional and the heart of the inline-approval design (see [docs/design/mcp-integration.md](docs/design/mcp-integration.md)): the agent key executes actions, and when an action returns `pending_approval`, the user-token side of the same process resolves the approval *in-band* without forcing the user to leave their editor. This does not violate the trust model — the user is sitting at the terminal and the MCP server runs on their machine, so co-locating both credentials is natural. White-label platforms (e.g., Overfolder) bypass the MCP server entirely and call the REST API directly with their own UX.
+
+### Distribution and Binary Layout
+
+Overslash ships as a single executable, `overslash`, with subcommands:
+
+| Command | Purpose |
+|---|---|
+| `overslash help` | Standard clap-generated help, including per-subcommand `--help` |
+| `overslash serve` | Start the REST API only. Cloud-mode default. The dashboard is served separately (Vercel + SSR) and proxies API traffic back. |
+| `overslash web` | Start the REST API *and* serve the SvelteKit dashboard same-origin from the same Axum process. Self-hosted mode. The dashboard is built with `@sveltejs/adapter-static` and embedded into the binary at compile time, so a single binary is the entire product. |
+| `overslash mcp` | Run the MCP stdio server. This is what MCP clients invoke — see §10 for tool details. |
+| `overslash mcp setup` | One-time interactive helper that captures user + agent credentials, writes `~/.config/overslash/mcp.json`, and prints the snippet to drop into the MCP client config. **Target**: browser-based OAuth login mints a user access + refresh token from a dashboard "MCP setup" page, no manual paste. **Today**: see STATUS.md — the helper currently prompts the user to paste tokens manually because the dashboard page does not yet exist. |
+
+The intended MCP client configuration is identical in shape to other stdio-based MCP servers:
+
+```json
+{
+  "mcpServers": {
+    "overslash": {
+      "command": "overslash",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+`serve` and `web` share the same `create_app` router and config — `web` only adds a static-file fallback and same-origin defaults. The `mcp` subcommand carries no Postgres or Axum dependency; it is a pure REST client over stdio.
 
 ---
 
@@ -788,15 +828,16 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 
 ## 10. Meta Tools for LLM Agents
 
-Three tools that let any LLM agent use Overslash:
+A small tool set that lets any LLM agent use Overslash. These are the underlying tools surfaced by both the CLI (`overslash` subcommands) and the MCP server (`overslash mcp`); REST callers invoke the same operations directly. The first three are universal; `overslash_approve` exists only in the MCP surface because it requires the user-token credential the MCP server uniquely holds (see §3 *Integration Surfaces*).
 
-| Tool | Purpose |
-|------|---------|
-| `overslash_search` | Discover services and actions. Returns schemas + auth status. |
-| `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. |
-| `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. |
+| Tool | Purpose | Credential | Surfaces |
+|------|---------|------------|----------|
+| `overslash_search` | Discover services and actions. Returns schemas + auth status. | agent (or user) | REST, CLI, MCP |
+| `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. | agent (or user) | REST, CLI, MCP |
+| `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. | agent (or user) | REST, CLI, MCP |
+| `overslash_approve` | Resolve a pending approval inline (one-time, "Allow & Remember", bubble, or reject). See §5 *Approval Bubbling*. | **user token** | MCP only |
 
-The agent platform wraps these 3 tools and handles plumbing (receiving approval events via webhook/polling/SSE, surfacing them to the user, and calling the resolve API with user credentials).
+Platforms that wrap the first three handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`). The MCP server collapses that loop into a fourth tool the LLM can call directly, because the user is already present in the conversation.
 
 ### `overslash_search`
 
@@ -858,6 +899,8 @@ When `notifications.managed_by_platform` is set (§5), Overslash's user-facing n
 ## 11. Web UI
 
 Web UI for non-API interactions. Built with SvelteKit + TypeScript.
+
+**Two delivery modes.** In **cloud mode** the dashboard is hosted on Vercel with full SvelteKit (SSR allowed) and proxies API/auth/health/enroll/public paths back to the API origin via `vercel.json` rewrites. In **self-hosted mode** the operator runs `overslash web`, which boots the same Axum app *and* serves the dashboard same-origin from embedded static assets (built with `@sveltejs/adapter-static`, embedded into the binary at compile time behind the `embed-dashboard` Cargo feature). Same-origin removes the cross-origin cookie and CORS complexity that Vercel rewrites paper over in cloud mode — the same router serves `/v1/*`, `/auth/*`, `/health/*`, `/enroll/*`, `/public/*`, and falls back to the SPA for everything else (with `index.html` for unknown paths to support client-side routing). Cloud and self-hosted ship from the same codebase; the only difference is which Cargo feature is enabled and which subcommand is invoked.
 
 ### Core Views
 

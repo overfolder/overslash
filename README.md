@@ -31,7 +31,7 @@ execution.
 
 ## What's in the box
 
-- **Backend** — Rust + Axum REST API (`crates/overslash-api`)
+- **Backend** — Rust + Axum REST API (`crates/overslash-api`), single `overslash` binary (`crates/overslash-cli`) with `serve` / `web` / `mcp` subcommands, MCP stdio server (`crates/overslash-mcp`)
 - **Database** — PostgreSQL with versioned secrets and audit trail
 - **Dashboard** — SvelteKit web UI for managing users, agents, secrets,
   connections, and approvals
@@ -101,7 +101,7 @@ No manual config required. Tear down a worktree's containers with
 ## Repository layout
 
 ```
-crates/          Rust workspace (overslash-core, overslash-db, overslash-api)
+crates/          Rust workspace (overslash-core, overslash-db, overslash-api, overslash-mcp, overslash-cli)
 dashboard/       SvelteKit web UI
 services/        Service registry YAML definitions (MIT licensed)
 docs/            Design docs and architecture notes

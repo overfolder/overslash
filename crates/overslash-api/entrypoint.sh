@@ -12,4 +12,4 @@ if [ -z "$DATABASE_URL" ] && [ -n "$DB_USER" ] && [ -n "$DB_PASSWORD" ] && [ -n 
     fi
 fi
 
-exec /app/overslash-api "$@"
+exec /app/overslash serve "$@"
