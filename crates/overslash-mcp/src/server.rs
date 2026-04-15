@@ -55,7 +55,9 @@ pub struct AuthArgs {
 pub struct ApproveArgs {
     /// Approval ID returned by a prior `pending_approval` execute result.
     pub approval_id: String,
-    /// One of `allow_once`, `allow_remember`, `bubble`, `reject`.
+    /// One of `allow`, `allow_remember`, `deny`, `bubble_up`. Common
+    /// synonyms (`allow_once`/`approve` → `allow`, `reject`/`denied` →
+    /// `deny`, `bubble` → `bubble_up`) are accepted and normalized.
     pub resolution: String,
     /// Permission keys to remember (only used with `allow_remember`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,6 +66,24 @@ pub struct ApproveArgs {
     /// `"24h"`, `"30m"`, `"7d"`. Omit for a permanent rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<String>,
+}
+
+/// Normalize common synonyms to the canonical resolution values the REST
+/// API expects (`allow`, `allow_remember`, `deny`, `bubble_up`).
+pub fn normalize_resolution(raw: &str) -> Result<&'static str, McpError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "allow" | "allow_once" | "approve" | "approved" | "ok" => Ok("allow"),
+        "allow_remember" | "remember" | "always" => Ok("allow_remember"),
+        "deny" | "denied" | "reject" | "rejected" | "no" => Ok("deny"),
+        "bubble_up" | "bubble" | "escalate" | "defer" => Ok("bubble_up"),
+        other => Err(McpError::invalid_params(
+            format!(
+                "unknown resolution `{other}` — use one of \
+                 allow, allow_remember, deny, bubble_up"
+            ),
+            None,
+        )),
+    }
 }
 
 #[tool_router]
@@ -142,8 +162,9 @@ impl OverslashMcp {
         &self,
         Parameters(args): Parameters<ApproveArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let resolution = normalize_resolution(&args.resolution)?;
         let body = json!({
-            "resolution": args.resolution,
+            "resolution": resolution,
             "remember_keys": args.remember_keys,
             "ttl": args.ttl,
         });
@@ -319,5 +340,34 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("flarp"));
         assert!(msg.contains("whoami"));
+    }
+
+    #[test]
+    fn resolution_canonical_values_pass_through() {
+        assert_eq!(normalize_resolution("allow").unwrap(), "allow");
+        assert_eq!(
+            normalize_resolution("allow_remember").unwrap(),
+            "allow_remember"
+        );
+        assert_eq!(normalize_resolution("deny").unwrap(), "deny");
+        assert_eq!(normalize_resolution("bubble_up").unwrap(), "bubble_up");
+    }
+
+    #[test]
+    fn resolution_synonyms_normalize() {
+        assert_eq!(normalize_resolution("allow_once").unwrap(), "allow");
+        assert_eq!(normalize_resolution("approve").unwrap(), "allow");
+        assert_eq!(normalize_resolution("reject").unwrap(), "deny");
+        assert_eq!(normalize_resolution("bubble").unwrap(), "bubble_up");
+        assert_eq!(
+            normalize_resolution(" REMEMBER ").unwrap(),
+            "allow_remember"
+        );
+    }
+
+    #[test]
+    fn resolution_unknown_is_rejected() {
+        let err = normalize_resolution("maybe").unwrap_err();
+        assert!(err.to_string().contains("maybe"));
     }
 }
