@@ -387,4 +387,46 @@ mod tests {
         let err = normalize_resolution("maybe").unwrap_err();
         assert!(err.to_string().contains("maybe"));
     }
+
+    #[test]
+    fn urlencode_passes_unreserved_unchanged() {
+        assert_eq!(urlencode("abc-123_XYZ.foo~bar"), "abc-123_XYZ.foo~bar");
+    }
+
+    #[test]
+    fn urlencode_encodes_space_and_slash() {
+        assert_eq!(urlencode("a b"), "a%20b");
+        assert_eq!(urlencode("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn json_result_serializes_value() {
+        let r = json_result(json!({"ok": true, "n": 7}));
+        // We don't introspect rmcp's content shape; we just ensure the call
+        // doesn't panic on typical inputs.
+        let _ = r;
+    }
+
+    #[test]
+    fn into_mcp_wraps_client_error() {
+        let e = ClientError::Api {
+            status: reqwest::StatusCode::IM_A_TEAPOT,
+            body: "🫖".into(),
+        };
+        let mcp = into_mcp(e);
+        assert!(format!("{mcp}").contains("418"));
+    }
+
+    #[test]
+    fn new_constructs_server_handler() {
+        let cfg = crate::config::McpConfig {
+            server_url: "https://x".into(),
+            agent_key: "a".into(),
+            user_token: "u".into(),
+            user_refresh_token: None,
+        };
+        let s = OverslashMcp::new(cfg).unwrap();
+        let info = s.get_info();
+        assert!(info.instructions.is_some());
+    }
 }

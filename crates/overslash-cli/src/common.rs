@@ -140,3 +140,101 @@ fn link(text: &str, url: &str) -> String {
     // support it just render TEXT.
     format!("\x1b[36m\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\\x1b[0m")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_password_masks_password_but_keeps_host() {
+        let s = redact_password("postgres://alice:supersecret@db.example.com:5432/ovs");
+        assert!(
+            !s.contains("supersecret"),
+            "expected password masked in {s}"
+        );
+        assert!(s.contains("alice"));
+        assert!(s.contains("db.example.com"));
+        assert!(s.contains("***"));
+    }
+
+    #[test]
+    fn redact_password_noop_when_absent() {
+        let s = redact_password("postgres://alice@db.example.com:5432/ovs");
+        assert!(!s.contains("***"));
+        assert!(s.contains("alice"));
+    }
+
+    #[test]
+    fn redact_password_passthrough_on_bad_url() {
+        let s = redact_password("not a url");
+        assert_eq!(s, "not a url");
+    }
+
+    #[test]
+    fn db_hint_message_includes_fix_commands() {
+        let e = db_hint(
+            "postgres://a:b@127.0.0.1:5432/ovs",
+            "connection refused".into(),
+        );
+        let msg = format!("{e}");
+        assert!(msg.contains("make local"));
+        assert!(msg.contains("DATABASE_URL"));
+        assert!(!msg.contains(":b@"), "password leaked: {msg}");
+    }
+
+    #[tokio::test]
+    async fn preflight_bad_host_errors_fast() {
+        // 127.0.0.1:1 is guaranteed-unreachable on typical hosts; if not, the
+        // 3s timeout still bounds the test.
+        let start = std::time::Instant::now();
+        let err = preflight_database("postgres://a:b@127.0.0.1:1/ovs")
+            .await
+            .expect_err("expected connect failure");
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
+        let msg = format!("{err}");
+        assert!(msg.contains("cannot reach Postgres"));
+    }
+
+    #[test]
+    fn preflight_malformed_url_errors() {
+        let fut = preflight_database("not a url");
+        // Build a throwaway runtime; we just want the parse branch.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt.block_on(fut).expect_err("expected parse error");
+        assert!(!format!("{err}").is_empty());
+    }
+
+    #[test]
+    fn link_contains_osc8_sequence() {
+        let s = link("label", "https://example.com");
+        assert!(s.contains("\x1b]8;;https://example.com"));
+        assert!(s.contains("label"));
+    }
+
+    #[test]
+    fn print_banner_does_not_panic() {
+        // No assertion beyond "doesn't panic"; the function writes to stderr.
+        print_banner(
+            "web",
+            "http://localhost:8080",
+            "http://localhost:8080/health",
+            true,
+        );
+        print_banner(
+            "web",
+            "http://localhost:8080",
+            "http://localhost:8080/health",
+            false,
+        );
+        print_banner(
+            "serve",
+            "http://localhost:8080",
+            "http://localhost:8080/health",
+            false,
+        );
+    }
+}

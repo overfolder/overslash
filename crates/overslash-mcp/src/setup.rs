@@ -144,3 +144,24 @@ async fn create_agent_identity(server_url: &str, user_token: &str) -> anyhow::Re
     println!("✓ Created agent `{name}` and captured its API key.");
     Ok(key)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn re_auth_against_missing_config_errors_clearly() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let missing = std::env::temp_dir().join("overslash-mcp-nonexistent-xyzzy.json");
+        let _ = std::fs::remove_file(&missing);
+        let err = rt
+            .block_on(run(missing.clone(), None, true))
+            .expect_err("re-auth on missing config should error");
+        let msg = format!("{err}");
+        assert!(msg.contains("no existing config"), "msg={msg}");
+        assert!(msg.contains("setup"), "msg={msg}");
+    }
+}

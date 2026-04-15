@@ -90,3 +90,62 @@ impl OverslashClient {
         self.request(cred, Method::POST, path, Some(body)).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(agent: &str, user: &str) -> McpConfig {
+        McpConfig {
+            server_url: "https://api.example.com/".into(),
+            agent_key: agent.into(),
+            user_token: user.into(),
+            user_refresh_token: None,
+        }
+    }
+
+    #[test]
+    fn new_trims_trailing_slash_from_base_url() {
+        let c = OverslashClient::new(&cfg("ak", "ut")).unwrap();
+        assert_eq!(c.base_url, "https://api.example.com");
+    }
+
+    #[test]
+    fn token_routes_by_credential() {
+        let c = OverslashClient::new(&cfg("agent_k", "user_t")).unwrap();
+        assert_eq!(c.token(Cred::Agent), "agent_k");
+        assert_eq!(c.token(Cred::User), "user_t");
+    }
+
+    #[test]
+    fn cred_is_copy_and_comparable() {
+        let a = Cred::Agent;
+        let b = a;
+        assert_eq!(a, b);
+        assert_ne!(Cred::Agent, Cred::User);
+    }
+
+    #[tokio::test]
+    async fn request_returns_http_error_for_unreachable_host() {
+        let c = OverslashClient::new(&McpConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            agent_key: "k".into(),
+            user_token: "u".into(),
+            user_refresh_token: None,
+        })
+        .unwrap();
+        let err = c.get(Cred::Agent, "/anything").await.unwrap_err();
+        assert!(matches!(err, ClientError::Http(_)), "{err:?}");
+    }
+
+    #[test]
+    fn client_error_display_has_status_and_body() {
+        let e = ClientError::Api {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: "oops".into(),
+        };
+        let s = format!("{e}");
+        assert!(s.contains("400"));
+        assert!(s.contains("oops"));
+    }
+}
