@@ -16,4 +16,5 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+percent-encoding = "2"
 uuid = { workspace = true }

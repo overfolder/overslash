@@ -2074,6 +2074,7 @@ name = "overslash-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "percent-encoding",
  "reqwest",
  "rmcp",
  "schemars 0.8.22",

@@ -202,8 +202,18 @@ fn into_mcp(e: ClientError) -> McpError {
     McpError::internal_error(e.to_string(), None)
 }
 
+// Percent-encode for URL path segments per RFC 3986: leave unreserved
+// characters (ALPHA / DIGIT / `-` / `.` / `_` / `~`) alone, encode
+// everything else. Notably, spaces become `%20` (not `+`, which would be
+// wrong for a path segment).
+const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
 fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+    percent_encoding::utf8_percent_encode(s, PATH_SEGMENT).to_string()
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -326,6 +336,13 @@ mod tests {
     fn service_status_url_encodes_dangerous_chars() {
         let r = auth_route(&args("service_status", json!({"service": "../admin"}))).unwrap();
         assert_eq!(r.path, "/v1/services/..%2Fadmin");
+    }
+
+    #[test]
+    fn service_status_encodes_space_as_percent20_not_plus() {
+        // Form-encoding would produce `+`, which is wrong for a path segment.
+        let r = auth_route(&args("service_status", json!({"service": "my svc"}))).unwrap();
+        assert_eq!(r.path, "/v1/services/my%20svc");
     }
 
     #[test]
