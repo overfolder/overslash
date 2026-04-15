@@ -51,7 +51,10 @@ pub async fn run(
     )?;
     let agent_key = match agent_choice.trim().to_ascii_lowercase().as_str() {
         "existing" => prompt("Paste the agent API key", None)?,
-        _ => create_agent_identity(&server_url, &user_token).await?,
+        _ => {
+            let name = prompt("Agent name (e.g. claude-code-laptop)", Some("claude-code"))?;
+            create_agent_identity(&server_url, &user_token, &name).await?
+        }
     };
 
     let cfg = McpConfig {
@@ -120,8 +123,11 @@ fn browser_oauth(server_url: &str) -> anyhow::Result<(String, String)> {
 }
 
 /// Create a fresh agent identity via the REST API using the user token.
-async fn create_agent_identity(server_url: &str, user_token: &str) -> anyhow::Result<String> {
-    let name = prompt("Agent name (e.g. claude-code-laptop)", Some("claude-code"))?;
+async fn create_agent_identity(
+    server_url: &str,
+    user_token: &str,
+    name: &str,
+) -> anyhow::Result<String> {
     // Reuse the same REST client the MCP server uses. Agent key is a
     // placeholder here — only the user token side is exercised for
     // identity creation.
@@ -148,6 +154,46 @@ async fn create_agent_identity(server_url: &str, user_token: &str) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn create_agent_identity_surfaces_network_error() {
+        // Unreachable port: OverslashClient returns a reqwest error, which
+        // `create_agent_identity` wraps as "create agent failed: …".
+        let err = create_agent_identity("http://127.0.0.1:1", "user_token", "claude-code")
+            .await
+            .expect_err("expected network error");
+        let msg = format!("{err}");
+        assert!(msg.contains("create agent failed"), "msg={msg}");
+    }
+
+    #[tokio::test]
+    async fn create_agent_identity_rejects_response_without_api_key() {
+        // Spin up a tiny one-shot server that returns a 200 with JSON that
+        // lacks `api_key`. create_agent_identity must error rather than
+        // silently succeeding with an empty string.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"id":"abc","kind":"agent"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        let err = create_agent_identity(&url, "user_token", "claude-code")
+            .await
+            .expect_err("expected missing-api_key error");
+        assert!(format!("{err}").contains("api_key"), "{err}");
+    }
 
     #[test]
     fn re_auth_against_missing_config_errors_clearly() {
