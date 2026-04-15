@@ -21,7 +21,7 @@ use overslash_db::repos::{audit::AuditEntry, oauth_provider};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp, SessionAuth},
+    extractors::{AdminAcl, ClientIp},
     services::client_credentials::oauth_secret_names,
 };
 
@@ -60,10 +60,14 @@ struct CredentialRow {
 
 async fn list_credentials(
     State(state): State<AppState>,
-    session: SessionAuth,
+    AdminAcl(acl): AdminAcl,
     scope: OrgScope,
 ) -> Result<Json<Vec<CredentialRow>>> {
-    debug_assert_eq!(session.org_id, scope.org_id());
+    // Admin-gated: listing which providers are configured (and their
+    // truncated client_id fingerprints) is information disclosure about
+    // the org's OAuth setup. PUT/DELETE are already admin-only; keeping
+    // GET at the same level matches the dashboard's Org Settings gate.
+    debug_assert_eq!(acl.org_id, scope.org_id());
 
     let providers = oauth_provider::list_all(&state.db).await?;
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;

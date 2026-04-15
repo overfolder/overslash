@@ -5,25 +5,9 @@
 
 mod common;
 
-use overslash_api::services::jwt;
 use overslash_core::crypto;
 use reqwest::Client;
 use serde_json::{Value, json};
-use time::OffsetDateTime;
-use uuid::Uuid;
-
-fn mint_session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
-    let secret = hex::decode("cd".repeat(32)).expect("valid hex");
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity_id,
-        org: org_id,
-        email: "oauth-cred-test@example.com".into(),
-        iat: now,
-        exp: now + 3600,
-    };
-    jwt::mint(&secret, &claims).expect("mint jwt")
-}
 
 async fn put_google_creds(base: &str, client: &Client, admin_key: &str) -> Value {
     let resp = client
@@ -42,10 +26,10 @@ async fn put_google_creds(base: &str, client: &Client, admin_key: &str) -> Value
     serde_json::from_str(&body).unwrap()
 }
 
-async fn list_creds(base: &str, client: &Client, cookie: &str) -> Vec<Value> {
+async fn list_creds(base: &str, client: &Client, admin_key: &str) -> Vec<Value> {
     client
         .get(format!("{base}/v1/org-oauth-credentials"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
         .send()
         .await
         .unwrap()
@@ -86,12 +70,12 @@ async fn test_put_creates_two_org_secrets_and_lists() {
             .is_some()
     );
 
-    // GET list (via session cookie) returns the row.
-    let cookie = mint_session_cookie(org_id, ident_id);
-    let rows = list_creds(&base, &client, &cookie).await;
+    // GET list returns the row.
+    let rows = list_creds(&base, &client, &admin_key).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["provider_key"], "google");
     assert_eq!(rows[0]["source"], "db");
+    let _ = ident_id; // silence unused warning — fixture keeps the value
 }
 
 #[tokio::test]
@@ -99,7 +83,7 @@ async fn test_delete_removes_both_secrets() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, admin_key) =
+    let (org_id, _ident_id, _agent_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
     put_google_creds(&base, &client, &admin_key).await;
@@ -112,8 +96,7 @@ async fn test_delete_removes_both_secrets() {
         .unwrap();
     assert_eq!(del.status(), 200);
 
-    let cookie = mint_session_cookie(org_id, ident_id);
-    let rows = list_creds(&base, &client, &cookie).await;
+    let rows = list_creds(&base, &client, &admin_key).await;
     assert!(rows.is_empty(), "rows after delete: {rows:?}");
 
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
@@ -125,6 +108,27 @@ async fn test_delete_removes_both_secrets() {
             .is_none(),
         "soft-delete should hide the secret from name lookup"
     );
+}
+
+#[tokio::test]
+async fn test_non_admin_cannot_list_credentials() {
+    // Defense in depth: listing configured providers leaks which OAuth
+    // providers the org uses and their client_id fingerprints. Only
+    // admins should see that, matching the Org Settings gate in the UI.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org_id, _ident_id, agent_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // The agent key is identity-bound and non-admin by default.
+    let resp = client
+        .get(format!("{base}/v1/org-oauth-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
 }
 
 #[tokio::test]
@@ -154,13 +158,12 @@ async fn test_cross_tenant_isolation() {
     let base = format!("http://{addr}");
 
     let (_org_a, _ident_a, _key_a, admin_a) = common::bootstrap_org_identity(&base, &client).await;
-    let (org_b, ident_b, _key_b, _admin_b) = common::bootstrap_org_identity(&base, &client).await;
+    let (org_b, _ident_b, _key_b, admin_b) = common::bootstrap_org_identity(&base, &client).await;
 
     put_google_creds(&base, &client, &admin_a).await;
 
-    // Org B sees nothing.
-    let cookie_b = mint_session_cookie(org_b, ident_b);
-    let rows = list_creds(&base, &client, &cookie_b).await;
+    // Org B sees nothing — org B's admin key only reaches org B's secrets.
+    let rows = list_creds(&base, &client, &admin_b).await;
     assert!(rows.is_empty(), "org B leaked org A creds: {rows:?}");
 
     // Direct secret lookup scoped to org B also misses.
