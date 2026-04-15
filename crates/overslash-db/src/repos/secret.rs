@@ -136,3 +136,29 @@ pub(crate) async fn soft_delete(
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Atomically soft-delete a set of secrets in one transaction.
+///
+/// Returns the total number of rows affected. If any DELETE fails the
+/// whole transaction rolls back and none of the secrets are marked as
+/// deleted — callers don't have to reason about partial state.
+pub(crate) async fn soft_delete_many(
+    pool: &PgPool,
+    org_id: Uuid,
+    names: &[&str],
+) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let mut total: u64 = 0;
+    for name in names {
+        let result = sqlx::query!(
+            "UPDATE secrets SET deleted_at = now() WHERE org_id = $1 AND name = $2 AND deleted_at IS NULL",
+            org_id,
+            name,
+        )
+        .execute(&mut *tx)
+        .await?;
+        total += result.rows_affected();
+    }
+    tx.commit().await?;
+    Ok(total)
+}

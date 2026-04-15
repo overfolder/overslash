@@ -212,9 +212,11 @@ async fn delete_credentials(
 
     let (id_name, secret_name) = oauth_secret_names(&provider_key);
 
-    let deleted_id = scope.soft_delete_secret(&id_name).await?;
-    let deleted_secret = scope.soft_delete_secret(&secret_name).await?;
-    let deleted = deleted_id || deleted_secret;
+    // Atomic: both soft-deletes happen in one transaction. If the second
+    // UPDATE fails, the first rolls back too — no orphan half-deleted
+    // secret pair. `deleted > 0` distinguishes "something was removed"
+    // from "nothing was configured for this provider".
+    let deleted = scope.soft_delete_secrets(&[&id_name, &secret_name]).await? > 0;
 
     if deleted {
         let _ = scope

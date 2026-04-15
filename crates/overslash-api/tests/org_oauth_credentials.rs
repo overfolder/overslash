@@ -114,6 +114,62 @@ async fn test_delete_removes_both_secrets() {
 }
 
 #[tokio::test]
+async fn test_delete_is_atomic_across_both_secret_names() {
+    // Both org secrets (OAUTH_{PROV}_CLIENT_ID and _CLIENT_SECRET) must
+    // be soft-deleted atomically. Even with only one half present
+    // (simulating an earlier partial-write that our PUT guards against
+    // but the repo layer should still handle cleanly), DELETE must not
+    // leave an orphan record.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, _ident_id, _agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    put_google_creds(&base, &client, &admin_key).await;
+    // Sanity — both secrets exist after PUT.
+    let scope = overslash_db::scopes::OrgScope::new(org_id, pool);
+    assert!(
+        scope
+            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        scope
+            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_SECRET")
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let resp = client
+        .delete(format!("{base}/v1/org-oauth-credentials/google"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Both gone after DELETE.
+    assert!(
+        scope
+            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        scope
+            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_SECRET")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn test_delete_unknown_provider_returns_404() {
     // Mirror the PUT contract: unknown provider returns 404 rather than
     // silently reporting deleted=false (ambiguous with "provider exists

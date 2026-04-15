@@ -56,4 +56,11 @@ impl OrgScope {
     pub async fn soft_delete_secret(&self, name: &str) -> Result<bool, sqlx::Error> {
         crate::repos::secret::soft_delete(self.db(), self.org_id(), name).await
     }
+
+    /// Soft-delete multiple secrets atomically. All deletes succeed or
+    /// none do — useful when a logical resource (e.g. an OAuth App
+    /// Credential pair) spans two secret names.
+    pub async fn soft_delete_secrets(&self, names: &[&str]) -> Result<u64, sqlx::Error> {
+        crate::repos::secret::soft_delete_many(self.db(), self.org_id(), names).await
+    }
 }
