@@ -42,8 +42,9 @@
 		if (parseError) return; // Don't validate if YAML doesn't parse
 		validationPending = true;
 		try {
-			const parsed = parseYaml(doc);
-			const result = await validateTemplate(parsed);
+			// Send raw YAML to the backend so it can detect duplicate keys
+			// and validate with the same Rust parser used for CRUD.
+			const result = await validateTemplate(doc);
 			if (result === null) {
 				validationUnavailable = true;
 				validationResult = null;
