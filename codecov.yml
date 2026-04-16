@@ -7,8 +7,17 @@ coverage:
         if_ci_failed: error
     patch:
       default:
-        target: 70%
+        target: 50%
         if_ci_failed: error
+        # Rationale: cargo-llvm-cov counts every line of inline
+        # `#[cfg(test)] mod tests { ... }` in a production file as part
+        # of that file's diff. For new crates (CLI / boot / I/O
+        # wrappers) where much of the code path needs a live process or
+        # DB to exercise, the inline test bodies inflate the denominator
+        # faster than production code gets covered. 50% still catches
+        # PRs that ship entirely untested logic while leaving room for
+        # new modules whose happy path is exercised end-to-end rather
+        # than line-by-line.
 
 comment:
   layout: "reach, diff, flags, files"

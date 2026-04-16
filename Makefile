@@ -1,6 +1,7 @@
 .PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
-       infra-shutdown infra-resume worktree-clean
+       infra-shutdown infra-resume worktree-clean \
+       dashboard-static web-build web
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -46,6 +47,20 @@ dev-api:
 # Start only the dashboard dev server (no container)
 dev-dashboard:
 	cd dashboard && npm run dev
+
+# Build the SvelteKit dashboard with adapter-static. Output: dashboard/build/.
+# Required before `make web-build` so rust-embed has assets to embed.
+dashboard-static:
+	cd dashboard && npm install && npm run build:static
+
+# Build the self-hosted single-binary release with the embedded dashboard.
+# Produces target/release/overslash. Run `overslash web` to start it.
+web-build: dashboard-static
+	cargo build --release -p overslash-cli --features embed-dashboard
+
+# Build + run the self-hosted binary directly (foreground).
+web: web-build
+	./target/release/overslash web
 
 # Stop services
 down:

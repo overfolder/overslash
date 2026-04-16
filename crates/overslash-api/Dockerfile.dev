@@ -9,15 +9,17 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
 COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
+COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
+COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 COPY crates/overslash-db/migrations crates/overslash-db/migrations
 COPY .sqlx .sqlx
 COPY services services
 # Stub sources so cargo-chef can resolve the workspace
-RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-api/src tests/mock-target/src && \
-    echo "fn main() {}" > crates/overslash-api/src/main.rs && \
+RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-api/src crates/overslash-mcp/src crates/overslash-cli/src tests/mock-target/src && \
+    echo "fn main() {}" > crates/overslash-cli/src/main.rs && \
     echo "fn main() {}" > tests/mock-target/src/main.rs && \
-    touch crates/overslash-core/src/lib.rs crates/overslash-db/src/lib.rs
+    touch crates/overslash-core/src/lib.rs crates/overslash-db/src/lib.rs crates/overslash-api/src/lib.rs crates/overslash-mcp/src/lib.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: build dependencies (cached image layer)
@@ -57,6 +59,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
 COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
+COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
+COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 
 # Copy migrations, sqlx cache, services
@@ -72,4 +76,4 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
 # Source dirs are mounted as volumes at runtime; clear our crate fingerprints so cargo rebuilds them
-CMD ["sh", "-c", "rm -rf target/debug/.fingerprint/overslash* target/debug/.fingerprint/mock-target* 2>/dev/null; cargo watch -x 'run -p overslash-api'"]
+CMD ["sh", "-c", "rm -rf target/debug/.fingerprint/overslash* target/debug/.fingerprint/mock-target* 2>/dev/null; cargo watch -x 'run -p overslash-cli -- serve'"]

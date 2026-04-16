@@ -125,6 +125,20 @@
 - Phase 3: TTL-based sub-identity auto-cleanup, approval visibility scoping
 - Phase 4: Meta tools, semantic search, billing, documentation site
 
+### CLI + MCP — Surface Restructure (in progress)
+
+- Single binary `overslash` replaces the old `overslash-api` bin (crates: `overslash-cli`, `overslash-mcp`)
+- Subcommands: `serve` (REST API only, cloud mode), `web` (REST + embedded SvelteKit dashboard, self-hosted), `mcp` (stdio↔HTTP shim — see below), `mcp login` (token onboarding via OAuth)
+- **Direction — MCP OAuth transport.** SPEC §3 *Integration Surfaces* now mandates MCP over Streamable HTTP at `POST /mcp` with OAuth 2.1 (Authorization Server endpoints under `/oauth/*` and `/.well-known/oauth-*`). The old stdio-only / dual-key / `mcp setup` paste-tokens design is **superseded**. Full design in [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md).
+- `overslash mcp` is being reshaped from a self-contained stdio server into a thin stdio↔HTTP **compat shim** (executor's pattern) holding a single bearer token in `~/.config/overslash/mcp.json`; the actual MCP server moves into the `overslash-api` crate behind `POST /mcp`.
+- `overslash mcp` (today, pending the rewrite above) exposes four tools wired to existing REST endpoints:
+  - `overslash_search` → `GET /v1/services`
+  - `overslash_execute` → `POST /v1/actions/execute`
+  - `overslash_auth` → dispatched per-action: `whoami`/`list_secrets`/`request_secret`/`create_subagent`/`create_service_from_template`/`service_status`. `rotate_secret` and a few others from SPEC §10 not yet wired (return `invalid_params` with a clear message).
+  - `overslash_approve` → `POST /v1/approvals/{id}/resolve` — no longer "MCP only" per the SPEC update; usable from any user-mode surface.
+- `overslash web` + `embed-dashboard` Cargo feature embeds `dashboard/build/` (built with `@sveltejs/adapter-static`) via `rust-embed`. Cloud Vercel build path unchanged.
+- Infra image still tagged `overslash-api:*` to keep Artifact Registry stable; only the in-container entrypoint changed (`overslash serve`).
+
 ## What's Deployed
 
 Nothing yet. Running locally via Docker Compose (Postgres on port 55432).

@@ -15,7 +15,7 @@ use overslash_db::repos::identity::RestoreOutcome;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp, WriteAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -28,6 +28,34 @@ pub fn router() -> Router<AppState> {
         .route("/v1/identities/{id}/children", get(list_children))
         .route("/v1/identities/{id}/chain", get(get_chain))
         .route("/v1/identities/{id}/restore", post(restore_identity))
+        .route("/v1/whoami", get(whoami))
+}
+
+/// Bearer-friendly self-introspection for API-key callers (CLI, MCP).
+/// Returns the calling identity's `identity_id`/`org_id`/`kind` so a
+/// downstream call can supply `parent_id` (e.g. `mcp setup` creating an
+/// agent under the calling user). The dashboard's `/auth/me*` endpoints
+/// require a session cookie and aren't usable from a Bearer client.
+async fn whoami(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<axum::Json<serde_json::Value>> {
+    let identity_id = auth
+        .identity_id
+        .ok_or_else(|| AppError::Unauthorized("no identity bound to this key".into()))?;
+    let scope = OrgScope::new(auth.org_id, state.db.clone());
+    let ident = scope
+        .get_identity(identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    Ok(axum::Json(serde_json::json!({
+        "org_id": auth.org_id,
+        "identity_id": identity_id,
+        "kind": ident.kind,
+        "name": ident.name,
+        "parent_id": ident.parent_id,
+        "owner_id": ident.owner_id,
+    })))
 }
 
 #[derive(Deserialize)]

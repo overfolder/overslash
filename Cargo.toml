@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "tests/mock-target"]
+members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "tests/mock-target"]
 
 [workspace.package]
 edition = "2024"
@@ -26,6 +26,12 @@ rand = "0.10"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 redis = { version = "1.2", features = ["tokio-comp", "connection-manager"] }
 dashmap = "6"
+clap = { version = "4", features = ["derive", "env"] }
+rmcp = { version = "1.4", features = ["server", "macros", "schemars", "transport-io"] }
+rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path", "debug-embed"] }
+mime_guess = "2"
+schemars = "0.8"
+url = "2"
 
 # Fast dev builds: minimal debug info
 [profile.dev]

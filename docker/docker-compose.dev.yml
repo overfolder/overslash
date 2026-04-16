@@ -33,6 +33,8 @@ services:
       - ../crates/overslash-core/src:/app/crates/overslash-core/src:ro
       - ../crates/overslash-db/src:/app/crates/overslash-db/src:ro
       - ../crates/overslash-api/src:/app/crates/overslash-api/src:ro
+      - ../crates/overslash-mcp/src:/app/crates/overslash-mcp/src:ro
+      - ../crates/overslash-cli/src:/app/crates/overslash-cli/src:ro
       - ../tests/mock-target/src:/app/tests/mock-target/src:ro
       - ../services:/app/services:ro
       - cargo-cache:/usr/local/cargo/registry

@@ -1,0 +1,32 @@
+[package]
+name = "overslash-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "overslash"
+path = "src/main.rs"
+
+[features]
+default = []
+# Embed the SvelteKit dashboard build into the binary so `overslash web`
+# can serve it same-origin. Requires `dashboard/build/` to exist (run
+# `make dashboard-static` first).
+embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
+
+[dependencies]
+overslash-api = { path = "../overslash-api" }
+overslash-mcp = { path = "../overslash-mcp" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true }
+url = { workspace = true }
+rust-embed = { workspace = true, optional = true }
+mime_guess = { workspace = true, optional = true }
