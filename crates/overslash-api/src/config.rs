@@ -23,15 +23,31 @@ pub struct Config {
     pub default_rate_window_secs: u32,
 }
 
+/// Build the default `public_url` from the bind host/port. We map
+/// wildcard binds (`0.0.0.0`, `::`) to `localhost` because the public URL
+/// is meant to be reachable from a browser — `http://0.0.0.0:8080` is not
+/// a valid origin to advertise. Set `PUBLIC_URL` explicitly for
+/// production deployments behind a reverse proxy.
+pub fn default_public_url(host: &str, port: u16) -> String {
+    let display = match host {
+        "0.0.0.0" | "::" | "[::]" => "localhost",
+        h => h,
+    };
+    format!("http://{display}:{port}")
+}
+
 impl Config {
     /// Load config from environment variables.
     pub fn from_env() -> Self {
+        let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
+        let port = env::var("PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(3000);
+        let public_url = env::var("PUBLIC_URL").unwrap_or_else(|_| default_public_url(&host, port));
         Self {
-            host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
-            port: env::var("PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(3000),
+            host,
+            port,
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL is required"),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
@@ -45,7 +61,7 @@ impl Config {
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
             github_auth_client_id: env::var("GITHUB_AUTH_CLIENT_ID").ok(),
             github_auth_client_secret: env::var("GITHUB_AUTH_CLIENT_SECRET").ok(),
-            public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+            public_url,
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
             max_response_body_bytes: env::var("MAX_RESPONSE_BODY_BYTES")
                 .ok()
@@ -94,5 +110,29 @@ impl Config {
                 .map(|(a, b)| (a.clone(), b.clone())),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_public_url_maps_wildcard_hosts_to_localhost() {
+        assert_eq!(default_public_url("0.0.0.0", 8080), "http://localhost:8080");
+        assert_eq!(default_public_url("::", 3000), "http://localhost:3000");
+        assert_eq!(default_public_url("[::]", 7676), "http://localhost:7676");
+    }
+
+    #[test]
+    fn default_public_url_passes_through_explicit_hosts() {
+        assert_eq!(
+            default_public_url("127.0.0.1", 7676),
+            "http://127.0.0.1:7676"
+        );
+        assert_eq!(
+            default_public_url("api.example.com", 8080),
+            "http://api.example.com:8080"
+        );
     }
 }

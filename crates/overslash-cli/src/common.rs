@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use axum::Router;
-use overslash_api::config::Config;
+use overslash_api::config::{Config, default_public_url};
 use tracing_subscriber::EnvFilter;
 
 fn init_tracing(to_stderr: bool) {
@@ -44,6 +44,13 @@ pub fn load_config(host: String, port: u16) -> Config {
     let mut config = Config::from_env();
     config.host = host;
     config.port = port;
+    // If PUBLIC_URL wasn't set explicitly, re-derive it from the final
+    // host/port — otherwise CLI overrides like `--port 7676` would still
+    // advertise the env-default URL (e.g. http://localhost:3000) in the
+    // banner and inside redirect_uri / login_url responses.
+    if std::env::var("PUBLIC_URL").is_err() {
+        config.public_url = default_public_url(&config.host, config.port);
+    }
     config
 }
 

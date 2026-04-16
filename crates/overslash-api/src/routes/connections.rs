@@ -88,7 +88,7 @@ async fn initiate_connection(
 
     let redirect_uri = format!(
         "{}/v1/oauth/callback",
-        std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into())
+        state.config.public_url.trim_end_matches('/')
     );
 
     let byoc_id = creds.byoc_credential_id;
@@ -190,7 +190,7 @@ async fn oauth_callback(
 
     let redirect_uri = format!(
         "{}/v1/oauth/callback",
-        std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into())
+        state.config.public_url.trim_end_matches('/')
     );
 
     // Exchange code for tokens
