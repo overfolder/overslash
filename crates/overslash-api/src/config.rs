@@ -26,12 +26,18 @@ pub struct Config {
 /// Build the default `public_url` from the bind host/port. We map
 /// wildcard binds (`0.0.0.0`, `::`) to `localhost` because the public URL
 /// is meant to be reachable from a browser — `http://0.0.0.0:8080` is not
-/// a valid origin to advertise. Set `PUBLIC_URL` explicitly for
-/// production deployments behind a reverse proxy.
+/// a valid origin to advertise. Raw IPv6 literals (e.g. `::1`,
+/// `2001:db8::1`) are wrapped in brackets per RFC 3986 so the resulting
+/// URL parses cleanly. Set `PUBLIC_URL` explicitly for production
+/// deployments behind a reverse proxy.
 pub fn default_public_url(host: &str, port: u16) -> String {
-    let display = match host {
-        "0.0.0.0" | "::" | "[::]" => "localhost",
-        h => h,
+    let display: std::borrow::Cow<'_, str> = match host {
+        "0.0.0.0" | "::" | "[::]" => "localhost".into(),
+        h if h.starts_with('[') => h.into(),
+        // An unbracketed colon means an IPv6 literal — bracket it so
+        // `host:port` doesn't collide with the address's own colons.
+        h if h.contains(':') => format!("[{h}]").into(),
+        h => h.into(),
     };
     format!("http://{display}:{port}")
 }
@@ -133,6 +139,26 @@ mod tests {
         assert_eq!(
             default_public_url("api.example.com", 8080),
             "http://api.example.com:8080"
+        );
+    }
+
+    #[test]
+    fn default_public_url_brackets_raw_ipv6_literals() {
+        // RFC 3986 requires IPv6 in URLs to be bracketed so the host's
+        // colons can be told apart from the host:port colon.
+        assert_eq!(default_public_url("::1", 8080), "http://[::1]:8080");
+        assert_eq!(
+            default_public_url("2001:db8::1", 8080),
+            "http://[2001:db8::1]:8080"
+        );
+    }
+
+    #[test]
+    fn default_public_url_does_not_double_bracket_already_bracketed_ipv6() {
+        assert_eq!(default_public_url("[::1]", 8080), "http://[::1]:8080");
+        assert_eq!(
+            default_public_url("[2001:db8::1]", 8080),
+            "http://[2001:db8::1]:8080"
         );
     }
 }
