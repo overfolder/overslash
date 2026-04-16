@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE org_idp_configs SET\n            encrypted_client_id = COALESCE($3, encrypted_client_id),\n            encrypted_client_secret = COALESCE($4, encrypted_client_secret),\n            enabled = COALESCE($5, enabled),\n            allowed_email_domains = COALESCE($6, allowed_email_domains),\n            updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at",
+  "query": "UPDATE org_idp_configs SET\n            encrypted_client_id = CASE WHEN $3 THEN $4 ELSE encrypted_client_id END,\n            encrypted_client_secret = CASE WHEN $3 THEN $5 ELSE encrypted_client_secret END,\n            enabled = COALESCE($6, enabled),\n            allowed_email_domains = COALESCE($7, allowed_email_domains),\n            updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -53,6 +53,7 @@
       "Left": [
         "Uuid",
         "Uuid",
+        "Bool",
         "Bytea",
         "Bytea",
         "Bool",
@@ -63,13 +64,13 @@
       false,
       false,
       false,
-      false,
-      false,
+      true,
+      true,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "f101a49f9f5e04fc9cc0c3ea2f96a1f54af8a951ed5a5d5c09003ad299a6112a"
+  "hash": "8a48a823e9bb63fb52730574ab99e8f2268e125cb598571d67212acbbd689ac5"
 }

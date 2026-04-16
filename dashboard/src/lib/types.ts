@@ -26,8 +26,17 @@ export interface IdpConfig {
   source: 'env' | 'db';
   enabled?: boolean;
   allowed_email_domains?: string[];
+  uses_org_credentials?: boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+/** One row in the Org Settings → OAuth App Credentials table. */
+export interface OAuthCredential {
+  provider_key: string;
+  display_name: string;
+  source: 'env' | 'db';
+  client_id_preview: string;
 }
 
 export interface Webhook {

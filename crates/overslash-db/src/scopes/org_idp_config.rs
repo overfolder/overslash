@@ -7,16 +7,22 @@
 
 use uuid::Uuid;
 
+pub use crate::repos::org_idp_config::CredentialsUpdate;
 use crate::repos::org_idp_config::OrgIdpConfigRow;
 use crate::scopes::OrgScope;
 
 impl OrgScope {
     /// Create an IdP config in this org.
+    ///
+    /// `encrypted_client_id` / `encrypted_client_secret` are both `None` when
+    /// the config defers to org-level OAuth App Credentials, both `Some`
+    /// when the config has its own dedicated credentials. The DB CHECK
+    /// enforces the both-or-neither invariant.
     pub async fn create_org_idp_config(
         &self,
         provider_key: &str,
-        encrypted_client_id: &[u8],
-        encrypted_client_secret: &[u8],
+        encrypted_client_id: Option<&[u8]>,
+        encrypted_client_secret: Option<&[u8]>,
         enabled: bool,
         allowed_email_domains: &[String],
     ) -> Result<OrgIdpConfigRow, sqlx::Error> {
@@ -69,8 +75,7 @@ impl OrgScope {
     pub async fn update_org_idp_config(
         &self,
         id: Uuid,
-        encrypted_client_id: Option<&[u8]>,
-        encrypted_client_secret: Option<&[u8]>,
+        creds: CredentialsUpdate<'_>,
         enabled: Option<bool>,
         allowed_email_domains: Option<&[String]>,
     ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
@@ -78,8 +83,7 @@ impl OrgScope {
             self.db(),
             id,
             self.org_id(),
-            encrypted_client_id,
-            encrypted_client_secret,
+            creds,
             enabled,
             allowed_email_domains,
         )

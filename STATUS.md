@@ -35,6 +35,7 @@
 
 - OAuth engine (authorization URL, code exchange, token storage, auto-refresh)
 - BYOC credential resolution with fallback chain (identity → org → system)
+- Three-tier OAuth credential cascade (SPEC §7): user BYOC → org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET`) → system env vars. Org-level tier is managed via Org Settings → OAuth App Credentials (`PUT/GET/DELETE /v1/org-oauth-credentials/{provider}`). IdP configs (`org_idp_configs`) default to the same org secrets (migration 032 makes `encrypted_client_id/secret` nullable; login resolves from the org secrets when NULL), so rotating org credentials propagates to linked IdPs automatically.
 - Connections API (initiate, list, revoke)
 - Global service template registry — YAML loader with search API
 - 7 service templates shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X

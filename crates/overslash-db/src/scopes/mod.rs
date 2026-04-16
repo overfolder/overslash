@@ -72,6 +72,7 @@ mod user_preferences;
 
 pub use agent::AgentScope;
 pub use org::OrgScope;
+pub use org_idp_config::CredentialsUpdate as OrgIdpConfigCredentialsUpdate;
 pub use system::SystemScope;
 pub use user::UserScope;
 

@@ -2,6 +2,7 @@
 	import { ApiError, session } from '$lib/session';
 	import type {
 		IdpConfig,
+		OAuthCredential,
 		OrgInfo,
 		SecretRequestSettings,
 		Webhook,
@@ -15,6 +16,7 @@
 
 	let org = $state<OrgInfo | null>(null);
 	let idpConfigs = $state<IdpConfig[]>([]);
+	let oauthCredentials = $state<OAuthCredential[]>([]);
 	let webhooks = $state<Webhook[]>([]);
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
@@ -22,6 +24,7 @@
 	$effect(() => {
 		org = data.org;
 		idpConfigs = data.idpConfigs;
+		oauthCredentials = data.oauthCredentials;
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
 	});
@@ -62,6 +65,49 @@
 	let idpClientSecret = $state('');
 	let idpError = $state<string | null>(null);
 	let idpSubmitting = $state(false);
+	// When the admin opens the IdP form and the selected provider already
+	// has an org OAuth credential, default to reusing it. The admin can
+	// still override to enter dedicated credentials.
+	let idpUseOrgCreds = $state(false);
+	let idpOverrideOrgCreds = $state(false);
+
+	// OAuth App Credentials form
+	const KNOWN_PROVIDERS = [
+		{ key: 'google', label: 'Google' },
+		{ key: 'github', label: 'GitHub' },
+		{ key: 'slack', label: 'Slack' },
+		{ key: 'microsoft', label: 'Microsoft' },
+		{ key: 'spotify', label: 'Spotify' }
+	] as const;
+	let showOauthCredForm = $state(false);
+	let oauthCredEditingProvider = $state<string | null>(null);
+	let oauthCredProvider = $state<string>('google');
+	let oauthCredClientId = $state('');
+	let oauthCredClientSecret = $state('');
+	let oauthCredError = $state<string | null>(null);
+	let oauthCredSubmitting = $state(false);
+
+	/** True when an org credential exists (from any source) for this provider. */
+	function hasOrgCredFor(providerKey: string): boolean {
+		return oauthCredentials.some((c) => c.provider_key === providerKey);
+	}
+
+	/** The matching org credential row, if any — used to pre-populate the IdP form. */
+	function orgCredFor(providerKey: string): OAuthCredential | undefined {
+		return oauthCredentials.find((c) => c.provider_key === providerKey);
+	}
+
+	// Re-evaluate "use org creds" default whenever the selected IdP provider
+	// changes or the OAuth credential list updates.
+	$effect(() => {
+		if (!showIdpForm) return;
+		// Custom OIDC has no provider_key match — always use dedicated creds.
+		if (idpType === 'oidc') {
+			idpUseOrgCreds = false;
+			return;
+		}
+		idpUseOrgCreds = hasOrgCredFor(idpType) && !idpOverrideOrgCreds;
+	});
 
 	// Webhook form
 	let showWebhookForm = $state(false);
@@ -87,6 +133,9 @@
 	async function refetchIdp() {
 		idpConfigs = await session.get<IdpConfig[]>('/v1/org-idp-configs');
 	}
+	async function refetchOauthCreds() {
+		oauthCredentials = await session.get<OAuthCredential[]>('/v1/org-oauth-credentials');
+	}
 	async function refetchWebhooks() {
 		webhooks = await session.get<Webhook[]>('/v1/webhooks');
 	}
@@ -96,15 +145,20 @@
 		idpError = null;
 		idpSubmitting = true;
 		try {
-			const body: Record<string, unknown> = {
-				client_id: idpClientId,
-				client_secret: idpClientSecret
-			};
+			const body: Record<string, unknown> = {};
 			if (idpType === 'oidc') {
 				body.issuer_url = idpIssuerUrl;
 				body.display_name = idpDisplayName;
+				body.client_id = idpClientId;
+				body.client_secret = idpClientSecret;
 			} else {
 				body.provider_key = idpType;
+				if (idpUseOrgCreds) {
+					body.use_org_credentials = true;
+				} else {
+					body.client_id = idpClientId;
+					body.client_secret = idpClientSecret;
+				}
 			}
 			await session.post<IdpConfig>('/v1/org-idp-configs', body);
 			showIdpForm = false;
@@ -112,12 +166,85 @@
 			idpIssuerUrl = '';
 			idpClientId = '';
 			idpClientSecret = '';
+			idpOverrideOrgCreds = false;
 			await refetchIdp();
 		} catch (err) {
 			idpError = asMessage(err);
 		} finally {
 			idpSubmitting = false;
 		}
+	}
+
+	// ----- OAuth App Credentials -----
+
+	function openAddOauthCred() {
+		oauthCredEditingProvider = null;
+		// Pick a default provider that isn't already configured, falling back
+		// to "google" if everything is already configured.
+		const taken = new Set(oauthCredentials.map((c) => c.provider_key));
+		const first = KNOWN_PROVIDERS.find((p) => !taken.has(p.key));
+		oauthCredProvider = first?.key ?? 'google';
+		oauthCredClientId = '';
+		oauthCredClientSecret = '';
+		oauthCredError = null;
+		showOauthCredForm = true;
+	}
+
+	function openEditOauthCred(row: OAuthCredential) {
+		oauthCredEditingProvider = row.provider_key;
+		oauthCredProvider = row.provider_key;
+		oauthCredClientId = '';
+		oauthCredClientSecret = '';
+		oauthCredError = null;
+		showOauthCredForm = true;
+	}
+
+	async function submitOauthCred(e: Event) {
+		e.preventDefault();
+		oauthCredError = null;
+		oauthCredSubmitting = true;
+		try {
+			await session.put<OAuthCredential>(
+				`/v1/org-oauth-credentials/${oauthCredProvider}`,
+				{
+					client_id: oauthCredClientId,
+					client_secret: oauthCredClientSecret
+				}
+			);
+			showOauthCredForm = false;
+			oauthCredClientId = '';
+			oauthCredClientSecret = '';
+			await refetchOauthCreds();
+		} catch (err) {
+			oauthCredError = asMessage(err);
+		} finally {
+			oauthCredSubmitting = false;
+		}
+	}
+
+	function removeOauthCred(row: OAuthCredential) {
+		const deferringIdp = idpConfigs.find(
+			(cfg) => cfg.provider_key === row.provider_key && cfg.uses_org_credentials === true
+		);
+		const message = deferringIdp
+			? `The "${deferringIdp.display_name}" identity provider is using these credentials to log users in. Removing them will break login for that provider until it's reconfigured. New service connections will also fall back to the Overslash system credentials (if any).`
+			: 'Existing connections will continue working until their tokens expire. New connections will fall back to the Overslash system credentials (if configured).';
+
+		openConfirm(
+			`Remove ${row.display_name} OAuth App Credentials?`,
+			message,
+			'Remove',
+			async () => {
+				try {
+					await session.delete(`/v1/org-oauth-credentials/${row.provider_key}`);
+					// Refresh IdP list too — a deferring IdP is now in a
+					// degraded state; the list should reflect that.
+					await Promise.all([refetchOauthCreds(), refetchIdp()]);
+				} catch (err) {
+					alert(asMessage(err));
+				}
+			}
+		);
 	}
 
 	async function toggleIdp(cfg: IdpConfig) {
@@ -320,7 +447,18 @@
 				<button
 					type="button"
 					class="btn btn-primary"
-					onclick={() => (showIdpForm = !showIdpForm)}
+					onclick={() => {
+						showIdpForm = !showIdpForm;
+						if (!showIdpForm) {
+							// Reset the override flag so the next time the form
+							// opens it defaults back to "use org OAuth credentials"
+							// when they exist for the selected provider.
+							idpOverrideOrgCreds = false;
+							idpClientId = '';
+							idpClientSecret = '';
+							idpError = null;
+						}
+					}}
 				>
 					{showIdpForm ? 'Cancel' : 'Add provider'}
 				</button>
@@ -398,20 +536,156 @@
 							/>
 						</label>
 					{/if}
-					<label>
-						Client ID
-						<input type="text" bind:value={idpClientId} required />
-					</label>
-					<label>
-						Client secret
-						<input type="password" bind:value={idpClientSecret} required />
-					</label>
+					{#if idpType !== 'oidc' && idpUseOrgCreds}
+						<div class="org-creds-note">
+							<p>
+								<strong>Using org OAuth credentials.</strong>
+								This IdP will use the org-level OAuth App Credentials for
+								<span class="mono">{idpType}</span>
+								({orgCredFor(idpType)?.client_id_preview ?? ''}). Rotating
+								the org credentials automatically updates this IdP.
+							</p>
+							<button
+								type="button"
+								class="btn-link"
+								onclick={() => (idpOverrideOrgCreds = true)}
+							>
+								Override with dedicated credentials
+							</button>
+						</div>
+					{:else}
+						<label>
+							Client ID
+							<input type="text" bind:value={idpClientId} required />
+						</label>
+						<label>
+							Client secret
+							<input type="password" bind:value={idpClientSecret} required />
+						</label>
+						{#if idpType !== 'oidc' && hasOrgCredFor(idpType) && idpOverrideOrgCreds}
+							<button
+								type="button"
+								class="btn-link"
+								onclick={() => (idpOverrideOrgCreds = false)}
+							>
+								Use org OAuth credentials instead
+							</button>
+						{/if}
+					{/if}
 					{#if idpError}
 						<p class="form-error">{idpError}</p>
 					{/if}
 					<div class="form-actions">
 						<button type="submit" class="btn btn-primary" disabled={idpSubmitting}>
 							{idpSubmitting ? 'Saving…' : 'Save provider'}
+						</button>
+					</div>
+				</form>
+			{/if}
+		</section>
+
+		<!-- OAuth App Credentials -->
+		<section class="card">
+			<div class="card-head">
+				<h2>OAuth App Credentials</h2>
+				<button
+					type="button"
+					class="btn btn-primary"
+					onclick={() => (showOauthCredForm ? (showOauthCredForm = false) : openAddOauthCred())}
+				>
+					{showOauthCredForm ? 'Cancel' : 'Add provider credentials'}
+				</button>
+			</div>
+			<p class="section-desc">
+				Org-level OAuth client credentials shared across IdP login and service
+				connections. These feed the org-level tier of the OAuth credential
+				cascade — Google Calendar, Drive, and Gmail share one set of Google
+				credentials.
+			</p>
+
+			{#if oauthCredentials.length === 0}
+				<p class="muted">No OAuth App Credentials configured.</p>
+			{:else}
+				<table>
+					<thead>
+						<tr>
+							<th>Provider</th>
+							<th>Client ID</th>
+							<th>Configured</th>
+							<th class="actions-col">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each oauthCredentials as row (row.provider_key)}
+							<tr>
+								<td>
+									{row.display_name}
+									{#if row.source === 'env'}
+										<span class="badge badge-env">env</span>
+									{/if}
+								</td>
+								<td class="mono small">{row.client_id_preview}</td>
+								<td>
+									{#if row.source === 'env'}
+										<span class="badge badge-on">env vars</span>
+									{:else}
+										<span class="badge badge-on">org secrets</span>
+									{/if}
+								</td>
+								<td class="actions-col">
+									{#if row.source === 'db'}
+										<button type="button" class="btn-link" onclick={() => openEditOauthCred(row)}>
+											Edit
+										</button>
+										<button type="button" class="btn-link danger" onclick={() => removeOauthCred(row)}>
+											Remove
+										</button>
+									{:else}
+										<span class="muted small">read-only</span>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+
+			{#if showOauthCredForm}
+				<form class="inline-form" onsubmit={submitOauthCred}>
+					<label>
+						Provider
+						<select bind:value={oauthCredProvider} disabled={oauthCredEditingProvider !== null}>
+							{#each KNOWN_PROVIDERS as p}
+								<option value={p.key}>{p.label}</option>
+							{/each}
+						</select>
+					</label>
+					<label>
+						Client ID
+						<input type="text" bind:value={oauthCredClientId} required />
+					</label>
+					<label>
+						Client secret
+						<input type="password" bind:value={oauthCredClientSecret} required />
+						{#if oauthCredEditingProvider !== null}
+							<span class="muted small">
+								The client secret is never shown after save — enter it again to update.
+							</span>
+						{/if}
+					</label>
+					{#if oauthCredError}
+						<p class="form-error">{oauthCredError}</p>
+					{/if}
+					<div class="form-actions">
+						<button type="submit" class="btn btn-primary" disabled={oauthCredSubmitting}>
+							{oauthCredSubmitting ? 'Saving…' : 'Save credentials'}
+						</button>
+						<button
+							type="button"
+							class="btn-link"
+							onclick={() => (showOauthCredForm = false)}
+						>
+							Cancel
 						</button>
 					</div>
 				</form>
@@ -783,6 +1057,20 @@
 		margin: 0 0 1rem;
 		color: var(--color-text-muted);
 		font-size: 0.88rem;
+	}
+	.org-creds-note {
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		padding: 0.75rem 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.org-creds-note p {
+		margin: 0;
+		font-size: 0.88rem;
+		color: var(--color-text-muted);
 	}
 	.section-desc code {
 		font-family: var(--font-mono);
