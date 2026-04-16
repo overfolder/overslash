@@ -282,6 +282,54 @@ async fn test_health() {
 }
 
 #[tokio::test]
+async fn test_whoami_returns_caller_identity_for_bearer_key() {
+    // /v1/whoami is the Bearer-friendly self-introspection endpoint that
+    // `mcp setup` uses to discover its own identity_id (so it can supply
+    // parent_id when creating an agent). The dashboard's /auth/me* paths
+    // are session-cookie-only and unusable from a CLI.
+    let pool = common::test_pool().await;
+    let (base, agent_key, org_id, ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    // Calling with the agent-bound key should report that agent identity.
+    let resp: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["org_id"].as_str().unwrap(), org_id.to_string());
+    assert_eq!(resp["identity_id"].as_str().unwrap(), ident_id.to_string());
+    assert_eq!(resp["kind"], "agent");
+    // The agent was created under a user, so parent_id is present and not null.
+    assert!(resp["parent_id"].is_string(), "parent_id={:?}", resp);
+
+    // The org bootstrap key is identity-bound to the freshly-minted admin user.
+    let admin_resp: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(admin_resp["org_id"].as_str().unwrap(), org_id.to_string());
+    assert_eq!(admin_resp["kind"], "user");
+
+    // Unauthenticated request is rejected.
+    let unauth = client
+        .get(format!("{base}/v1/whoami"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), 401);
+}
+
+#[tokio::test]
 async fn test_happy_path_execute_with_permission() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
