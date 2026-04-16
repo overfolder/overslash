@@ -233,7 +233,9 @@ pub struct AuthRoute {
 /// table is unit-testable without an HTTP server.
 pub fn auth_route(args: &AuthArgs) -> Result<AuthRoute, McpError> {
     let (method, path, cred) = match args.action.as_str() {
-        "whoami" => (HttpMethod::Get, "/auth/me".to_string(), Cred::Agent),
+        // Bearer-friendly self-introspection. /auth/me is cookie-only and
+        // unusable from an MCP-held API key; /v1/whoami accepts Bearer.
+        "whoami" => (HttpMethod::Get, "/v1/whoami".to_string(), Cred::Agent),
         "list_secrets" => (HttpMethod::Get, "/v1/secrets".to_string(), Cred::Agent),
         "request_secret" => (
             HttpMethod::Post,
@@ -287,10 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn whoami_uses_auth_me() {
+    fn whoami_routes_to_v1_whoami() {
+        // /v1/whoami is the Bearer-friendly self-introspection endpoint.
+        // /auth/me requires the dashboard's session cookie and would 401
+        // for any MCP-held API key.
         let r = auth_route(&args("whoami", json!({}))).unwrap();
         assert_eq!(r.method, HttpMethod::Get);
-        assert_eq!(r.path, "/auth/me");
+        assert_eq!(r.path, "/v1/whoami");
+        assert_eq!(r.cred, Cred::Agent);
     }
 
     #[test]
