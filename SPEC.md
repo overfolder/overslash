@@ -41,7 +41,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 9. Service registry — YAML-defined services (global + org-extensible) with human-readable action descriptions
 10. Audit everything — every action, approval, secret access, connection change
 11. Three integration surfaces over one backend — REST API, CLI (`overslash`), and MCP server, so any HTTP client, shell-capable agent, or MCP-aware editor can use Overslash without rebuilding the same plumbing
-12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_execute`, `overslash_auth`, plus `overslash_approve` in the MCP surface for inline user approvals)
+12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_execute`, `overslash_auth`, `overslash_approve`) available across REST, CLI, and MCP surfaces
 13. Web UI — for org admins and users to manage everything visually, served by Vercel in cloud mode and embedded same-origin in self-hosted mode (`overslash web`)
 14. Single-binary self-hosting — `overslash` ships everything (API, dashboard, MCP server) so an org can run the entire product from one executable
 
@@ -101,9 +101,9 @@ Overslash exposes three peer surfaces over the same backend. The REST API is can
 |---|---|---|---|---|
 | **REST API** | Platforms, CI, custom integrations, agents capable of HTTP | HTTPS / JSON | Caller's choice (per-request `Authorization: Bearer ...`) | Hosted at the org's Overslash domain |
 | **CLI (`overslash`)** | Developers, shell-capable agents, ops/admin scripting | Local process invocation, REST under the hood | One identity at a time, from `~/.config/overslash/` or env | Single static binary |
-| **MCP server** | LLM agents inside MCP-aware editors (Claude Code, Cursor, Windsurf, ...) | JSON-RPC over stdio (MCP) | **Two** credentials in one process: an **agent key** for execution and a **user token** for inline approval resolution | Same `overslash` binary, started by the MCP client as `overslash mcp` |
+| **MCP server** | LLM agents inside MCP-aware editors (Claude Code, Cursor, Windsurf, ...) | **Primary**: MCP Streamable HTTP at `POST /mcp` (same Axum process as the REST API) with OAuth 2.1 (browser flow). **Compat**: stdio shim `overslash mcp` for editors whose MCP transport is stdio-only — proxies frames to `POST /mcp`. | None — the MCP client (or stdio shim) holds them. Default: an OAuth-issued user access token. Advanced: a static `osk_…` agent API key. | The HTTP transport ships in `overslash serve` / `overslash web`. The optional stdio shim is a subcommand of the same binary (`overslash mcp`). |
 
-The MCP server is the only surface that holds two credentials at once. This is intentional and the heart of the inline-approval design (see [docs/design/mcp-integration.md](docs/design/mcp-integration.md)): the agent key executes actions, and when an action returns `pending_approval`, the user-token side of the same process resolves the approval *in-band* without forcing the user to leave their editor. This does not violate the trust model — the user is sitting at the terminal and the MCP server runs on their machine, so co-locating both credentials is natural. White-label platforms (e.g., Overfolder) bypass the MCP server entirely and call the REST API directly with their own UX.
+The MCP server reuses Overslash's existing IdP login flow as an OAuth 2.1 Authorization Server. A standards-compliant MCP client (Claude Code, Cursor, Windsurf, …) discovers the AS via `WWW-Authenticate` on a 401 from `/mcp`, fetches `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`, dynamically registers itself ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)), opens a browser for the user to consent, and uses the resulting access token on every subsequent JSON-RPC call. Editors that only speak stdio MCP point at `overslash mcp` (the compat shim), which holds a single token in `~/.config/overslash/mcp.json` and proxies every JSON-RPC frame to `POST /mcp` over Bearer. The shim is a pipe — no business logic, no dual credentials. The user is established as a **user identity** for that session (Layer 2 skipped — see §5 *User Identities Skip Layer 2*). For agent-mode MCP — where Layer 2 approvals are desired — the MCP client (or shim) is configured with a static `osk_…` agent key directly, bypassing OAuth. Approvals in that mode surface via the standard webhook / SSE / approval-URL path (§10 *Async Event Delivery*). Full design in [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md). White-label platforms (e.g., Overfolder) bypass the MCP server entirely and call the REST API directly with their own UX.
 
 ### Distribution and Binary Layout
 
@@ -114,10 +114,10 @@ Overslash ships as a single executable, `overslash`, with subcommands:
 | `overslash help` | Standard clap-generated help, including per-subcommand `--help` |
 | `overslash serve` | Start the REST API only. Cloud-mode default. The dashboard is served separately (Vercel + SSR) and proxies API traffic back. |
 | `overslash web` | Start the REST API *and* serve the SvelteKit dashboard same-origin from the same Axum process. Self-hosted mode. The dashboard is built with `@sveltejs/adapter-static` and embedded into the binary at compile time, so a single binary is the entire product. |
-| `overslash mcp` | Run the MCP stdio server. This is what MCP clients invoke — see §10 for tool details. |
-| `overslash mcp setup` | One-time interactive helper that captures user + agent credentials, writes `~/.config/overslash/mcp.json`, and prints the snippet to drop into the MCP client config. **Target**: browser-based OAuth login mints a user access + refresh token from a dashboard "MCP setup" page, no manual paste. **Today**: see STATUS.md — the helper currently prompts the user to paste tokens manually because the dashboard page does not yet exist. |
+| `overslash mcp` | Stdio-to-HTTP shim for MCP clients that don't yet speak Streamable HTTP. Reads `~/.config/overslash/mcp.json` (server URL + bearer token) and proxies every JSON-RPC frame to `POST <server>/mcp`. No business logic — the actual MCP server lives in `overslash serve` / `overslash web`. See §10 for tool details. |
+| `overslash mcp login` | Mint a token for the stdio shim by running the standard OAuth Authorization Code + PKCE flow against the configured server (opens a browser, captures the callback on `127.0.0.1`, writes `~/.config/overslash/mcp.json`). Replaces the old paste-tokens helper. |
 
-The intended MCP client configuration is identical in shape to other stdio-based MCP servers:
+MCP-client configuration for editors that drive MCP via stdio is identical in shape to other stdio-based MCP servers:
 
 ```json
 {
@@ -130,7 +130,9 @@ The intended MCP client configuration is identical in shape to other stdio-based
 }
 ```
 
-`serve` and `web` share the same `create_app` router and config — `web` only adds a static-file fallback and same-origin defaults. The `mcp` subcommand carries no Postgres or Axum dependency; it is a pure REST client over stdio.
+Editors that already speak MCP Streamable HTTP can point at the server URL directly and skip the shim — they handle OAuth themselves via the AS endpoints (see [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md)).
+
+`serve` and `web` share the same `create_app` router and config — `web` only adds a static-file fallback and same-origin defaults. The `mcp` shim carries no Postgres or Axum dependency; it is a tiny stdio↔HTTP pipe.
 
 ---
 
@@ -384,7 +386,7 @@ Permission keys (Layer 2) are an **agent-only** concept. When a request is authe
 
 This rule is transport-agnostic. It holds for the dashboard, the API Explorer, an MCP session logged in as a user, a CLI calling the REST API directly with user credentials, or any other surface. **What matters is the identity type on the credential, not the channel.**
 
-A practical consequence: an MCP session establishes a *user* session, not an agent session. If a customer wants MCP usage gated by per-action approvals, they must instead enroll an agent identity for the MCP client and authenticate it with an agent API key — at which point Layer 2 kicks in.
+A practical consequence: an MCP session established via the default OAuth flow is a *user* session, not an agent session. If a customer wants MCP usage gated by per-action approvals, they configure the MCP client (or the `overslash mcp` stdio shim) to authenticate with an `osk_…` agent API key directly, bypassing OAuth — at which point Layer 2 kicks in. In that mode, approvals surface via the standard webhook / SSE / approval-URL path (§10 *Async Event Delivery*); they are not resolved in-band by the same session that triggered them, because an agent cannot approve its own request.
 
 ### Platform-Managed Notifications
 
@@ -828,16 +830,16 @@ The template YAML is parsed and validated by a pure-Rust linter in `overslash-co
 
 ## 10. Meta Tools for LLM Agents
 
-A small tool set that lets any LLM agent use Overslash. These are the underlying tools surfaced by both the CLI (`overslash` subcommands) and the MCP server (`overslash mcp`); REST callers invoke the same operations directly. The first three are universal; `overslash_approve` exists only in the MCP surface because it requires the user-token credential the MCP server uniquely holds (see §3 *Integration Surfaces*).
+A small tool set that lets any LLM agent use Overslash. These are the underlying tools surfaced by both the CLI (`overslash` subcommands) and the MCP server (the `POST /mcp` HTTP transport, optionally fronted by the `overslash mcp` stdio shim — see §3 *Integration Surfaces*); REST callers invoke the same operations directly. All four are surface-agnostic; the credential column reflects what kind of identity the call is meaningful from.
 
 | Tool | Purpose | Credential | Surfaces |
 |------|---------|------------|----------|
 | `overslash_search` | Discover services and actions. Returns schemas + auth status. | agent (or user) | REST, CLI, MCP |
 | `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. | agent (or user) | REST, CLI, MCP |
 | `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. | agent (or user) | REST, CLI, MCP |
-| `overslash_approve` | Resolve a pending approval inline (one-time, "Allow & Remember", bubble, or reject). See §5 *Approval Bubbling*. | **user token** | MCP only |
+| `overslash_approve` | Resolve a pending approval (one-time, "Allow & Remember", bubble, or reject). See §5 *Approval Bubbling*. | **user** (an agent cannot approve its own requests) | REST, CLI, MCP |
 
-Platforms that wrap the first three handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`). The MCP server collapses that loop into a fourth tool the LLM can call directly, because the user is already present in the conversation.
+When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is skipped entirely, so `overslash_execute` returns results directly without ever producing a `pending_approval` for `overslash_approve` to resolve. The tool exists for the inverse direction — a user surface (dashboard, CLI, or an MCP session in user mode) resolving approvals raised by an *agent* identity elsewhere in the org. Platforms that wrap the agent surface handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`).
 
 ### `overslash_search`
 
