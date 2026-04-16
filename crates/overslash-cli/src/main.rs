@@ -64,6 +64,11 @@ enum McpCommand {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env BEFORE clap parses, so flags with `env = "…"` fallbacks
+    // (e.g. --port / PORT) see values from the dotenv file. Otherwise clap
+    // only sees the real process env, falls back to `default_value`, and
+    // the CLI silently ignores .env overrides.
+    let _ = dotenvy::dotenv();
     let cli = Cli::parse();
     match cli.command {
         Command::Serve { host, port } => {
