@@ -137,6 +137,47 @@ pub(crate) async fn soft_delete(
     Ok(result.rows_affected() > 0)
 }
 
+/// Atomically put multiple secrets in one transaction. Each entry
+/// creates a new version of the corresponding secret. All writes
+/// commit together or none do — useful when a logical resource
+/// (e.g. an OAuth App Credential pair) spans two secret names.
+pub(crate) async fn put_many(
+    pool: &PgPool,
+    org_id: Uuid,
+    entries: &[(&str, &[u8])],
+    created_by: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for (name, encrypted_value) in entries {
+        let secret = sqlx::query_as!(
+            SecretRow,
+            "INSERT INTO secrets (org_id, name) VALUES ($1, $2)
+             ON CONFLICT (org_id, name) DO UPDATE SET
+               current_version = secrets.current_version + 1,
+               updated_at = now(),
+               deleted_at = NULL
+             RETURNING id, org_id, name, current_version, deleted_at, created_at, updated_at",
+            org_id,
+            name,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query!(
+            "INSERT INTO secret_versions (secret_id, version, encrypted_value, created_by, provisioned_by_user_id)
+             VALUES ($1, $2, $3, $4, NULL)",
+            secret.id,
+            secret.current_version,
+            encrypted_value,
+            created_by,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Atomically soft-delete a set of secrets in one transaction.
 ///
 /// Returns the total number of rows affected. If any DELETE fails the

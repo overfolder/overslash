@@ -158,18 +158,14 @@ async fn put_credentials(
     let encrypted_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;
     let encrypted_secret = crypto::encrypt(&enc_key, req.client_secret.as_bytes())?;
 
-    // Write the secret value first, then the client_id. Both are needed for
-    // the tier-2 resolver to match: missing either returns `Ok(None)` and
-    // the cascade falls through. Writing the id last means that on a
-    // partial failure before the second call, the resolver still correctly
-    // reports "not configured" (rather than "half-configured, id matches
-    // but secret is stale/missing"). The admin sees a 500, the org shows
-    // as unconfigured, and retrying the PUT completes the pair.
+    // Atomic: both secret versions land in one transaction. If the second
+    // write fails, the first rolls back too — no half-configured state
+    // where the id is rotated but the secret is stale.
     scope
-        .put_secret(&secret_name, &encrypted_secret, acl.identity_id, None)
-        .await?;
-    scope
-        .put_secret(&id_name, &encrypted_id, acl.identity_id, None)
+        .put_secrets(
+            &[(&id_name, &encrypted_id), (&secret_name, &encrypted_secret)],
+            acl.identity_id,
+        )
         .await?;
 
     let _ = scope
