@@ -32,6 +32,23 @@
 	});
 
 	const label = $derived(providerDisplayName || provider);
+
+	const helpLinks: Record<string, { url: string; text: string }> = {
+		google: { url: 'https://support.google.com/cloud/answer/6158849', text: 'Create a Google Cloud OAuth app' },
+		github: { url: 'https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app', text: 'Create a GitHub OAuth app' },
+		slack: { url: 'https://api.slack.com/authentication/oauth-v2', text: 'Create a Slack app' },
+		microsoft: { url: 'https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app', text: 'Register a Microsoft Entra app' },
+		spotify: { url: 'https://developer.spotify.com/documentation/web-api/concepts/apps', text: 'Create a Spotify app' },
+	};
+	const help = $derived(helpLinks[provider] ?? null);
+
+	const placeholders: Record<string, string> = {
+		google: 'e.g. 1234567890-abc.apps.googleusercontent.com',
+		github: 'e.g. Iv1.abc123def456',
+		slack: 'e.g. 1234567890.1234567890',
+		microsoft: 'e.g. 12345678-abcd-1234-abcd-123456789abc',
+	};
+	const clientIdPlaceholder = $derived(placeholders[provider] ?? 'Paste client ID');
 </script>
 
 <section class="byoc" class:expanded class:required>
@@ -62,8 +79,7 @@
 					No org or system credentials are configured for {label}. Paste your OAuth app's
 					Client ID and Client Secret to continue.
 				{:else}
-					Override org/system credentials with your own {label} OAuth app
-					(e.g. from your personal GCP project).
+					Override org/system credentials with your own {label} OAuth app.
 				{/if}
 			</p>
 
@@ -75,7 +91,7 @@
 					{disabled}
 					autocomplete="off"
 					spellcheck="false"
-					placeholder="e.g. 1234567890-abc.apps.googleusercontent.com"
+					placeholder={clientIdPlaceholder}
 				/>
 			</label>
 
@@ -104,14 +120,16 @@
 				</div>
 			</label>
 
-			<a
-				class="help"
-				href="https://support.google.com/cloud/answer/6158849"
-				target="_blank"
-				rel="noopener noreferrer"
-			>
-				How to create your own OAuth app →
-			</a>
+			{#if help}
+				<a
+					class="help"
+					href={help.url}
+					target="_blank"
+					rel="noopener noreferrer"
+				>
+					{help.text} →
+				</a>
+			{/if}
 		</div>
 	{/if}
 </section>
