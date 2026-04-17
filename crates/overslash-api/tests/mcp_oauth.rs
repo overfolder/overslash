@@ -207,7 +207,7 @@ async fn authorize_without_session_redirects_to_login() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
     assert!(
-        loc.starts_with("/auth/login/"),
+        loc.starts_with("/auth/login/") || loc.starts_with("/auth/dev/token"),
         "redirect to login, got: {loc}"
     );
     assert!(loc.contains("next="), "next= query param present");

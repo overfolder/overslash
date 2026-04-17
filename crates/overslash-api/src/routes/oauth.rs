@@ -257,7 +257,14 @@ async fn authorize(
             };
             let authorize_path = rebuild_authorize_path(&params);
             let next = urlencoding::encode(&authorize_path);
-            let login = format!("/auth/login/{provider}?next={next}");
+            // Dev login is a separate endpoint, not the generic
+            // /auth/login/{provider_key} path (which requires an
+            // oauth_providers DB row).
+            let login = if provider == "dev" {
+                format!("/auth/dev/token?next={next}")
+            } else {
+                format!("/auth/login/{provider}?next={next}")
+            };
             return Redirect::to(&login).into_response();
         }
     };

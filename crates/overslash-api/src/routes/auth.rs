@@ -443,7 +443,15 @@ async fn me_identity(
 // Dev token (unchanged)
 // ---------------------------------------------------------------------------
 
-async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+#[derive(Deserialize, Default)]
+struct DevTokenQuery {
+    next: Option<String>,
+}
+
+async fn dev_token(
+    State(state): State<AppState>,
+    Query(query): Query<DevTokenQuery>,
+) -> Result<Response, AppError> {
     if !state.config.dev_auth_enabled {
         return Err(AppError::NotFound("not found".into()));
     }
@@ -522,6 +530,12 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
 
+    // When `?next=` is set (e.g. by /oauth/authorize bouncing through dev
+    // login), redirect instead of returning JSON so the OAuth flow resumes.
+    if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
+        return Ok((headers, Redirect::to(&next)).into_response());
+    }
+
     Ok((
         headers,
         axum::Json(json!({
@@ -531,7 +545,8 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
             "email": dev_email,
             "token": token,
         })),
-    ))
+    )
+        .into_response())
 }
 
 // ---------------------------------------------------------------------------
