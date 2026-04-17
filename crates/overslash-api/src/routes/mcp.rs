@@ -29,7 +29,11 @@ use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{AppState, extractors::AuthContext};
+use crate::{
+    AppState,
+    extractors::AuthContext,
+    services::{jwt, oauth_as},
+};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/mcp", post(post_mcp).get(get_mcp))
@@ -96,15 +100,31 @@ async fn post_mcp(
     headers: HeaderMap,
     body: String,
 ) -> Response {
-    if auth.is_err() {
-        return challenge(&state);
-    }
+    let auth = match auth {
+        Ok(a) => a,
+        Err(_) => return challenge(&state),
+    };
 
-    let bearer = headers
+    // Prefer the explicit Bearer header. When the caller authenticated via
+    // a session cookie (no Authorization header), mint a short-lived MCP
+    // JWT on the fly so the loopback REST calls carry a valid Bearer.
+    let bearer: Option<String> = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| {
+            let signing_key = hex::decode(&state.config.signing_key)
+                .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+            jwt::mint_mcp(
+                &signing_key,
+                auth.identity_id.unwrap_or_default(),
+                auth.org_id,
+                String::new(),
+                oauth_as::ACCESS_TOKEN_TTL_SECS,
+            )
+            .ok()
+        });
 
     let req: JsonRpcRequest = match serde_json::from_str(&body) {
         Ok(r) => r,

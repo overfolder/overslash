@@ -36,13 +36,32 @@ pub fn mint(secret: &[u8], claims: &Claims) -> Result<String, JwtError> {
 /// Verify and decode a JWT, asserting the `aud` matches `expected_aud`.
 /// Callers must pass the audience they expect — session handlers pass
 /// `AUD_SESSION`, MCP bearer acceptance passes `AUD_MCP`.
+///
+/// Legacy tokens minted before the `aud` field was introduced lack it
+/// entirely. For `AUD_SESSION` only, we fall back to a second decode
+/// that skips the audience check so that active sessions survive a
+/// rolling deployment. `AUD_MCP` tokens are always newly minted and
+/// must carry `aud`.
 pub fn verify(secret: &[u8], token: &str, expected_aud: &str) -> Result<Claims, JwtError> {
     let key = DecodingKey::from_secret(secret);
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["exp", "sub", "aud"]);
     validation.set_audience(&[expected_aud]);
-    let data = jsonwebtoken::decode::<Claims>(token, &key, &validation)?;
-    Ok(data.claims)
+    match jsonwebtoken::decode::<Claims>(token, &key, &validation) {
+        Ok(data) => Ok(data.claims),
+        Err(e) if expected_aud == AUD_SESSION => {
+            // Retry without aud requirement for legacy session tokens.
+            let mut legacy = Validation::new(Algorithm::HS256);
+            legacy.set_required_spec_claims(&["exp", "sub"]);
+            legacy.validate_aud = false;
+            let data = jsonwebtoken::decode::<Claims>(token, &key, &legacy).map_err(|_| e)?;
+            Ok(Claims {
+                aud: AUD_SESSION.into(),
+                ..data.claims
+            })
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Convenience: mint an MCP access token (aud=mcp, HS256 with the configured
