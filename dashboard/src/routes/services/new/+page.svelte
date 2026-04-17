@@ -21,11 +21,12 @@
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 
-	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[] } } = $props();
+	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
 	let templates = $state<TemplateSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
 	const providers = $derived(data.providers);
+	const providersLoaded = $derived(data.providersLoaded);
 	let loadingTemplates = $state(true);
 	let error = $state<string | null>(null);
 
@@ -121,9 +122,11 @@
 			? providerInfo.has_org_credential || providerInfo.has_system_credential
 			: false
 	);
-	// When no org/system creds exist the user MUST provide their own — BYOC
-	// starts open and blocks submission if empty.
-	const byocRequired = $derived(!!oauthProvider && !hasFallback);
+	// When we've confirmed (via a successful provider fetch) that no org/system
+	// creds exist, the user MUST provide their own. If the provider catalog
+	// failed to load, we DON'T force BYOC — the backend cascade will resolve
+	// credentials at connect time (Sentry review feedback).
+	const byocRequired = $derived(!!oauthProvider && providersLoaded && !hasFallback);
 
 	async function loadTemplates() {
 		loadingTemplates = true;
