@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use crate::{
     AppState,
     extractors::AuthContext,
-    services::{jwt, oauth_as},
+    services::{jwt, oauth_as, session},
 };
 
 pub fn router() -> Router<AppState> {
@@ -116,11 +116,14 @@ async fn post_mcp(
         .or_else(|| {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+            let email = session::extract_session(&state, &headers)
+                .map(|c| c.email)
+                .unwrap_or_default();
             jwt::mint_mcp(
                 &signing_key,
                 auth.identity_id.unwrap_or_default(),
                 auth.org_id,
-                String::new(),
+                email,
                 oauth_as::ACCESS_TOKEN_TTL_SECS,
             )
             .ok()
