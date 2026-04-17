@@ -133,6 +133,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::templates::router())
         .merge(routes::connections::router())
         .merge(routes::byoc_credentials::router())
+        .merge(routes::oauth_providers::router())
         .merge(routes::auth::router())
         .merge(routes::preferences::router())
         .merge(routes::org_idp_configs::router())

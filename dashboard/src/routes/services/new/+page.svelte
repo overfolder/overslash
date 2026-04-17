@@ -1,23 +1,38 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
+	import { ApiError, type MeIdentity } from '$lib/session';
 	import {
 		listTemplates,
 		getTemplate,
 		listConnections,
 		initiateOAuth,
-		createService
+		createService,
+		createByocCredential
 	} from '$lib/api/services';
-	import type { ConnectionSummary, TemplateDetail, TemplateSummary } from '$lib/types';
+	import type {
+		ConnectionSummary,
+		OAuthProviderInfo,
+		TemplateDetail,
+		TemplateSummary
+	} from '$lib/types';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+
+	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
 	let templates = $state<TemplateSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
+	const providers = $derived(data.providers);
+	const providersLoaded = $derived(data.providersLoaded);
 	let loadingTemplates = $state(true);
 	let error = $state<string | null>(null);
+
+	// BYOC form state — reset whenever the selected template changes.
+	let byocClientId = $state('');
+	let byocClientSecret = $state('');
 
 	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
 
@@ -99,6 +114,19 @@
 			? connections.filter((c) => c.provider_key === oauthProvider.provider)
 			: connections
 	);
+	const providerInfo = $derived(
+		oauthProvider ? providers.find((p) => p.key === oauthProvider.provider) ?? null : null
+	);
+	const hasFallback = $derived(
+		providerInfo
+			? providerInfo.has_org_credential || providerInfo.has_system_credential
+			: false
+	);
+	// When we've confirmed (via a successful provider fetch) that no org/system
+	// creds exist, the user MUST provide their own. If the provider catalog
+	// failed to load, we DON'T force BYOC — the backend cascade will resolve
+	// credentials at connect time (Sentry review feedback).
+	const byocRequired = $derived(!!oauthProvider && providersLoaded && !hasFallback);
 
 	async function loadTemplates() {
 		loadingTemplates = true;
@@ -113,9 +141,15 @@
 		}
 	}
 
+	function resetByoc() {
+		byocClientId = '';
+		byocClientSecret = '';
+	}
+
 	async function selectTemplate(t: TemplateSummary) {
 		selectedKey = t.key;
 		loadingDetail = true;
+		resetByoc();
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
@@ -133,14 +167,54 @@
 
 	async function startOAuth() {
 		if (!oauthProvider) return;
+		// Validate BYOC first so we don't open a popup that will fail at
+		// cascade resolution with a cryptic error.
+		const wantsByoc = byocClientId.trim() || byocClientSecret.trim();
+		if (byocRequired && !(byocClientId.trim() && byocClientSecret.trim())) {
+			error = 'Client ID and Client Secret are required — no org or system credentials are configured for this provider.';
+			return;
+		}
+		if (wantsByoc && !(byocClientId.trim() && byocClientSecret.trim())) {
+			error = 'Provide both Client ID and Client Secret, or leave both blank.';
+			return;
+		}
 		oauthAbort?.abort();
 		const ctrl = new AbortController();
 		oauthAbort = ctrl;
 		connectingOAuth = true;
 		error = null;
 		try {
+			// If BYOC fields are filled, persist them as a user-owned BYOC
+			// credential before kicking off OAuth. The cascade resolver picks
+			// it up at tier 1 for this identity (SPEC §7).
+			let byocCredentialId: string | undefined;
+			if (wantsByoc && data.user?.identity_id) {
+				try {
+					const created = await createByocCredential({
+						provider: oauthProvider.provider,
+						client_id: byocClientId.trim(),
+						client_secret: byocClientSecret.trim(),
+						identity_id: data.user.identity_id
+					});
+					byocCredentialId = created.id;
+				} catch (e) {
+					if (e instanceof ApiError && e.status === 409) {
+						// Pre-existing BYOC for this identity+provider will win at
+						// tier 1 of the cascade without pinning — continue without
+						// an explicit id.
+					} else {
+						throw e;
+					}
+				}
+			}
 			const beforeIds = new Set(connections.map((c) => c.id));
-			const resp = await initiateOAuth({ provider: oauthProvider.provider }, ctrl.signal);
+			const resp = await initiateOAuth(
+				{
+					provider: oauthProvider.provider,
+					byoc_credential_id: byocCredentialId
+				},
+				ctrl.signal
+			);
 			if (ctrl.signal.aborted) return;
 			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
 			if (!popup) {
@@ -335,6 +409,29 @@
 					{:else}
 						<p class="muted">No existing connections for this provider.</p>
 					{/if}
+
+					<p class="cred-source">
+						{#if providerInfo?.has_org_credential}
+							Using <strong>org credentials</strong> configured for {providerInfo.display_name}.
+						{:else if providerInfo?.has_system_credential}
+							Using <strong>Overslash system credentials</strong>.
+						{:else}
+							<span class="warn">
+								No credentials configured for this provider — paste your own below to continue.
+							</span>
+						{/if}
+					</p>
+
+					<ByocSection
+						provider={oauthProvider.provider}
+						providerDisplayName={providerInfo?.display_name ?? oauthProvider.provider}
+						required={byocRequired}
+						defaultExpanded={byocRequired}
+						disabled={connectingOAuth}
+						bind:clientId={byocClientId}
+						bind:clientSecret={byocClientSecret}
+					/>
+
 					<button
 						type="button"
 						class="btn"
@@ -536,6 +633,14 @@
 	.field small {
 		color: var(--color-text-muted);
 		font-size: 0.75rem;
+	}
+	.cred-source {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--color-text-muted);
+	}
+	.cred-source .warn {
+		color: #b45309;
 	}
 	.actions {
 		display: flex;

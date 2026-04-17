@@ -6,12 +6,13 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_core::permissions::AccessLevel;
 use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp},
+    extractors::{ClientIp, WriteAcl},
 };
 use overslash_core::crypto;
 use overslash_db::OrgScope;
@@ -27,9 +28,9 @@ struct CreateByocRequest {
     provider: String,
     client_id: String,
     client_secret: String,
-    /// Required: BYOC credentials are always identity-bound. The previously
-    /// supported "org-level" credential (identity_id = null) was removed in
-    /// migration 028.
+    /// BYOC credentials are identity-bound. A caller with Write access can
+    /// only create BYOC for their own identity; creating on behalf of
+    /// another identity requires Admin.
     identity_id: Uuid,
 }
 
@@ -45,12 +46,21 @@ struct ByocCredentialResponse {
 
 async fn create_byoc(
     State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateByocRequest>,
 ) -> Result<Json<ByocCredentialResponse>> {
-    let auth = acl;
+    // Self-or-admin: non-admins can only configure their own OAuth app.
+    let caller_identity = acl
+        .identity_id
+        .ok_or_else(|| AppError::Forbidden("identity-bound credential required for BYOC".into()))?;
+    if req.identity_id != caller_identity && acl.access_level < AccessLevel::Admin {
+        return Err(AppError::Forbidden(
+            "creating BYOC for another identity requires admin access".into(),
+        ));
+    }
+
     // Validate provider exists
     overslash_db::repos::oauth_provider::get_by_key(&state.db, &req.provider)
         .await?
@@ -89,7 +99,7 @@ async fn create_byoc(
     let _ = scope
         .log_audit(AuditEntry {
             org_id: scope.org_id(),
-            identity_id: auth.identity_id,
+            identity_id: Some(caller_identity),
             action: "byoc_credential.created",
             resource_type: Some("byoc_credential"),
             resource_id: Some(row.id),
@@ -109,11 +119,19 @@ async fn create_byoc(
     }))
 }
 
-async fn list_byoc(scope: OrgScope) -> Result<Json<Vec<ByocCredentialResponse>>> {
+async fn list_byoc(
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+) -> Result<Json<Vec<ByocCredentialResponse>>> {
+    let caller_identity = acl
+        .identity_id
+        .ok_or_else(|| AppError::Forbidden("identity-bound credential required for BYOC".into()))?;
     let rows = scope.list_byoc_credentials().await?;
+    let is_admin = acl.access_level >= AccessLevel::Admin;
 
     Ok(Json(
         rows.into_iter()
+            .filter(|r| is_admin || r.identity_id == caller_identity)
             .map(|r| ByocCredentialResponse {
                 id: r.id,
                 org_id: r.org_id,
@@ -127,19 +145,34 @@ async fn list_byoc(scope: OrgScope) -> Result<Json<Vec<ByocCredentialResponse>>>
 }
 
 async fn delete_byoc(
-    AdminAcl(acl): AdminAcl,
+    WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let auth = acl;
+    let caller_identity = acl
+        .identity_id
+        .ok_or_else(|| AppError::Forbidden("identity-bound credential required for BYOC".into()))?;
+
+    // Self-or-admin: look up the row first to check ownership. `get_byoc_credential`
+    // is org-scoped, so cross-org reads return None here.
+    let row = scope
+        .get_byoc_credential(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("BYOC credential not found".into()))?;
+    if row.identity_id != caller_identity && acl.access_level < AccessLevel::Admin {
+        return Err(AppError::Forbidden(
+            "deleting another identity's BYOC requires admin access".into(),
+        ));
+    }
+
     let deleted = scope.delete_byoc_credential(id).await?;
 
     if deleted {
         let _ = scope
             .log_audit(AuditEntry {
                 org_id: scope.org_id(),
-                identity_id: auth.identity_id,
+                identity_id: Some(caller_identity),
                 action: "byoc_credential.deleted",
                 resource_type: Some("byoc_credential"),
                 resource_id: Some(id),

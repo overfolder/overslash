@@ -5,11 +5,14 @@
 import { ApiError, session } from '$lib/session';
 import type {
 	ActionSummary,
+	ByocCredentialSummary,
 	ConnectionSummary,
+	CreateByocCredentialRequest,
 	CreateServiceRequest,
 	CreateTemplateRequest,
 	InitiateConnectionRequest,
 	InitiateConnectionResponse,
+	OAuthProviderInfo,
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
 	ServiceStatus,
@@ -95,3 +98,19 @@ export const initiateOAuth = (req: InitiateConnectionRequest, signal?: AbortSign
 	session.post<InitiateConnectionResponse>('/v1/connections', req, signal);
 
 export const deleteConnection = (id: string) => session.delete<void>(`/v1/connections/${id}`);
+
+// -- OAuth providers (read-only catalog) --
+
+export const listOAuthProviders = (signal?: AbortSignal) =>
+	session.get<OAuthProviderInfo[]>('/v1/oauth-providers', signal);
+
+// -- BYOC credentials (user self-service) --
+
+export const listByocCredentials = (signal?: AbortSignal) =>
+	session.get<ByocCredentialSummary[]>('/v1/byoc-credentials', signal);
+
+export const createByocCredential = (req: CreateByocCredentialRequest) =>
+	session.post<ByocCredentialSummary>('/v1/byoc-credentials', req);
+
+export const deleteByocCredential = (id: string) =>
+	session.delete<{ deleted: boolean }>(`/v1/byoc-credentials/${id}`);

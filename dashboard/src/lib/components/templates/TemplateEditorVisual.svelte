@@ -1,15 +1,19 @@
 <script lang="ts">
-	import type { ServiceAction, ServiceAuth, TemplateDetail } from '$lib/types';
+	import type { OAuthProviderInfo, ServiceAction, ServiceAuth, TemplateDetail } from '$lib/types';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ActionEditorModal from './ActionEditorModal.svelte';
 
 	let {
 		data,
 		readOnly = false,
+		providers = [],
+		isAdmin = false,
 		onchange
 	}: {
 		data: TemplateDetail;
 		readOnly?: boolean;
+		providers?: OAuthProviderInfo[];
+		isAdmin?: boolean;
 		onchange: (updated: TemplateDetail) => void;
 	} = $props();
 
@@ -114,6 +118,10 @@
 		showActionModal = false;
 		editingAction = null;
 		emit();
+	}
+
+	function providerInfoFor(key: string): OAuthProviderInfo | undefined {
+		return providers.find((p) => p.key === key);
 	}
 
 	const actionEntries = $derived(Object.entries(actions));
@@ -274,13 +282,40 @@
 						<div class="form-grid">
 							<label class="field">
 								<span class="label">Provider</span>
-								<input
-									type="text"
-									value={entry.provider}
-									disabled={readOnly}
-									oninput={(e) => updateAuth(i, { ...entry, provider: (e.target as HTMLInputElement).value })}
-									class="mono-input"
-								/>
+								{#if providers.length > 0}
+									<select
+										value={entry.provider}
+										disabled={readOnly}
+										onchange={(e) => updateAuth(i, { ...entry, provider: (e.target as HTMLSelectElement).value })}
+									>
+										{#each providers as p}
+											<option value={p.key}>{p.display_name}</option>
+										{/each}
+										{#if entry.provider && !providers.find((p) => p.key === entry.provider)}
+											<option value={entry.provider}>{entry.provider}</option>
+										{/if}
+									</select>
+								{:else}
+									<input
+										type="text"
+										value={entry.provider}
+										disabled={readOnly}
+										oninput={(e) => updateAuth(i, { ...entry, provider: (e.target as HTMLInputElement).value })}
+										class="mono-input"
+									/>
+								{/if}
+								{#if providerInfoFor(entry.provider)}
+									{@const pInfo = providerInfoFor(entry.provider)!}
+									<small class="cred-status" class:warn={!pInfo.has_org_credential && !pInfo.has_system_credential}>
+										{#if pInfo.has_org_credential}
+											Using org credentials{#if isAdmin} · <a href="/org">Org Settings</a>{/if}
+										{:else if pInfo.has_system_credential}
+											Using Overslash system credentials
+										{:else}
+											No credentials configured — user must provide via BYOC on connect{#if isAdmin} · <a href="/org">Configure</a>{/if}
+										{/if}
+									</small>
+								{/if}
 							</label>
 							<label class="field">
 								<span class="label">Token inject as</span>
@@ -414,6 +449,20 @@
 	.hint {
 		font-size: 0.72rem;
 		color: var(--color-text-muted);
+	}
+	.cred-status {
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+	}
+	.cred-status.warn {
+		color: #b45309;
+	}
+	.cred-status a {
+		color: var(--color-primary, #6366f1);
+		text-decoration: none;
+	}
+	.cred-status a:hover {
+		text-decoration: underline;
 	}
 	.muted {
 		color: var(--color-text-muted);
