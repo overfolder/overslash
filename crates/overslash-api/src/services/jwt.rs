@@ -54,7 +54,14 @@ pub fn verify(secret: &[u8], token: &str, expected_aud: &str) -> Result<Claims, 
             let mut legacy = Validation::new(Algorithm::HS256);
             legacy.set_required_spec_claims(&["exp", "sub"]);
             legacy.validate_aud = false;
-            let data = jsonwebtoken::decode::<Claims>(token, &key, &legacy).map_err(|_| e)?;
+            let data =
+                jsonwebtoken::decode::<Claims>(token, &key, &legacy).map_err(|_| e.clone())?;
+            // Guard: if the token explicitly carries a *different* known
+            // audience it's not a legacy session — it's a mis-routed MCP
+            // token. Reject it rather than silently promoting it.
+            if data.claims.aud == AUD_MCP {
+                return Err(e.into());
+            }
             Ok(Claims {
                 aud: AUD_SESSION.into(),
                 ..data.claims
