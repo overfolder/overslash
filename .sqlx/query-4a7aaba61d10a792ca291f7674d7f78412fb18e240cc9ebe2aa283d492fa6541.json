@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_refresh_tokens\n            SET revoked_at = now(), replaced_by_id = $2\n          WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4a7aaba61d10a792ca291f7674d7f78412fb18e240cc9ebe2aa283d492fa6541"
+}

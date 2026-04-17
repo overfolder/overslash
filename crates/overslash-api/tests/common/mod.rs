@@ -524,6 +524,11 @@ async fn run_standard_bootstrap(base: &str, client: &Client) -> BootstrapFixture
 
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    // Bind first so `public_url` matches the real bound address. This lets
+    // server-internal loopback calls (e.g. the `/mcp` dispatcher proxying to
+    // REST) reach this test's process instead of a non-existent 3000.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -536,7 +541,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
@@ -560,6 +565,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -586,10 +592,11 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -600,6 +607,8 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
 
 /// Start API with dev auth enabled. Returns (base_url, client).
 pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -612,7 +621,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
         dashboard_url: "/".into(),
@@ -635,6 +644,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -661,10 +671,12 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())
@@ -716,6 +728,7 @@ pub async fn start_api_with_auth_providers(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -1110,6 +1123,7 @@ pub async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -1136,6 +1150,10 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1182,6 +1200,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -1208,6 +1227,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -26,6 +26,7 @@ fn mint_session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
         sub: identity_id,
         org: org_id,
         email: "session-test@example.com".into(),
+        aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 3600,
     };

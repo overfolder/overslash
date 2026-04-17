@@ -4,6 +4,12 @@ Known workarounds and deferred improvements.
 
 ---
 
+## MCP OAuth authorization codes are in-process
+
+`POST /oauth/authorize` stashes one-shot authorization codes (60 s TTL, single-use) in a process-local store (`crates/overslash-api/src/services/oauth_as.rs`). This is fine today because codes expire fast and Overslash runs as a single replica. Moving to multi-replica serving either requires sticky-routing the `authorize` / `token` pair to the same instance or promoting the store to Redis. The `AuthCodeStore` facade is deliberately narrow so a Redis-backed implementation can drop in behind the same interface.
+
+---
+
 ## `serde_yaml` is deprecated upstream
 
 `overslash-core` uses `serde_yaml = "0.9"` for the registry loader and the template validator's YAML entry point. The crate was archived by dtolnay in 2024 and is no longer receiving updates. Current behavior is stable and well-tested, but we should migrate to `saphyr` / `yaml-rust2` eventually. The validator's duplicate-action-key detection parses a serde_yaml error string to extract the offending key — a drop-in replacement will need to re-derive that from whatever API the replacement exposes (probably easier, since `yaml-rust2`'s event API surfaces every key emission directly).

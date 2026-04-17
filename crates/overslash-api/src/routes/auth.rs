@@ -50,6 +50,10 @@ async fn logout() -> impl IntoResponse {
 struct LoginQuery {
     /// Org slug — required for enterprise SSO, optional for social providers.
     org: Option<String>,
+    /// Where to send the user after login succeeds. Must be same-origin
+    /// (path-only redirect). Used by `/oauth/authorize` to resume after the
+    /// IdP bounce.
+    next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -144,6 +148,18 @@ async fn provider_login(
     headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
     headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
 
+    // Persist `next` across the IdP round-trip so the callback can resume
+    // wherever the caller wanted (used by `/oauth/authorize` to bounce
+    // through login). Only accept path-only targets to keep this from
+    // turning into an open redirect.
+    if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
+        let next_cookie = format!(
+            "oss_auth_next={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
+            next
+        );
+        headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+    }
+
     Ok((headers, Redirect::to(&auth_url)).into_response())
 }
 
@@ -223,6 +239,7 @@ async fn provider_callback(
         sub: identity_id,
         org: org_id,
         email: email.clone(),
+        aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
     };
@@ -237,14 +254,19 @@ async fn provider_callback(
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_org = "oss_auth_org=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
+    let clear_next = "oss_auth_next=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
+    resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
 
-    Ok((resp_headers, Redirect::to(&state.config.dashboard_url)).into_response())
+    let redirect_target = extract_cookie(&headers, "oss_auth_next")
+        .and_then(|v| sanitize_next(&v))
+        .unwrap_or_else(|| state.config.dashboard_url.clone());
+    Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +376,7 @@ async fn me(
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let claims = jwt::verify(&jwt_secret, &token)
+    let claims = jwt::verify(&jwt_secret, &token, jwt::AUD_SESSION)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
     // Resolve the user's ACL level from group grants. Construct an OrgScope
@@ -386,7 +408,7 @@ async fn me_identity(
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let claims = jwt::verify(&jwt_secret, &token)
+    let claims = jwt::verify(&jwt_secret, &token, jwt::AUD_SESSION)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
     let scope = OrgScope::new(claims.org, state.db.clone());
@@ -485,6 +507,7 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
         sub: identity_id,
         org: org_id,
         email: dev_email.into(),
+        aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
     };
@@ -846,6 +869,17 @@ async fn find_or_provision_user(
             Ok((existing.org_id, existing.id, userinfo.email.clone()))
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Only allow same-origin path redirects to prevent open-redirect abuse
+/// via the `?next=` parameter on IdP login.
+fn sanitize_next(raw: &str) -> Option<String> {
+    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\r') && !raw.contains('\n')
+    {
+        Some(raw.to_string())
+    } else {
+        None
     }
 }
 

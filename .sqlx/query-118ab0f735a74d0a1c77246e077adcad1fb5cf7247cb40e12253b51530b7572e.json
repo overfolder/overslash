@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_refresh_tokens\n            SET revoked_at = coalesce(revoked_at, now())\n          WHERE client_id = $1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "118ab0f735a74d0a1c77246e077adcad1fb5cf7247cb40e12253b51530b7572e"
+}

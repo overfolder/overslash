@@ -30,3 +30,11 @@ sqlx = { workspace = true }
 url = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11"
+base64 = "0.22"
+rand = { workspace = true }
+webbrowser = "1"
+urlencoding = "2"

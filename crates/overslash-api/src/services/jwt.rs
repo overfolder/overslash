@@ -2,11 +2,20 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Canonical `aud` value for the dashboard session JWT (set via cookie).
+pub const AUD_SESSION: &str = "session";
+
+/// Canonical `aud` value for MCP/OAuth access tokens presented as Bearer.
+/// Distinct from `AUD_SESSION` so a cookie JWT cannot be replayed against
+/// `/mcp` and vice versa.
+pub const AUD_MCP: &str = "mcp";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
     pub org: Uuid,
     pub email: String,
+    pub aud: String,
     pub iat: i64,
     pub exp: i64,
 }
@@ -24,13 +33,38 @@ pub fn mint(secret: &[u8], claims: &Claims) -> Result<String, JwtError> {
     Ok(token)
 }
 
-/// Verify and decode a JWT.
-pub fn verify(secret: &[u8], token: &str) -> Result<Claims, JwtError> {
+/// Verify and decode a JWT, asserting the `aud` matches `expected_aud`.
+/// Callers must pass the audience they expect — session handlers pass
+/// `AUD_SESSION`, MCP bearer acceptance passes `AUD_MCP`.
+pub fn verify(secret: &[u8], token: &str, expected_aud: &str) -> Result<Claims, JwtError> {
     let key = DecodingKey::from_secret(secret);
     let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_required_spec_claims(&["exp", "sub"]);
+    validation.set_required_spec_claims(&["exp", "sub", "aud"]);
+    validation.set_audience(&[expected_aud]);
     let data = jsonwebtoken::decode::<Claims>(token, &key, &validation)?;
     Ok(data.claims)
+}
+
+/// Convenience: mint an MCP access token (aud=mcp, HS256 with the configured
+/// signing key). Intentionally minimal — callers populate `sub`/`org`/`email`
+/// themselves from the resolved identity.
+pub fn mint_mcp(
+    secret: &[u8],
+    sub: Uuid,
+    org: Uuid,
+    email: String,
+    ttl_secs: i64,
+) -> Result<String, JwtError> {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = Claims {
+        sub,
+        org,
+        email,
+        aud: AUD_MCP.into(),
+        iat: now,
+        exp: now + ttl_secs,
+    };
+    mint(secret, &claims)
 }
 
 /// Claims for the standalone "Provide Secret" page. Distinct from `Claims`
@@ -60,6 +94,7 @@ pub fn verify_secret_request(secret: &[u8], token: &str) -> Result<SecretRequest
     let key = DecodingKey::from_secret(secret);
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["exp"]);
+    validation.validate_aud = false;
     let data = jsonwebtoken::decode::<SecretRequestClaims>(token, &key, &validation)?;
     if data.claims.kind != SECRET_REQUEST_KIND {
         // Map "wrong kind" into the same error type as a bad signature so
@@ -85,6 +120,7 @@ mod tests {
             sub: Uuid::new_v4(),
             org: Uuid::new_v4(),
             email: "test@example.com".into(),
+            aud: AUD_SESSION.into(),
             iat: now,
             exp: now + 3600,
         }
@@ -95,7 +131,7 @@ mod tests {
         let secret = test_secret();
         let claims = test_claims();
         let token = mint(&secret, &claims).unwrap();
-        let decoded = verify(&secret, &token).unwrap();
+        let decoded = verify(&secret, &token, AUD_SESSION).unwrap();
         assert_eq!(decoded.sub, claims.sub);
         assert_eq!(decoded.org, claims.org);
         assert_eq!(decoded.email, claims.email);
@@ -109,11 +145,12 @@ mod tests {
             sub: Uuid::new_v4(),
             org: Uuid::new_v4(),
             email: "test@example.com".into(),
+            aud: AUD_SESSION.into(),
             iat: now - 7200,
             exp: now - 3600,
         };
         let token = mint(&secret, &claims).unwrap();
-        assert!(verify(&secret, &token).is_err());
+        assert!(verify(&secret, &token, AUD_SESSION).is_err());
     }
 
     #[test]
@@ -122,6 +159,29 @@ mod tests {
         let claims = test_claims();
         let token = mint(&secret, &claims).unwrap();
         let wrong_secret = vec![1u8; 32];
-        assert!(verify(&wrong_secret, &token).is_err());
+        assert!(verify(&wrong_secret, &token, AUD_SESSION).is_err());
+    }
+
+    #[test]
+    fn session_token_not_accepted_as_mcp() {
+        let secret = test_secret();
+        let claims = test_claims(); // aud=session
+        let token = mint(&secret, &claims).unwrap();
+        assert!(verify(&secret, &token, AUD_MCP).is_err());
+    }
+
+    #[test]
+    fn mcp_token_not_accepted_as_session() {
+        let secret = test_secret();
+        let token = mint_mcp(
+            &secret,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "u@example.com".into(),
+            3600,
+        )
+        .unwrap();
+        assert!(verify(&secret, &token, AUD_SESSION).is_err());
+        assert!(verify(&secret, &token, AUD_MCP).is_ok());
     }
 }

@@ -27,14 +27,6 @@ pub async fn run_stdio(config_path: PathBuf) -> anyhow::Result<()> {
     overslash_mcp::serve_stdio(config_path).await
 }
 
-pub async fn run_setup(
-    config_path: PathBuf,
-    server: Option<String>,
-    re_auth: bool,
-) -> anyhow::Result<()> {
-    overslash_mcp::setup::run(config_path, server, re_auth).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

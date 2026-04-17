@@ -29,6 +29,10 @@ pub struct AppState {
     pub registry: Arc<ServiceRegistry>,
     pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
     pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
+    /// In-memory store for one-shot OAuth 2.1 authorization codes (60s TTL).
+    /// Process-local for v1; promoted to Redis once horizontal replication
+    /// is on the roadmap (tracked in `TECH_DEBT.md`).
+    pub auth_code_store: services::oauth_as::AuthCodeStore,
 }
 
 /// Create the application router with all routes and middleware.
@@ -59,6 +63,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         registry: Arc::new(registry),
         rate_limiter,
         rate_limit_cache,
+        auth_code_store: services::oauth_as::AuthCodeStore::new(),
     };
 
     // Spawn background tasks
@@ -136,6 +141,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::oauth_providers::router())
         .merge(routes::auth::router())
         .merge(routes::preferences::router())
+        .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())
         .merge(routes::org_oauth_credentials::router())
         .merge(routes::enrollment::router())
@@ -193,6 +199,9 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
 
     let app = Router::new()
         .merge(routes::health::router())
+        .merge(routes::oauth_as::router())
+        .merge(routes::oauth::router())
+        .merge(routes::mcp::router())
         .merge(rate_limited_routes)
         .with_state(state)
         .layer(CompressionLayer::new())
