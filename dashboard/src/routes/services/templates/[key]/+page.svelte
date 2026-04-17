@@ -152,6 +152,8 @@
 			<TemplateEditorVisual
 				data={template}
 				{readOnly}
+				providers={data.providers}
+				isAdmin={data.isAdmin}
 				onchange={handleVisualChange}
 			/>
 		{:else}

@@ -170,6 +170,35 @@ export interface InitiateConnectionRequest {
   byoc_credential_id?: string;
 }
 
+/**
+ * Entry returned by GET /v1/oauth-providers. The `has_*` flags drive the
+ * Create Service BYOC UX: when neither org nor system credentials exist,
+ * the user must supply their own OAuth app. Reflects SPEC §7 tiers 2/3.
+ */
+export interface OAuthProviderInfo {
+  key: string;
+  display_name: string;
+  supports_pkce: boolean;
+  has_org_credential: boolean;
+  has_system_credential: boolean;
+}
+
+export interface CreateByocCredentialRequest {
+  provider: string;
+  client_id: string;
+  client_secret: string;
+  identity_id: string;
+}
+
+export interface ByocCredentialSummary {
+  id: string;
+  org_id: string;
+  identity_id: string;
+  provider_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface InitiateConnectionResponse {
   auth_url: string;
   state: string;

@@ -2,13 +2,19 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
-	import { createTemplate } from '$lib/api/services';
-	import type { TemplateDetail, ServiceAuth, ServiceAction } from '$lib/types';
+	import { createTemplate, listOAuthProviders } from '$lib/api/services';
+	import type { OAuthProviderInfo, TemplateDetail, ServiceAuth, ServiceAction } from '$lib/types';
+	import { onMount } from 'svelte';
 	import { templateToYaml, yamlToTemplate } from '$lib/utils/templateYaml';
 	import TemplateEditorVisual from '$lib/components/templates/TemplateEditorVisual.svelte';
 	import TemplateEditorYaml from '$lib/components/templates/TemplateEditorYaml.svelte';
 
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
+	let oauthProviders = $state<OAuthProviderInfo[]>([]);
+
+	onMount(async () => {
+		try { oauthProviders = await listOAuthProviders(); } catch { /* non-fatal */ }
+	});
 
 	let activeTab = $state<'visual' | 'yaml'>('visual');
 	// Default to user-level when non-admin (they can't create org templates)
@@ -154,6 +160,8 @@
 			<TemplateEditorVisual
 				data={template}
 				readOnly={false}
+				providers={oauthProviders}
+				{isAdmin}
 				onchange={handleVisualChange}
 			/>
 		{:else}

@@ -9,6 +9,7 @@ pub mod enrollment;
 pub mod groups;
 pub mod health;
 pub mod identities;
+pub mod oauth_providers;
 pub mod org_idp_configs;
 pub mod org_oauth_credentials;
 pub mod orgs;
