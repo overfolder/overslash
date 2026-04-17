@@ -413,13 +413,20 @@
 	{@const isCollapsed = collapsed.has(node.id)}
 	{@const pending = pendingByIdentity.get(node.id) ?? 0}
 	{@const isSelected = selectedId === node.id}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="tree-node"
 		class:selected={isSelected}
 		style:padding-left={`${depth * 20 + 16}px`}
 		role="treeitem"
+		aria-selected={isSelected}
+		tabindex={isSelected ? 0 : -1}
 		onclick={() => selectIdentity(node.id)}
+		onkeydown={(e) => {
+			if (e.key === 'Enter' || e.key === ' ') {
+				e.preventDefault();
+				selectIdentity(node.id);
+			}
+		}}
 	>
 		<span class="tree-toggle-slot">
 			{#if kids.length > 0}
@@ -472,7 +479,18 @@
 
 {#if createOpen}
 	<div class="modal-backdrop" onclick={() => (createOpen = false)} role="presentation">
-		<div class="modal" role="dialog" onclick={(e) => e.stopPropagation()}>
+		<div
+			class="modal"
+			role="dialog"
+			tabindex={-1}
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={(e) => {
+				if (e.key === 'Escape') {
+					e.stopPropagation();
+					createOpen = false;
+				}
+			}}
+		>
 			<div class="modal-head">
 				<h2>New Agent</h2>
 				<button class="modal-close" onclick={() => (createOpen = false)}>✕</button>
@@ -588,10 +606,6 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-	}
-	.btn-new-small {
-		font-size: 12px;
-		padding: 4px 10px;
 	}
 	.tree-empty {
 		padding: 16px;

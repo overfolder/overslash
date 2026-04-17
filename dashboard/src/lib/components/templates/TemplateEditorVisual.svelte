@@ -17,13 +17,20 @@
 		onchange: (updated: TemplateDetail) => void;
 	} = $props();
 
-	// Local form state — synced from parent data
+	// Local form state — synced from parent data via $effect below
+	// svelte-ignore state_referenced_locally
 	let key = $state(data.key);
+	// svelte-ignore state_referenced_locally
 	let displayName = $state(data.display_name);
+	// svelte-ignore state_referenced_locally
 	let description = $state(data.description ?? '');
+	// svelte-ignore state_referenced_locally
 	let category = $state(data.category ?? '');
+	// svelte-ignore state_referenced_locally
 	let hostsText = $state(data.hosts.join(', '));
+	// svelte-ignore state_referenced_locally
 	let auth = $state<ServiceAuth[]>(data.auth ?? []);
+	// svelte-ignore state_referenced_locally
 	let actions = $state<Record<string, ServiceAction>>(data.actions ?? {});
 
 	// Prevent $effect from overwriting local state during self-initiated updates

@@ -7,10 +7,13 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import TemplateEditorVisual from '$lib/components/templates/TemplateEditorVisual.svelte';
-	import TemplateEditorYaml from '$lib/components/templates/TemplateEditorYaml.svelte';
+
+	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle until the YAML tab is opened.
+	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
 
 	let { data } = $props();
 
+	// svelte-ignore state_referenced_locally
 	let template = $state<TemplateDetail>(data.template);
 	let activeTab = $state<'visual' | 'yaml'>('visual');
 	let saving = $state(false);
@@ -23,6 +26,7 @@
 	const canDelete = $derived(!readOnly && template.id && data.isAdmin);
 
 	// YAML representation synced with template state
+	// svelte-ignore state_referenced_locally
 	let yamlText = $state(templateToYaml(template));
 
 	function handleVisualChange(updated: TemplateDetail) {
@@ -157,11 +161,18 @@
 				onchange={handleVisualChange}
 			/>
 		{:else}
-			<TemplateEditorYaml
-				yamlValue={yamlText}
-				{readOnly}
-				onchange={handleYamlChange}
-			/>
+			{#await loadYamlEditor()}
+				<div class="editor-loading">Loading editor…</div>
+			{:then mod}
+				{@const TemplateEditorYaml = mod.default}
+				<TemplateEditorYaml
+					yamlValue={yamlText}
+					{readOnly}
+					onchange={handleYamlChange}
+				/>
+			{:catch}
+				<div class="error">Failed to load the YAML editor.</div>
+			{/await}
 		{/if}
 	</div>
 
@@ -264,6 +275,11 @@
 	}
 	.editor-area {
 		min-height: 300px;
+	}
+	.editor-loading {
+		padding: 1.25rem;
+		color: var(--color-text-muted);
+		font-size: 0.85rem;
 	}
 	.editor-footer {
 		display: flex;

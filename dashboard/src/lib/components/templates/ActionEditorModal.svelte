@@ -19,12 +19,19 @@
 
 	const isEdit = $derived(action !== null);
 
+	// svelte-ignore state_referenced_locally
 	let key = $state(action?.key ?? '');
+	// svelte-ignore state_referenced_locally
 	let method = $state(action?.method ?? 'GET');
+	// svelte-ignore state_referenced_locally
 	let path = $state(action?.path ?? '');
+	// svelte-ignore state_referenced_locally
 	let description = $state(action?.description ?? '');
+	// svelte-ignore state_referenced_locally
 	let risk = $state(action?.risk ?? 'low');
+	// svelte-ignore state_referenced_locally
 	let responseType = $state(action?.response_type ?? '');
+	// svelte-ignore state_referenced_locally
 	let params = $state<{ name: string; type: string; required: boolean; description: string; enumValues: string }[]>(
 		action
 			? Object.entries(action.params ?? {}).map(([name, p]) => ({
