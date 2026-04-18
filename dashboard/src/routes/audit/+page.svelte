@@ -15,14 +15,21 @@
 
 	let { data } = $props();
 
+	// svelte-ignore state_referenced_locally
 	let entries = $state<AuditEntry[]>(data.entries);
+	// svelte-ignore state_referenced_locally
 	let filters = $state<AuditFilters>(data.filters);
+	// svelte-ignore state_referenced_locally
 	const identities = data.identities;
 	const searchKeys = buildAuditSearchKeys(identities);
+	// svelte-ignore state_referenced_locally
 	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities));
+	// svelte-ignore state_referenced_locally
 	let offset = $state(data.entries.length);
+	// svelte-ignore state_referenced_locally
 	let done = $state(data.entries.length < PAGE_LIMIT);
 	let loading = $state(false);
+	// svelte-ignore state_referenced_locally
 	let loadError = $state<string | null>(data.error?.message ?? null);
 	let expandedId = $state<string | null>(null);
 

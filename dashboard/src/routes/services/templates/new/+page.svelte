@@ -7,7 +7,9 @@
 	import { onMount } from 'svelte';
 	import { templateToYaml, yamlToTemplate } from '$lib/utils/templateYaml';
 	import TemplateEditorVisual from '$lib/components/templates/TemplateEditorVisual.svelte';
-	import TemplateEditorYaml from '$lib/components/templates/TemplateEditorYaml.svelte';
+
+	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle until the YAML tab is opened.
+	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
 
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	let oauthProviders = $state<OAuthProviderInfo[]>([]);
@@ -18,6 +20,7 @@
 
 	let activeTab = $state<'visual' | 'yaml'>('visual');
 	// Default to user-level when non-admin (they can't create org templates)
+	// svelte-ignore state_referenced_locally
 	let userLevel = $state(!isAdmin);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
@@ -35,6 +38,7 @@
 		tier: 'org'
 	});
 
+	// svelte-ignore state_referenced_locally
 	let yamlText = $state(templateToYaml(template));
 
 	function handleVisualChange(updated: TemplateDetail) {
@@ -165,11 +169,18 @@
 				onchange={handleVisualChange}
 			/>
 		{:else}
-			<TemplateEditorYaml
-				yamlValue={yamlText}
-				readOnly={false}
-				onchange={handleYamlChange}
-			/>
+			{#await loadYamlEditor()}
+				<div class="editor-loading">Loading editor…</div>
+			{:then mod}
+				{@const TemplateEditorYaml = mod.default}
+				<TemplateEditorYaml
+					yamlValue={yamlText}
+					readOnly={false}
+					onchange={handleYamlChange}
+				/>
+			{:catch}
+				<div class="error">Failed to load the YAML editor.</div>
+			{/await}
 		{/if}
 	</div>
 
@@ -264,6 +275,11 @@
 	}
 	.editor-area {
 		min-height: 300px;
+	}
+	.editor-loading {
+		padding: 1.25rem;
+		color: var(--color-text-muted);
+		font-size: 0.85rem;
 	}
 	.editor-footer {
 		display: flex;

@@ -92,13 +92,20 @@ fi
 
 # Dashboard checks (only if dashboard/ files are staged)
 if git diff --cached --name-only --diff-filter=ACMR | grep -q '^dashboard/'; then
-    echo "  dashboard/ changes detected, running svelte-check"
+    echo "  dashboard/ changes detected, running svelte-check + strict build"
     if [ ! -d dashboard/node_modules ]; then
         echo "ERROR: dashboard/node_modules missing. Run 'cd dashboard && npm install' first."
         exit 1
     fi
     (cd dashboard && npm run check) || {
         echo "ERROR: dashboard svelte-check failed."
+        exit 1
+    }
+    # Fail on any Svelte/Rollup warning or oversize chunk. See
+    # dashboard/svelte.config.js onwarn, vite.config.ts rollupOptions.onwarn,
+    # and scripts/check-chunk-sizes.mjs.
+    (cd dashboard && npm run build:strict) || {
+        echo "ERROR: dashboard build emitted warnings (see output above)."
         exit 1
     }
 fi

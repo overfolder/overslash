@@ -225,8 +225,8 @@ jobs:
         run: npm ci
       - name: Type check (svelte-check)
         run: npm run check
-      - name: Build
-        run: npm run build
+      - name: Build (strict — fails on any warning)
+        run: npm run build:strict
 
   ci-ok:
     name: ci-ok
