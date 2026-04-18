@@ -56,8 +56,12 @@
 	--color-warning: var(--warning-500);
 
 	/* ── Typography ── */
-	--font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-	--font-mono: 'Roboto Mono', 'JetBrains Mono', 'Fira Code', monospace;
+	/* Sans/mono are self-hosted variable builds loaded in app.css via
+	   `@fontsource-variable/*`. The static family name is kept as a soft
+	   fallback for browsers that happen to have it installed, and the OS
+	   stack keeps the page readable if the woff2 fails to load. */
+	--font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	--font-mono: 'Roboto Mono Variable', 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
 	--text-h1: 700 28px/36px var(--font-sans);
 	--text-h2: 600 22px/28px var(--font-sans);

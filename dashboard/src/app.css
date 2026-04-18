@@ -1,3 +1,5 @@
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/roboto-mono';
 @import '$lib/styles/design-tokens.css';
 
 * {
