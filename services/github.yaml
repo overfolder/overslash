@@ -5,6 +5,10 @@ hosts:
 auth:
   - type: oauth
     provider: github
+    scopes:
+      - repo
+      - read:user
+      - user:email
     token_injection:
       as: header
       header_name: Authorization

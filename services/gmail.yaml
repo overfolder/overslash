@@ -6,6 +6,10 @@ hosts:
 auth:
   - type: oauth
     provider: google
+    scopes:
+      - https://www.googleapis.com/auth/gmail.readonly
+      - https://www.googleapis.com/auth/gmail.send
+      - https://www.googleapis.com/auth/gmail.modify
     token_injection:
       as: header
       header_name: Authorization

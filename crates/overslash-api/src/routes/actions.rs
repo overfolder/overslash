@@ -736,6 +736,7 @@ async fn resolve_service_auth(
         if let overslash_core::types::ServiceAuth::OAuth {
             provider,
             token_injection,
+            ..
         } = service_auth
         {
             if let Ok(Some(conn)) = user_scope.find_my_connection_by_provider(provider).await {
@@ -882,6 +883,7 @@ async fn resolve_instance_auth(
                     if let overslash_core::types::ServiceAuth::OAuth {
                         provider,
                         token_injection,
+                        ..
                     } = service_auth
                     {
                         if *provider == conn.provider_key {

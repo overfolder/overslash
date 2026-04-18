@@ -211,6 +211,7 @@
 			const resp = await initiateOAuth(
 				{
 					provider: oauthProvider.provider,
+					scopes: oauthProvider.scopes ?? [],
 					byoc_credential_id: byocCredentialId
 				},
 				ctrl.signal

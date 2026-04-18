@@ -101,6 +101,7 @@ fn check_auth(auth: &[ServiceAuth], issues: &mut Issues) {
             ServiceAuth::OAuth {
                 provider,
                 token_injection,
+                ..
             } => {
                 if provider.trim().is_empty() {
                     issues.err(

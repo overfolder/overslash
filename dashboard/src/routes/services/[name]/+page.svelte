@@ -148,7 +148,10 @@
 		error = null;
 		try {
 			const beforeIds = new Set(connections.map((c) => c.id));
-			const resp = await initiateOAuth({ provider: oauthAuth.provider }, ctrl.signal);
+			const resp = await initiateOAuth(
+				{ provider: oauthAuth.provider, scopes: oauthAuth.scopes ?? [] },
+				ctrl.signal
+			);
 			if (ctrl.signal.aborted) return;
 			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
 			if (!popup) {

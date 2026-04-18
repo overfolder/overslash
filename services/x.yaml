@@ -6,6 +6,11 @@ hosts:
 auth:
   - type: oauth
     provider: x
+    scopes:
+      - tweet.read
+      - tweet.write
+      - users.read
+      - offline.access
     token_injection:
       as: header
       header_name: Authorization
