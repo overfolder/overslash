@@ -124,13 +124,17 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
             let Value::Object(path_obj) = path_item else {
                 continue;
             };
+            // Path-level parameters (shared across all methods on this path)
+            // also carry parameter aliases and must be normalized.
+            let path_base = format!("paths.{path_key}");
+            normalize_parameters_in(path_obj, &path_base, &mut issues);
             for method in HTTP_METHODS {
                 let Some(op) = path_obj.get_mut(*method).and_then(Value::as_object_mut) else {
                     continue;
                 };
                 let op_base = format!("paths.{path_key}.{method}");
                 rewrite_aliases(op, OPERATION_ALIASES, &op_base, &mut issues);
-                normalize_operation_parameters(op, &op_base, &mut issues);
+                normalize_parameters_in(op, &op_base, &mut issues);
             }
         }
     }
@@ -328,17 +332,22 @@ fn rewrite_aliases(
     }
 }
 
-fn normalize_operation_parameters(
-    op: &mut Map<String, Value>,
-    op_base: &str,
+/// Normalize parameter aliases on the `parameters` array of an object. Used
+/// for both path-item and operation contexts — OpenAPI allows a shared
+/// `parameters` array at the path level and a per-method one at the operation
+/// level, and both must be walked or aliases at the path level are silently
+/// dropped.
+fn normalize_parameters_in(
+    obj: &mut Map<String, Value>,
+    obj_base: &str,
     issues: &mut Vec<ValidationIssue>,
 ) {
-    let Some(params) = op.get_mut("parameters").and_then(Value::as_array_mut) else {
+    let Some(params) = obj.get_mut("parameters").and_then(Value::as_array_mut) else {
         return;
     };
     for (i, p) in params.iter_mut().enumerate() {
         let Value::Object(pm) = p else { continue };
-        let base = format!("{op_base}.parameters[{i}]");
+        let base = format!("{obj_base}.parameters[{i}]");
         rewrite_aliases(pm, PARAMETER_ALIASES, &base, issues);
     }
 }
@@ -896,6 +905,32 @@ mod tests {
         assert_eq!(op["x-overslash-risk"], "write");
         assert_eq!(op["x-overslash-scope_param"], "repo");
         assert!(!op.contains_key("risk"));
+    }
+
+    #[test]
+    fn normalize_path_level_parameter_resolve() {
+        // OpenAPI allows a `parameters` array directly on the path item,
+        // shared across all methods. Aliases there must be normalized too,
+        // or resolver configs on shared path params get silently dropped.
+        let mut v = doc(json!({
+            "paths": {
+                "/x/{id}": {
+                    "parameters": [
+                        {"name": "id", "in": "path", "required": true,
+                         "resolve": {"get": "/x/{id}", "pick": "name"}}
+                    ],
+                    "get": {"operationId": "getX"}
+                }
+            }
+        }));
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let p0 = &v["paths"]["/x/{id}"]["parameters"][0];
+        assert!(
+            p0.get("x-overslash-resolve").is_some(),
+            "path-level resolve alias was not normalized"
+        );
+        assert!(p0.get("resolve").is_none());
     }
 
     #[test]
