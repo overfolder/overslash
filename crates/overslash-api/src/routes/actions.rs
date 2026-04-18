@@ -17,7 +17,7 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AuthContext, ClientIp},
-    services::http_executor,
+    services::{group_ceiling, http_executor},
 };
 use overslash_core::{
     crypto,
@@ -110,7 +110,7 @@ async fn execute_action(
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
-    let ceiling_user_id = crate::services::group_ceiling::ceiling_user_id_from_identity(&identity)?;
+    let ceiling_user_id = group_ceiling::ceiling_user_id_from_identity(&identity)?;
 
     // Resolve the request to a concrete ActionRequest
     let (action_req, meta) = resolve_request(&state, &auth, &scope, identity_id, &req).await?;
@@ -148,14 +148,10 @@ async fn execute_action(
             || meta.service_instance_owner == Some(identity_id));
 
     if !is_user_owned_service {
-        let ceiling = crate::services::group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
+        let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
         if ceiling.has_groups {
-            match crate::services::group_ceiling::check_ceiling(
-                &ceiling,
-                &ceiling_service,
-                ceiling_risk,
-            ) {
+            match group_ceiling::check_ceiling(&ceiling, &ceiling_service, ceiling_risk) {
                 GroupCeilingResult::ExceedsCeiling(reason) => {
                     return Ok((
                         StatusCode::FORBIDDEN,
@@ -515,9 +511,12 @@ async fn resolve_request(
 
     // Mode C: service + action
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
-        // Try to resolve through a service instance first (user-shadows-org)
+        // Try to resolve through a service instance first (user-shadows-org).
+        // Include the ceiling user so agent callers can reach services their
+        // owner user has created.
+        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(scope, auth.identity_id).await?;
         let instance = scope
-            .resolve_service_instance_by_name(auth.identity_id, service_key)
+            .resolve_service_instance_by_name(auth.identity_id, ceiling, service_key)
             .await?;
 
         // Resolve the template: if instance found use its template_key, else use service_key directly
