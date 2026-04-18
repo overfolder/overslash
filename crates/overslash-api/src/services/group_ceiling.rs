@@ -41,6 +41,19 @@ pub async fn resolve_ceiling_user_id(
     ceiling_user_id_from_identity(&identity)
 }
 
+/// Convenience wrapper: resolve the ceiling user for an optional identity.
+/// Returns `None` for org-level API keys (no identity), `Some(user_id)`
+/// otherwise.
+pub async fn resolve_ceiling_user_id_opt(
+    scope: &OrgScope,
+    identity_id: Option<Uuid>,
+) -> Result<Option<Uuid>, crate::error::AppError> {
+    match identity_id {
+        Some(id) => Ok(Some(resolve_ceiling_user_id(scope, id).await?)),
+        None => Ok(None),
+    }
+}
+
 /// Validate that `caller_identity_id` is allowed to act `on_behalf_of`
 /// `target_user_id`.
 ///
