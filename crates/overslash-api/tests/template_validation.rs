@@ -275,25 +275,12 @@ async fn update_template_allows_valid_full_replacement() {
         .unwrap();
     let id = create["id"].as_str().unwrap();
 
-    let renamed = r#"
-openapi: 3.1.0
-info:
-  title: Meta API v2
-  key: meta-api
-servers:
-  - url: https://api.example.com
-paths:
-  /items:
-    get:
-      operationId: list_items
-      summary: List items
-      risk: read
-"#;
-
     let resp = client
         .put(format!("{base}/v1/templates/{id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({ "openapi": renamed }))
+        .json(&json!({
+            "openapi": include_str!("fixtures/openapi/meta_api_v2.yaml"),
+        }))
         .send()
         .await
         .unwrap();

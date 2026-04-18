@@ -1,0 +1,39 @@
+openapi: 3.1.0
+info:
+  title: Slack
+  key: slack
+  category: chat
+servers:
+  - url: https://slack.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: slack
+      flows:
+        authorizationCode:
+          authorizationUrl: https://slack.com/oauth
+          tokenUrl: https://slack.com/token
+          scopes:
+            chat:write: ""
+paths:
+  /api/chat.postMessage:
+    post:
+      operationId: send_message
+      summary: Send a message to {channel}
+      risk: write
+      scope_param: channel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, text]
+              properties:
+                channel:
+                  type: string
+                  description: Channel ID
+                text:
+                  type: string
+                  description: Message text

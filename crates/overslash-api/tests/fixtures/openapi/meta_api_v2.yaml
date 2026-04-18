@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info:
+  title: Meta API v2
+  key: meta-api
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read
