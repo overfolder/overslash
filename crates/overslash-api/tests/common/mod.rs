@@ -566,6 +566,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
             ),
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -645,6 +646,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
             ),
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -729,6 +731,7 @@ pub async fn start_api_with_auth_providers(
             ),
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -1064,6 +1067,48 @@ pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
+/// Submit the MCP OAuth consent form with mode=new to enroll a fresh agent.
+/// Returns the final redirect Location (the MCP client's `redirect_uri` with
+/// `?code=…`), which is the value tests would otherwise read directly from
+/// `/oauth/authorize` pre-consent.
+pub async fn finish_oauth_consent_new(
+    base: &str,
+    consent_redirect_location: &str,
+    session_cookie: &str,
+    agent_name: &str,
+) -> String {
+    let request_id = consent_redirect_location
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .expect("consent redirect missing request_id");
+    let request_id = urlencoding::decode(request_id).unwrap().into_owned();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let resp = no_redirect
+        .post(format!("{base}/oauth/consent/finish"))
+        .header("cookie", session_cookie)
+        .form(&[
+            ("request_id", request_id.as_str()),
+            ("mode", "new"),
+            ("name", agent_name),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::SEE_OTHER,
+        "consent finish must redirect to client's redirect_uri"
+    );
+    resp.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
 /// Start API with real service registry loaded from `services/` directory.
 /// Optionally override a service's host (useful for mock-based tests).
 pub async fn start_api_with_registry(
@@ -1124,6 +1169,7 @@ pub async fn start_api_with_registry(
             ),
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -1201,6 +1247,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
             ),
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()

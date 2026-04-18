@@ -32,6 +32,25 @@ pub struct AuthCodeRecord {
     pub issued_at: Instant,
 }
 
+/// A paused `/oauth/authorize` request awaiting the user's consent at
+/// `/oauth/consent`. The `issued_at` Instant drives the same 60s TTL as auth
+/// codes — the consent step should feel instantaneous to the user.
+///
+/// All client + session validation has already happened at authorize time;
+/// consent_finish only needs to replay the session cookie check for
+/// defence-in-depth and then mint an auth code bound to the chosen agent.
+#[derive(Debug, Clone)]
+pub struct PendingAuthorize {
+    pub client_id: String,
+    pub redirect_uri: String,
+    pub code_challenge: String,
+    pub state_param: Option<String>,
+    pub user_identity_id: Uuid,
+    pub org_id: Uuid,
+    pub email: String,
+    pub issued_at: Instant,
+}
+
 pub const AUTH_CODE_TTL: Duration = Duration::from_secs(60);
 pub const REFRESH_TOKEN_TTL_SECS: i64 = 30 * 24 * 3600; // 30 days
 pub const ACCESS_TOKEN_TTL_SECS: i64 = 3600; // 1 hour
@@ -64,6 +83,51 @@ impl AuthCodeStore {
     }
 
     fn prune_locked(map: &mut std::collections::HashMap<String, AuthCodeRecord>) {
+        map.retain(|_, r| r.issued_at.elapsed() <= AUTH_CODE_TTL);
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct PendingAuthorizeStore {
+    inner: Arc<Mutex<std::collections::HashMap<String, PendingAuthorize>>>,
+}
+
+impl PendingAuthorizeStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&self, request_id: String, record: PendingAuthorize) {
+        let mut map = self.inner.lock().expect("pending authorize store poisoned");
+        Self::prune_locked(&mut map);
+        map.insert(request_id, record);
+    }
+
+    /// Peek without consuming — used by `GET /oauth/consent` to render the
+    /// form multiple times without invalidating the request mid-flight.
+    pub fn get(&self, request_id: &str) -> Option<PendingAuthorize> {
+        let mut map = self.inner.lock().expect("pending authorize store poisoned");
+        let rec = map.get(request_id)?.clone();
+        if rec.issued_at.elapsed() > AUTH_CODE_TTL {
+            map.remove(request_id);
+            return None;
+        }
+        Some(rec)
+    }
+
+    /// Consume atomically at `POST /oauth/consent/finish`. Like auth codes,
+    /// consent requests are single-use — once taken, a second form submission
+    /// of the same `request_id` gets nothing and must restart the flow.
+    pub fn take(&self, request_id: &str) -> Option<PendingAuthorize> {
+        let mut map = self.inner.lock().expect("pending authorize store poisoned");
+        let rec = map.remove(request_id)?;
+        if rec.issued_at.elapsed() > AUTH_CODE_TTL {
+            return None;
+        }
+        Some(rec)
+    }
+
+    fn prune_locked(map: &mut std::collections::HashMap<String, PendingAuthorize>) {
         map.retain(|_, r| r.issued_at.elapsed() <= AUTH_CODE_TTL);
     }
 }

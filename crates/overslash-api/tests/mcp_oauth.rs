@@ -299,10 +299,16 @@ async fn authorize_full_flow_issues_code_and_token() {
         .await
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::SEE_OTHER);
-    let loc = resp.headers()[reqwest::header::LOCATION]
+    let consent_loc = resp.headers()[reqwest::header::LOCATION]
         .to_str()
         .unwrap()
         .to_string();
+    assert!(
+        consent_loc.starts_with("/oauth/consent"),
+        "first authorize redirects to consent, got: {consent_loc}"
+    );
+    let loc =
+        common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "e2e-agent").await;
     assert!(loc.starts_with(redirect));
     let code: String = loc
         .split(&['?', '&'][..])
@@ -429,7 +435,12 @@ async fn token_rejects_wrong_pkce_verifier() {
         .send()
         .await
         .unwrap();
-    let loc = resp.headers()[reqwest::header::LOCATION].to_str().unwrap();
+    let consent_loc = resp.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let loc =
+        common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "pkce-agent").await;
     let code: String = loc
         .split(&['?', '&'][..])
         .find_map(|p: &str| p.strip_prefix("code=").map(|s| s.to_string()))
@@ -547,10 +558,13 @@ async fn mcp_tools_call_forwards_to_rest_with_bearer() {
         .send()
         .await
         .unwrap();
-    let loc = resp.headers()[reqwest::header::LOCATION]
+    let consent_loc = resp.headers()[reqwest::header::LOCATION]
         .to_str()
         .unwrap()
         .to_string();
+    let loc =
+        common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "whoami-agent")
+            .await;
     let code: String = loc
         .split(&['?', '&'][..])
         .find_map(|p: &str| p.strip_prefix("code=").map(|s| s.to_string()))
@@ -598,13 +612,247 @@ async fn mcp_tools_call_forwards_to_rest_with_bearer() {
     assert_eq!(body["id"], 42);
     let text = body["result"]["content"][0]["text"].as_str().unwrap();
     let payload: Value = serde_json::from_str(text).unwrap();
-    // /v1/whoami returns identity_id / org_id — just confirm forwarding
-    // worked by checking at least one of the expected keys is present.
+    // /v1/whoami returns identity_id / org_id — confirm forwarding worked
+    // AND that the OAuth token is bound to an **agent** identity (not a
+    // user). Binding the MCP session to the enrolled agent is the whole
+    // point of the consent step.
     assert!(
         payload.get("identity_id").is_some() || payload.get("org_id").is_some(),
         "expected whoami payload, got: {payload}"
     );
+    assert_eq!(
+        payload["kind"].as_str(),
+        Some("agent"),
+        "MCP whoami must return the enrolled agent, got: {payload}"
+    );
 }
+
+// ---------------------------------------------------------------------------
+// Agent enrollment + binding reuse
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn authorize_first_time_redirects_to_consent() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let redirect = "http://127.0.0.1:9995/callback";
+    let client_id = register_client(&client, &base, redirect).await;
+    let (_, challenge) = pkce();
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let resp = no_redirect
+        .get(&url)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::SEE_OTHER);
+    let loc = resp.headers()[reqwest::header::LOCATION].to_str().unwrap();
+    assert!(
+        loc.starts_with("/oauth/consent?request_id="),
+        "first authorize must redirect to consent, got: {loc}"
+    );
+}
+
+#[tokio::test]
+async fn authorize_reuses_binding_on_second_login() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let redirect = "http://127.0.0.1:9994/callback";
+    let client_id = register_client(&client, &base, redirect).await;
+    let (_, challenge) = pkce();
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+
+    // First time: consent → agent enrolled → final redirect
+    let r1 = no_redirect
+        .get(&url)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc = r1.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let _ = common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "sticky-agent")
+        .await;
+
+    // Second time: same (user, client_id) → existing binding → straight to
+    // the MCP client's redirect with ?code=, no consent screen.
+    let r2 = no_redirect
+        .get(&url)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let loc2 = r2.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        loc2.starts_with(redirect),
+        "second authorize must skip consent, got: {loc2}"
+    );
+    assert!(
+        loc2.contains("code="),
+        "second authorize must issue an auth code, got: {loc2}"
+    );
+}
+
+#[tokio::test]
+async fn consent_finish_rejects_invalid_request_id() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .post(format!("{base}/oauth/consent/finish"))
+        .header("cookie", session_cookie)
+        .form(&[
+            ("request_id", "forged-or-expired"),
+            ("mode", "new"),
+            ("name", "evil"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    // Body is the HTML error page — just confirm we got a content-type back.
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(ct.starts_with("text/html"), "expected HTML error page");
+}
+
+#[tokio::test]
+async fn mcp_rejects_user_kind_bearer() {
+    // Legacy MCP tokens minted before the agent-enrollment rollout had
+    // `sub = user_id`. The extractor must refuse them so such tokens can't
+    // continue authenticating post-migration (defence-in-depth on top of the
+    // refresh-token wipe).
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+
+    // Dev login produces a user identity. Decode the session cookie to
+    // extract the user's identity_id + org_id (the claims on oss_session
+    // JWTs match what would be embedded in a legacy user-bound MCP token).
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .unwrap()
+        .to_string();
+    let session_jwt = cookie
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("oss_session=")
+        .unwrap()
+        .to_string();
+
+    let signing_key = hex::decode("cd".repeat(32)).unwrap();
+    let claims = overslash_api::services::jwt::verify(
+        &signing_key,
+        &session_jwt,
+        overslash_api::services::jwt::AUD_SESSION,
+    )
+    .unwrap();
+
+    // Mint an aud=mcp JWT whose sub is the USER identity — the shape legacy
+    // tokens had. `verify` still passes, but the extractor's kind check
+    // must reject it.
+    let user_bound = overslash_api::services::jwt::mint_mcp(
+        &signing_key,
+        claims.sub,
+        claims.org,
+        claims.email,
+        3600,
+    )
+    .unwrap();
+
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .bearer_auth(&user_bound)
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+// ---------------------------------------------------------------------------
+// Revoke
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn revoke_returns_200_for_unknown_token() {

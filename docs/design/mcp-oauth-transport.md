@@ -75,10 +75,44 @@ Reuses `services::jwt::Claims` with the `aud` field added. Distinct from the das
 
 | Mode | How the MCP client (or shim) authenticates | Identity established | Layer 2 / approvals |
 |---|---|---|---|
-| **OAuth (default)** | Browser flow at `/oauth/authorize` → access token → `Authorization: Bearer <jwt>` on `/mcp`. | The IdP-authenticated **user**. | Skipped (SPEC §5 *User Identities Skip Layer 2*). |
+| **OAuth (default)** | Browser flow at `/oauth/authorize` → consent step enrolls an **agent** under the user → access token → `Authorization: Bearer <jwt>` on `/mcp`. | An **agent identity** owned by the IdP-authenticated user. | Active. The agent is a Layer 2 identity; approvals fire through the standard user-surface path. |
 | **Agent key** | Static `Authorization: Bearer osk_…` on `/mcp`. No OAuth involved. | The **agent identity** the key is bound to. | Active; approvals fire and surface via the standard webhook / SSE / approval-URL path. |
 
-The MCP client (or shim) UX picks the mode by what's configured. Claude Code / Cursor users get OAuth out of the box (zero config beyond entering the server URL or running `overslash mcp login`). Production agents that want gated execution use the agent-key mode.
+Both modes produce an **agent** `AuthContext`. The difference is only in *how the agent is authenticated*, not in what the identity is. This keeps the downstream permission / approval surface uniform — the `/mcp` dispatcher has no "is this a user or an agent?" branch to get wrong.
+
+Concretely, OAuth mode binds a `(user_identity_id, client_id) → agent_identity_id` row (table: `mcp_client_agent_bindings`). The first `/oauth/authorize` for a given pair shows a consent screen where the user either creates a fresh agent (default name taken from the client's DCR `client_name`) or picks an existing agent they already own. Subsequent authorizations by the same `(user, client)` pair skip the consent screen and mint tokens for the stored agent.
+
+MCP tokens whose `sub` resolves to a `kind=user` identity (minted by any pre-consent-rollout code path) are refused at `AuthContext` construction — the extractor treats them as invalid and returns `401 + WWW-Authenticate`, so clients restart the OAuth flow and land on the consent screen.
+
+The MCP client (or shim) UX picks the authentication mode by what's configured. Claude Code / Cursor users get OAuth out of the box (zero config beyond entering the server URL or running `overslash mcp login`). Production agents that want a long-lived, non-interactive credential use the agent-key mode.
+
+## Agent enrollment consent (`/oauth/consent`)
+
+The consent step is an in-band part of the OAuth Authorization Code flow, wrapped around the standard `/oauth/authorize` → `/oauth/token` exchange:
+
+```
+/oauth/authorize
+   │  (valid session + no existing binding)
+   ▼
+ 303 /oauth/consent?request_id=…           ← paused authorize request
+   │  (user picks "create new" or "use existing")
+   ▼
+POST /oauth/consent/finish
+   │  (creates / resolves agent, upserts binding, issues auth code)
+   ▼
+ 303 <client's redirect_uri>?code=…        ← standard OAuth callback
+```
+
+The paused authorize request is held in-memory on `AppState::pending_authorize_store` with a 60-second TTL, keyed by a single-use `request_id`. The consent POST validates:
+
+1. The session cookie is still present and valid.
+2. The `request_id` exists in the store and hasn't expired.
+3. `session.sub == pending.user_identity_id` — the tab that landed on `/oauth/authorize` is the same tab submitting consent. Guards against cross-tab session swaps.
+4. When `mode=existing`, the chosen agent's `owner_id` equals the session user.
+
+On a subsequent `/oauth/authorize` with the same `(user_identity_id, client_id)`, the handler fast-paths: look up the binding, verify the agent is not archived / still `kind=agent`, and emit the auth code directly. No consent page, no detour. If the binding points at a stale agent (archived, deleted, wrong kind), the flow falls through to a fresh consent screen rather than failing.
+
+The binding is the local-file-equivalent of "remember my choice." The stdio shim's `~/.config/overslash/mcp.json` stays dumb — it only holds the access / refresh token. Persistence of the agent selection lives on the server, where it's auditable.
 
 ## `overslash mcp` (stdio shim)
 
@@ -115,10 +149,13 @@ This is what `overslash mcp setup` was always supposed to be. The previous helpe
 
 ## Approval model
 
-- **OAuth/user mode** → no approval surface. The user is their own approver.
-- **Agent-key mode** → existing flow: `POST /v1/actions/execute` returns `pending_approval` with an approval URL; the agent surfaces the URL in its response; the user resolves via dashboard / webhook handler / direct REST call. SSE / webhooks / polling all work as documented in SPEC §10 *Async Event Delivery*.
+Both OAuth and agent-key modes resolve to an agent identity, so the approval surface is uniform:
 
-`overslash_approve` (previously "MCP only") becomes a regular user operation in §10. It is callable from any surface where the caller is authenticated as a user identity; the agent-key MCP path cannot use it (an agent cannot approve its own requests, by design).
+- `POST /v1/actions/execute` returns `pending_approval` with an approval URL when the agent's permission chain has a gap.
+- The MCP tool returns the approval URL in its response; the owning user resolves it via dashboard, webhook handler, or direct REST call.
+- SSE / webhooks / polling continue to work as documented in SPEC §10 *Async Event Delivery*.
+
+`overslash_approve` is callable from the user surface (dashboard session, user-bound API key) to resolve approvals raised by the agent elsewhere in the org. The MCP agent cannot approve its own requests, by design — whether it's authenticated via OAuth or an `osk_` key makes no difference.
 
 ## Removal list
 

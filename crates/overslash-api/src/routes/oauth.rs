@@ -19,7 +19,7 @@ use axum::{
     Form, Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -31,12 +31,16 @@ use crate::{
     AppState,
     services::{jwt, oauth_as, session},
 };
-use overslash_db::repos::{mcp_refresh_token, oauth_mcp_client};
+use overslash_db::repos::{
+    identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/register", post(register))
         .route("/oauth/authorize", get(authorize))
+        .route("/oauth/consent", get(consent_get))
+        .route("/oauth/consent/finish", post(consent_finish))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
 }
@@ -269,30 +273,56 @@ async fn authorize(
         }
     };
 
-    // Issue a one-shot authorization code.
-    let code = oauth_as::generate_auth_code();
-    state.auth_code_store.insert(
-        code.clone(),
-        oauth_as::AuthCodeRecord {
+    // Fast path: if this (user, client_id) already has an enrolled agent,
+    // skip the consent screen and issue a code bound to that agent. The
+    // lookup failure-mode is "fall through to consent" rather than 500 so
+    // a transient DB blip doesn't lock the user out of authentication.
+    if let Ok(Some(binding)) =
+        mcp_client_agent_binding::get_for(&state.db, session_claims.sub, &client.client_id).await
+    {
+        if let Ok(Some(agent)) =
+            identity::get_by_id(&state.db, session_claims.org, binding.agent_identity_id).await
+        {
+            if agent.archived_at.is_none() && agent.kind == "agent" {
+                let email = agent.email.as_deref().unwrap_or(&session_claims.email);
+                return issue_authorization_code(
+                    &state,
+                    &client.client_id,
+                    agent.id,
+                    session_claims.org,
+                    email,
+                    &params.redirect_uri,
+                    &params.code_challenge,
+                    params.state.as_deref(),
+                );
+            }
+        }
+        // Binding points at an archived / missing / wrong-kind agent —
+        // stale row. Fall through to consent so the user re-enrolls.
+    }
+
+    // No binding (or stale): park the authorize request and redirect to the
+    // consent screen. The `request_id` lives only in memory (60s TTL) so a
+    // consent submission against a stale or forged id fails closed.
+    let request_id = oauth_as::generate_auth_code();
+    state.pending_authorize_store.insert(
+        request_id.clone(),
+        oauth_as::PendingAuthorize {
             client_id: client.client_id.clone(),
-            identity_id: session_claims.sub,
-            org_id: session_claims.org,
-            email: session_claims.email.clone(),
             redirect_uri: params.redirect_uri.clone(),
             code_challenge: params.code_challenge.clone(),
+            state_param: params.state.clone(),
+            user_identity_id: session_claims.sub,
+            org_id: session_claims.org,
+            email: session_claims.email.clone(),
             issued_at: Instant::now(),
         },
     );
-
-    let mut redirect = format!(
-        "{}?code={}",
-        params.redirect_uri,
-        urlencoding::encode(&code)
-    );
-    if let Some(s) = params.state.as_deref() {
-        redirect.push_str(&format!("&state={}", urlencoding::encode(s)));
-    }
-    Redirect::to(&redirect).into_response()
+    Redirect::to(&format!(
+        "/oauth/consent?request_id={}",
+        urlencoding::encode(&request_id)
+    ))
+    .into_response()
 }
 
 fn rebuild_authorize_path(p: &AuthorizeQuery) -> String {
@@ -314,6 +344,41 @@ fn rebuild_authorize_path(p: &AuthorizeQuery) -> String {
     qs
 }
 
+/// Build the final authorize-code redirect back to the MCP client. Shared
+/// between the fast-path in `authorize` (existing binding) and
+/// `consent_finish` (newly-enrolled agent) so there's a single canonical
+/// code-issuance site.
+#[allow(clippy::too_many_arguments)]
+fn issue_authorization_code(
+    state: &AppState,
+    client_id: &str,
+    identity_id: Uuid,
+    org_id: Uuid,
+    email: &str,
+    redirect_uri: &str,
+    code_challenge: &str,
+    state_param: Option<&str>,
+) -> Response {
+    let code = oauth_as::generate_auth_code();
+    state.auth_code_store.insert(
+        code.clone(),
+        oauth_as::AuthCodeRecord {
+            client_id: client_id.to_string(),
+            identity_id,
+            org_id,
+            email: email.to_string(),
+            redirect_uri: redirect_uri.to_string(),
+            code_challenge: code_challenge.to_string(),
+            issued_at: Instant::now(),
+        },
+    );
+    let mut redirect = format!("{}?code={}", redirect_uri, urlencoding::encode(&code));
+    if let Some(s) = state_param {
+        redirect.push_str(&format!("&state={}", urlencoding::encode(s)));
+    }
+    Redirect::to(&redirect).into_response()
+}
+
 /// Pick the first configured env-var IdP for bouncing `/oauth/authorize`
 /// through login. Production deployments should always have exactly one
 /// default; installations with multiple IdPs can pick via a UI redirect
@@ -333,6 +398,343 @@ fn default_idp_provider(state: &AppState) -> Option<&'static str> {
         return Some("dev");
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Consent (agent enrollment)
+// ---------------------------------------------------------------------------
+//
+// When /oauth/authorize finds no prior (user, client_id) → agent binding, it
+// parks the request in `pending_authorize_store` and redirects here. This
+// server-rendered page is intentionally self-contained — no SvelteKit
+// coupling — so the Authorization Server can run in modes where the
+// dashboard isn't served (e.g. the `overslash serve` cloud mode).
+
+#[derive(Deserialize)]
+struct ConsentQuery {
+    request_id: String,
+}
+
+async fn consent_get(
+    State(state): State<AppState>,
+    Query(q): Query<ConsentQuery>,
+    headers: HeaderMap,
+) -> Response {
+    // Session must still be valid — consent is a user-authenticated action.
+    let session_claims = match session::extract_session(&state, &headers) {
+        Some(c) => c,
+        None => {
+            return consent_error_page(
+                StatusCode::UNAUTHORIZED,
+                "Your session has expired. Restart the sign-in from your MCP client.",
+            );
+        }
+    };
+
+    let pending = match state.pending_authorize_store.get(&q.request_id) {
+        Some(p) => p,
+        None => {
+            return consent_error_page(
+                StatusCode::BAD_REQUEST,
+                "This authorization request has expired. Restart the sign-in from your MCP client.",
+            );
+        }
+    };
+
+    // The session that landed on /oauth/authorize must be the one finishing
+    // consent — protects against a swap-after-redirect attack where a second
+    // tab's session accidentally completes someone else's flow.
+    if pending.user_identity_id != session_claims.sub {
+        return consent_error_page(
+            StatusCode::FORBIDDEN,
+            "You're signed in as a different user than started this authorization.",
+        );
+    }
+
+    let client = match oauth_mcp_client::get_by_client_id(&state.db, &pending.client_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return consent_error_page(
+                StatusCode::BAD_REQUEST,
+                "The MCP client that started this authorization is no longer registered.",
+            );
+        }
+        Err(e) => {
+            tracing::error!("consent: client lookup failed: {e}");
+            return consent_error_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "We couldn't load this authorization request. Try again.",
+            );
+        }
+    };
+
+    let existing_agents =
+        match identity::list_children(&state.db, pending.org_id, pending.user_identity_id).await {
+            Ok(rows) => rows
+                .into_iter()
+                .filter(|r| r.kind == "agent" && r.archived_at.is_none())
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::error!("consent: list_children failed: {e}");
+                Vec::new()
+            }
+        };
+
+    let suggested_name = client
+        .client_name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "MCP Client".into());
+
+    Html(render_consent_page(
+        &q.request_id,
+        &session_claims.email,
+        client.client_name.as_deref().unwrap_or("(unnamed client)"),
+        &suggested_name,
+        &existing_agents,
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ConsentForm {
+    request_id: String,
+    /// "new" | "existing"
+    mode: String,
+    /// Populated when `mode == "new"`.
+    name: Option<String>,
+    /// Populated when `mode == "existing"`.
+    agent_id: Option<String>,
+}
+
+async fn consent_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ConsentForm>,
+) -> Response {
+    let session_claims = match session::extract_session(&state, &headers) {
+        Some(c) => c,
+        None => {
+            return consent_error_page(
+                StatusCode::UNAUTHORIZED,
+                "Your session has expired. Restart the sign-in from your MCP client.",
+            );
+        }
+    };
+
+    let pending = match state.pending_authorize_store.take(&form.request_id) {
+        Some(p) => p,
+        None => {
+            return consent_error_page(
+                StatusCode::BAD_REQUEST,
+                "This authorization request has expired. Restart the sign-in from your MCP client.",
+            );
+        }
+    };
+
+    if pending.user_identity_id != session_claims.sub {
+        return consent_error_page(
+            StatusCode::FORBIDDEN,
+            "You're signed in as a different user than started this authorization.",
+        );
+    }
+
+    let agent_identity_id =
+        match form.mode.as_str() {
+            "new" => {
+                let name = form
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("MCP Client");
+                let user =
+                    match identity::get_by_id(&state.db, pending.org_id, pending.user_identity_id)
+                        .await
+                    {
+                        Ok(Some(u)) => u,
+                        Ok(None) => {
+                            return consent_error_page(
+                                StatusCode::BAD_REQUEST,
+                                "Your user identity could not be located.",
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("consent: user lookup failed: {e}");
+                            return consent_error_page(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "We couldn't complete the authorization. Try again.",
+                            );
+                        }
+                    };
+                match identity::create_with_parent(
+                    &state.db,
+                    pending.org_id,
+                    name,
+                    "agent",
+                    None,
+                    user.id,
+                    user.depth + 1,
+                    user.id,
+                    true, // inherit_permissions: sensible default, user can tighten later
+                )
+                .await
+                {
+                    Ok(row) => row.id,
+                    Err(e) => {
+                        tracing::error!("consent: agent create failed: {e}");
+                        return consent_error_page(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "We couldn't create the agent. Try again.",
+                        );
+                    }
+                }
+            }
+            "existing" => {
+                let agent_id_str = match form.agent_id.as_deref() {
+                    Some(s) if !s.is_empty() => s,
+                    _ => {
+                        return consent_error_page(
+                            StatusCode::BAD_REQUEST,
+                            "Select an existing agent or create a new one.",
+                        );
+                    }
+                };
+                let agent_id = match Uuid::parse_str(agent_id_str) {
+                    Ok(u) => u,
+                    Err(_) => {
+                        return consent_error_page(StatusCode::BAD_REQUEST, "Invalid agent id.");
+                    }
+                };
+                let agent = match identity::get_by_id(&state.db, pending.org_id, agent_id).await {
+                    Ok(Some(a)) => a,
+                    Ok(None) => {
+                        return consent_error_page(StatusCode::BAD_REQUEST, "Unknown agent.");
+                    }
+                    Err(e) => {
+                        tracing::error!("consent: agent lookup failed: {e}");
+                        return consent_error_page(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "We couldn't complete the authorization. Try again.",
+                        );
+                    }
+                };
+                // Only the user's own agents are eligible — guards against a
+                // crafted form submitting another user's agent id.
+                if agent.kind != "agent"
+                    || agent.archived_at.is_some()
+                    || agent.owner_id != Some(pending.user_identity_id)
+                {
+                    return consent_error_page(
+                        StatusCode::FORBIDDEN,
+                        "That agent isn't available for this authorization.",
+                    );
+                }
+                agent.id
+            }
+            _ => {
+                return consent_error_page(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid selection. Restart from your MCP client.",
+                );
+            }
+        };
+
+    if let Err(e) = mcp_client_agent_binding::upsert(
+        &state.db,
+        pending.org_id,
+        pending.user_identity_id,
+        &pending.client_id,
+        agent_identity_id,
+    )
+    .await
+    {
+        tracing::error!("consent: binding upsert failed: {e}");
+        return consent_error_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "We couldn't record the agent binding. Try again.",
+        );
+    }
+
+    // Fetch the agent's email (if any) so the access-token JWT carries a
+    // sensible `email` claim. Agents usually inherit the owner's email
+    // address for display purposes.
+    let email = match identity::get_by_id(&state.db, pending.org_id, agent_identity_id).await {
+        Ok(Some(a)) => a.email.unwrap_or_else(|| pending.email.clone()),
+        _ => pending.email.clone(),
+    };
+
+    issue_authorization_code(
+        &state,
+        &pending.client_id,
+        agent_identity_id,
+        pending.org_id,
+        &email,
+        &pending.redirect_uri,
+        &pending.code_challenge,
+        pending.state_param.as_deref(),
+    )
+}
+
+const CONSENT_TEMPLATE: &str = include_str!("oauth_consent.html");
+const CONSENT_ERROR_TEMPLATE: &str = include_str!("oauth_consent_error.html");
+
+fn consent_error_page(status: StatusCode, message: &str) -> Response {
+    let body = CONSENT_ERROR_TEMPLATE.replace("{{message}}", &html_escape(message));
+    (status, Html(body)).into_response()
+}
+
+fn render_consent_page(
+    request_id: &str,
+    user_email: &str,
+    client_display_name: &str,
+    suggested_name: &str,
+    existing_agents: &[identity::IdentityRow],
+) -> String {
+    let existing_options = if existing_agents.is_empty() {
+        "<option value=\"\">(no existing agents)</option>".to_string()
+    } else {
+        existing_agents
+            .iter()
+            .map(|a| {
+                format!(
+                    "<option value=\"{}\">{}</option>",
+                    html_escape(&a.id.to_string()),
+                    html_escape(&a.name),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let existing_disabled = if existing_agents.is_empty() {
+        " disabled"
+    } else {
+        ""
+    };
+
+    CONSENT_TEMPLATE
+        .replace("{{user_email}}", &html_escape(user_email))
+        .replace("{{client}}", &html_escape(client_display_name))
+        .replace("{{request_id}}", &html_escape(request_id))
+        .replace("{{suggested}}", &html_escape(suggested_name))
+        .replace("{{existing_disabled}}", existing_disabled)
+        .replace("{{existing_options}}", &existing_options)
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

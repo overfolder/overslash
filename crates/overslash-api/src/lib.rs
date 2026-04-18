@@ -33,6 +33,9 @@ pub struct AppState {
     /// Process-local for v1; promoted to Redis once horizontal replication
     /// is on the roadmap (tracked in `TECH_DEBT.md`).
     pub auth_code_store: services::oauth_as::AuthCodeStore,
+    /// In-memory store for `/oauth/authorize` requests paused at the consent
+    /// step, keyed by a single-use `request_id`. Same 60s TTL as auth codes.
+    pub pending_authorize_store: services::oauth_as::PendingAuthorizeStore,
 }
 
 /// Create the application router with all routes and middleware.
@@ -64,6 +67,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         rate_limiter,
         rate_limit_cache,
         auth_code_store: services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     // Spawn background tasks

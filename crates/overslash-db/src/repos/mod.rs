@@ -24,6 +24,7 @@ pub mod enabled_global_template;
 pub mod enrollment_token;
 pub mod group;
 pub mod identity;
+pub mod mcp_client_agent_binding;
 pub mod mcp_refresh_token;
 pub mod oauth_mcp_client;
 pub mod oauth_provider;

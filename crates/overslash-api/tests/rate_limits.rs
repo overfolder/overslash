@@ -627,6 +627,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
             overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     }
 }
 
