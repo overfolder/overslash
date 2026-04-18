@@ -6,15 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-rmcp = { workspace = true }
-schemars = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "io-std", "rt", "macros", "sync"] }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-url = { workspace = true }
-percent-encoding = "2"
-uuid = { workspace = true }

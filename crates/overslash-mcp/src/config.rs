@@ -2,17 +2,31 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// Single-credential MCP shim config. Written by `overslash mcp login`,
+/// read by `overslash mcp` (the stdio↔HTTP pump). Lives at
+/// `~/.config/overslash/mcp.json` with mode 0600 on unix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfig {
     /// Base URL of the Overslash API (e.g. `https://acme.overslash.dev`).
     pub server_url: String,
-    /// Agent API key used for `overslash_search`, `overslash_execute`, `overslash_auth`.
-    pub agent_key: String,
-    /// User access token used for `overslash_approve` (and any other user-scoped op).
-    pub user_token: String,
-    /// Refresh token for the user access token. Optional but strongly recommended.
+    /// Bearer token presented on every `POST /mcp` frame. Minted by
+    /// `/oauth/token` during `overslash mcp login`, or an `osk_…` agent key
+    /// pasted in directly for agent-mode use.
+    pub token: String,
+    /// Refresh token paired with `token`. Only set for OAuth-minted tokens;
+    /// absent for static `osk_` keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_refresh_token: Option<String>,
+    pub refresh_token: Option<String>,
+    /// DCR client_id, persisted after the first `mcp login` so subsequent
+    /// logins reuse the registration instead of creating a duplicate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// Loopback redirect URI registered with `client_id`. Reused on
+    /// subsequent logins so the bound port matches what was registered at
+    /// DCR time — otherwise the AS rejects authorize with
+    /// `invalid_redirect_uri`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
 }
 
 impl McpConfig {
@@ -66,16 +80,18 @@ mod tests {
         let path = tmp_path("roundtrip");
         let cfg = McpConfig {
             server_url: "https://acme.overslash.dev".into(),
-            agent_key: "ovs_acme_agent_xyz".into(),
-            user_token: "ovs_user_alice_abc".into(),
-            user_refresh_token: Some("ovs_refresh_xyz".into()),
+            token: "ovs_access_xyz".into(),
+            refresh_token: Some("ovs_refresh_xyz".into()),
+            client_id: Some("osc_abc".into()),
+            redirect_uri: Some("http://127.0.0.1:34211/callback".into()),
         };
         cfg.save(&path).unwrap();
         let loaded = McpConfig::load(&path).unwrap();
         assert_eq!(loaded.server_url, cfg.server_url);
-        assert_eq!(loaded.agent_key, cfg.agent_key);
-        assert_eq!(loaded.user_token, cfg.user_token);
-        assert_eq!(loaded.user_refresh_token, cfg.user_refresh_token);
+        assert_eq!(loaded.token, cfg.token);
+        assert_eq!(loaded.refresh_token, cfg.refresh_token);
+        assert_eq!(loaded.client_id, cfg.client_id);
+        assert_eq!(loaded.redirect_uri, cfg.redirect_uri);
     }
 
     #[cfg(unix)]
@@ -85,9 +101,10 @@ mod tests {
         let path = tmp_path("perms");
         let cfg = McpConfig {
             server_url: "https://x".into(),
-            agent_key: "k".into(),
-            user_token: "t".into(),
-            user_refresh_token: None,
+            token: "t".into(),
+            refresh_token: None,
+            client_id: None,
+            redirect_uri: None,
         };
         cfg.save(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -95,22 +112,19 @@ mod tests {
     }
 
     #[test]
-    fn refresh_token_is_optional() {
+    fn optional_fields_are_skipped_when_none() {
         let path = tmp_path("optional");
         let cfg = McpConfig {
             server_url: "https://x".into(),
-            agent_key: "k".into(),
-            user_token: "t".into(),
-            user_refresh_token: None,
+            token: "t".into(),
+            refresh_token: None,
+            client_id: None,
+            redirect_uri: None,
         };
         cfg.save(&path).unwrap();
-        // The on-disk JSON should omit the field rather than write `null`.
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !raw.contains("user_refresh_token"),
-            "unexpected serialized refresh token in: {raw}"
-        );
-        let loaded = McpConfig::load(&path).unwrap();
-        assert!(loaded.user_refresh_token.is_none());
+        assert!(!raw.contains("refresh_token"), "unexpected: {raw}");
+        assert!(!raw.contains("client_id"), "unexpected: {raw}");
+        assert!(!raw.contains("redirect_uri"), "unexpected: {raw}");
     }
 }

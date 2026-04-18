@@ -52,6 +52,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -841,6 +843,8 @@ async fn test_service_registry_api() {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()
@@ -1694,6 +1698,8 @@ async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
     };
 
     let app = axum::Router::new()

@@ -27,5 +27,5 @@ pub fn extract_session(state: &AppState, headers: &HeaderMap) -> Option<jwt::Cla
         .find_map(|pair| pair.trim().strip_prefix("oss_session="))?;
     let signing_key = hex::decode(&state.config.signing_key)
         .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
-    jwt::verify(&signing_key, token).ok()
+    jwt::verify(&signing_key, token, jwt::AUD_SESSION).ok()
 }

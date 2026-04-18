@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 mod common;
 mod mcp;
+mod mcp_login;
 mod serve;
 mod web;
 
@@ -51,12 +52,14 @@ enum Command {
 
 #[derive(Subcommand)]
 enum McpCommand {
-    /// Interactive setup: OAuth login, agent key, write config, print snippet.
-    Setup {
+    /// Authenticate against an Overslash deployment via OAuth 2.1 and
+    /// persist the resulting token in `~/.config/overslash/mcp.json`.
+    Login {
         /// Server URL (e.g. https://acme.overslash.dev). Prompted if omitted.
         #[arg(long)]
         server: Option<String>,
-        /// Re-run only the user OAuth step against an existing config.
+        /// Force a fresh client registration + consent even if a token is
+        /// already configured.
         #[arg(long)]
         re_auth: bool,
     },
@@ -90,9 +93,9 @@ async fn main() -> anyhow::Result<()> {
                     common::bootstrap_mcp();
                     mcp::run_stdio(path).await
                 }
-                Some(McpCommand::Setup { server, re_auth }) => {
+                Some(McpCommand::Login { server, re_auth }) => {
                     common::bootstrap_cli();
-                    mcp::run_setup(path, server, re_auth).await
+                    mcp_login::run(path, server, re_auth).await
                 }
             }
         }
@@ -162,13 +165,13 @@ mod cli_tests {
     }
 
     #[test]
-    fn mcp_setup_with_profile_and_server() {
+    fn mcp_login_with_profile_and_server() {
         let cli = parse(&[
             "overslash",
             "mcp",
             "--profile",
             "work",
-            "setup",
+            "login",
             "--server",
             "https://x.y",
         ]);
@@ -178,11 +181,11 @@ mod cli_tests {
         {
             assert_eq!(profile.as_deref(), Some("work"));
             match command {
-                Some(McpCommand::Setup { server, re_auth }) => {
+                Some(McpCommand::Login { server, re_auth }) => {
                     assert_eq!(server.as_deref(), Some("https://x.y"));
                     assert!(!re_auth);
                 }
-                _ => panic!("expected Setup"),
+                _ => panic!("expected Login"),
             }
         } else {
             panic!("expected Mcp");
@@ -190,16 +193,16 @@ mod cli_tests {
     }
 
     #[test]
-    fn mcp_setup_reauth_flag() {
-        let cli = parse(&["overslash", "mcp", "setup", "--re-auth"]);
+    fn mcp_login_reauth_flag() {
+        let cli = parse(&["overslash", "mcp", "login", "--re-auth"]);
         if let Command::Mcp {
-            command: Some(McpCommand::Setup { re_auth, .. }),
+            command: Some(McpCommand::Login { re_auth, .. }),
             ..
         } = cli.command
         {
             assert!(re_auth);
         } else {
-            panic!("expected Setup re-auth");
+            panic!("expected Login re-auth");
         }
     }
 

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict LBlcC7r6hFd7ZA9Dj2EatGVrLNbuR3zTMnQmGA1BLmClVUxEAOAhSjUeYvWN2GN
+\restrict EEEwtbH3jEHNh2wex2hhedCamLwnsji5SNS0daaxAmagNdRTJ1ANnkghnuxQ42Y
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -235,6 +235,57 @@ CREATE TABLE public.identity_groups (
 
 
 --
+-- Name: mcp_client_agent_bindings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_client_agent_bindings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    user_identity_id uuid NOT NULL,
+    client_id text NOT NULL,
+    agent_identity_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: mcp_refresh_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_refresh_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id text NOT NULL,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    hash bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    replaced_by_id uuid
+);
+
+
+--
+-- Name: oauth_mcp_clients; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_mcp_clients (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id text NOT NULL,
+    client_name text,
+    redirect_uris text[] NOT NULL,
+    software_id text,
+    software_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone,
+    created_ip text,
+    created_user_agent text,
+    is_revoked boolean DEFAULT false NOT NULL
+);
+
+
+--
 -- Name: oauth_providers; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -265,12 +316,13 @@ CREATE TABLE public.org_idp_configs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,
     provider_key text NOT NULL,
-    encrypted_client_id bytea NOT NULL,
-    encrypted_client_secret bytea NOT NULL,
+    encrypted_client_id bytea,
+    encrypted_client_secret bytea,
     enabled boolean DEFAULT true NOT NULL,
     allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
 );
 
 
@@ -609,6 +661,46 @@ ALTER TABLE ONLY public.identity_groups
 
 
 --
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_identity_id_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_user_identity_id_client_id_key UNIQUE (user_identity_id, client_id);
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_mcp_clients oauth_mcp_clients_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_mcp_clients
+    ADD CONSTRAINT oauth_mcp_clients_client_id_key UNIQUE (client_id);
+
+
+--
+-- Name: oauth_mcp_clients oauth_mcp_clients_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_mcp_clients
+    ADD CONSTRAINT oauth_mcp_clients_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: oauth_providers oauth_providers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -911,6 +1003,48 @@ CREATE INDEX idx_identity_groups_group ON public.identity_groups USING btree (gr
 --
 
 CREATE INDEX idx_identity_groups_identity ON public.identity_groups USING btree (identity_id);
+
+
+--
+-- Name: idx_mcp_client_agent_bindings_agent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_client_agent_bindings_agent ON public.mcp_client_agent_bindings USING btree (agent_identity_id);
+
+
+--
+-- Name: idx_mcp_client_agent_bindings_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_client_agent_bindings_user ON public.mcp_client_agent_bindings USING btree (user_identity_id);
+
+
+--
+-- Name: idx_mcp_refresh_tokens_active_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_refresh_tokens_active_identity ON public.mcp_refresh_tokens USING btree (identity_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: idx_mcp_refresh_tokens_client; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_refresh_tokens_client ON public.mcp_refresh_tokens USING btree (client_id);
+
+
+--
+-- Name: idx_mcp_refresh_tokens_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_mcp_refresh_tokens_hash ON public.mcp_refresh_tokens USING btree (hash);
+
+
+--
+-- Name: idx_oauth_mcp_clients_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_mcp_clients_active ON public.oauth_mcp_clients USING btree (created_at DESC) WHERE (is_revoked = false);
 
 
 --
@@ -1284,6 +1418,70 @@ ALTER TABLE ONLY public.identity_groups
 
 
 --
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_agent_identity_id_fkey FOREIGN KEY (agent_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_mcp_clients(client_id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_user_identity_id_fkey FOREIGN KEY (user_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_mcp_clients(client_id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_replaced_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_replaced_by_id_fkey FOREIGN KEY (replaced_by_id) REFERENCES public.mcp_refresh_tokens(id);
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1487,5 +1685,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict LBlcC7r6hFd7ZA9Dj2EatGVrLNbuR3zTMnQmGA1BLmClVUxEAOAhSjUeYvWN2GN
+\unrestrict EEEwtbH3jEHNh2wex2hhedCamLwnsji5SNS0daaxAmagNdRTJ1ANnkghnuxQ42Y
 

@@ -1372,3 +1372,53 @@ Login required. An agent generated a consent URL and sent it to a user. Any auth
 - **Token expired** — "This enrollment request has expired."
 - **Already enrolled** — "This agent has already been enrolled."
 
+### MCP OAuth Consent Page (`/oauth/consent?request_id=...`)
+
+Session required. Reached from `GET /oauth/authorize` on first connection from a new MCP client (e.g. Claude Code hitting `POST /mcp` without a token). This is where the user enrolls the agent the MCP client will act as.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Overs/ash                                          │
+│                                                     │
+│  Authorize MCP client                               │
+│  Signed in as alice@acme.com                        │
+│                                                     │
+│  ┌───────────────────────────────────────────────┐  │
+│  │  Claude Code is requesting access on your     │  │
+│  │  behalf.                                      │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  Overslash connects this MCP client through a       │
+│  scoped agent identity owned by your user — not     │
+│  your user directly. The client's actions are       │
+│  auditable separately, approvals route correctly,   │
+│  and you can revoke the agent without touching      │
+│  your own account.                                  │
+│                                                     │
+│  ┌─ Create a new agent ─────────────────────────┐   │
+│  │  ● Create a new agent named                  │   │
+│  │    [Claude Code                         ]    │   │
+│  └──────────────────────────────────────────────┘   │
+│                                                     │
+│  ┌─ Use an existing agent ──────────────────────┐   │
+│  │  ○ Select one you already own                │   │
+│  │    ┌──────────────────────────────────┐      │   │
+│  │    │ research-bot                   ▾ │      │   │
+│  │    └──────────────────────────────────┘      │   │
+│  └──────────────────────────────────────────────┘   │
+│                                                     │
+│  [ Authorize ]                                      │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Signed in as …** — the human user's email from the active dashboard session. If the session expired between `/oauth/authorize` and landing on this page, show a short error page pointing the user back to their MCP client to restart.
+- **Client card** — shows the DCR-registered `client_name` from `oauth_mcp_clients`. Falls back to "(unnamed client)" if the MCP client didn't advertise one.
+- **Explainer paragraph** — load-bearing copy. This is what makes Overslash different from a plain OAuth app: users are not granting the client *their own* rights, they're creating a scoped agent. The sentence stays visible; do not collapse behind a "learn more" link.
+- **Create new agent** — default mode. Suggested name is `client_name` (falling back to "MCP Client"). Editable text input, max 120 chars. No trimming of empty → server replaces blank with a safe default.
+- **Use existing agent** — `<select>` populated from the user's un-archived `kind = agent` identities (children via `owner_id`). When the user has no agents yet, the whole fieldset is disabled and the radio isn't selectable.
+- **Authorize button** — `POST /oauth/consent/finish` with `request_id`, `mode` (`new` | `existing`), and either `name` or `agent_id`. On success, 303 → the MCP client's `redirect_uri?code=…&state=…`.
+- **Errors** — rendered as a minimal server-side error page. Cases: session expired, `request_id` expired or unknown, session user ≠ authorize user, agent ownership mismatch. No dashboard chrome — this is a standalone auth surface.
+- **Repeat visits are automatic** — once the binding is stored, subsequent `/oauth/authorize` calls for the same `(user, client_id)` skip this page entirely. There's no separate "I want to re-pick the agent" UI here (v1); to change the binding, use the dashboard MCP Clients admin (follow-up) or delete the binding row.
+
+This page is intentionally hosted by the API server (not SvelteKit), so the Authorization Server remains self-contained in modes where the dashboard isn't served (`overslash serve` cloud mode). Markup lives in `crates/overslash-api/src/routes/oauth_consent.html` and is rendered via simple `{{placeholder}}` substitution — no template engine.
+

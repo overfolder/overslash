@@ -75,7 +75,7 @@ impl FromRequestParts<AppState> for AuthContext {
         if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
-            if let Ok(claims) = jwt::verify(&signing_key, &token) {
+            if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
                 return Ok(AuthContext {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
@@ -94,7 +94,41 @@ impl FromRequestParts<AppState> for AuthContext {
             .strip_prefix("Bearer ")
             .ok_or_else(|| AppError::Unauthorized("invalid authorization format".into()))?;
 
+        // MCP access token: JWT with aud=mcp, signed with the same signing_key.
+        // Checked before the osk_ prefix so MCP clients don't need to rename
+        // their tokens and agent keys keep their existing shape.
+        //
+        // MCP tokens MUST resolve to an agent identity. Tokens whose `sub`
+        // points at a user-kind identity are rejected even though the JWT
+        // itself is valid — this enforces the invariant "MCP OAuth enrolls
+        // an agent" at the authenticator, so a legacy pre-enrollment token
+        // can't slip through to business logic.
         if !raw_key.starts_with("osk_") {
+            let signing_key = hex::decode(&state.config.signing_key)
+                .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+            if let Ok(claims) = jwt::verify(&signing_key, raw_key, jwt::AUD_MCP) {
+                let identity =
+                    overslash_db::repos::identity::get_by_id(&state.db, claims.org, claims.sub)
+                        .await
+                        .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+                let identity = identity.ok_or_else(|| {
+                    AppError::Unauthorized("token identity no longer exists".into())
+                })?;
+                if identity.kind == "user" {
+                    return Err(AppError::Unauthorized(
+                        "MCP tokens must be bound to an agent identity; re-authenticate to enroll"
+                            .into(),
+                    ));
+                }
+                if identity.archived_at.is_some() {
+                    return Err(AppError::Unauthorized("agent identity archived".into()));
+                }
+                return Ok(AuthContext {
+                    org_id: claims.org,
+                    identity_id: Some(claims.sub),
+                    key_id: None,
+                });
+            }
             return Err(AppError::Unauthorized("invalid key format".into()));
         }
 
@@ -225,7 +259,7 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
         if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
-            if let Ok(claims) = jwt::verify(&signing_key, &token) {
+            if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
                 return Ok(UserOrKeyAuth {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
@@ -263,7 +297,7 @@ impl FromRequestParts<AppState> for SessionAuth {
             .ok_or_else(|| AppError::Unauthorized("session cookie required".into()))?;
         let signing_key = hex::decode(&state.config.signing_key)
             .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
-        let claims = jwt::verify(&signing_key, &token)
+        let claims = jwt::verify(&signing_key, &token, jwt::AUD_SESSION)
             .map_err(|_| AppError::Unauthorized("invalid session".into()))?;
         Ok(SessionAuth {
             org_id: claims.org,

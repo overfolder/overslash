@@ -39,6 +39,17 @@ export interface OAuthCredential {
   client_id_preview: string;
 }
 
+export interface McpClient {
+  client_id: string;
+  client_name: string | null;
+  software_id: string | null;
+  software_version: string | null;
+  redirect_uris: string[];
+  created_at: string;
+  last_seen_at: string | null;
+  is_revoked: boolean;
+}
+
 export interface Webhook {
   id: string;
   url: string;

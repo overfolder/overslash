@@ -1,17 +1,12 @@
-use reqwest::{Client, Method, StatusCode};
-use serde::Serialize;
-use serde_json::Value;
+use reqwest::{Client, StatusCode};
+use serde::Deserialize;
 
-use crate::config::McpConfig;
-
-/// Thin REST client that holds both an agent key and a user token and
-/// dispatches requests with the appropriate credential.
+/// HTTP client for the MCP shim. Holds a single bearer token and talks to
+/// `POST /mcp` for JSON-RPC frames and `POST /oauth/token` for refresh.
 #[derive(Clone)]
 pub struct OverslashClient {
     http: Client,
     base_url: String,
-    agent_key: String,
-    user_token: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -20,74 +15,71 @@ pub enum ClientError {
     Http(#[from] reqwest::Error),
     #[error("API returned {status}: {body}")]
     Api { status: StatusCode, body: String },
-    #[error("URL parse error: {0}")]
-    Url(#[from] url::ParseError),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Cred {
-    Agent,
-    User,
+#[derive(Debug, Deserialize)]
+pub struct TokenPair {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_in: Option<i64>,
 }
 
 impl OverslashClient {
-    pub fn new(cfg: &McpConfig) -> anyhow::Result<Self> {
+    pub fn new(base_url: &str) -> anyhow::Result<Self> {
         let http = Client::builder()
             .user_agent(concat!("overslash-mcp/", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self {
             http,
-            base_url: cfg.server_url.trim_end_matches('/').to_string(),
-            agent_key: cfg.agent_key.clone(),
-            user_token: cfg.user_token.clone(),
+            base_url: base_url.trim_end_matches('/').to_string(),
         })
     }
 
-    fn token(&self, cred: Cred) -> &str {
-        match cred {
-            Cred::Agent => &self.agent_key,
-            Cred::User => &self.user_token,
-        }
+    /// Forward a JSON-RPC frame to `POST {base}/mcp`. The body is the raw
+    /// frame bytes (so we don't re-serialize and potentially re-order
+    /// fields). Returns the HTTP status and response body.
+    pub async fn mcp_call(
+        &self,
+        token: &str,
+        body: &[u8],
+    ) -> Result<(StatusCode, Vec<u8>), ClientError> {
+        let resp = self
+            .http
+            .post(format!("{}/mcp", self.base_url))
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_vec())
+            .send()
+            .await?;
+        let status = resp.status();
+        let bytes = resp.bytes().await?.to_vec();
+        Ok((status, bytes))
     }
 
-    pub async fn request<B: Serialize>(
-        &self,
-        cred: Cred,
-        method: Method,
-        path: &str,
-        body: Option<&B>,
-    ) -> Result<Value, ClientError> {
-        let url = format!("{}{}", self.base_url, path);
-        let mut req = self
+    /// Exchange a refresh token for a fresh access + refresh pair via
+    /// `POST {base}/oauth/token`. Per RFC 6749 the body is
+    /// form-url-encoded, and per OAuth 2.1 BCP each refresh is single-use
+    /// so the returned refresh_token must replace the old one.
+    pub async fn oauth_refresh(&self, refresh_token: &str) -> Result<TokenPair, ClientError> {
+        let resp = self
             .http
-            .request(method, &url)
-            .bearer_auth(self.token(cred));
-        if let Some(b) = body {
-            req = req.json(b);
-        }
-        let resp = req.send().await?;
+            .post(format!("{}/oauth/token", self.base_url))
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+            ])
+            .send()
+            .await?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
             return Err(ClientError::Api { status, body: text });
         }
-        if text.is_empty() {
-            return Ok(Value::Null);
-        }
-        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
-    }
-
-    pub async fn get(&self, cred: Cred, path: &str) -> Result<Value, ClientError> {
-        self.request::<()>(cred, Method::GET, path, None).await
-    }
-
-    pub async fn post<B: Serialize>(
-        &self,
-        cred: Cred,
-        path: &str,
-        body: &B,
-    ) -> Result<Value, ClientError> {
-        self.request(cred, Method::POST, path, Some(body)).await
+        Ok(serde_json::from_str::<TokenPair>(&text)?)
     }
 }
 
@@ -95,57 +87,34 @@ impl OverslashClient {
 mod tests {
     use super::*;
 
-    fn cfg(agent: &str, user: &str) -> McpConfig {
-        McpConfig {
-            server_url: "https://api.example.com/".into(),
-            agent_key: agent.into(),
-            user_token: user.into(),
-            user_refresh_token: None,
-        }
-    }
-
     #[test]
-    fn new_trims_trailing_slash_from_base_url() {
-        let c = OverslashClient::new(&cfg("ak", "ut")).unwrap();
+    fn new_trims_trailing_slash() {
+        let c = OverslashClient::new("https://api.example.com/").unwrap();
         assert_eq!(c.base_url, "https://api.example.com");
     }
 
     #[test]
-    fn token_routes_by_credential() {
-        let c = OverslashClient::new(&cfg("agent_k", "user_t")).unwrap();
-        assert_eq!(c.token(Cred::Agent), "agent_k");
-        assert_eq!(c.token(Cred::User), "user_t");
+    fn token_pair_deserializes_minimal() {
+        let v: TokenPair = serde_json::from_str(r#"{"access_token":"a"}"#).unwrap();
+        assert_eq!(v.access_token, "a");
+        assert!(v.refresh_token.is_none());
     }
 
     #[test]
-    fn cred_is_copy_and_comparable() {
-        let a = Cred::Agent;
-        let b = a;
-        assert_eq!(a, b);
-        assert_ne!(Cred::Agent, Cred::User);
+    fn token_pair_deserializes_full() {
+        let v: TokenPair = serde_json::from_str(
+            r#"{"access_token":"a","refresh_token":"r","expires_in":3600,"token_type":"Bearer"}"#,
+        )
+        .unwrap();
+        assert_eq!(v.access_token, "a");
+        assert_eq!(v.refresh_token.as_deref(), Some("r"));
+        assert_eq!(v.expires_in, Some(3600));
     }
 
     #[tokio::test]
-    async fn request_returns_http_error_for_unreachable_host() {
-        let c = OverslashClient::new(&McpConfig {
-            server_url: "http://127.0.0.1:1".into(),
-            agent_key: "k".into(),
-            user_token: "u".into(),
-            user_refresh_token: None,
-        })
-        .unwrap();
-        let err = c.get(Cred::Agent, "/anything").await.unwrap_err();
+    async fn mcp_call_returns_http_error_for_unreachable_host() {
+        let c = OverslashClient::new("http://127.0.0.1:1").unwrap();
+        let err = c.mcp_call("t", b"{}").await.unwrap_err();
         assert!(matches!(err, ClientError::Http(_)), "{err:?}");
-    }
-
-    #[test]
-    fn client_error_display_has_status_and_body() {
-        let e = ClientError::Api {
-            status: reqwest::StatusCode::BAD_REQUEST,
-            body: "oops".into(),
-        };
-        let s = format!("{e}");
-        assert!(s.contains("400"));
-        assert!(s.contains("oops"));
     }
 }

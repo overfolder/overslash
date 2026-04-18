@@ -2,6 +2,7 @@
 	import { ApiError, session } from '$lib/session';
 	import type {
 		IdpConfig,
+		McpClient,
 		OAuthCredential,
 		OrgInfo,
 		SecretRequestSettings,
@@ -17,6 +18,7 @@
 	let org = $state<OrgInfo | null>(null);
 	let idpConfigs = $state<IdpConfig[]>([]);
 	let oauthCredentials = $state<OAuthCredential[]>([]);
+	let mcpClients = $state<McpClient[]>([]);
 	let webhooks = $state<Webhook[]>([]);
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
@@ -25,6 +27,7 @@
 		org = data.org;
 		idpConfigs = data.idpConfigs;
 		oauthCredentials = data.oauthCredentials;
+		mcpClients = data.mcpClients;
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
 	});
@@ -138,6 +141,26 @@
 	}
 	async function refetchWebhooks() {
 		webhooks = await session.get<Webhook[]>('/v1/webhooks');
+	}
+	async function refetchMcpClients() {
+		const resp = await session.get<{ clients: McpClient[] }>('/v1/oauth/mcp-clients');
+		mcpClients = resp.clients;
+	}
+
+	function revokeMcpClient(c: McpClient) {
+		openConfirm(
+			'Revoke MCP client?',
+			`"${c.client_name ?? c.client_id}" will stop being able to complete OAuth on this deployment. Any outstanding refresh tokens bound to it will be revoked. This cannot be undone.`,
+			'Revoke',
+			async () => {
+				try {
+					await session.post(`/v1/oauth/mcp-clients/${encodeURIComponent(c.client_id)}/revoke`, {});
+					await refetchMcpClients();
+				} catch (e) {
+					console.error('revoke mcp client failed', e);
+				}
+			}
+		);
 	}
 
 	async function submitIdp(e: Event) {
@@ -689,6 +712,65 @@
 						</button>
 					</div>
 				</form>
+			{/if}
+		</section>
+
+		<!-- MCP Clients -->
+		<section class="card">
+			<div class="card-head">
+				<h2>MCP Clients</h2>
+			</div>
+			<p class="muted small">
+				Editors and agents that have authenticated to this deployment via
+				<code>overslash mcp login</code>. Clients self-register via OAuth 2.1 Dynamic
+				Client Registration — revoke any you no longer want to accept.
+			</p>
+
+			{#if mcpClients.length === 0}
+				<p class="muted">No MCP clients have registered yet.</p>
+			{:else}
+				<table>
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Client ID</th>
+							<th>Registered</th>
+							<th>Last seen</th>
+							<th>Status</th>
+							<th class="actions-col">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each mcpClients as c (c.client_id)}
+							<tr>
+								<td>{c.client_name ?? '—'}</td>
+								<td class="mono small">{c.client_id}</td>
+								<td class="small">{fmtDate(c.created_at)}</td>
+								<td class="small">{fmtDate(c.last_seen_at)}</td>
+								<td>
+									{#if c.is_revoked}
+										<span class="badge badge-off">revoked</span>
+									{:else}
+										<span class="badge badge-on">active</span>
+									{/if}
+								</td>
+								<td class="actions-col">
+									{#if !c.is_revoked}
+										<button
+											type="button"
+											class="btn-link danger"
+											onclick={() => revokeMcpClient(c)}
+										>
+											Revoke
+										</button>
+									{:else}
+										<span class="muted small">—</span>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			{/if}
 		</section>
 

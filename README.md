@@ -98,6 +98,66 @@ auto-detects the worktree and spins up an isolated Postgres on a unique port.
 No manual config required. Tear down a worktree's containers with
 `make worktree-clean`.
 
+## Connect an MCP client
+
+Overslash ships an MCP Authorization Server at `POST /mcp` and `/oauth/*`. Any
+MCP client that speaks the Streamable-HTTP transport — Claude Code, Cursor,
+Windsurf, etc. — connects directly. On first use, the client opens a browser
+for the OAuth flow; you sign in, pick or name an **agent** for that client to
+act as, and it's done. The client is now bound to a scoped agent identity owned
+by your user, not to your user directly — so its actions are auditable
+separately, Layer 2 approvals route correctly, and you can revoke the agent
+without touching your own account.
+
+### Claude Code (one command)
+
+```bash
+claude mcp add --transport http overslash https://<your-overslash>/mcp
+```
+
+Run any Overslash tool (`overslash_search`, `overslash_auth whoami`, …) and
+Claude Code handles the OAuth dance. For local dev, the URL is
+`http://localhost:3000/mcp`.
+
+### Manual `.mcp.json`
+
+Works with Claude Code and any other editor that consumes the MCP standard
+config format (Cursor, Windsurf, etc. with their equivalent file names):
+
+```json
+{
+  "mcpServers": {
+    "overslash": {
+      "type": "http",
+      "url": "https://<your-overslash>/mcp"
+    }
+  }
+}
+```
+
+### `npx` (if your client supports it)
+
+Some MCP clients accept an `npx`-style launcher. The ecosystem's canonical
+launcher for adding an HTTP MCP server is still settling — check your client's
+docs for the current incantation. If yours doesn't advertise one, stick to the
+two options above; no Overslash-specific `npx` package is published.
+
+### Stdio fallback
+
+For editors that don't speak Streamable-HTTP MCP yet, the `overslash mcp`
+subcommand is a 1:1 stdio↔HTTP pipe. Run `overslash mcp login` once to mint a
+token, then point the editor's MCP config at the `overslash` binary. Details
+in [`docs/design/mcp-oauth-transport.md`](docs/design/mcp-oauth-transport.md).
+
+### What the consent screen is asking
+
+When the browser opens during first-time setup, Overslash asks whether to
+**create a new agent** for this client or **reuse an existing one**. That
+agent — not your user — is what the MCP client authenticates as on every
+subsequent call. You can rename, revoke, or scope it from the dashboard at
+any time, and repeat logins from the same client skip the consent screen by
+reusing the bound agent.
+
 ## Repository layout
 
 ```

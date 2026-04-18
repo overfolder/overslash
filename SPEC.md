@@ -103,7 +103,9 @@ Overslash exposes three peer surfaces over the same backend. The REST API is can
 | **CLI (`overslash`)** | Developers, shell-capable agents, ops/admin scripting | Local process invocation, REST under the hood | One identity at a time, from `~/.config/overslash/` or env | Single static binary |
 | **MCP server** | LLM agents inside MCP-aware editors (Claude Code, Cursor, Windsurf, ...) | **Primary**: MCP Streamable HTTP at `POST /mcp` (same Axum process as the REST API) with OAuth 2.1 (browser flow). **Compat**: stdio shim `overslash mcp` for editors whose MCP transport is stdio-only — proxies frames to `POST /mcp`. | None — the MCP client (or stdio shim) holds them. Default: an OAuth-issued user access token. Advanced: a static `osk_…` agent API key. | The HTTP transport ships in `overslash serve` / `overslash web`. The optional stdio shim is a subcommand of the same binary (`overslash mcp`). |
 
-The MCP server reuses Overslash's existing IdP login flow as an OAuth 2.1 Authorization Server. A standards-compliant MCP client (Claude Code, Cursor, Windsurf, …) discovers the AS via `WWW-Authenticate` on a 401 from `/mcp`, fetches `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`, dynamically registers itself ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)), opens a browser for the user to consent, and uses the resulting access token on every subsequent JSON-RPC call. Editors that only speak stdio MCP point at `overslash mcp` (the compat shim), which holds a single token in `~/.config/overslash/mcp.json` and proxies every JSON-RPC frame to `POST /mcp` over Bearer. The shim is a pipe — no business logic, no dual credentials. The user is established as a **user identity** for that session (Layer 2 skipped — see §5 *User Identities Skip Layer 2*). For agent-mode MCP — where Layer 2 approvals are desired — the MCP client (or shim) is configured with a static `osk_…` agent key directly, bypassing OAuth. Approvals in that mode surface via the standard webhook / SSE / approval-URL path (§10 *Async Event Delivery*). Full design in [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md). White-label platforms (e.g., Overfolder) bypass the MCP server entirely and call the REST API directly with their own UX.
+The MCP server reuses Overslash's existing IdP login flow as an OAuth 2.1 Authorization Server. A standards-compliant MCP client (Claude Code, Cursor, Windsurf, …) discovers the AS via `WWW-Authenticate` on a 401 from `/mcp`, fetches `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`, dynamically registers itself ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)), opens a browser for the consent step, and uses the resulting access token on every subsequent JSON-RPC call. Editors that only speak stdio MCP point at `overslash mcp` (the compat shim), which holds a single token in `~/.config/overslash/mcp.json` and proxies every JSON-RPC frame to `POST /mcp` over Bearer. The shim is a pipe — no business logic, no dual credentials.
+
+The session established by OAuth is an **agent identity** owned by the signed-in user, not the user itself: `/oauth/authorize` pauses at an in-app **consent step** where the user creates or picks the agent the MCP client will act as, and the `(user, client_id) → agent` binding is stored so repeat logins skip the prompt. Layer 2 applies (see §4 *MCP OAuth Enrollment*). Static `osk_…` agent keys remain available for non-interactive callers (CI, headless deployments). Approvals surface via the standard webhook / SSE / approval-URL path (§10 *Async Event Delivery*). Full design in [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md). White-label platforms (e.g., Overfolder) bypass the MCP server entirely and call the REST API directly with their own UX.
 
 ### Distribution and Binary Layout
 
@@ -117,7 +119,22 @@ Overslash ships as a single executable, `overslash`, with subcommands:
 | `overslash mcp` | Stdio-to-HTTP shim for MCP clients that don't yet speak Streamable HTTP. Reads `~/.config/overslash/mcp.json` (server URL + bearer token) and proxies every JSON-RPC frame to `POST <server>/mcp`. No business logic — the actual MCP server lives in `overslash serve` / `overslash web`. See §10 for tool details. |
 | `overslash mcp login` | Mint a token for the stdio shim by running the standard OAuth Authorization Code + PKCE flow against the configured server (opens a browser, captures the callback on `127.0.0.1`, writes `~/.config/overslash/mcp.json`). Replaces the old paste-tokens helper. |
 
-MCP-client configuration for editors that drive MCP via stdio is identical in shape to other stdio-based MCP servers:
+MCP clients that speak Streamable HTTP (Claude Code, Cursor, Windsurf, …) point at the server URL directly and handle OAuth themselves via the AS endpoints:
+
+```json
+{
+  "mcpServers": {
+    "overslash": {
+      "type": "http",
+      "url": "https://<your-overslash>/mcp"
+    }
+  }
+}
+```
+
+On first connection the client hits `POST /mcp`, receives `401 + WWW-Authenticate`, follows the AS metadata, dynamically registers, opens a browser for the consent step, and proceeds — no pre-shared secrets or prior CLI step required. See [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md).
+
+Editors that only speak stdio MCP use the `overslash mcp` compat shim instead:
 
 ```json
 {
@@ -130,7 +147,7 @@ MCP-client configuration for editors that drive MCP via stdio is identical in sh
 }
 ```
 
-Editors that already speak MCP Streamable HTTP can point at the server URL directly and skip the shim — they handle OAuth themselves via the AS endpoints (see [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md)).
+The stdio shim requires `overslash mcp login` once (runs the same OAuth flow interactively) and then proxies every JSON-RPC frame to `POST /mcp`. Both shapes terminate at the same handler and produce the same `(user → agent) → MCP token` binding server-side.
 
 `serve` and `web` share the same `create_app` router and config — `web` only adds a static-file fallback and same-origin defaults. The `mcp` shim carries no Postgres or Axum dependency; it is a tiny stdio↔HTTP pipe.
 
@@ -194,6 +211,8 @@ The consent URL is scoped to the org. Any authenticated user in the org with age
 **Picking up the key.** The agent retrieves its permanent API key from `GET /v1/enrollment/{token}` (the same single-use token from the original request). Until consent, this returns `{ status: "awaiting_consent" }`. After consent it returns `{ status: "ready", api_key: "..." }` exactly once and invalidates the token. The approved-but-unclaimed state has its own **15-minute TTL** (separate from the 15-minute pre-approval TTL); if unclaimed, the enrolled identity is rolled back. Agents can use polling, SSE (§10 *Async event delivery*), or webhooks for the transition.
 
 Note: `inherit_permissions` is not offered during agent-initiated enrollment — the user configures this after enrollment if desired.
+
+**MCP OAuth enrollment.** A third enrollment path, used when an MCP client (Claude Code, Cursor, Windsurf, …) connects over OAuth 2.1 for the first time. After the user signs in at `/oauth/authorize`, the server pauses the authorize request and redirects to `/oauth/consent`, a minimal form where the user either creates a fresh agent (suggested name = the DCR-registered `client_name`) or picks an existing agent they own. On submission, the server persists a `(user_identity_id, client_id) → agent_identity_id` binding and completes the OAuth redirect back to the MCP client with an auth code bound to the agent. Subsequent authorizations from the same `(user, client_id)` reuse the binding and skip the prompt. The issued access token's `sub` is the agent; `/mcp` refuses any token whose `sub` points at a user-kind identity so a pre-binding or CSRF-stolen token can't slip through. Unlike agent-initiated enrollment, there is no separate "consent URL" sent out-of-band — the consent screen is hosted inline in the OAuth flow. `inherit_permissions = true` is the default for newly-created MCP agents so a freshly-connected MCP client works immediately; users tighten this from the dashboard if needed.
 
 ### Identity Reconfiguration
 
