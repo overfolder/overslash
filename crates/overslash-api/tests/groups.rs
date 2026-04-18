@@ -483,11 +483,7 @@ async fn user_level_services_always_visible_despite_restrictive_group() {
     client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "key": "my-calendar",
-            "display_name": "My Calendar",
-            "hosts": ["calendar.example.com"],
-        }))
+        .json(&json!({ "openapi": common::minimal_openapi("my-calendar") }))
         .send()
         .await
         .unwrap();
@@ -667,11 +663,7 @@ async fn admin_agent_cannot_delete_owner_user_service_by_name() {
     client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "key": "my-svc",
-            "display_name": "My Service",
-            "hosts": ["svc.example.com"],
-        }))
+        .json(&json!({ "openapi": common::minimal_openapi("my-svc") }))
         .send()
         .await
         .unwrap();

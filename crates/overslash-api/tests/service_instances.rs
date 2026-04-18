@@ -106,20 +106,10 @@ async fn test_create_and_get_org_template() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "my-internal-api",
-            "display_name": "My Internal API",
-            "description": "Internal API for testing",
-            "category": "dev-tools",
-            "hosts": ["api.internal.test"],
-            "auth": [{"type": "api_key", "default_secret_name": "internal_key", "injection": {"as": "header", "header_name": "X-API-Key"}}],
-            "actions": {
-                "list_items": {
-                    "method": "GET",
-                    "path": "/items",
-                    "description": "List all items",
-                    "risk": "read"
-                }
-            },
+            "openapi": common::render_openapi(
+                include_str!("fixtures/openapi/minimal.yaml.tmpl"),
+                &[("key", "my-internal-api"), ("display_name", "My Internal API")],
+            ),
             "user_level": false
         }))
         .send()
@@ -179,9 +169,7 @@ async fn test_create_user_template() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "my-personal-api",
-            "display_name": "Personal API",
-            "hosts": ["personal.api.test"],
+            "openapi": common::minimal_openapi("my-personal-api"),
             "user_level": true
         }))
         .send()
@@ -203,10 +191,7 @@ async fn test_search_templates() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "searchable-api",
-            "display_name": "Searchable API",
-            "description": "An API that can be found via search",
-            "hosts": ["search.test"],
+            "openapi": common::minimal_openapi("searchable-api"),
             "user_level": false
         }))
         .send()
@@ -236,9 +221,7 @@ async fn test_delete_template() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "deletable-api",
-            "display_name": "Deletable API",
-            "hosts": ["delete.test"],
+            "openapi": common::minimal_openapi("deletable-api"),
             "user_level": false
         }))
         .send()
@@ -279,10 +262,8 @@ async fn test_create_service_instance() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "test-svc",
-            "display_name": "Test Service",
-            "hosts": ["test.example.com"],
-            "user_level": false
+            "openapi": common::minimal_openapi("test-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -317,10 +298,8 @@ async fn test_list_service_instances() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "list-svc",
-            "display_name": "Listable Service",
-            "hosts": ["list.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("list-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -357,10 +336,8 @@ async fn test_service_instance_lifecycle() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "lifecycle-svc",
-            "display_name": "Lifecycle Service",
-            "hosts": ["lifecycle.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("lifecycle-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -445,10 +422,8 @@ async fn test_service_name_defaults_to_template_key() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "auto-name-svc",
-            "display_name": "Auto Named",
-            "hosts": ["autoname.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("auto-name-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -477,10 +452,8 @@ async fn test_duplicate_instance_name_conflict() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "dup-svc",
-            "display_name": "Dup Service",
-            "hosts": ["dup.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("dup-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -514,24 +487,8 @@ async fn test_template_actions_via_service() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "actions-svc",
-            "display_name": "Actions Service",
-            "hosts": ["actions.test"],
-            "actions": {
-                "get_items": {
-                    "method": "GET",
-                    "path": "/items",
-                    "description": "List items",
-                    "risk": "read"
-                },
-                "create_item": {
-                    "method": "POST",
-                    "path": "/items",
-                    "description": "Create item",
-                    "risk": "write"
-                }
-            },
-            "user_level": false
+            "openapi": include_str!("fixtures/openapi/actions_svc.yaml"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -569,13 +526,8 @@ async fn test_template_actions_listing() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "tmpl-actions",
-            "display_name": "Template Actions",
-            "hosts": ["tmpl.test"],
-            "actions": {
-                "list": { "method": "GET", "path": "/", "description": "List all", "risk": "read" }
-            },
-            "user_level": false
+            "openapi": include_str!("fixtures/openapi/tmpl_actions.yaml"),
+            "user_level": false,
         }))
         .send()
         .await
