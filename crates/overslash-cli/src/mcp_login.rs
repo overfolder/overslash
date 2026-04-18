@@ -34,15 +34,35 @@ pub async fn run(
         .await
         .with_context(|| format!("discovering AS metadata at {server_url}"))?;
 
-    let mut client_id = if re_auth {
-        None
+    let (mut client_id, stored_redirect_uri) = if re_auth {
+        (None, None)
     } else {
-        existing.as_ref().and_then(|c| c.client_id.clone())
+        (
+            existing.as_ref().and_then(|c| c.client_id.clone()),
+            existing.as_ref().and_then(|c| c.redirect_uri.clone()),
+        )
     };
 
-    let listener = TcpListener::bind("127.0.0.1:0")
+    // Reuse the registered port on subsequent logins: the AS rejects
+    // authorize when redirect_uri doesn't byte-match the one registered
+    // via DCR, so binding to :0 every run would break any login after the
+    // first unless the user also passed --re-auth.
+    let bind_port = stored_redirect_uri
+        .as_deref()
+        .and_then(port_from_redirect_uri)
+        .filter(|_| client_id.is_some())
+        .unwrap_or(0);
+    let listener = TcpListener::bind(("127.0.0.1", bind_port))
         .await
-        .context("bind 127.0.0.1:0 for OAuth callback")?;
+        .with_context(|| {
+            if bind_port == 0 {
+                "bind 127.0.0.1:0 for OAuth callback".to_string()
+            } else {
+                format!(
+                    "bind 127.0.0.1:{bind_port} for OAuth callback (previously registered with the AS — re-run with --re-auth if this port is in use)"
+                )
+            }
+        })?;
     let bound_addr = listener.local_addr().context("local_addr")?;
     let redirect_uri = format!("http://{bound_addr}/callback");
 
@@ -88,6 +108,7 @@ pub async fn run(
         token: token_pair.access_token,
         refresh_token: token_pair.refresh_token,
         client_id: Some(client_id),
+        redirect_uri: Some(redirect_uri),
     };
     cfg.save(&config_path)
         .with_context(|| format!("persist MCP config to {}", config_path.display()))?;
@@ -125,6 +146,15 @@ fn resolve_server_url(
 
 fn normalize_url(s: &str) -> String {
     s.trim_end_matches('/').to_string()
+}
+
+fn port_from_redirect_uri(uri: &str) -> Option<u16> {
+    let rest = uri
+        .strip_prefix("http://")
+        .or_else(|| uri.strip_prefix("https://"))?;
+    let host_port = rest.split('/').next()?;
+    let (_, port) = host_port.rsplit_once(':')?;
+    port.parse().ok()
 }
 
 fn print_prompt(msg: &str) {
@@ -363,6 +393,20 @@ mod tests {
     fn normalize_url_strips_trailing_slash() {
         assert_eq!(normalize_url("http://x/"), "http://x");
         assert_eq!(normalize_url("http://x"), "http://x");
+    }
+
+    #[test]
+    fn port_from_redirect_uri_parses_loopback() {
+        assert_eq!(
+            port_from_redirect_uri("http://127.0.0.1:34211/callback"),
+            Some(34211)
+        );
+        assert_eq!(
+            port_from_redirect_uri("http://[::1]:8080/callback"),
+            Some(8080)
+        );
+        assert_eq!(port_from_redirect_uri("http://127.0.0.1/callback"), None);
+        assert_eq!(port_from_redirect_uri("not-a-url"), None);
     }
 
     #[test]

@@ -21,6 +21,12 @@ pub struct McpConfig {
     /// logins reuse the registration instead of creating a duplicate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// Loopback redirect URI registered with `client_id`. Reused on
+    /// subsequent logins so the bound port matches what was registered at
+    /// DCR time — otherwise the AS rejects authorize with
+    /// `invalid_redirect_uri`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
 }
 
 impl McpConfig {
@@ -77,6 +83,7 @@ mod tests {
             token: "ovs_access_xyz".into(),
             refresh_token: Some("ovs_refresh_xyz".into()),
             client_id: Some("osc_abc".into()),
+            redirect_uri: Some("http://127.0.0.1:34211/callback".into()),
         };
         cfg.save(&path).unwrap();
         let loaded = McpConfig::load(&path).unwrap();
@@ -84,6 +91,7 @@ mod tests {
         assert_eq!(loaded.token, cfg.token);
         assert_eq!(loaded.refresh_token, cfg.refresh_token);
         assert_eq!(loaded.client_id, cfg.client_id);
+        assert_eq!(loaded.redirect_uri, cfg.redirect_uri);
     }
 
     #[cfg(unix)]
@@ -96,6 +104,7 @@ mod tests {
             token: "t".into(),
             refresh_token: None,
             client_id: None,
+            redirect_uri: None,
         };
         cfg.save(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -110,10 +119,12 @@ mod tests {
             token: "t".into(),
             refresh_token: None,
             client_id: None,
+            redirect_uri: None,
         };
         cfg.save(&path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("refresh_token"), "unexpected: {raw}");
         assert!(!raw.contains("client_id"), "unexpected: {raw}");
+        assert!(!raw.contains("redirect_uri"), "unexpected: {raw}");
     }
 }
