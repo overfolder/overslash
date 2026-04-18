@@ -1,10 +1,10 @@
-key: overslash
-display_name: Overslash Platform
-description: Administrative access to the Overslash platform
-category: platform
-hosts: []
-auth: []
-actions:
+openapi: 3.1.0
+info:
+  title: Overslash Platform
+  description: Administrative access to the Overslash platform
+  key: overslash
+  category: platform
+platform_actions:
   manage_members:
     description: "Manage org member roles and group assignments"
     risk: delete

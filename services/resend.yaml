@@ -1,38 +1,45 @@
-key: resend
-display_name: Resend
-hosts:
-  - api.resend.com
-auth:
-  - type: api_key
-    default_secret_name: resend_key
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  list_domains:
-    method: GET
-    path: /domains
-    description: List verified sending domains
-    risk: read
-  send_email:
-    method: POST
-    path: /emails
-    description: "Send email '{subject}' to {to}"
-    risk: write
-    params:
-      from:
-        type: string
+openapi: 3.1.0
+info:
+  title: Resend
+  key: resend
+servers:
+  - url: https://api.resend.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: resend_key
+paths:
+  /domains:
+    get:
+      operationId: list_domains
+      summary: List verified sending domains
+      risk: read
+  /emails:
+    post:
+      operationId: send_email
+      summary: "Send email '{subject}' to {to}"
+      risk: write
+      requestBody:
         required: true
-        description: Sender email address
-      to:
-        type: string
-        required: true
-        description: Recipient email address
-      subject:
-        type: string
-        required: true
-        description: Email subject line
-      html:
-        type: string
-        description: HTML body content
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to, subject]
+              properties:
+                from:
+                  type: string
+                  description: Sender email address
+                to:
+                  type: string
+                  description: Recipient email address
+                subject:
+                  type: string
+                  description: Email subject line
+                html:
+                  type: string
+                  description: HTML body content

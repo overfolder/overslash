@@ -1,113 +1,138 @@
-key: github
-display_name: GitHub
-hosts:
-  - api.github.com
-auth:
-  - type: oauth
-    provider: github
-    scopes:
-      - repo
-      - read:user
-      - user:email
-    token_injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-  - type: api_key
-    default_secret_name: github_token
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  get_authenticated_user:
-    method: GET
-    path: /user
-    description: Get the authenticated user's profile
-    risk: read
-  list_repos:
-    method: GET
-    path: /user/repos
-    description: "List repositories for the authenticated user[, sorted by {sort}]"
-    risk: read
-    params:
-      sort:
-        type: string
-        description: Sort by created, updated, pushed, full_name
-        enum: [created, updated, pushed, full_name]
-      per_page:
-        type: integer
-        description: Results per page (max 100)
-        default: 30
-  get_repo:
-    method: GET
-    path: /repos/{repo}
-    description: "Get repository {repo}"
-    risk: read
-    scope_param: repo
-    params:
-      repo:
-        type: string
+openapi: 3.1.0
+info:
+  title: GitHub
+  key: github
+servers:
+  - url: https://api.github.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: github
+      flows:
+        authorizationCode:
+          authorizationUrl: https://github.com/login/oauth/authorize
+          tokenUrl: https://github.com/login/oauth/access_token
+          scopes:
+            repo: ""
+            read:user: ""
+            user:email: ""
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: github_token
+paths:
+  /user:
+    get:
+      operationId: get_authenticated_user
+      summary: Get the authenticated user's profile
+      risk: read
+  /user/repos:
+    get:
+      operationId: list_repos
+      summary: "List repositories for the authenticated user[, sorted by {sort}]"
+      risk: read
+      parameters:
+        - name: sort
+          in: query
+          description: Sort by created, updated, pushed, full_name
+          schema:
+            type: string
+            enum: [created, updated, pushed, full_name]
+        - name: per_page
+          in: query
+          description: Results per page (max 100)
+          schema:
+            type: integer
+            default: 30
+  /repos/{repo}:
+    get:
+      operationId: get_repo
+      summary: "Get repository {repo}"
+      risk: read
+      scope_param: repo
+      parameters:
+        - name: repo
+          in: path
+          required: true
+          description: "owner/repo"
+          schema:
+            type: string
+  /repos/{repo}/issues:
+    parameters:
+      - name: repo
+        in: path
         required: true
         description: "owner/repo"
-  list_issues:
-    method: GET
-    path: /repos/{repo}/issues
-    description: "List issues on {repo}[ (state={state})]"
-    risk: read
-    scope_param: repo
-    params:
-      repo:
-        type: string
+        schema:
+          type: string
+    get:
+      operationId: list_issues
+      summary: "List issues on {repo}[ (state={state})]"
+      risk: read
+      scope_param: repo
+      parameters:
+        - name: state
+          in: query
+          description: Filter by state
+          schema:
+            type: string
+            enum: [open, closed, all]
+        - name: per_page
+          in: query
+          description: Results per page (max 100)
+          schema:
+            type: integer
+            default: 30
+    post:
+      operationId: create_issue
+      summary: "Create issue '{title}' on {repo}"
+      risk: write
+      scope_param: repo
+      requestBody:
         required: true
-        description: "owner/repo"
-      state:
-        type: string
-        description: Filter by state
-        enum: [open, closed, all]
-      per_page:
-        type: integer
-        description: Results per page (max 100)
-        default: 30
-  create_pull_request:
-    method: POST
-    path: /repos/{repo}/pulls
-    description: "Create pull request '{title}' on {repo}"
-    risk: write
-    scope_param: repo
-    params:
-      repo:
-        type: string
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                body:
+                  type: string
+  /repos/{repo}/pulls:
+    post:
+      operationId: create_pull_request
+      summary: "Create pull request '{title}' on {repo}"
+      risk: write
+      scope_param: repo
+      parameters:
+        - name: repo
+          in: path
+          required: true
+          description: "owner/repo"
+          schema:
+            type: string
+      requestBody:
         required: true
-        description: "owner/repo"
-      title:
-        type: string
-        required: true
-        description: PR title
-      head:
-        type: string
-        required: true
-        description: Branch to merge from
-      base:
-        type: string
-        required: true
-        description: Branch to merge into
-      body:
-        type: string
-        description: PR description
-  create_issue:
-    method: POST
-    path: /repos/{repo}/issues
-    description: "Create issue '{title}' on {repo}"
-    risk: write
-    scope_param: repo
-    params:
-      repo:
-        type: string
-        required: true
-        description: "owner/repo"
-      title:
-        type: string
-        required: true
-      body:
-        type: string
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, head, base]
+              properties:
+                title:
+                  type: string
+                  description: PR title
+                head:
+                  type: string
+                  description: Branch to merge from
+                base:
+                  type: string
+                  description: Branch to merge into
+                body:
+                  type: string
+                  description: PR description
