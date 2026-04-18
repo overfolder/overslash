@@ -8,11 +8,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_core::openapi;
 use overslash_core::permissions::AccessLevel;
 use overslash_core::template_validation::{
-    ValidationReport, parse_template_parts, validate_template_yaml,
+    ValidationReport, parse_normalize_compile_yaml, validate_template_yaml,
 };
-use overslash_core::types::Risk;
+use overslash_core::types::{Risk, ServiceDefinition};
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateServiceTemplate};
 use overslash_db::repos::{enabled_global_template, org as org_repo};
@@ -72,8 +73,13 @@ struct TemplateDetail {
     description: Option<String>,
     category: Option<String>,
     hosts: Vec<String>,
-    auth: Vec<serde_json::Value>,
-    actions: serde_json::Value,
+    /// Canonical OpenAPI 3.1 YAML source — the editable document. For DB
+    /// templates this is the stored, alias-normalized text. For global
+    /// templates it's the shipped YAML verbatim.
+    openapi: String,
+    /// Compiled actions view for rendering the service detail page without
+    /// re-parsing on the client.
+    actions: Vec<ActionSummary>,
     tier: String,
     /// DB id for org/user templates; None for global.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,7 +104,7 @@ struct AdminTemplateSummary {
     enabled: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub(crate) struct ActionSummary {
     key: String,
     method: String,
@@ -116,18 +122,10 @@ struct SearchQuery {
 
 #[derive(Deserialize)]
 struct CreateTemplateRequest {
-    key: String,
-    display_name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    category: String,
-    #[serde(default)]
-    hosts: Vec<String>,
-    #[serde(default)]
-    auth: serde_json::Value,
-    #[serde(default)]
-    actions: serde_json::Value,
+    /// Raw OpenAPI 3.1 YAML source. Must include `info.key` (or
+    /// `info.x-overslash-key`) as the template key and enough structure to
+    /// compile a service definition.
+    openapi: String,
     /// If true, create as a user-level template (requires identity-bound key).
     #[serde(default)]
     user_level: bool,
@@ -135,12 +133,9 @@ struct CreateTemplateRequest {
 
 #[derive(Deserialize)]
 struct UpdateTemplateRequest {
-    display_name: Option<String>,
-    description: Option<String>,
-    category: Option<String>,
-    hosts: Option<Vec<String>>,
-    auth: Option<serde_json::Value>,
-    actions: Option<serde_json::Value>,
+    /// Replacement OpenAPI 3.1 YAML source. The template `key` must match the
+    /// existing template's key — it cannot be changed via update.
+    openapi: String,
 }
 
 #[derive(Deserialize)]
@@ -172,32 +167,49 @@ fn is_global_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
     }
 }
 
-fn db_template_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> TemplateDetail {
-    TemplateDetail {
+fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
+    let mut out: Vec<ActionSummary> = def
+        .actions
+        .iter()
+        .map(|(k, a)| ActionSummary {
+            key: k.clone(),
+            method: a.method.clone(),
+            path: a.path.clone(),
+            description: a.description.clone(),
+            risk: a.risk,
+        })
+        .collect();
+    out.sort_by(|a, b| a.key.cmp(&b.key));
+    out
+}
+
+fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Result<TemplateDetail> {
+    // Re-compile the stored openapi doc to produce the actions summary for
+    // the dashboard. The stored doc is already normalized on write, so
+    // compile should not surface new issues.
+    let def = compile_row(&t)?;
+    let openapi_yaml = openapi::to_yaml_string(&t.openapi).unwrap_or_default();
+    Ok(TemplateDetail {
         key: t.key,
         display_name: t.display_name,
         description: Some(t.description).filter(|s| !s.is_empty()),
         category: Some(t.category).filter(|s| !s.is_empty()),
         hosts: t.hosts,
-        auth: t.auth.as_array().cloned().unwrap_or_default(),
-        actions: t.actions,
+        openapi: openapi_yaml,
+        actions: actions_from_definition(&def),
         tier: tier.into(),
         id: Some(t.id),
-    }
+    })
 }
 
-fn actions_from_json(actions: &serde_json::Value) -> Vec<ActionSummary> {
-    let map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_value(actions.clone()).unwrap_or_default();
-    map.into_iter()
-        .map(|(k, v)| ActionSummary {
-            key: k,
-            method: v["method"].as_str().unwrap_or("GET").to_string(),
-            path: v["path"].as_str().unwrap_or("").to_string(),
-            description: v["description"].as_str().unwrap_or("").to_string(),
-            risk: serde_json::from_value(v["risk"].clone()).unwrap_or_default(),
-        })
-        .collect()
+fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefinition> {
+    let (def, _warnings) = openapi::compile_service(&t.openapi).map_err(|errors| {
+        AppError::Internal(format!(
+            "stored openapi for '{}' failed to compile: {:?}",
+            t.key, errors
+        ))
+    })?;
+    Ok(def)
 }
 
 // -- Handlers --
@@ -238,8 +250,9 @@ async fn list_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let actions: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_value(t.actions).unwrap_or_default();
+        let action_count = openapi::compile_service(&t.openapi)
+            .map(|(def, _)| def.actions.len())
+            .unwrap_or(0);
         let tier = if is_user_tier { "user" } else { "org" };
         templates.push(TemplateSummary {
             key: t.key,
@@ -247,7 +260,7 @@ async fn list_templates(
             description: Some(t.description).filter(|s| !s.is_empty()),
             category: Some(t.category).filter(|s| !s.is_empty()),
             hosts: t.hosts,
-            action_count: actions.len(),
+            action_count,
             tier: tier.into(),
         });
     }
@@ -297,8 +310,9 @@ async fn search_templates(
             || t.display_name.to_lowercase().contains(&q)
             || t.description.to_lowercase().contains(&q)
         {
-            let actions: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_value(t.actions).unwrap_or_default();
+            let action_count = openapi::compile_service(&t.openapi)
+                .map(|(def, _)| def.actions.len())
+                .unwrap_or(0);
             let tier = if is_user_tier { "user" } else { "org" };
             results.push(TemplateSummary {
                 key: t.key,
@@ -306,7 +320,7 @@ async fn search_templates(
                 description: Some(t.description).filter(|s| !s.is_empty()),
                 category: Some(t.category).filter(|s| !s.is_empty()),
                 hosts: t.hosts,
-                action_count: actions.len(),
+                action_count,
                 tier: tier.into(),
             });
         }
@@ -332,14 +346,14 @@ async fn get_template(
                 service_template::get_by_key(&state.db, auth.org_id, Some(identity_id), &key)
                     .await?
             {
-                return Ok(Json(db_template_to_detail(t, "user")));
+                return Ok(Json(db_row_to_detail(t, "user")?));
             }
         }
     }
 
     // Try org tier
     if let Some(t) = service_template::get_by_key(&state.db, auth.org_id, None, &key).await? {
-        return Ok(Json(db_template_to_detail(t, "org")));
+        return Ok(Json(db_row_to_detail(t, "org")?));
     }
 
     // Try global tier (respect visibility filter)
@@ -353,21 +367,33 @@ async fn get_template(
         .get(&key)
         .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))?;
 
+    // For global templates, load the shipped YAML verbatim for the editor.
+    // Falls back to an empty string if the file is not present (read-only
+    // view still works via the compiled actions list).
+    let openapi_yaml = load_global_yaml(&svc.key).unwrap_or_default();
+
     Ok(Json(TemplateDetail {
         key: svc.key.clone(),
         display_name: svc.display_name.clone(),
         description: svc.description.clone(),
         category: svc.category.clone(),
         hosts: svc.hosts.clone(),
-        auth: serde_json::to_value(&svc.auth)
-            .unwrap_or_default()
-            .as_array()
-            .cloned()
-            .unwrap_or_default(),
-        actions: serde_json::to_value(&svc.actions).unwrap_or_default(),
+        openapi: openapi_yaml,
+        actions: actions_from_definition(svc),
         tier: "global".into(),
         id: None,
     }))
+}
+
+/// Read the shipped OpenAPI YAML for a global template off disk, if present.
+fn load_global_yaml(key: &str) -> Option<String> {
+    // Walk upward from the executable dir to find `services/{key}.yaml`.
+    // Works in both `cargo run` and installed-binary contexts.
+    let services_dir = std::env::var_os("OVERSLASH_SERVICES_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok().map(|p| p.join("services")))?;
+    let path = services_dir.join(format!("{key}.yaml"));
+    std::fs::read_to_string(&path).ok()
 }
 
 /// List actions for a template.
@@ -414,22 +440,19 @@ async fn list_template_actions(
 
 /// POST /v1/templates/validate
 ///
-/// Lint a YAML template definition without persisting it. Accepts the raw
-/// YAML as the request body (any Content-Type; typically `application/yaml`
-/// or `text/plain`) so dashboards and CLIs can pipe files directly:
+/// Lint an OpenAPI 3.1 template definition without persisting it. Accepts the
+/// raw YAML as the request body (any Content-Type; typically
+/// `application/yaml` or `text/plain`) so dashboards and CLIs can pipe files
+/// directly:
 ///
 /// ```sh
 /// curl --data-binary @service.yaml $API/v1/templates/validate
 /// ```
 ///
-/// Always returns 200 with a `ValidationReport`. A YAML parse failure or
-/// duplicate action key is itself a reported validation error, not a
-/// transport-level error — the dashboard editor calls this on every keystroke
-/// and wants structured diagnostics, not HTTP 400s.
-///
-/// The only case that returns a non-200 response is a request body that
-/// exceeds [`MAX_TEMPLATE_YAML_BYTES`] — that's a DoS guard on a public
-/// endpoint, not a validation outcome.
+/// Always returns 200 with a `ValidationReport`. A YAML parse failure, alias
+/// ambiguity, or duplicate operationId is itself a reported validation error,
+/// not a transport-level error — the dashboard editor calls this on every
+/// keystroke and wants structured diagnostics, not HTTP 400s.
 async fn validate_template(auth: AuthContext, body: String) -> Result<Json<ValidationReport>> {
     // Auth extraction enforces authentication. Template linting is stateless
     // and org-independent — the org_id is used only for tracing / rate-limit
@@ -477,48 +500,32 @@ async fn create_template(
         None
     };
 
-    // Check that key doesn't collide with a global template
-    if state.registry.get(&req.key).is_some() {
-        return Err(AppError::Conflict(format!(
-            "template key '{}' conflicts with a global template",
-            req.key
-        )));
+    let (doc, def) = parse_normalize_compile_yaml(&req.openapi)
+        .map_err(|report| AppError::TemplateValidationFailed { report })?;
+
+    if def.key.is_empty() {
+        return Err(AppError::BadRequest(
+            "template key is required (set `info.key` or `info.x-overslash-key`)".into(),
+        ));
     }
 
-    // Parse the template at the boundary. On success we get a typed
-    // ServiceDefinition — serialize it back to JSON for storage so we
-    // guarantee only valid, round-tripped data hits the database.
-    let desc = if req.description.is_empty() {
-        None
-    } else {
-        Some(req.description.as_str())
-    };
-    let cat = if req.category.is_empty() {
-        None
-    } else {
-        Some(req.category.as_str())
-    };
-    let (def, _report) = parse_template_parts(
-        &req.key,
-        &req.display_name,
-        desc,
-        cat,
-        &req.hosts,
-        &req.auth,
-        &req.actions,
-    )
-    .map_err(|report| AppError::TemplateValidationFailed { report })?;
+    // Check that key doesn't collide with a global template
+    if state.registry.get(&def.key).is_some() {
+        return Err(AppError::Conflict(format!(
+            "template key '{}' conflicts with a global template",
+            def.key
+        )));
+    }
 
     let input = CreateServiceTemplate {
         org_id: acl.org_id,
         owner_identity_id,
-        key: &req.key,
-        display_name: &req.display_name,
-        description: &req.description,
-        category: &req.category,
-        hosts: &req.hosts,
-        auth: serde_json::to_value(&def.auth).unwrap(),
-        actions: serde_json::to_value(&def.actions).unwrap(),
+        key: &def.key,
+        display_name: &def.display_name,
+        description: def.description.as_deref().unwrap_or(""),
+        category: def.category.as_deref().unwrap_or(""),
+        hosts: &def.hosts,
+        openapi: doc,
     };
 
     let row = service_template::create(&state.db, &input)
@@ -528,7 +535,7 @@ async fn create_template(
                 if db_err.constraint().is_some() {
                     return AppError::Conflict(format!(
                         "template key '{}' already exists",
-                        req.key
+                        def.key
                     ));
                 }
             }
@@ -558,7 +565,7 @@ async fn create_template(
         })
         .await;
 
-    Ok(Json(db_template_to_detail(row, tier)))
+    Ok(Json(db_row_to_detail(row, tier)?))
 }
 
 /// Update a DB-stored template by id.
@@ -591,58 +598,23 @@ async fn update_template(
         }
     }
 
-    // Parse the *merged* result (patch + existing) so a broken template can't
-    // be kept broken by touching only metadata. On success, store the
-    // round-tripped auth/actions from the parsed definition.
-    let merged_display_name = req
-        .display_name
-        .as_deref()
-        .unwrap_or(&existing.display_name);
-    let merged_desc = req.description.as_deref().unwrap_or(&existing.description);
-    let merged_desc = if merged_desc.is_empty() {
-        None
-    } else {
-        Some(merged_desc)
-    };
-    let merged_cat = req.category.as_deref().unwrap_or(&existing.category);
-    let merged_cat = if merged_cat.is_empty() {
-        None
-    } else {
-        Some(merged_cat)
-    };
-    let merged_hosts: Vec<String> = req.hosts.clone().unwrap_or_else(|| existing.hosts.clone());
-    let merged_auth = req.auth.clone().unwrap_or_else(|| existing.auth.clone());
-    let merged_actions = req
-        .actions
-        .clone()
-        .unwrap_or_else(|| existing.actions.clone());
-    let (def, _report) = parse_template_parts(
-        &existing.key,
-        merged_display_name,
-        merged_desc,
-        merged_cat,
-        &merged_hosts,
-        &merged_auth,
-        &merged_actions,
-    )
-    .map_err(|report| AppError::TemplateValidationFailed { report })?;
+    let (doc, def) = parse_normalize_compile_yaml(&req.openapi)
+        .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
-    // Store the round-tripped auth/actions from the parsed definition, but
-    // only for fields the request actually patched. Unpatched fields keep
-    // their existing DB value (which was itself round-tripped on creation).
+    // Template key cannot change via update — the unique index pins it.
+    if def.key != existing.key {
+        return Err(AppError::BadRequest(format!(
+            "template key cannot change (existing: {:?}, new: {:?})",
+            existing.key, def.key
+        )));
+    }
+
     let input = UpdateServiceTemplate {
-        display_name: req.display_name.as_deref(),
-        description: req.description.as_deref(),
-        category: req.category.as_deref(),
-        hosts: req.hosts.as_deref(),
-        auth: req
-            .auth
-            .as_ref()
-            .map(|_| serde_json::to_value(&def.auth).unwrap()),
-        actions: req
-            .actions
-            .as_ref()
-            .map(|_| serde_json::to_value(&def.actions).unwrap()),
+        display_name: Some(&def.display_name),
+        description: Some(def.description.as_deref().unwrap_or("")),
+        category: Some(def.category.as_deref().unwrap_or("")),
+        hosts: Some(&def.hosts),
+        openapi: Some(doc),
     };
 
     let row = service_template::update(&state.db, id, &input)
@@ -671,7 +643,7 @@ async fn update_template(
         })
         .await;
 
-    Ok(Json(db_template_to_detail(row, tier)))
+    Ok(Json(db_row_to_detail(row, tier)?))
 }
 
 /// Delete a DB-stored template by id (cannot delete global templates).
@@ -777,8 +749,9 @@ async fn list_templates_admin(
     // ALL DB templates (org + all users')
     let db_templates = service_template::list_all_by_org(&state.db, acl.org_id).await?;
     for t in db_templates {
-        let actions: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_value(t.actions).unwrap_or_default();
+        let action_count = openapi::compile_service(&t.openapi)
+            .map(|(def, _)| def.actions.len())
+            .unwrap_or(0);
         let tier = if t.owner_identity_id.is_some() {
             "user"
         } else {
@@ -790,7 +763,7 @@ async fn list_templates_admin(
             description: Some(t.description).filter(|s| !s.is_empty()),
             category: Some(t.category).filter(|s| !s.is_empty()),
             hosts: t.hosts,
-            action_count: actions.len(),
+            action_count,
             tier: tier.into(),
             id: Some(t.id),
             owner_identity_id: t.owner_identity_id,
@@ -892,13 +865,15 @@ pub(crate) async fn resolve_template_actions(
         if let Some(t) =
             service_template::get_by_key(&state.db, auth.org_id, Some(identity_id), key).await?
         {
-            return Ok(actions_from_json(&t.actions));
+            let def = compile_row(&t)?;
+            return Ok(actions_from_definition(&def));
         }
     }
 
     // Try org tier
     if let Some(t) = service_template::get_by_key(&state.db, auth.org_id, None, key).await? {
-        return Ok(actions_from_json(&t.actions));
+        let def = compile_row(&t)?;
+        return Ok(actions_from_definition(&def));
     }
 
     // Try global
@@ -907,17 +882,7 @@ pub(crate) async fn resolve_template_actions(
         .get(key)
         .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))?;
 
-    Ok(svc
-        .actions
-        .iter()
-        .map(|(k, a)| ActionSummary {
-            key: k.clone(),
-            method: a.method.clone(),
-            path: a.path.clone(),
-            description: a.description.clone(),
-            risk: a.risk,
-        })
-        .collect())
+    Ok(actions_from_definition(svc))
 }
 
 /// Resolve a ServiceDefinition from a template key across all tiers.
@@ -929,19 +894,19 @@ pub(crate) async fn resolve_template_definition(
     org_id: Uuid,
     identity_id: Option<Uuid>,
     key: &str,
-) -> Result<overslash_core::types::ServiceDefinition> {
+) -> Result<ServiceDefinition> {
     // Try user tier
     if let Some(identity_id) = identity_id {
         if let Some(t) =
             service_template::get_by_key(&state.db, org_id, Some(identity_id), key).await?
         {
-            return db_row_to_definition(t);
+            return compile_row(&t);
         }
     }
 
     // Try org tier
     if let Some(t) = service_template::get_by_key(&state.db, org_id, None, key).await? {
-        return db_row_to_definition(t);
+        return compile_row(&t);
     }
 
     // Try global
@@ -950,26 +915,4 @@ pub(crate) async fn resolve_template_definition(
         .get(key)
         .cloned()
         .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
-}
-
-fn db_row_to_definition(
-    t: service_template::ServiceTemplateRow,
-) -> Result<overslash_core::types::ServiceDefinition> {
-    use overslash_core::types::{ServiceAction, ServiceAuth, ServiceDefinition};
-    use std::collections::HashMap;
-
-    let auth: Vec<ServiceAuth> = serde_json::from_value(t.auth)
-        .map_err(|e| AppError::Internal(format!("corrupt template auth in '{}': {e}", t.key)))?;
-    let actions: HashMap<String, ServiceAction> = serde_json::from_value(t.actions)
-        .map_err(|e| AppError::Internal(format!("corrupt template actions in '{}': {e}", t.key)))?;
-
-    Ok(ServiceDefinition {
-        key: t.key,
-        display_name: t.display_name,
-        description: Some(t.description).filter(|s| !s.is_empty()),
-        category: Some(t.category).filter(|s| !s.is_empty()),
-        hosts: t.hosts,
-        auth,
-        actions,
-    })
 }

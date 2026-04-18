@@ -85,6 +85,21 @@ const HTTP_METHODS: &[&str] = &[
 
 // ── Public API ───────────────────────────────────────────────────────────
 
+/// Serialize a normalized OpenAPI JSON document back to a YAML string for
+/// display in the dashboard editor. The stored form is `serde_json::Value`
+/// (JSONB in the DB); round-tripping through `serde_yaml::Value` preserves
+/// structure.
+#[cfg(feature = "yaml")]
+pub fn to_yaml_string(v: &Value) -> Result<String, ValidationIssue> {
+    serde_yaml::to_string(v).map_err(|e| {
+        ValidationIssue::new(
+            "openapi_parse_error",
+            format!("failed to serialize openapi to YAML: {e}"),
+            "",
+        )
+    })
+}
+
 /// Parse an OpenAPI YAML document into a `serde_json::Value`.
 #[cfg(feature = "yaml")]
 pub fn parse_yaml(src: &str) -> Result<Value, ValidationIssue> {

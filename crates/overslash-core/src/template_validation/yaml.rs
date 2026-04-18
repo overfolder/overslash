@@ -10,6 +10,7 @@
 //! inline on every keystroke.
 
 use crate::openapi;
+use crate::types::ServiceDefinition;
 
 use super::{Issues, ValidationReport, core::validate_service_definition};
 
@@ -71,6 +72,63 @@ pub fn validate_template_yaml(source: &str) -> ValidationReport {
     };
 
     validate_service_definition(&def, &[])
+}
+
+/// Parse + alias-normalize + compile + validate an OpenAPI YAML source for
+/// persistence. On success returns the normalized canonical `serde_json::Value`
+/// (alias-free — suitable for storing in the DB) and the compiled
+/// [`ServiceDefinition`]. On failure returns a structured `ValidationReport`
+/// so the caller can surface it back to the client as-is.
+pub fn parse_normalize_compile_yaml(
+    source: &str,
+) -> std::result::Result<(serde_json::Value, ServiceDefinition), ValidationReport> {
+    let mut issues = Issues::default();
+
+    // Raw YAML syntax pass first (serde_yaml catches duplicate mapping keys).
+    if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(source) {
+        issues.err("yaml_parse", format!("could not parse YAML: {e}"), "");
+        return Err(issues.finish());
+    }
+
+    let mut doc = match openapi::parse_yaml(source) {
+        Ok(d) => d,
+        Err(i) => {
+            issues.err(i.code, i.message, i.path);
+            return Err(issues.finish());
+        }
+    };
+
+    let alias_issues = openapi::normalize_aliases(&mut doc);
+    if !alias_issues.is_empty() {
+        for i in alias_issues {
+            issues.err(i.code, i.message, i.path);
+        }
+        return Err(issues.finish());
+    }
+
+    let mut dup_issues = Issues::default();
+    check_duplicate_operation_ids(&doc, &mut dup_issues);
+    let dup_report = dup_issues.finish();
+    if !dup_report.valid {
+        return Err(dup_report);
+    }
+
+    let def = match openapi::compile_service(&doc) {
+        Ok((def, _warnings)) => def,
+        Err(errors) => {
+            for i in errors {
+                issues.err(i.code, i.message, i.path);
+            }
+            return Err(issues.finish());
+        }
+    };
+
+    let report = validate_service_definition(&def, &[]);
+    if !report.valid {
+        return Err(report);
+    }
+
+    Ok((doc, def))
 }
 
 fn check_duplicate_operation_ids(doc: &serde_json::Value, issues: &mut Issues) {

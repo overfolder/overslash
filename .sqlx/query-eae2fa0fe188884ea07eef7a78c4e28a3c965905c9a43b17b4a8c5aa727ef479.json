@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO service_templates (org_id, owner_identity_id, key, display_name, description, category, hosts, auth, actions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, org_id, owner_identity_id, key, display_name, description, category, hosts, auth, actions, created_at, updated_at",
+  "query": "UPDATE service_templates SET display_name = COALESCE($2, display_name), description = COALESCE($3, description), category = COALESCE($4, category), hosts = COALESCE($5, hosts), openapi = COALESCE($6, openapi), updated_at = now() WHERE id = $1 RETURNING id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -45,21 +45,16 @@
       },
       {
         "ordinal": 8,
-        "name": "auth",
+        "name": "openapi",
         "type_info": "Jsonb"
       },
       {
         "ordinal": 9,
-        "name": "actions",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -67,13 +62,10 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
         "Text",
         "Text",
         "Text",
         "TextArray",
-        "Jsonb",
         "Jsonb"
       ]
     },
@@ -88,9 +80,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "2ed04f0cd4d8fb2aa5eb551e7c7d856aeb9cb8030cc05514b685916b3d02e027"
+  "hash": "eae2fa0fe188884ea07eef7a78c4e28a3c965905c9a43b17b4a8c5aa727ef479"
 }
