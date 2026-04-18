@@ -45,3 +45,4 @@ infra/*.tfstate.*
 infra/*.tfplan
 infra/terraform.tfvars
 .vercel
+/trees/

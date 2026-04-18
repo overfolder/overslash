@@ -15,6 +15,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, WriteAcl},
+    services::group_ceiling,
 };
 
 pub fn router() -> Router<AppState> {
@@ -115,25 +116,29 @@ async fn list_services(
     // Org-level API keys (no identity) bypass group filtering — they see everything.
     // Otherwise resolve the ceiling user (self for users, owner for agents) and apply
     // group-based visibility.
-    let visible_ids = if let Some(identity_id) = auth.identity_id {
-        let ceiling_user_id =
-            crate::services::group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
+    let (ceiling_user_id, visible_ids) = if let Some(identity_id) = auth.identity_id {
+        let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
 
         // System groups (Everyone, Admins) don't count for visibility filtering.
         // Only user-created groups trigger filtering, matching group_ceiling::load_ceiling.
         let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
         let has_user_groups = groups.iter().any(|g| !g.is_system);
-        if !has_user_groups {
+        let visible_ids = if !has_user_groups {
             None // no user groups = permissive (backward compat)
         } else {
             Some(scope.get_visible_service_ids(ceiling_user_id).await?)
-        }
+        };
+        (Some(ceiling_user_id), visible_ids)
     } else {
-        None // org-level key — permissive
+        (None, None) // org-level key — permissive
     };
 
     let rows = scope
-        .list_available_service_instances_with_groups(auth.identity_id, visible_ids.as_deref())
+        .list_available_service_instances_with_groups(
+            auth.identity_id,
+            ceiling_user_id,
+            visible_ids.as_deref(),
+        )
         .await?;
 
     let services = rows.into_iter().map(row_to_summary).collect();
@@ -163,14 +168,17 @@ async fn get_service(
     // pass it to avoid the user-shadows-org name resolution semantics.
     let row = if let Ok(uuid) = name.parse::<Uuid>() {
         scope.get_service_instance(uuid).await?
-    } else if q.include_inactive {
-        scope
-            .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
-            .await?
     } else {
-        scope
-            .resolve_service_instance_by_name(auth.identity_id, &name)
-            .await?
+        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(&scope, auth.identity_id).await?;
+        if q.include_inactive {
+            scope
+                .resolve_service_instance_by_name_any_status(auth.identity_id, ceiling, &name)
+                .await?
+        } else {
+            scope
+                .resolve_service_instance_by_name(auth.identity_id, ceiling, &name)
+                .await?
+        }
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
     Ok(Json(row_to_detail(row)))
@@ -191,12 +199,7 @@ async fn create_service(
     //   - else: fall back to the legacy `user_level` flag (defaults true when
     //     the key is identity-bound)
     let owner_identity_id = if req.on_behalf_of.is_some() {
-        crate::services::group_ceiling::resolve_owner_identity(
-            &scope,
-            auth.identity_id,
-            req.on_behalf_of,
-        )
-        .await?
+        group_ceiling::resolve_owner_identity(&scope, auth.identity_id, req.on_behalf_of).await?
     } else {
         let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
         if user_level {
@@ -311,6 +314,10 @@ async fn delete_service(
     let auth = acl;
     // Resolve by name (or id) to get the row; both lookups are org-scoped
     // at the SQL boundary, so a foreign id returns None → 404.
+    // Destructive op: intentionally do NOT reach up to the ceiling user for
+    // name resolution. An agent with AdminAcl must not be able to target its
+    // owner user's services via the shadowing lookup; callers that really
+    // mean to delete a parent-owned service can address it by UUID.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
         scope
             .get_service_instance(uuid)
@@ -318,7 +325,7 @@ async fn delete_service(
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
         scope
-            .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
+            .resolve_service_instance_by_name_any_status(auth.identity_id, None, &name)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
@@ -347,8 +354,9 @@ async fn list_service_actions(
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
         scope.get_service_instance(uuid).await?
     } else {
+        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(&scope, auth.identity_id).await?;
         scope
-            .resolve_service_instance_by_name_any_status(auth.identity_id, &name)
+            .resolve_service_instance_by_name_any_status(auth.identity_id, ceiling, &name)
             .await?
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;

@@ -43,13 +43,22 @@ impl OrgScope {
     }
 
     /// Resolve a service instance by name with user-shadows-org semantics
-    /// within this org.
+    /// within this org. `ceiling_user_id` is the caller's owner user (itself when
+    /// the caller is a user identity); services it owns are always reachable.
     pub async fn resolve_service_instance_by_name(
         &self,
         identity_id: Option<Uuid>,
+        ceiling_user_id: Option<Uuid>,
         raw_name: &str,
     ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
-        service_instance::resolve_by_name(self.db(), self.org_id(), identity_id, raw_name).await
+        service_instance::resolve_by_name(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            ceiling_user_id,
+            raw_name,
+        )
+        .await
     }
 
     /// Resolve a service instance by name without filtering by status. Used by
@@ -57,12 +66,14 @@ impl OrgScope {
     pub async fn resolve_service_instance_by_name_any_status(
         &self,
         identity_id: Option<Uuid>,
+        ceiling_user_id: Option<Uuid>,
         raw_name: &str,
     ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
         service_instance::resolve_by_name_any_status(
             self.db(),
             self.org_id(),
             identity_id,
+            ceiling_user_id,
             raw_name,
         )
         .await
@@ -81,26 +92,33 @@ impl OrgScope {
         service_instance::list_by_user(self.db(), self.org_id(), identity_id).await
     }
 
-    /// List all service instances available to a caller in this org
-    /// (the user's own + the org's).
+    /// List all service instances available to a caller in this org:
+    /// org-level + caller-owned + ceiling-user-owned.
     pub async fn list_available_service_instances(
         &self,
         identity_id: Option<Uuid>,
+        ceiling_user_id: Option<Uuid>,
     ) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
-        service_instance::list_available(self.db(), self.org_id(), identity_id).await
+        service_instance::list_available(self.db(), self.org_id(), identity_id, ceiling_user_id)
+            .await
     }
 
     /// List service instances visible to a caller in this org, filtered by
     /// the supplied set of group-visible org-level service ids.
+    ///
+    /// Caller-owned and ceiling-user-owned services bypass the group filter — a
+    /// user always sees the services they've created themselves.
     pub async fn list_available_service_instances_with_groups(
         &self,
         identity_id: Option<Uuid>,
+        ceiling_user_id: Option<Uuid>,
         visible_service_ids: Option<&[Uuid]>,
     ) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
         service_instance::list_available_with_groups(
             self.db(),
             self.org_id(),
             identity_id,
+            ceiling_user_id,
             visible_service_ids,
         )
         .await

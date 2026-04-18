@@ -107,14 +107,20 @@ pub(crate) async fn get_by_name(
 
 /// Resolve a service instance by name using user-shadows-org semantics.
 ///
-/// - `org/name` prefix forces org scope (ignores user instances)
-/// - Plain `name` tries user scope first, then org scope
+/// Resolution order (each layer is org-scoped; only active instances are returned):
+/// 1. `org/name` prefix forces org scope, ignoring all user-level instances.
+/// 2. Caller-owned instance (`owner_identity_id = identity_id`).
+/// 3. Ceiling-user-owned instance (`owner_identity_id = ceiling_user_id`) — services the
+///    agent's owner user has created are always reachable by the agent, regardless of
+///    group membership.
+/// 4. Org-level instance (`owner_identity_id IS NULL`).
 ///
-/// Only returns active instances by default (for execution). Use `get_by_name` for any status.
+/// Use `get_by_name` for any-status lookups.
 pub(crate) async fn resolve_by_name(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
+    ceiling_user_id: Option<Uuid>,
     raw_name: &str,
 ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
     // Parse "org/" prefix
@@ -133,9 +139,9 @@ pub(crate) async fn resolve_by_name(
         .await;
     }
 
-    // User-shadows-org: try user scope first
+    // Caller-owned wins first (agent-specific instance).
     if let Some(identity_id) = identity_id {
-        let user_instance = sqlx::query_as!(
+        let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
              template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
@@ -143,6 +149,27 @@ pub(crate) async fn resolve_by_name(
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
             org_id,
             identity_id,
+            raw_name,
+        )
+        .fetch_optional(pool)
+        .await?;
+        if caller_instance.is_some() {
+            return Ok(caller_instance);
+        }
+    }
+
+    // Ceiling-user-owned (user-level shared with all agents in their chain).
+    if let Some(user_id) = ceiling_user_id
+        && Some(user_id) != identity_id
+    {
+        let user_instance = sqlx::query_as!(
+            ServiceInstanceRow,
+            "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+             template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
+             FROM service_instances \
+             WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3 AND status = 'active'",
+            org_id,
+            user_id,
             raw_name,
         )
         .fetch_optional(pool)
@@ -173,6 +200,7 @@ pub async fn resolve_by_name_any_status(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
+    ceiling_user_id: Option<Uuid>,
     raw_name: &str,
 ) -> Result<Option<ServiceInstanceRow>, sqlx::Error> {
     if let Some(name) = raw_name.strip_prefix("org/") {
@@ -190,7 +218,7 @@ pub async fn resolve_by_name_any_status(
     }
 
     if let Some(identity_id) = identity_id {
-        let user_instance = sqlx::query_as!(
+        let caller_instance = sqlx::query_as!(
             ServiceInstanceRow,
             "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
              template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
@@ -198,6 +226,26 @@ pub async fn resolve_by_name_any_status(
              WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
             org_id,
             identity_id,
+            raw_name,
+        )
+        .fetch_optional(pool)
+        .await?;
+        if caller_instance.is_some() {
+            return Ok(caller_instance);
+        }
+    }
+
+    if let Some(user_id) = ceiling_user_id
+        && Some(user_id) != identity_id
+    {
+        let user_instance = sqlx::query_as!(
+            ServiceInstanceRow,
+            "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+             template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
+             FROM service_instances \
+             WHERE org_id = $1 AND owner_identity_id = $2 AND name = $3",
+            org_id,
+            user_id,
             raw_name,
         )
         .fetch_optional(pool)
@@ -256,34 +304,47 @@ pub(crate) async fn list_by_user(
     .await
 }
 
-/// List all instances available to a caller: user's + org's.
+/// List all instances available to a caller: org-level + caller-owned + ceiling-user-owned.
+///
+/// `ceiling_user_id` is the caller's owner user (same as `identity_id` when the caller is
+/// a user). Passing `None` yields the non-identity bound set (org-level only). Services
+/// owned by the ceiling user are always included, guaranteeing a user and their agents
+/// see every service the user has created regardless of group membership.
 pub(crate) async fn list_available(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
+    ceiling_user_id: Option<Uuid>,
 ) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
     sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
          template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
          FROM service_instances \
-         WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) \
+         WHERE org_id = $1 \
+           AND (owner_identity_id IS NULL \
+                OR owner_identity_id = $2 \
+                OR owner_identity_id = $3) \
          ORDER BY name",
         org_id,
         identity_id,
+        ceiling_user_id,
     )
     .fetch_all(pool)
     .await
 }
 
 /// List services visible to a user, filtered by group membership.
-/// User-owned services are always visible. Org-level services are filtered
-/// by the `visible_service_ids` set (derived from group grants).
+///
+/// Caller-owned and ceiling-user-owned services are always visible regardless of group
+/// grants (a user must always be able to reach the services they've defined). Org-level
+/// services are filtered by the `visible_service_ids` set (derived from group grants).
 /// If `visible_service_ids` is `None`, no group filtering is applied (backward compat).
 pub(crate) async fn list_available_with_groups(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Option<Uuid>,
+    ceiling_user_id: Option<Uuid>,
     visible_service_ids: Option<&[Uuid]>,
 ) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
     match visible_service_ids {
@@ -293,16 +354,20 @@ pub(crate) async fn list_available_with_groups(
                 "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
                  template_id, connection_id, secret_name, status, is_system, created_at, updated_at \
                  FROM service_instances \
-                 WHERE org_id = $1 AND (owner_identity_id = $2 OR id = ANY($3)) \
+                 WHERE org_id = $1 \
+                   AND (owner_identity_id = $2 \
+                        OR owner_identity_id = $3 \
+                        OR id = ANY($4)) \
                  ORDER BY name",
                 org_id,
                 identity_id,
+                ceiling_user_id,
                 ids,
             )
             .fetch_all(pool)
             .await
         }
-        None => list_available(pool, org_id, identity_id).await,
+        None => list_available(pool, org_id, identity_id, ceiling_user_id).await,
     }
 }
 
