@@ -91,30 +91,25 @@ export interface TemplateDetail {
   description?: string | null;
   category?: string | null;
   hosts: string[];
+  /** Compiled auth view for rendering the detail/connect UIs without re-parsing. */
   auth: ServiceAuth[];
-  actions: Record<string, ServiceAction>;
+  /** Raw OpenAPI 3.1 YAML source. This is the editable document. */
+  openapi: string;
+  /** Compiled actions view for rendering the detail page without re-parsing. */
+  actions: ActionSummary[];
   tier: TemplateTier;
   id?: string;
 }
 
 export interface CreateTemplateRequest {
-  key: string;
-  display_name: string;
-  description?: string;
-  category?: string;
-  hosts: string[];
-  auth: ServiceAuth[];
-  actions: Record<string, ServiceAction>;
+  /** Raw OpenAPI 3.1 YAML. Must include `info.key` (or alias) as the template key. */
+  openapi: string;
   user_level?: boolean;
 }
 
 export interface UpdateTemplateRequest {
-  display_name?: string;
-  description?: string;
-  category?: string;
-  hosts?: string[];
-  auth?: ServiceAuth[];
-  actions?: Record<string, ServiceAction>;
+  /** Full replacement OpenAPI YAML. Template key cannot change via update. */
+  openapi: string;
 }
 
 export interface ValidationResult {

@@ -4,20 +4,25 @@ use std::path::Path;
 
 use crate::types::ServiceDefinition;
 
-/// In-memory service registry loaded from YAML files.
+/// In-memory service registry loaded from OpenAPI 3.1 YAML files with
+/// `x-overslash-*` vendor extensions. See `crates/overslash-core/src/openapi.rs`
+/// for the parse + normalize + compile pipeline.
 #[derive(Debug, Clone, Default)]
 pub struct ServiceRegistry {
     services: HashMap<String, ServiceDefinition>,
 }
 
 impl ServiceRegistry {
-    /// Load all .yaml/.yml files from a directory.
+    /// Load all .yaml/.yml files from a directory as OpenAPI 3.1 service
+    /// templates.
     ///
-    /// Each file is parsed as a [`ServiceDefinition`] and then linted by
-    /// [`crate::template_validation::validate_service_definition`]. Invalid
-    /// templates are skipped with a loud `tracing` error so a single broken
-    /// shipped template can't take down the whole process — CI catches the
-    /// same cases via the `shipped_services_validate_clean` test below.
+    /// Each file is parsed via `openapi::parse_yaml`, alias-normalized, and
+    /// compiled into a [`ServiceDefinition`]. The compiled definition is then
+    /// linted by
+    /// [`crate::template_validation::validate_service_definition`]. Files that
+    /// fail at any stage are logged as `tracing::error!` and skipped so a
+    /// single broken shipped template can't take down the whole process — CI
+    /// catches the same cases via `shipped_services_load_clean` below.
     #[cfg(feature = "yaml")]
     pub fn load_from_dir(dir: &Path) -> Result<Self, RegistryError> {
         let mut services = HashMap::new();
@@ -38,18 +43,42 @@ impl ServiceRegistry {
 
             let content =
                 std::fs::read_to_string(&path).map_err(|e| RegistryError::Io(e.to_string()))?;
-            let def: ServiceDefinition =
-                serde_yaml::from_str(&content).map_err(|e| RegistryError::Parse {
-                    file: path.display().to_string(),
-                    error: e.to_string(),
-                })?;
 
-            // Lint the shipped template before inserting. Duplicate-key
-            // detection is a YAML-source-level concern handled by the YAML
-            // entry point of `template_validation`; by the time we get here,
-            // the YAML has already round-tripped through `serde_yaml` (which
-            // rejects duplicate mapping keys at parse time), so we pass an
-            // empty raw-key list — there are no duplicates left to find.
+            let mut doc = match crate::openapi::parse_yaml(&content) {
+                Ok(d) => d,
+                Err(issue) => {
+                    tracing::error!(
+                        file = %path.display(),
+                        code = %issue.code,
+                        error = %issue.message,
+                        "openapi YAML parse failed; skipping"
+                    );
+                    continue;
+                }
+            };
+
+            let ns_issues = crate::openapi::normalize_aliases(&mut doc);
+            if !ns_issues.is_empty() {
+                tracing::error!(
+                    file = %path.display(),
+                    issues = ?ns_issues,
+                    "alias normalization failed; skipping"
+                );
+                continue;
+            }
+
+            let def = match crate::openapi::compile_service(&doc) {
+                Ok((def, _warnings)) => def,
+                Err(errors) => {
+                    tracing::error!(
+                        file = %path.display(),
+                        errors = ?errors,
+                        "openapi compile failed; skipping"
+                    );
+                    continue;
+                }
+            };
+
             let report = crate::template_validation::validate_service_definition(&def, &[]);
             if !report.valid {
                 tracing::error!(
@@ -140,27 +169,32 @@ mod tests {
     }
 
     #[test]
-    fn load_from_dir_parses_yaml() {
+    fn load_from_dir_parses_openapi_yaml() {
         let dir = TempDir::new().unwrap();
         write_yaml(
             dir.path(),
             "github.yaml",
             r#"
-key: github
-display_name: GitHub
-hosts: [api.github.com]
-auth:
-  - type: api_key
-    default_secret_name: github_token
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  list_repos:
-    method: GET
-    path: /user/repos
-    description: List repositories
+openapi: 3.1.0
+info:
+  title: GitHub
+  key: github
+servers:
+  - url: https://api.github.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: github_token
+paths:
+  /user/repos:
+    get:
+      operationId: list_repos
+      summary: List repositories
+      risk: read
 "#,
         );
 
@@ -179,9 +213,12 @@ actions:
             dir.path(),
             "github.yaml",
             r#"
-key: github
-display_name: GitHub
-hosts: [api.github.com]
+openapi: 3.1.0
+info:
+  title: GitHub
+  key: github
+servers:
+  - url: https://api.github.com
 "#,
         );
 
@@ -191,29 +228,36 @@ hosts: [api.github.com]
     }
 
     #[test]
-    fn scope_param_parsed_from_yaml() {
+    fn scope_param_parsed_from_openapi() {
         let dir = TempDir::new().unwrap();
         write_yaml(
             dir.path(),
             "github.yaml",
             r#"
-key: github
-display_name: GitHub
-hosts: [api.github.com]
-actions:
-  create_pull_request:
-    method: POST
-    path: /repos/{repo}/pulls
-    description: Create a pull request
-    scope_param: repo
-    params:
-      repo:
-        type: string
-        required: true
-  list_repos:
-    method: GET
-    path: /user/repos
-    description: List repositories
+openapi: 3.1.0
+info:
+  title: GitHub
+  key: github
+servers:
+  - url: https://api.github.com
+paths:
+  /repos/{repo}/pulls:
+    post:
+      operationId: create_pull_request
+      summary: Create a pull request
+      risk: write
+      scope_param: repo
+      parameters:
+        - name: repo
+          in: path
+          required: true
+          schema:
+            type: string
+  /user/repos:
+    get:
+      operationId: list_repos
+      summary: List repositories
+      risk: read
 "#,
         );
 
@@ -232,14 +276,18 @@ actions:
             dir.path(),
             "stripe.yaml",
             r#"
-key: stripe
-display_name: Stripe
-hosts: [api.stripe.com]
-actions:
-  list_charges:
-    method: GET
-    path: /v1/charges
-    description: List recent charges
+openapi: 3.1.0
+info:
+  title: Stripe
+  key: stripe
+servers:
+  - url: https://api.stripe.com
+paths:
+  /v1/charges:
+    get:
+      operationId: list_charges
+      summary: List recent charges
+      risk: read
 "#,
         );
 
@@ -250,7 +298,7 @@ actions:
     }
 
     #[test]
-    fn risk_defaults_to_read_when_omitted() {
+    fn risk_defaults_from_method_when_omitted() {
         use crate::types::Risk;
 
         let dir = TempDir::new().unwrap();
@@ -258,29 +306,33 @@ actions:
             dir.path(),
             "test.yaml",
             r#"
-key: test
-display_name: Test
-hosts: [api.test.com]
-actions:
-  no_risk:
-    method: GET
-    path: /items
-    description: No risk field
-  explicit_write:
-    method: POST
-    path: /items
-    description: Explicit write
-    risk: write
-  explicit_delete:
-    method: DELETE
-    path: /items/{id}
-    description: "Explicit delete of {id}"
-    risk: delete
-    scope_param: id
-    params:
-      id:
-        type: string
-        required: true
+openapi: 3.1.0
+info:
+  title: Test
+  key: test
+servers:
+  - url: https://api.test.com
+paths:
+  /items:
+    get:
+      operationId: no_risk
+      summary: No risk field
+    post:
+      operationId: explicit_write
+      summary: Explicit write
+      risk: write
+  /items/{id}:
+    delete:
+      operationId: explicit_delete
+      summary: "Explicit delete of {id}"
+      risk: delete
+      scope_param: id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
 "#,
         );
 
@@ -289,5 +341,19 @@ actions:
         assert_eq!(svc.actions["no_risk"].risk, Risk::Read);
         assert_eq!(svc.actions["explicit_write"].risk, Risk::Write);
         assert_eq!(svc.actions["explicit_delete"].risk, Risk::Delete);
+    }
+
+    #[test]
+    fn shipped_services_load_clean() {
+        // Smoke test: every shipped services/*.yaml must load via the
+        // openapi pipeline and pass validation.
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+        assert!(!reg.is_empty(), "no shipped templates loaded");
     }
 }

@@ -2,6 +2,7 @@ pub mod crypto;
 pub mod description;
 pub(crate) mod description_grammar;
 pub mod identity_path;
+pub mod openapi;
 pub mod param_resolver;
 pub mod permissions;
 pub mod registry;

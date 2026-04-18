@@ -81,13 +81,14 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] BYOC credential support (identity, org, system fallback chain)
 - [x] Connections API (initiate, list, revoke) — to be refactored into service instances
 - [ ] `on_behalf_of` for agent-initiated service creation at user level
-- [x] Global service template registry — YAML loader for shipped definitions
-- [ ] Ship top 20 service templates — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- [x] Template/service split — templates (YAML blueprints) + services (named instances with credentials) (PR #31)
-- [x] Three-tier template registry — global (YAML, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting) (PR #100)
+- [x] Global service template registry — OpenAPI 3.1 loader for shipped definitions
+- [ ] Ship top 20 service templates — 9 shipped: Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X (plus the `overslash` platform namespace)
+- [x] Template/service split — templates (OpenAPI blueprints) + services (named instances with credentials) (PR #31)
+- [x] Three-tier template registry — global (OpenAPI, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting) (PR #100)
 - [x] Service instances — create from template, bind credentials, assign to groups (PR #31)
-- [x] Template validation endpoint (`POST /v1/templates/validate`) — pure-Rust linter in `overslash-core::template_validation` + CRUD hook + registry-loader smoke test. WASM feature gate in place for client-side reuse.
-- [ ] OpenAPI import (`POST /v1/templates/import`) — parse OpenAPI 3.x, generate template + actions
+- [x] Template validation endpoint (`POST /v1/templates/validate`) — OpenAPI 3.1 parse + alias normalization + struct-level lint in `overslash-core::template_validation`. WASM feature gate in place for client-side reuse.
+- [x] OpenAPI-native template format — OpenAPI 3.1 with `x-overslash-*` vendor extensions (risk, scope_param, resolve, provider, default_secret_name, category, key, platform_actions) and unprefixed aliases that canonicalize on save.
+- [ ] Bulk OpenAPI import UX — upload/paste a vendor's public spec and auto-generate a template with sensible `x-overslash-*` overlay defaults.
 - [ ] User-to-org template sharing (propose, approve/deny)
 - [x] Service + action execution (registry-resolved, auth auto-resolve)
 - [x] Human-readable action descriptions from registry metadata (description interpolation, PR #35)

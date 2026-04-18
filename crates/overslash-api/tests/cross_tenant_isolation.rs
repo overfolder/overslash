@@ -172,20 +172,25 @@ async fn create_org_service(
     key: &str,
     key_name: &str,
 ) -> Uuid {
-    client
+    let openapi = common::minimal_openapi(key_name);
+    let tpl_resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(key).0, auth(key).1)
         .json(&json!({
-            "key": key_name,
-            "display_name": key_name,
-            "hosts": [format!("{key_name}.example.com")],
+            "openapi": openapi,
             "user_level": false,
         }))
         .send()
         .await
         .unwrap();
+    assert!(
+        tpl_resp.status().is_success(),
+        "template create failed ({}): {}",
+        tpl_resp.status(),
+        tpl_resp.text().await.unwrap_or_default()
+    );
 
-    let svc: Value = client
+    let svc_resp = client
         .post(format!("{base}/v1/services"))
         .header(auth(key).0, auth(key).1)
         .json(&json!({
@@ -195,10 +200,14 @@ async fn create_org_service(
         }))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
+    assert!(
+        svc_resp.status().is_success(),
+        "service create failed ({}): {}",
+        svc_resp.status(),
+        svc_resp.text().await.unwrap_or_default()
+    );
+    let svc: Value = svc_resp.json().await.unwrap();
     svc["id"].as_str().unwrap().parse().unwrap()
 }
 

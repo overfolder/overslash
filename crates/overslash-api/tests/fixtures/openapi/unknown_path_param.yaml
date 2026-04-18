@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info:
+  title: Bad API
+  key: bad-api
+servers:
+  - url: https://api.example.com
+paths:
+  /items/{ghost}:
+    get:
+      operationId: bad_action
+      summary: Get item
+      risk: read

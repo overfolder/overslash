@@ -1286,3 +1286,34 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
 
     (addr, Client::new())
 }
+
+// ─── openapi fixtures ──────────────────────────────────────────────────────
+
+/// Render an OpenAPI Jinja template loaded via `include_str!` with the given
+/// context values. Templates live under `tests/fixtures/openapi/`. We use
+/// minijinja rather than hand-rolled string substitution so fixtures can grow
+/// into conditionals/loops later without churn on the helper.
+pub fn render_openapi(template: &str, ctx: &[(&str, &str)]) -> String {
+    use minijinja::{Environment, Value};
+    use std::collections::BTreeMap;
+    let mut env = Environment::new();
+    env.add_template("t", template).expect("template parses");
+    let bag: BTreeMap<String, Value> = ctx
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), Value::from(*v)))
+        .collect();
+    env.get_template("t")
+        .unwrap()
+        .render(Value::from(bag))
+        .expect("template renders")
+}
+
+/// Render the shared minimal OpenAPI fixture for the given template key.
+/// Display name defaults to the key — pass both separately via `render_openapi`
+/// when you need a different display name.
+pub fn minimal_openapi(key: &str) -> String {
+    render_openapi(
+        include_str!("../fixtures/openapi/minimal.yaml.tmpl"),
+        &[("key", key), ("display_name", key)],
+    )
+}

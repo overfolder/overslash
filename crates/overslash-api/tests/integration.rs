@@ -925,7 +925,13 @@ async fn test_service_registry_api() {
         .await
         .unwrap();
     assert_eq!(resp["key"], "github");
-    assert!(resp["actions"]["create_pull_request"].is_object());
+    assert!(
+        resp["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["key"] == "create_pull_request")
+    );
 
     // List template actions
     let actions: Vec<Value> = client

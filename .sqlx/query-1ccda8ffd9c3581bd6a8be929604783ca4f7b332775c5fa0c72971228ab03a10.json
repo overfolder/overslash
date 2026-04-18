@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, auth, actions, created_at, updated_at FROM service_templates WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY key",
+  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, created_at, updated_at FROM service_templates WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -45,28 +45,22 @@
       },
       {
         "ordinal": 8,
-        "name": "auth",
+        "name": "openapi",
         "type_info": "Jsonb"
       },
       {
         "ordinal": 9,
-        "name": "actions",
-        "type_info": "Jsonb"
-      },
-      {
-        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -81,9 +75,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "a179d8ab4bc35c8139d8f963db10c2f6f409915bd31f9b35171c5ed93bc9cdfd"
+  "hash": "1ccda8ffd9c3581bd6a8be929604783ca4f7b332775c5fa0c72971228ab03a10"
 }

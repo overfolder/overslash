@@ -1,70 +1,83 @@
-key: eventbrite
-display_name: Eventbrite
-hosts:
-  - www.eventbriteapi.com
-auth:
-  - type: oauth
-    provider: eventbrite
-    token_injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-  - type: api_key
-    default_secret_name: eventbrite_token
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  get_me:
-    method: GET
-    path: /v3/users/me/
-    description: Get the authenticated user's profile
-    risk: read
-  list_my_orders:
-    method: GET
-    path: /v3/users/me/orders/
-    description: List orders (registrations) placed by the authenticated user
-    risk: read
-  list_organizations:
-    method: GET
-    path: /v3/users/me/organizations/
-    description: List organizations the user belongs to
-    risk: read
-  get_event:
-    method: GET
-    path: /v3/events/{event_id}/
-    description: "Get details of event {event_id}"
-    risk: read
-    scope_param: event_id
-    params:
-      event_id:
-        type: string
-        required: true
-        description: The event ID
-  list_ticket_classes:
-    method: GET
-    path: /v3/events/{event_id}/ticket_classes/
-    description: "List ticket types for event {event_id}"
-    risk: read
-    scope_param: event_id
-    params:
-      event_id:
-        type: string
-        required: true
-        description: The event ID
-  list_event_attendees:
-    method: GET
-    path: /v3/events/{event_id}/attendees/
-    description: "List attendees for event {event_id}[ with status {status}]"
-    risk: read
-    scope_param: event_id
-    params:
-      event_id:
-        type: string
-        required: true
-        description: The event ID
-      status:
-        type: string
-        description: "Filter by status: attending, not_attending, etc."
-        enum: [attending, not_attending, unpaid]
+openapi: 3.1.0
+info:
+  title: Eventbrite
+  key: eventbrite
+servers:
+  - url: https://www.eventbriteapi.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: eventbrite
+      flows:
+        authorizationCode:
+          authorizationUrl: https://www.eventbrite.com/oauth/authorize
+          tokenUrl: https://www.eventbrite.com/oauth/token
+          scopes: {}
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: eventbrite_token
+paths:
+  /v3/users/me/:
+    get:
+      operationId: get_me
+      summary: Get the authenticated user's profile
+      risk: read
+  /v3/users/me/orders/:
+    get:
+      operationId: list_my_orders
+      summary: List orders (registrations) placed by the authenticated user
+      risk: read
+  /v3/users/me/organizations/:
+    get:
+      operationId: list_organizations
+      summary: List organizations the user belongs to
+      risk: read
+  /v3/events/{event_id}/:
+    get:
+      operationId: get_event
+      summary: "Get details of event {event_id}"
+      risk: read
+      scope_param: event_id
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          description: The event ID
+          schema:
+            type: string
+  /v3/events/{event_id}/ticket_classes/:
+    get:
+      operationId: list_ticket_classes
+      summary: "List ticket types for event {event_id}"
+      risk: read
+      scope_param: event_id
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          description: The event ID
+          schema:
+            type: string
+  /v3/events/{event_id}/attendees/:
+    get:
+      operationId: list_event_attendees
+      summary: "List attendees for event {event_id}[ with status {status}]"
+      risk: read
+      scope_param: event_id
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          description: The event ID
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: "Filter by status: attending, not_attending, etc."
+          schema:
+            type: string
+            enum: [attending, not_attending, unpaid]

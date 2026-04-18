@@ -1,0 +1,16 @@
+openapi: 3.1.0
+info:
+  title: Actions Service
+  key: actions-svc
+servers:
+  - url: https://actions.test
+paths:
+  /items:
+    get:
+      operationId: get_items
+      summary: List items
+      risk: read
+    post:
+      operationId: create_item
+      summary: Create item
+      risk: write

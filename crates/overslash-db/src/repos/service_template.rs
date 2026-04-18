@@ -12,8 +12,10 @@ pub struct ServiceTemplateRow {
     pub description: String,
     pub category: String,
     pub hosts: Vec<String>,
-    pub auth: serde_json::Value,
-    pub actions: serde_json::Value,
+    /// Full OpenAPI 3.1 document (with `x-overslash-*` extensions), canonical
+    /// source of truth for the template. The scalar fields above are
+    /// denormalized at write time for fast listing.
+    pub openapi: serde_json::Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -26,8 +28,7 @@ pub struct CreateServiceTemplate<'a> {
     pub description: &'a str,
     pub category: &'a str,
     pub hosts: &'a [String],
-    pub auth: serde_json::Value,
-    pub actions: serde_json::Value,
+    pub openapi: serde_json::Value,
 }
 
 pub struct UpdateServiceTemplate<'a> {
@@ -35,8 +36,7 @@ pub struct UpdateServiceTemplate<'a> {
     pub description: Option<&'a str>,
     pub category: Option<&'a str>,
     pub hosts: Option<&'a [String]>,
-    pub auth: Option<serde_json::Value>,
-    pub actions: Option<serde_json::Value>,
+    pub openapi: Option<serde_json::Value>,
 }
 
 pub async fn create(
@@ -46,10 +46,10 @@ pub async fn create(
     sqlx::query_as!(
         ServiceTemplateRow,
         "INSERT INTO service_templates (org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         category, hosts, openapi) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
          RETURNING id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at",
+         category, hosts, openapi, created_at, updated_at",
         input.org_id,
         input.owner_identity_id,
         input.key,
@@ -57,8 +57,7 @@ pub async fn create(
         input.description,
         input.category,
         input.hosts,
-        input.auth,
-        input.actions,
+        input.openapi,
     )
     .fetch_one(pool)
     .await
@@ -68,7 +67,7 @@ pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ServiceTemplate
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at \
+         category, hosts, openapi, created_at, updated_at \
          FROM service_templates WHERE id = $1",
         id,
     )
@@ -86,7 +85,7 @@ pub async fn get_by_key(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at \
+         category, hosts, openapi, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND key = $3",
         org_id,
@@ -105,7 +104,7 @@ pub async fn list_by_org(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at \
+         category, hosts, openapi, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND owner_identity_id IS NULL ORDER BY key",
         org_id,
@@ -123,7 +122,7 @@ pub async fn list_by_user(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at \
+         category, hosts, openapi, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND owner_identity_id = $2 ORDER BY key",
         org_id,
@@ -142,7 +141,7 @@ pub async fn list_available(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at \
+         category, hosts, openapi, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) \
          ORDER BY key",
@@ -161,7 +160,7 @@ pub async fn list_all_by_org(
     sqlx::query_as!(
         ServiceTemplateRow,
         "SELECT id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at \
+         category, hosts, openapi, created_at, updated_at \
          FROM service_templates \
          WHERE org_id = $1 ORDER BY key",
         org_id,
@@ -182,19 +181,17 @@ pub async fn update(
          description = COALESCE($3, description), \
          category = COALESCE($4, category), \
          hosts = COALESCE($5, hosts), \
-         auth = COALESCE($6, auth), \
-         actions = COALESCE($7, actions), \
+         openapi = COALESCE($6, openapi), \
          updated_at = now() \
          WHERE id = $1 \
          RETURNING id, org_id, owner_identity_id, key, display_name, description, \
-         category, hosts, auth, actions, created_at, updated_at",
+         category, hosts, openapi, created_at, updated_at",
         id,
         input.display_name,
         input.description,
         input.category,
         input.hosts as Option<&[String]>,
-        input.auth.clone() as Option<serde_json::Value>,
-        input.actions.clone() as Option<serde_json::Value>,
+        input.openapi.clone() as Option<serde_json::Value>,
     )
     .fetch_optional(pool)
     .await

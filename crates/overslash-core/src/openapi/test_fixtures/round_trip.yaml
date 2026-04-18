@@ -2,9 +2,9 @@ openapi: 3.1.0
 info:
   title: Slack
   key: slack
+  category: chat
 servers:
   - url: https://slack.com
-  - url: https://api.slack.com
 components:
   securitySchemes:
     oauth:
@@ -12,22 +12,15 @@ components:
       provider: slack
       flows:
         authorizationCode:
-          authorizationUrl: https://slack.com/oauth/v2/authorize
-          tokenUrl: https://slack.com/api/oauth.v2.access
+          authorizationUrl: https://slack.com/oauth
+          tokenUrl: https://slack.com/token
           scopes:
             chat:write: ""
-            channels:read: ""
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: slack_token
 paths:
   /api/chat.postMessage:
     post:
       operationId: send_message
-      summary: Send a message to Slack channel {channel}
+      summary: Send a message to {channel}
       risk: write
       scope_param: channel
       requestBody:
@@ -44,7 +37,3 @@ paths:
                 text:
                   type: string
                   description: Message text
-  /api/conversations.list:
-    get:
-      operationId: list_channels
-      summary: List Slack channels

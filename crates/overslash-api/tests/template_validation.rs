@@ -1,5 +1,8 @@
 //! Integration tests for the template validation endpoint and the CRUD hook
 //! that rejects broken templates at create/update time.
+//!
+//! All requests use OpenAPI 3.1 YAML payloads with `x-overslash-*` vendor
+//! extensions (plus aliases — see `overslash_core::openapi`).
 
 mod common;
 
@@ -43,23 +46,15 @@ async fn bootstrap(pool: sqlx::PgPool) -> (String, Client, String) {
     (base, client, admin_key)
 }
 
-const VALID_YAML: &str = r#"
-key: test-svc
-display_name: Test Service
-hosts: [api.example.com]
-auth:
-  - type: api_key
-    default_secret_name: svc_token
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  list_items:
-    method: GET
-    path: /items
-    description: List items
-"#;
+const VALID_YAML: &str = include_str!("fixtures/openapi/test_service.yaml");
+
+fn yaml_with_key(key: &str) -> String {
+    let display_name = format!("Template for {key}");
+    common::render_openapi(
+        include_str!("fixtures/openapi/minimal.yaml.tmpl"),
+        &[("key", key), ("display_name", &display_name)],
+    )
+}
 
 // ---------------------------------------------------------------------------
 // POST /v1/templates/validate
@@ -92,7 +87,7 @@ async fn validate_reports_yaml_parse_error_as_issue_not_400() {
     let resp = client
         .post(format!("{base}/v1/templates/validate"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .body("key: svc\n  bad_indent: :::")
+        .body("openapi: 3.1.0\n  bad_indent: :::")
         .send()
         .await
         .unwrap();
@@ -109,27 +104,10 @@ async fn validate_reports_semantic_error() {
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
-    // scope_param references a non-existent param.
-    let broken = r#"
-key: test-svc
-display_name: Test
-hosts: [api.example.com]
-actions:
-  get_item:
-    method: GET
-    path: /items/{id}
-    description: "Get {id}"
-    scope_param: missing
-    params:
-      id:
-        type: string
-        required: true
-"#;
-
     let resp = client
         .post(format!("{base}/v1/templates/validate"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .body(broken)
+        .body(include_str!("fixtures/openapi/unknown_scope_param.yaml"))
         .send()
         .await
         .unwrap();
@@ -175,6 +153,30 @@ async fn validate_requires_auth() {
     assert_eq!(resp.status(), 401);
 }
 
+#[tokio::test]
+async fn validate_reports_ambiguous_alias() {
+    let pool = common::test_pool().await;
+    let (base, client, admin_key) = bootstrap(pool).await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates/validate"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .body(include_str!("fixtures/openapi/ambiguous_alias.yaml"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["valid"], false);
+    assert!(
+        body["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["code"] == "ambiguous_alias")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // CRUD hook: create_template / update_template reject broken templates
 // ---------------------------------------------------------------------------
@@ -184,21 +186,12 @@ async fn create_template_rejects_broken_template() {
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
+    // path references a param that doesn't exist
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "key": "bad-api",
-            "display_name": "Bad API",
-            "hosts": ["api.example.com"],
-            "actions": {
-                "bad_action": {
-                    // path references a param that doesn't exist
-                    "method": "GET",
-                    "path": "/items/{ghost}",
-                    "description": "Get item",
-                }
-            }
+            "openapi": include_str!("fixtures/openapi/unknown_path_param.yaml"),
         }))
         .send()
         .await
@@ -212,18 +205,13 @@ async fn create_template_rejects_broken_template() {
 
 #[tokio::test]
 async fn create_template_accepts_valid_minimal_template() {
-    // Regression: existing CRUD path must still work for a valid template.
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({
-            "key": "good-api",
-            "display_name": "Good API",
-            "hosts": ["api.example.com"],
-        }))
+        .json(&json!({ "openapi": yaml_with_key("good-api") }))
         .send()
         .await
         .unwrap();
@@ -233,7 +221,7 @@ async fn create_template_accepts_valid_minimal_template() {
 }
 
 #[tokio::test]
-async fn update_template_rejects_broken_patch() {
+async fn update_template_rejects_broken_doc() {
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
@@ -241,11 +229,7 @@ async fn update_template_rejects_broken_patch() {
     let create: Value = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({
-            "key": "edit-api",
-            "display_name": "Edit API",
-            "hosts": ["api.example.com"],
-        }))
+        .json(&json!({ "openapi": yaml_with_key("edit-api") }))
         .send()
         .await
         .unwrap()
@@ -254,18 +238,12 @@ async fn update_template_rejects_broken_patch() {
         .unwrap();
     let id = create["id"].as_str().unwrap();
 
-    // Now try to patch actions with a broken action.
+    // Now try to replace the doc with a broken one.
     let resp = client
         .put(format!("{base}/v1/templates/{id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "actions": {
-                "borked": {
-                    "method": "SNOOZE",
-                    "path": "/x",
-                    "description": "nope",
-                }
-            }
+            "openapi": include_str!("fixtures/openapi/invalid_risk.yaml"),
         }))
         .send()
         .await
@@ -274,24 +252,21 @@ async fn update_template_rejects_broken_patch() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "validation_failed");
     let errors = body["report"]["errors"].as_array().unwrap();
-    assert!(errors.iter().any(|e| e["code"] == "invalid_http_method"));
+    assert!(
+        errors.iter().any(|e| e["code"] == "invalid_risk"),
+        "body: {body}"
+    );
 }
 
 #[tokio::test]
-async fn update_template_allows_metadata_only_patch_on_valid_template() {
-    // Regression: PUT {display_name} on a valid template still works and
-    // re-validates the untouched fields against the current rule set.
+async fn update_template_allows_valid_full_replacement() {
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
     let create: Value = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({
-            "key": "meta-api",
-            "display_name": "Meta API",
-            "hosts": ["api.example.com"],
-        }))
+        .json(&json!({ "openapi": yaml_with_key("meta-api") }))
         .send()
         .await
         .unwrap()
@@ -303,11 +278,41 @@ async fn update_template_allows_metadata_only_patch_on_valid_template() {
     let resp = client
         .put(format!("{base}/v1/templates/{id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"display_name": "Meta API v2"}))
+        .json(&json!({
+            "openapi": include_str!("fixtures/openapi/meta_api_v2.yaml"),
+        }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["display_name"], "Meta API v2");
+}
+
+#[tokio::test]
+async fn update_template_rejects_key_change() {
+    let pool = common::test_pool().await;
+    let (base, client, admin_key) = bootstrap(pool).await;
+
+    let create: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": yaml_with_key("orig-api") }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = create["id"].as_str().unwrap();
+
+    // Attempt to renaming the key via update — should be rejected.
+    let resp = client
+        .put(format!("{base}/v1/templates/{id}/manage"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": yaml_with_key("renamed-api") }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }

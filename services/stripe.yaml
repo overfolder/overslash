@@ -1,44 +1,53 @@
-key: stripe
-display_name: Stripe
-hosts:
-  - api.stripe.com
-auth:
-  - type: api_key
-    default_secret_name: stripe_key
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  list_charges:
-    method: GET
-    path: /v1/charges
-    description: List recent charges
-    risk: read
-    params:
-      limit:
-        type: integer
-        description: Number of charges to return (max 100)
-        default: 10
-  create_charge:
-    method: POST
-    path: /v1/charges
-    description: "Create charge for {amount} {currency}"
-    risk: write
-    params:
-      amount:
-        type: integer
+openapi: 3.1.0
+info:
+  title: Stripe
+  key: stripe
+servers:
+  - url: https://api.stripe.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: stripe_key
+paths:
+  /v1/charges:
+    get:
+      operationId: list_charges
+      summary: List recent charges
+      risk: read
+      parameters:
+        - name: limit
+          in: query
+          description: Number of charges to return (max 100)
+          schema:
+            type: integer
+            default: 10
+    post:
+      operationId: create_charge
+      summary: "Create charge for {amount} {currency}"
+      risk: write
+      requestBody:
         required: true
-        description: Amount in cents
-      currency:
-        type: string
-        required: true
-        description: Three-letter ISO currency code
-      source:
-        type: string
-        description: Payment source token
-  list_customers:
-    method: GET
-    path: /v1/customers
-    description: List customers
-    risk: read
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, currency]
+              properties:
+                amount:
+                  type: integer
+                  description: Amount in cents
+                currency:
+                  type: string
+                  description: Three-letter ISO currency code
+                source:
+                  type: string
+                  description: Payment source token
+  /v1/customers:
+    get:
+      operationId: list_customers
+      summary: List customers
+      risk: read

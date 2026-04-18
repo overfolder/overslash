@@ -1,7 +1,20 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { EditorView, basicSetup } from 'codemirror';
+	import {
+		EditorView,
+		lineNumbers,
+		highlightSpecialChars,
+		drawSelection,
+		keymap
+	} from '@codemirror/view';
 	import { EditorState } from '@codemirror/state';
+	import { history, defaultKeymap, historyKeymap } from '@codemirror/commands';
+	import {
+		syntaxHighlighting,
+		defaultHighlightStyle,
+		indentOnInput,
+		bracketMatching
+	} from '@codemirror/language';
 	import { yaml as yamlLang } from '@codemirror/lang-yaml';
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { parse as parseYaml } from 'yaml';
@@ -75,8 +88,18 @@
 			typeof document !== 'undefined' &&
 			document.documentElement.dataset.theme === 'dark';
 
+		// Minimal extension set instead of `basicSetup` — keeps the CodeMirror
+		// chunk small (no autocompletion, search, rectangular selection, fold
+		// gutter, lint, etc.). YAML config editors don't need those.
 		const extensions = [
-			basicSetup,
+			lineNumbers(),
+			highlightSpecialChars(),
+			history(),
+			drawSelection(),
+			indentOnInput(),
+			bracketMatching(),
+			syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+			keymap.of([...defaultKeymap, ...historyKeymap]),
 			yamlLang(),
 			EditorView.updateListener.of((update) => {
 				if (update.docChanged) {

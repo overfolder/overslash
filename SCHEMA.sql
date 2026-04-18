@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict EEEwtbH3jEHNh2wex2hhedCamLwnsji5SNS0daaxAmagNdRTJ1ANnkghnuxQ42Y
+\restrict YOLBK8GnYfJ9Nu8SHYQWmEytYdDmYfOlBjnYFjWQPW6AmudH1io7SJCk1CyDEZk
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -492,10 +492,9 @@ CREATE TABLE public.service_templates (
     description text DEFAULT ''::text NOT NULL,
     category text DEFAULT ''::text NOT NULL,
     hosts text[] DEFAULT '{}'::text[] NOT NULL,
-    auth jsonb DEFAULT '[]'::jsonb NOT NULL,
-    actions jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    openapi jsonb NOT NULL
 );
 
 
@@ -1685,5 +1684,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict EEEwtbH3jEHNh2wex2hhedCamLwnsji5SNS0daaxAmagNdRTJ1ANnkghnuxQ42Y
+\unrestrict YOLBK8GnYfJ9Nu8SHYQWmEytYdDmYfOlBjnYFjWQPW6AmudH1io7SJCk1CyDEZk
 

@@ -328,7 +328,7 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 - **Services**: service list → service detail/editor is a full-screen push. API Explorer is full-screen.
 - **Secrets**: secret list → secret detail is a full-screen push. Version reveal modal works as-is.
 - **Audit log**: event list → event detail is a full-screen push.
-- **Template Editor**: only the Visual tab is practical on mobile. YAML tab shows a "best on desktop" hint.
+- **Template Editor**: the OpenAPI YAML editor is desktop-first. On mobile the CodeMirror pane is still usable but reduced (smaller gutter, no validation panel when space is tight).
 - **Approval resolution**: specificity picker renders as a vertical radio list (works well on mobile as-is).
 
 ## Loading States
@@ -971,7 +971,7 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 2. **Parse preview**: Overslash parses the spec and shows a structured preview — template identity (key, name, base URL inferred from `servers`), auth config (inferred from `securitySchemes`), and a list of all endpoints grouped by tag.
 3. **Endpoint picker**: each endpoint shows as a row with checkbox, HTTP method badge, path, and inferred description. User picks which endpoints become actions, can edit generated names/descriptions, and skip the rest. "Select all" / "Deselect all" toggles at the top.
 4. **Parameter mapping**: for selected endpoints, parameter schemas are extracted from path params, query params, and request body. User can edit types, mark required/optional, and set `scope_param`.
-5. **Review**: opens the **Template Editor** (Visual tab) with all generated content pre-filled. User makes final edits before saving as Draft or Active.
+5. **Review**: opens the **Template Editor** with the generated OpenAPI YAML pre-filled — including any `x-overslash-*` overlay defaults the importer could infer. User makes final edits before saving as Draft or Active.
 
 ### Template Editor
 
@@ -984,80 +984,41 @@ The editing view for user-defined and org-defined templates. Two tabs.
 
 The pill is omitted if the template has no special status. Changing status happens via the kebab menu in the header (`Publish`, `Unpublish`, `Archive`).
 
-Two tabs:
+#### OpenAPI YAML editor
 
-#### Visual tab
-
-A form-based editor for the template definition:
-
-**Template section:**
-- Key, display name, description, base URL
-- **Auth config**: method picker (`API Key` / `OAuth 2.0` / `Bearer Token` / `Basic Auth` / `None`) + relevant fields per method:
-  - **API Key**: header/query name, injection location (`header` / `query`), and a **Secret picker** for the key value (see below).
-  - **OAuth 2.0**: **Provider** dropdown (built-in providers: Google, GitHub, Slack, etc., plus "Custom"). Scopes (multi-input). Token injection config (header name, prefix). For "Custom" provider: additionally shows authorize URL and token URL fields. Client credentials are **not** configured here — they resolve via the three-tier cascade (§7 in SPEC): user BYOC secrets → org-level secrets → system env vars. A status line below the provider picker shows where credentials will come from (e.g., "Using org credentials" or "No credentials configured — user must provide via BYOC on connect").
-  - **Bearer Token**: **Secret picker** for the token.
-  - **Basic Auth**: username field + **Secret picker** for the password.
-  
-  **Secret picker** — a searchable dropdown listing the secrets the current user owns (filtered to user-level secrets, plus org-level secrets if the user is an org admin). The dropdown shows: secret name (mono), owner identity, last-used timestamp. Typing in the dropdown filters the list by name (debounced 200ms). A `[+ New Secret]` action at the bottom of the dropdown opens the New Secret modal inline; on save, the newly-created secret is auto-selected. Selected secrets render as a chip with the secret name and a `✕` to clear. The picker stores a reference to the secret (not its value) — the value is injected at execution time, never embedded in the template.
-
-**Actions section:**
-- List of defined actions with name, method badge, path, mutating badge (read/write)
-- `[+ New Action]` button opens the **New Action modal** (see below)
-- Click any action to open the same modal in **edit mode** prefilled with that action's values
-- Drag to reorder, delete with confirmation
-
-##### New / Edit Action modal
-
-A centered modal (~640px wide, scroll if content exceeds viewport) that captures all fields for an action in one place. Same component used for both create and edit (the title and primary button label switch between *New Action* / *Edit Action* and *Create* / *Save*).
-
-**Modal layout:**
-
-1. **Header** — title (`New Action` or `Edit Action: <name>`), close `✕` button.
-2. **Identity row** — two fields side by side:
-   - **Name** (`text`, required) — snake_case identifier used in permission keys and SDK calls. Validation: lowercase, digits, underscores, starts with letter. Inline error if invalid.
-   - **HTTP Method** (`dropdown`, required) — `GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS`. Each option shows the method's badge color.
-3. **Path template** (`text`, required) — full-width, monospace input. Supports `{param}` placeholder syntax. Typing `{` triggers autocomplete from currently-defined params. Inline placeholder chips render in primary color. Invalid placeholders (param not defined) underlined with a warning. Example: `/repos/{owner}/{repo}/issues`.
-4. **Description template** (`textarea`, required) — full-width, 2 rows tall. Supports `{param}` interpolation and `[conditional segments]`. Typing `{` triggers param autocomplete; typing `[` starts a conditional segment. Placeholders render as highlighted chips inside the textarea preview. Live preview line below shows the rendered example using placeholder values. Example: `Create pull request "{title}" on {owner}/{repo}` → preview: `Create pull request "Fix bug" on overfolder/app`.
-5. **Mutating toggle** — checkbox + label `Mutating (write) action`. Default value is inferred from the HTTP method (GET/HEAD/OPTIONS → unchecked/read, others → checked/write). Manual override allowed; an info icon explains what mutating means (controls approval-by-default behavior).
-6. **Scope param** (`dropdown`) — which defined parameter drives the permission key arg. Options are populated from the params table below. `None` is allowed (key uses `*` wildcard). Helper text: *"The selected param's value becomes the resource arg in the permission key, e.g. for `slack.chat.post_message:#general` the scope param is `channel`."*
-7. **Parameters table** — full-width editable table with columns:
-   - **Name** (text, required) — param identifier
-   - **Type** (dropdown) — `string` / `number` / `boolean` / `enum` / `object`
-   - **Required** (checkbox)
-   - **Description** (text)
-   - **Enum values** (only when type = `enum`) — comma-separated; renders as removable chips
-   - Trailing **`✕`** button to delete the row
-   
-   Below the table: `[+ Add parameter]` ghost button.
-8. **Footer** — full-width row with `[Cancel]` (ghost, left) and `[Create]` / `[Save]` (primary, right). For edit mode also a `[Delete action]` button on the far left in danger style with a confirmation popover.
-
-**Validation:** the primary button is disabled until all required fields are valid. Errors render inline beneath each field. The modal locks scroll on the page behind it (overlay backdrop dimmed at 50% opacity).
-
-#### YAML tab
-
-A code editor showing the full template definition as YAML:
+A single CodeMirror pane showing the full template definition as OpenAPI 3.1 with `x-overslash-*` extensions. There is no separate visual tab — templates are edited as raw YAML, which is the canonical format stored in the database.
 
 ```
 ┌─ Template Editor: My Scraper API ─────────────────────────────┐
-│  [Visual]  [YAML]                                             │
 │                                                               │
 │  ┌──────────────────────────────────────────────────────────┐ │
-│  │ key: my-scraper-api                                      │ │
-│  │ display_name: My Scraper API                             │ │
-│  │ description: "Personal web scraping service"             │ │
-│  │ hosts: [scraper.myserver.com]                            │ │
-│  │ auth:                                                    │ │
-│  │   - type: api_key                                        │ │
-│  │     injection: { as: header, header_name: X-API-Key }    │ │
-│  │ actions:                                                 │ │
-│  │   scrape_page:                                           │ │
-│  │     method: POST                                         │ │
-│  │     path: /scrape                                        │ │
-│  │     description: "Scrape a web page"                     │ │
-│  │     # mutating: true (inferred from POST)                │ │
-│  │     params:                                              │ │
-│  │       url: { type: string, required: true }              │ │
-│  │       format: { type: string, enum: [html, text, md] }   │ │
+│  │ openapi: 3.1.0                                           │ │
+│  │ info:                                                    │ │
+│  │   title: My Scraper API                                  │ │
+│  │   description: "Personal web scraping service"           │ │
+│  │   key: my-scraper-api                                    │ │
+│  │ servers:                                                 │ │
+│  │   - url: https://scraper.myserver.com                    │ │
+│  │ components:                                              │ │
+│  │   securitySchemes:                                       │ │
+│  │     token:                                               │ │
+│  │       type: apiKey                                       │ │
+│  │       in: header                                         │ │
+│  │       name: X-API-Key                                    │ │
+│  │       default_secret_name: scraper_key                   │ │
+│  │ paths:                                                   │ │
+│  │   /scrape:                                               │ │
+│  │     post:                                                │ │
+│  │       operationId: scrape_page                           │ │
+│  │       summary: Scrape a web page                         │ │
+│  │       requestBody:                                       │ │
+│  │         content:                                         │ │
+│  │           application/json:                              │ │
+│  │             schema:                                      │ │
+│  │               properties:                                │ │
+│  │                 url: {type: string}                      │ │
+│  │                 format: {type: string,                   │ │
+│  │                          enum: [html, text, md]}         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  ┌─ Validation ─────────────────────────────────────────────┐ │
@@ -1066,18 +1027,23 @@ A code editor showing the full template definition as YAML:
 │  │   keys will use wildcard arg (*)                         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
-│                                        [Test] [Save] [Delete] │
+│                                                [Save] [Delete]│
 └───────────────────────────────────────────────────────────────┘
 ```
 
-- YAML is directly editable — changes sync to the Visual tab on switch (and vice versa)
-- **Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/templates/validate`). Validation runs on every edit (debounced). Errors block saving, warnings are informational.
-- **`[Test]`** — opens the API Explorer (see below) pre-loaded with a draft service instance of this template. If no service instance exists yet, creates a temporary draft instance and prompts the user for credentials. This lets template authors verify actions, parameters, and auth config work against the real API before publishing.
-- Future: ship the Rust YAML parser as WASM for instant client-side validation without a round-trip. V1 uses the backend validate endpoint.
+**Aliases**: for ergonomic authoring, the `x-overslash-*` extensions may be written without their prefix — `risk:`, `scope_param:`, `resolve:`, `provider:`, `default_secret_name:`, `category:`, `key:`, and top-level `platform_actions:` all canonicalize to their `x-overslash-*` form on save. Ambiguous documents (both forms on the same object) are rejected inline with `ambiguous_alias` and a line-precise dot-path pointing to the offending key.
+
+**Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/templates/validate`). Validation runs on every edit (debounced ~400ms). Errors block saving, warnings are informational. Stable machine-readable codes (`openapi_parse_error`, `ambiguous_alias`, `duplicate_operation_id`, `unknown_scope_param`, `invalid_risk`, `unknown_path_param`, `missing_field`, …) let the panel render structured messages with path hints.
+
+**Editor behavior**:
+- YAML syntax highlighting via `@codemirror/lang-yaml`. Minimal CodeMirror footprint (line numbers, history, bracket matching, default keymaps — no autocompletion, search, or fold gutter) so the lazy-loaded chunk stays small.
+- Dark mode follows the dashboard theme (`oneDark` when the document has `data-theme="dark"`).
+- Client-side YAML-syntax parse catches malformed YAML immediately; structured semantics go to the backend.
+- Future: ship the Rust OpenAPI parser as WASM for instant client-side validation of `x-overslash-*` semantics without a round-trip.
 
 #### View-only mode
 
-For global (Overslash-shipped) templates, the editor opens in read-only mode. Both Visual and YAML tabs are viewable but not editable. This lets users inspect the template — what actions are available, what parameters they take, how auth is configured.
+For global (Overslash-shipped) templates, the editor opens in read-only mode. The YAML source is still displayed verbatim so users can inspect the template — what operations are available, what parameters they take, how auth is configured.
 
 ### Share template
 

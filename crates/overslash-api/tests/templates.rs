@@ -1,5 +1,5 @@
 //! Integration tests for the three-tier template registry:
-//! global (shipped YAML) + org (DB, admin CRUD) + user (DB, CRUD gated by org setting).
+//! global (shipped OpenAPI YAML) + org (DB, admin CRUD) + user (DB, CRUD gated by org setting).
 
 mod common;
 
@@ -9,6 +9,15 @@ use uuid::Uuid;
 
 fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
+}
+
+/// Minimal OpenAPI 3.1 template body loaded from
+/// `tests/fixtures/openapi/minimal.yaml.tmpl` with Jinja substitution.
+fn minimal_openapi(key: &str, display_name: &str) -> String {
+    common::render_openapi(
+        include_str!("fixtures/openapi/minimal.yaml.tmpl"),
+        &[("key", key), ("display_name", display_name)],
+    )
 }
 
 /// Bootstrap an org with admin, write, and read-only users + keys.
@@ -61,8 +70,7 @@ async fn test_user_template_blocked_when_setting_off() {
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
         .json(&json!({
-            "key": "my-api",
-            "display_name": "My API",
+            "openapi": minimal_openapi("my-api", "My API"),
             "user_level": true,
         }))
         .send()
@@ -92,10 +100,8 @@ async fn test_user_template_crud_when_setting_on() {
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
         .json(&json!({
-            "key": "my-api",
-            "display_name": "My Custom API",
+            "openapi": minimal_openapi("my-api", "My Custom API"),
             "user_level": true,
-            "hosts": ["api.example.com"],
         }))
         .send()
         .await
@@ -106,11 +112,11 @@ async fn test_user_template_crud_when_setting_on() {
     assert_eq!(created["key"], "my-api");
     let template_id = created["id"].as_str().unwrap();
 
-    // Update the user-level template
+    // Update the user-level template — full OpenAPI replacement, rename
     let resp = client
         .put(format!("{base}/v1/templates/{template_id}/manage"))
         .header(auth(&write_key).0, auth(&write_key).1)
-        .json(&json!({"display_name": "My API v2"}))
+        .json(&json!({ "openapi": minimal_openapi("my-api", "My API v2") }))
         .send()
         .await
         .unwrap();
@@ -140,8 +146,7 @@ async fn test_write_user_cannot_create_org_template() {
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
         .json(&json!({
-            "key": "org-api",
-            "display_name": "Org API",
+            "openapi": minimal_openapi("org-api", "Org API"),
             "user_level": false,
         }))
         .send()
@@ -162,8 +167,7 @@ async fn test_admin_creates_org_template() {
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "key": "internal-api",
-            "display_name": "Internal API",
+            "openapi": minimal_openapi("internal-api", "Internal API"),
         }))
         .send()
         .await
@@ -191,8 +195,6 @@ async fn test_user_cannot_modify_other_users_template() {
         .await
         .unwrap();
 
-    // Create a key for a second write user (reuse user_ids[2] after promoting them,
-    // or create a new user). Let's create a new user for clarity.
     let user2: Value = client
         .post(format!("{base}/v1/identities"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -222,8 +224,7 @@ async fn test_user_cannot_modify_other_users_template() {
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
         .json(&json!({
-            "key": "private-api",
-            "display_name": "Private API",
+            "openapi": minimal_openapi("private-api", "Private API"),
             "user_level": true,
         }))
         .send()
@@ -237,7 +238,7 @@ async fn test_user_cannot_modify_other_users_template() {
     let resp = client
         .put(format!("{base}/v1/templates/{template_id}/manage"))
         .header(auth(&user2_key).0, auth(&user2_key).1)
-        .json(&json!({"display_name": "Hijacked"}))
+        .json(&json!({ "openapi": minimal_openapi("private-api", "Hijacked") }))
         .send()
         .await
         .unwrap();
@@ -256,7 +257,7 @@ async fn test_user_cannot_modify_other_users_template() {
     let resp = client
         .put(format!("{base}/v1/templates/{template_id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"display_name": "Admin Override"}))
+        .json(&json!({ "openapi": minimal_openapi("private-api", "Admin Override") }))
         .send()
         .await
         .unwrap();
@@ -282,7 +283,6 @@ async fn test_global_templates_visible_by_default() {
     assert_eq!(resp.status(), 200);
     let templates: Vec<Value> = resp.json().await.unwrap();
 
-    // With registry loaded, global templates should be present
     let global_count = templates.iter().filter(|t| t["tier"] == "global").count();
     assert!(global_count > 0, "expected global templates to be visible");
 }
@@ -291,7 +291,6 @@ async fn test_global_templates_visible_by_default() {
 async fn test_global_templates_hidden_when_disabled() {
     let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
-    // Disable global templates
     let resp = client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -301,7 +300,6 @@ async fn test_global_templates_hidden_when_disabled() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Write user sees no globals
     let resp = client
         .get(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -312,7 +310,6 @@ async fn test_global_templates_hidden_when_disabled() {
     let global_count = templates.iter().filter(|t| t["tier"] == "global").count();
     assert_eq!(global_count, 0, "expected no globals when disabled");
 
-    // GET by key also returns 404 for global
     let resp = client
         .get(format!("{base}/v1/templates/github"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -326,7 +323,6 @@ async fn test_global_templates_hidden_when_disabled() {
 async fn test_selective_global_enable() {
     let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
-    // Disable all globals
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -335,7 +331,6 @@ async fn test_selective_global_enable() {
         .await
         .unwrap();
 
-    // Enable just "github"
     let resp = client
         .post(format!("{base}/v1/templates/enabled-globals"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -345,7 +340,6 @@ async fn test_selective_global_enable() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Write user sees only github
     let resp = client
         .get(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -357,7 +351,6 @@ async fn test_selective_global_enable() {
     assert_eq!(globals.len(), 1);
     assert_eq!(globals[0]["key"], "github");
 
-    // GET by key works for github
     let resp = client
         .get(format!("{base}/v1/templates/github"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -366,7 +359,6 @@ async fn test_selective_global_enable() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // But not for slack
     let resp = client
         .get(format!("{base}/v1/templates/slack"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -375,7 +367,6 @@ async fn test_selective_global_enable() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 
-    // Disable github
     let resp = client
         .delete(format!("{base}/v1/templates/enabled-globals/github"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -384,7 +375,6 @@ async fn test_selective_global_enable() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Now no globals visible
     let resp = client
         .get(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -404,7 +394,6 @@ async fn test_selective_global_enable() {
 async fn test_admin_compliance_view() {
     let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
-    // Enable user templates and create one
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -417,27 +406,23 @@ async fn test_admin_compliance_view() {
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
         .json(&json!({
-            "key": "user-api",
-            "display_name": "User API",
+            "openapi": minimal_openapi("user-api", "User API"),
             "user_level": true,
         }))
         .send()
         .await
         .unwrap();
 
-    // Admin creates an org-level template
     client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "key": "org-api",
-            "display_name": "Org API",
+            "openapi": minimal_openapi("org-api", "Org API"),
         }))
         .send()
         .await
         .unwrap();
 
-    // Disable globals and enable just one
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -453,7 +438,6 @@ async fn test_admin_compliance_view() {
         .await
         .unwrap();
 
-    // Admin compliance view
     let resp = client
         .get(format!("{base}/v1/templates/admin"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -463,7 +447,6 @@ async fn test_admin_compliance_view() {
     assert_eq!(resp.status(), 200);
     let templates: Vec<Value> = resp.json().await.unwrap();
 
-    // Should see ALL globals (with enabled flag)
     let globals: Vec<&Value> = templates.iter().filter(|t| t["tier"] == "global").collect();
     assert!(globals.len() > 1, "admin should see ALL globals");
 
@@ -473,21 +456,18 @@ async fn test_admin_compliance_view() {
     let slack = globals.iter().find(|t| t["key"] == "slack").unwrap();
     assert_eq!(slack["enabled"], false);
 
-    // Should see the org template
     assert!(
         templates
             .iter()
             .any(|t| t["key"] == "org-api" && t["tier"] == "org")
     );
 
-    // Should see the user's template (with owner_identity_id)
     let user_tpl = templates
         .iter()
         .find(|t| t["key"] == "user-api" && t["tier"] == "user")
         .expect("admin should see user templates");
     assert!(user_tpl["owner_identity_id"].is_string());
 
-    // Write user cannot access admin view
     let resp = client
         .get(format!("{base}/v1/templates/admin"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -505,13 +485,11 @@ async fn test_admin_compliance_view() {
 async fn test_template_operations_produce_audit_entries() {
     let (base, client, org_id, admin_key, _, _, _, _) = bootstrap(true).await;
 
-    // Create org template (generates audit)
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "key": "audit-test-api",
-            "display_name": "Audit Test",
+            "openapi": minimal_openapi("audit-test-api", "Audit Test"),
         }))
         .send()
         .await
@@ -520,16 +498,14 @@ async fn test_template_operations_produce_audit_entries() {
     let created: Value = resp.json().await.unwrap();
     let template_id = created["id"].as_str().unwrap();
 
-    // Update template (generates audit)
     client
         .put(format!("{base}/v1/templates/{template_id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"display_name": "Audit Test v2"}))
+        .json(&json!({ "openapi": minimal_openapi("audit-test-api", "Audit Test v2") }))
         .send()
         .await
         .unwrap();
 
-    // Delete template (generates audit)
     client
         .delete(format!("{base}/v1/templates/{template_id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -537,7 +513,6 @@ async fn test_template_operations_produce_audit_entries() {
         .await
         .unwrap();
 
-    // Enable a global template (generates audit)
     client
         .post(format!("{base}/v1/templates/enabled-globals"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -546,7 +521,6 @@ async fn test_template_operations_produce_audit_entries() {
         .await
         .unwrap();
 
-    // Change template settings (generates audit)
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -555,7 +529,6 @@ async fn test_template_operations_produce_audit_entries() {
         .await
         .unwrap();
 
-    // Check audit log for template-related entries
     let resp = client
         .get(format!("{base}/v1/audit?resource_type=template"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -628,7 +601,6 @@ async fn test_template_settings_write_user_forbidden() {
 async fn test_template_actions_respects_global_filter() {
     let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
 
-    // Disable global templates
     client
         .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -637,7 +609,6 @@ async fn test_template_actions_respects_global_filter() {
         .await
         .unwrap();
 
-    // GET /v1/templates/github/actions should be 404
     let resp = client
         .get(format!("{base}/v1/templates/github/actions"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -646,7 +617,6 @@ async fn test_template_actions_respects_global_filter() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 
-    // Enable github specifically
     client
         .post(format!("{base}/v1/templates/enabled-globals"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -655,7 +625,6 @@ async fn test_template_actions_respects_global_filter() {
         .await
         .unwrap();
 
-    // Now actions should work for github
     let resp = client
         .get(format!("{base}/v1/templates/github/actions"))
         .header(auth(&write_key).0, auth(&write_key).1)
@@ -664,7 +633,6 @@ async fn test_template_actions_respects_global_filter() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // But not for slack
     let resp = client
         .get(format!("{base}/v1/templates/slack/actions"))
         .header(auth(&write_key).0, auth(&write_key).1)

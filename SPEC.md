@@ -599,7 +599,7 @@ These descriptions appear in: approval requests (what the agent wants to do), au
 
 Two distinct concepts:
 
-- **Service Template** — a YAML definition describing an API: base URL, auth config, actions. No credentials. A blueprint.
+- **Service Template** — an OpenAPI 3.1 definition describing an API: base URL, auth config, operations. No credentials. A blueprint.
 - **Service** — a named instance of a template, bound to specific credentials. `work-calendar` is a Google Calendar template instantiated with alice@acme.com's OAuth token.
 
 ### Service Templates
@@ -608,11 +608,11 @@ Templates live in a three-tier registry:
 
 | Tier | Managed by | Visible to | Mutable |
 |------|-----------|------------|---------|
-| **Global** | Overslash (shipped YAML) | Everyone | Read-only for orgs |
+| **Global** | Overslash (shipped OpenAPI YAML) | Everyone | Read-only for orgs |
 | **Org** | Org-admins | Org members | Full CRUD |
 | **User** | Users (if org allows) | Creator + their agents | Full CRUD |
 
-**Global**: YAML files shipped with Overslash. Common APIs (Eventbrite, GitHub, Google Calendar, Stripe, Slack, Resend, X, etc.). Read-only for orgs. Org-admins can hide unused global templates from their org.
+**Global**: OpenAPI 3.1 YAML files shipped with Overslash under `services/`. Common APIs (Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Slack, Stripe, Resend, X). Read-only for orgs. Org-admins can hide unused global templates from their org.
 
 **Org**: Org-admins create templates for the org's internal or niche APIs. Visible to all org members (templates are blueprints — visibility doesn't grant access, creating a service instance does).
 
@@ -622,43 +622,70 @@ Templates live in a three-tier registry:
 
 ### Template Definition
 
+Templates are authored as OpenAPI 3.1 documents. Five AI-gateway-specific fields that OpenAPI cannot express natively live under the `x-overslash-*` vendor-extension namespace: `risk`, `scope_param`, `resolve`, `provider`, `default_secret_name`. For authoring ergonomics, the same keys may also be written without the prefix (just `risk:`, `scope_param:`, etc.) — the backend normalizes aliases to their canonical `x-overslash-*` form on load and before persist. Ambiguous documents (both forms present on the same object) are rejected with a stable `ambiguous_alias` error.
+
 ```yaml
-key: google-calendar
-display_name: Google Calendar
-description: "Google Calendar API"
-hosts: [www.googleapis.com/calendar]
-auth:
-  - type: oauth
-    provider: google
-    scopes: [https://www.googleapis.com/auth/calendar]
-    token_injection: { as: header, header_name: Authorization, prefix: "Bearer " }
-actions:
-  create_event:
-    method: POST
-    path: /calendars/{calendar_id}/events
-    description: "Create event '{summary}'[ on {calendar_id}]"
-    risk: write
-    scope_param: calendar_id
-    params:
-      calendar_id: { type: string, required: true, default: primary }
-      summary: { type: string, required: true }
-      start: { type: string, required: true, description: "ISO 8601 datetime" }
-      end: { type: string, required: true, description: "ISO 8601 datetime" }
-  list_events:
-    method: GET
-    path: /calendars/{calendar_id}/events
-    description: "List events[ on {calendar_id}]"
-    risk: read
-    scope_param: calendar_id
-    params:
-      calendar_id: { type: string, required: true, default: primary }
-      time_min: { type: string, description: "ISO 8601 datetime" }
-      time_max: { type: string, description: "ISO 8601 datetime" }
+openapi: 3.1.0
+info:
+  title: Google Calendar
+  key: google_calendar              # alias for x-overslash-key
+servers:
+  - url: https://www.googleapis.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: google              # alias for x-overslash-provider
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/calendar: ""
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: google_calendar_token   # alias for x-overslash-default_secret_name
+paths:
+  /calendar/v3/calendars/{calendarId}/events:
+    parameters:
+      - name: calendarId
+        in: path
+        required: true
+        description: "Calendar identifier (use 'primary' for the main calendar)"
+        schema:
+          type: string
+          default: primary
+        resolve:                    # alias for x-overslash-resolve
+          get: /calendar/v3/calendars/{calendarId}
+          pick: summary
+    post:
+      operationId: create_event
+      summary: "Create event '{summary}' on calendar {calendarId}"
+      risk: write                   # alias for x-overslash-risk
+      scope_param: calendarId       # alias for x-overslash-scope_param
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [summary, start, end]
+              properties:
+                summary: {type: string, description: Title of the event}
+                start: {type: object, description: "Start time object"}
+                end: {type: object, description: "End time object"}
 ```
 
-**Key fields:**
-- **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. Without `scope_param`, the arg is `*`.
-- **`risk`** — enum: `read`, `write`, `delete`. Defaults to `read` when omitted. Informational for the UI and influences auto-approve-reads behavior (`read` → non-mutating, `write`/`delete` → mutating).
+**Key gateway-specific fields:**
+- **`x-overslash-risk` / `risk:`** — enum: `read`, `write`, `delete`. Defaults to a value inferred from the HTTP method (GET/HEAD/OPTIONS → read, DELETE → delete, else write). Influences auto-approve-reads behavior.
+- **`x-overslash-scope_param` / `scope_param:`** — which parameter provides the `{arg}` segment in permission keys. Without it, the arg is `*`.
+- **`x-overslash-resolve` / `resolve:`** — on a parameter, fetch a human-readable name for an opaque ID. Runs a follow-up GET against the service and extracts a field. Used in agent-facing descriptions.
+- **`x-overslash-provider` / `provider:`** — on an `oauth2` security scheme, the symbolic OAuth provider name (`google`, `slack`, `github`, ...). Decoupled from OAuth URLs so the gateway can resolve credentials independently.
+- **`x-overslash-default_secret_name` / `default_secret_name:`** — on an `apiKey` or `http` security scheme, the canonical secret name for auto-wiring.
+- **Platform-namespace actions** — `x-overslash-platform_actions` (alias `platform_actions:`) at the top level declares permission anchors with no HTTP binding (e.g. the `overslash` meta service's admin actions).
 
 ### OAuth Scopes
 
