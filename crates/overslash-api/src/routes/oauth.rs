@@ -144,20 +144,29 @@ async fn register(
         }
     };
 
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "client_id": row.client_id,
-            "client_name": row.client_name,
-            "redirect_uris": row.redirect_uris,
-            "software_id": row.software_id,
-            "software_version": row.software_version,
-            "token_endpoint_auth_method": "none",
-            "grant_types": ["authorization_code", "refresh_token"],
-            "response_types": ["code"],
-        })),
-    )
-        .into_response()
+    // RFC 7591 metadata fields are optional. Claude Code's DCR client (Zod
+    // schema) rejects explicit `null`s — omit unset fields entirely rather
+    // than serialising Option<String>::None into `null`.
+    let mut body = serde_json::Map::new();
+    body.insert("client_id".into(), json!(row.client_id));
+    body.insert("redirect_uris".into(), json!(row.redirect_uris));
+    body.insert("token_endpoint_auth_method".into(), json!("none"));
+    body.insert(
+        "grant_types".into(),
+        json!(["authorization_code", "refresh_token"]),
+    );
+    body.insert("response_types".into(), json!(["code"]));
+    if let Some(v) = row.client_name.as_deref() {
+        body.insert("client_name".into(), json!(v));
+    }
+    if let Some(v) = row.software_id.as_deref() {
+        body.insert("software_id".into(), json!(v));
+    }
+    if let Some(v) = row.software_version.as_deref() {
+        body.insert("software_version".into(), json!(v));
+    }
+
+    (StatusCode::CREATED, Json(Value::Object(body))).into_response()
 }
 
 // ---------------------------------------------------------------------------

@@ -128,7 +128,7 @@ config format (Cursor, Windsurf, etc. with their equivalent file names):
 {
   "mcpServers": {
     "overslash": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "https://<your-overslash>/mcp"
     }
   }

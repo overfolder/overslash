@@ -125,7 +125,7 @@ MCP clients that speak Streamable HTTP (Claude Code, Cursor, Windsurf, …) poin
 {
   "mcpServers": {
     "overslash": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "https://<your-overslash>/mcp"
     }
   }
