@@ -2,76 +2,47 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
-	import { createTemplate, listOAuthProviders } from '$lib/api/services';
-	import type { OAuthProviderInfo, TemplateDetail, ServiceAuth, ServiceAction } from '$lib/types';
-	import { onMount } from 'svelte';
-	import { templateToYaml, yamlToTemplate } from '$lib/utils/templateYaml';
-	import TemplateEditorVisual from '$lib/components/templates/TemplateEditorVisual.svelte';
+	import { createTemplate } from '$lib/api/services';
 
-	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle until the YAML tab is opened.
+	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle.
 	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
 
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
-	let oauthProviders = $state<OAuthProviderInfo[]>([]);
 
-	onMount(async () => {
-		try { oauthProviders = await listOAuthProviders(); } catch { /* non-fatal */ }
-	});
-
-	let activeTab = $state<'visual' | 'yaml'>('visual');
 	// Default to user-level when non-admin (they can't create org templates)
 	// svelte-ignore state_referenced_locally
 	let userLevel = $state(!isAdmin);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
-	let syncError = $state<string | null>(null);
 
-	// Default skeleton for a new template
-	let template = $state<TemplateDetail>({
-		key: '',
-		display_name: '',
-		description: null,
-		category: null,
-		hosts: [],
-		auth: [] as ServiceAuth[],
-		actions: {} as Record<string, ServiceAction>,
-		tier: 'org'
-	});
-
-	// svelte-ignore state_referenced_locally
-	let yamlText = $state(templateToYaml(template));
-
-	function handleVisualChange(updated: TemplateDetail) {
-		template = updated;
-		yamlText = templateToYaml(updated);
-		syncError = null;
-	}
+	// Seed OpenAPI skeleton so the user has something to edit.
+	let yamlText = $state(`openapi: 3.1.0
+info:
+  title: My Service
+  key: my-service
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: my_service_token
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read
+`);
 
 	function handleYamlChange(yaml: string) {
 		yamlText = yaml;
-		const parsed = yamlToTemplate(yaml, template);
-		if (parsed) {
-			template = parsed;
-			syncError = null;
-		}
 	}
 
-	function switchTab(tab: 'visual' | 'yaml') {
-		if (tab === 'yaml' && activeTab === 'visual') {
-			yamlText = templateToYaml(template);
-		} else if (tab === 'visual' && activeTab === 'yaml') {
-			const parsed = yamlToTemplate(yamlText, template);
-			if (!parsed) {
-				syncError = 'Cannot switch to Visual tab: YAML has syntax errors.';
-				return;
-			}
-			template = parsed;
-		}
-		syncError = null;
-		activeTab = tab;
-	}
-
-	const canSave = $derived(template.key.length > 0 && template.display_name.length > 0);
+	const canSave = $derived(yamlText.trim().length > 0);
 
 	async function save() {
 		if (!canSave) return;
@@ -79,21 +50,20 @@
 		error = null;
 		try {
 			const created = await createTemplate({
-				key: template.key,
-				display_name: template.display_name,
-				description: template.description ?? undefined,
-				category: template.category ?? undefined,
-				hosts: template.hosts,
-				auth: template.auth,
-				actions: template.actions,
+				openapi: yamlText,
 				user_level: userLevel
 			});
 			await goto(`/services/templates/${encodeURIComponent(created.key)}`);
 		} catch (e) {
 			if (e instanceof ApiError) {
 				const body = (e as any).body;
-				const detail = typeof body === 'object' && body?.error ? body.error : '';
-				error = `Failed to create template (${e.status})${detail ? ': ' + detail : ''}`;
+				const report = body?.report;
+				if (report?.errors?.length) {
+					error = report.errors.map((x: any) => `${x.path ?? ''} ${x.message ?? ''}`).join('; ');
+				} else {
+					const detail = typeof body === 'object' && body?.error ? body.error : '';
+					error = `Failed to create template (${e.status})${detail ? ': ' + detail : ''}`;
+				}
 			} else {
 				error = 'Failed to create template';
 			}
@@ -109,13 +79,11 @@
 	<header class="page-head">
 		<a href="/services" class="back">← Back to services</a>
 		<h1>New Template</h1>
+		<p class="subtitle">OpenAPI 3.1 with <code>x-overslash-*</code> extensions. Aliases (<code>risk:</code>, <code>scope_param:</code>, <code>resolve:</code>, <code>provider:</code>, <code>default_secret_name:</code>, <code>key:</code>, <code>category:</code>) are accepted and canonicalized on save.</p>
 	</header>
 
 	{#if error}
 		<div class="error">{error}</div>
-	{/if}
-	{#if syncError}
-		<div class="error">{syncError}</div>
 	{/if}
 
 	<div class="tier-picker">
@@ -138,50 +106,15 @@
 		</label>
 	</div>
 
-	<div class="tabs" role="tablist">
-		<button
-			type="button"
-			role="tab"
-			class="tab"
-			aria-selected={activeTab === 'visual'}
-			onclick={() => switchTab('visual')}
-		>
-			Visual
-		</button>
-		<button
-			type="button"
-			role="tab"
-			class="tab"
-			aria-selected={activeTab === 'yaml'}
-			onclick={() => switchTab('yaml')}
-		>
-			YAML
-		</button>
-	</div>
-
 	<div class="editor-area">
-		{#if activeTab === 'visual'}
-			<TemplateEditorVisual
-				data={template}
-				readOnly={false}
-				providers={oauthProviders}
-				{isAdmin}
-				onchange={handleVisualChange}
-			/>
-		{:else}
-			{#await loadYamlEditor()}
-				<div class="editor-loading">Loading editor…</div>
-			{:then mod}
-				{@const TemplateEditorYaml = mod.default}
-				<TemplateEditorYaml
-					yamlValue={yamlText}
-					readOnly={false}
-					onchange={handleYamlChange}
-				/>
-			{:catch}
-				<div class="error">Failed to load the YAML editor.</div>
-			{/await}
-		{/if}
+		{#await loadYamlEditor()}
+			<div class="editor-loading">Loading editor…</div>
+		{:then mod}
+			{@const TemplateEditorYaml = mod.default}
+			<TemplateEditorYaml yamlValue={yamlText} readOnly={false} onchange={handleYamlChange} />
+		{:catch}
+			<div class="error">Failed to load the YAML editor.</div>
+		{/await}
 	</div>
 
 	<footer class="editor-footer">
@@ -218,6 +151,17 @@
 		font: var(--text-h1);
 		margin: 0;
 	}
+	.subtitle {
+		margin: 0.5rem 0 0;
+		font-size: 0.82rem;
+		color: var(--color-text-muted);
+	}
+	.subtitle code {
+		font-size: 0.78rem;
+		background: var(--color-bg-muted, rgba(0, 0, 0, 0.04));
+		padding: 0 0.3em;
+		border-radius: 3px;
+	}
 	.tier-picker {
 		margin-bottom: 1.25rem;
 	}
@@ -247,31 +191,6 @@
 	.tier-option small {
 		color: var(--color-text-muted);
 		font-size: 0.78rem;
-	}
-	.tabs {
-		display: flex;
-		gap: 0;
-		border-bottom: 1px solid var(--color-border);
-		margin-bottom: 1.25rem;
-	}
-	.tab {
-		padding: 0.6rem 1.1rem;
-		font: inherit;
-		font-size: 0.88rem;
-		font-weight: 500;
-		color: var(--color-text-muted);
-		background: none;
-		border: none;
-		border-bottom: 2px solid transparent;
-		cursor: pointer;
-		transition: color 0.1s ease, border-color 0.1s ease;
-	}
-	.tab:hover {
-		color: var(--color-text);
-	}
-	.tab[aria-selected='true'] {
-		color: var(--color-primary, #6366f1);
-		border-bottom-color: var(--color-primary, #6366f1);
 	}
 	.editor-area {
 		min-height: 300px;

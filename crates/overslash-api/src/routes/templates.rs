@@ -73,6 +73,8 @@ struct TemplateDetail {
     description: Option<String>,
     category: Option<String>,
     hosts: Vec<String>,
+    /// Compiled auth view for the dashboard's connect flows.
+    auth: Vec<serde_json::Value>,
     /// Canonical OpenAPI 3.1 YAML source — the editable document. For DB
     /// templates this is the stored, alias-normalized text. For global
     /// templates it's the shipped YAML verbatim.
@@ -189,12 +191,17 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
     // compile should not surface new issues.
     let def = compile_row(&t)?;
     let openapi_yaml = openapi::to_yaml_string(&t.openapi).unwrap_or_default();
+    let auth = serde_json::to_value(&def.auth)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
     Ok(TemplateDetail {
         key: t.key,
         display_name: t.display_name,
         description: Some(t.description).filter(|s| !s.is_empty()),
         category: Some(t.category).filter(|s| !s.is_empty()),
         hosts: t.hosts,
+        auth,
         openapi: openapi_yaml,
         actions: actions_from_definition(&def),
         tier: tier.into(),
@@ -372,12 +379,17 @@ async fn get_template(
     // view still works via the compiled actions list).
     let openapi_yaml = load_global_yaml(&svc.key).unwrap_or_default();
 
+    let auth = serde_json::to_value(&svc.auth)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
     Ok(Json(TemplateDetail {
         key: svc.key.clone(),
         display_name: svc.display_name.clone(),
         description: svc.description.clone(),
         category: svc.category.clone(),
         hosts: svc.hosts.clone(),
+        auth,
         openapi: openapi_yaml,
         actions: actions_from_definition(svc),
         tier: "global".into(),

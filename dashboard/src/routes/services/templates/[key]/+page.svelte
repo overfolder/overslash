@@ -2,62 +2,30 @@
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/session';
 	import { updateTemplate, deleteTemplate } from '$lib/api/services';
-	import type { TemplateDetail, UpdateTemplateRequest } from '$lib/types';
-	import { templateToYaml, yamlToTemplate } from '$lib/utils/templateYaml';
+	import type { TemplateDetail } from '$lib/types';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import TemplateEditorVisual from '$lib/components/templates/TemplateEditorVisual.svelte';
 
-	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle until the YAML tab is opened.
+	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle.
 	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
 
 	let { data } = $props();
 
 	// svelte-ignore state_referenced_locally
 	let template = $state<TemplateDetail>(data.template);
-	let activeTab = $state<'visual' | 'yaml'>('visual');
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 	let success = $state<string | null>(null);
 	let pendingDelete = $state(false);
-	let syncError = $state<string | null>(null);
 
 	const readOnly = $derived(template.tier === 'global');
 	const canDelete = $derived(!readOnly && template.id && data.isAdmin);
 
-	// YAML representation synced with template state
 	// svelte-ignore state_referenced_locally
-	let yamlText = $state(templateToYaml(template));
-
-	function handleVisualChange(updated: TemplateDetail) {
-		template = updated;
-		yamlText = templateToYaml(updated);
-		syncError = null;
-	}
+	let yamlText = $state(template.openapi ?? '');
 
 	function handleYamlChange(yaml: string) {
 		yamlText = yaml;
-		const parsed = yamlToTemplate(yaml, template);
-		if (parsed) {
-			template = parsed;
-			syncError = null;
-		}
-		// If parse fails, keep yaml text but don't update template
-	}
-
-	function switchTab(tab: 'visual' | 'yaml') {
-		if (tab === 'yaml' && activeTab === 'visual') {
-			yamlText = templateToYaml(template);
-		} else if (tab === 'visual' && activeTab === 'yaml') {
-			const parsed = yamlToTemplate(yamlText, template);
-			if (!parsed) {
-				syncError = 'Cannot switch to Visual tab: YAML has syntax errors. Fix them first.';
-				return;
-			}
-			template = parsed;
-		}
-		syncError = null;
-		activeTab = tab;
 	}
 
 	async function save() {
@@ -66,24 +34,23 @@
 		error = null;
 		success = null;
 		try {
-			const patch: UpdateTemplateRequest = {
-				display_name: template.display_name,
-				description: template.description ?? undefined,
-				category: template.category ?? undefined,
-				hosts: template.hosts,
-				auth: template.auth as any,
-				actions: template.actions as any
-			};
-			const updated = await updateTemplate(template.id, patch);
+			const updated = await updateTemplate(template.id, { openapi: yamlText });
 			template = updated;
-			yamlText = templateToYaml(updated);
+			yamlText = updated.openapi ?? '';
 			success = 'Template saved.';
 			setTimeout(() => (success = null), 3000);
 		} catch (e) {
-			error =
-				e instanceof ApiError
-					? `Failed to save (${e.status}): ${JSON.stringify((e as any).body?.error ?? '')}`
-					: 'Failed to save template';
+			if (e instanceof ApiError) {
+				const body = (e as any).body;
+				const report = body?.report;
+				if (report?.errors?.length) {
+					error = report.errors.map((x: any) => `${x.path ?? ''} ${x.message ?? ''}`).join('; ');
+				} else {
+					error = `Failed to save (${e.status})`;
+				}
+			} else {
+				error = 'Failed to save template';
+			}
 		} finally {
 			saving = false;
 		}
@@ -118,6 +85,7 @@
 				<span class="read-only-badge">Read-only</span>
 			{/if}
 		</div>
+		<p class="subtitle">OpenAPI 3.1 with <code>x-overslash-*</code> extensions. Aliases like <code>risk:</code>, <code>scope_param:</code>, <code>resolve:</code> are accepted and canonicalized on save.</p>
 	</header>
 
 	{#if error}
@@ -126,54 +94,16 @@
 	{#if success}
 		<div class="success">{success}</div>
 	{/if}
-	{#if syncError}
-		<div class="error">{syncError}</div>
-	{/if}
-
-	<div class="tabs" role="tablist">
-		<button
-			type="button"
-			role="tab"
-			class="tab"
-			aria-selected={activeTab === 'visual'}
-			onclick={() => switchTab('visual')}
-		>
-			Visual
-		</button>
-		<button
-			type="button"
-			role="tab"
-			class="tab"
-			aria-selected={activeTab === 'yaml'}
-			onclick={() => switchTab('yaml')}
-		>
-			YAML
-		</button>
-	</div>
 
 	<div class="editor-area">
-		{#if activeTab === 'visual'}
-			<TemplateEditorVisual
-				data={template}
-				{readOnly}
-				providers={data.providers}
-				isAdmin={data.isAdmin}
-				onchange={handleVisualChange}
-			/>
-		{:else}
-			{#await loadYamlEditor()}
-				<div class="editor-loading">Loading editor…</div>
-			{:then mod}
-				{@const TemplateEditorYaml = mod.default}
-				<TemplateEditorYaml
-					yamlValue={yamlText}
-					{readOnly}
-					onchange={handleYamlChange}
-				/>
-			{:catch}
-				<div class="error">Failed to load the YAML editor.</div>
-			{/await}
-		{/if}
+		{#await loadYamlEditor()}
+			<div class="editor-loading">Loading editor…</div>
+		{:then mod}
+			{@const TemplateEditorYaml = mod.default}
+			<TemplateEditorYaml yamlValue={yamlText} {readOnly} onchange={handleYamlChange} />
+		{:catch}
+			<div class="error">Failed to load the YAML editor.</div>
+		{/await}
 	</div>
 
 	{#if !readOnly}
@@ -248,30 +178,16 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
-	.tabs {
-		display: flex;
-		gap: 0;
-		border-bottom: 1px solid var(--color-border);
-		margin-bottom: 1.25rem;
-	}
-	.tab {
-		padding: 0.6rem 1.1rem;
-		font: inherit;
-		font-size: 0.88rem;
-		font-weight: 500;
+	.subtitle {
+		margin: 0.5rem 0 0;
+		font-size: 0.82rem;
 		color: var(--color-text-muted);
-		background: none;
-		border: none;
-		border-bottom: 2px solid transparent;
-		cursor: pointer;
-		transition: color 0.1s ease, border-color 0.1s ease;
 	}
-	.tab:hover {
-		color: var(--color-text);
-	}
-	.tab[aria-selected='true'] {
-		color: var(--color-primary, #6366f1);
-		border-bottom-color: var(--color-primary, #6366f1);
+	.subtitle code {
+		font-size: 0.78rem;
+		background: var(--color-bg-muted, rgba(0, 0, 0, 0.04));
+		padding: 0 0.3em;
+		border-radius: 3px;
 	}
 	.editor-area {
 		min-height: 300px;
