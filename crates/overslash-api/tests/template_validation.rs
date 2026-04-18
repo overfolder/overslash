@@ -46,45 +46,13 @@ async fn bootstrap(pool: sqlx::PgPool) -> (String, Client, String) {
     (base, client, admin_key)
 }
 
-const VALID_YAML: &str = r#"
-openapi: 3.1.0
-info:
-  title: Test Service
-  key: test-svc
-servers:
-  - url: https://api.example.com
-components:
-  securitySchemes:
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: svc_token
-paths:
-  /items:
-    get:
-      operationId: list_items
-      summary: List items
-      risk: read
-"#;
+const VALID_YAML: &str = include_str!("fixtures/openapi/test_service.yaml");
 
 fn yaml_with_key(key: &str) -> String {
-    format!(
-        r#"
-openapi: 3.1.0
-info:
-  title: Template for {key}
-  key: {key}
-servers:
-  - url: https://api.example.com
-paths:
-  /items:
-    get:
-      operationId: list_items
-      summary: List items
-      risk: read
-"#
+    let display_name = format!("Template for {key}");
+    common::render_openapi(
+        include_str!("fixtures/openapi/minimal.yaml.tmpl"),
+        &[("key", key), ("display_name", &display_name)],
     )
 }
 
@@ -136,33 +104,10 @@ async fn validate_reports_semantic_error() {
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
-    // scope_param references a non-existent param.
-    let broken = r#"
-openapi: 3.1.0
-info:
-  title: Test
-  key: test-svc
-servers:
-  - url: https://api.example.com
-paths:
-  /items/{id}:
-    get:
-      operationId: get_item
-      summary: "Get {id}"
-      risk: read
-      scope_param: missing
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-"#;
-
     let resp = client
         .post(format!("{base}/v1/templates/validate"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .body(broken)
+        .body(include_str!("fixtures/openapi/unknown_scope_param.yaml"))
         .send()
         .await
         .unwrap();
@@ -213,20 +158,10 @@ async fn validate_reports_ambiguous_alias() {
     let pool = common::test_pool().await;
     let (base, client, admin_key) = bootstrap(pool).await;
 
-    let ambiguous = r#"
-openapi: 3.1.0
-info:
-  title: Svc
-  key: svc
-  x-overslash-key: svc
-servers:
-  - url: https://api.example.com
-"#;
-
     let resp = client
         .post(format!("{base}/v1/templates/validate"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .body(ambiguous)
+        .body(include_str!("fixtures/openapi/ambiguous_alias.yaml"))
         .send()
         .await
         .unwrap();
@@ -252,25 +187,12 @@ async fn create_template_rejects_broken_template() {
     let (base, client, admin_key) = bootstrap(pool).await;
 
     // path references a param that doesn't exist
-    let broken = r#"
-openapi: 3.1.0
-info:
-  title: Bad API
-  key: bad-api
-servers:
-  - url: https://api.example.com
-paths:
-  /items/{ghost}:
-    get:
-      operationId: bad_action
-      summary: Get item
-      risk: read
-"#;
-
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({ "openapi": broken }))
+        .json(&json!({
+            "openapi": include_str!("fixtures/openapi/unknown_path_param.yaml"),
+        }))
         .send()
         .await
         .unwrap();
@@ -317,25 +239,12 @@ async fn update_template_rejects_broken_doc() {
     let id = create["id"].as_str().unwrap();
 
     // Now try to replace the doc with a broken one.
-    let broken = r#"
-openapi: 3.1.0
-info:
-  title: Edit API
-  key: edit-api
-servers:
-  - url: https://api.example.com
-paths:
-  /x:
-    get:
-      operationId: borked
-      summary: nope
-      x-overslash-risk: catastrophic
-"#;
-
     let resp = client
         .put(format!("{base}/v1/templates/{id}/manage"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({ "openapi": broken }))
+        .json(&json!({
+            "openapi": include_str!("fixtures/openapi/invalid_risk.yaml"),
+        }))
         .send()
         .await
         .unwrap();

@@ -56,13 +56,7 @@ async fn create_template(base: &str, client: &reqwest::Client, admin_key: &str, 
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": key,
-            "display_name": key,
-            "description": "test",
-            "category": "dev-tools",
-            "hosts": ["api.test"],
-            "auth": [],
-            "actions": {},
+            "openapi": common::minimal_openapi(key),
             "user_level": false,
         }))
         .send()

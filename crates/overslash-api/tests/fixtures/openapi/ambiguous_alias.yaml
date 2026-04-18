@@ -1,0 +1,7 @@
+openapi: 3.1.0
+info:
+  title: Svc
+  key: svc
+  x-overslash-key: svc
+servers:
+  - url: https://api.example.com

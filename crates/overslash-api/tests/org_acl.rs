@@ -404,7 +404,7 @@ async fn test_write_user_permissions() {
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
-        .json(&json!({"key": "foo", "display_name": "Foo", "hosts": []}))
+        .json(&json!({ "openapi": common::minimal_openapi("foo") }))
         .send()
         .await
         .unwrap();

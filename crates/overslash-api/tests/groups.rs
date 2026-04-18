@@ -5,14 +5,12 @@ use uuid::Uuid;
 
 /// Create an org-level template + service instance. Returns the service instance ID.
 async fn create_org_service(base: &str, client: &reqwest::Client, key: &str, name: &str) -> Uuid {
-    // Create template
+    let openapi = common::minimal_openapi(name);
     client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&json!({
-            "key": name,
-            "display_name": name,
-            "hosts": [format!("{name}.example.com")],
+            "openapi": openapi,
             "user_level": false,
         }))
         .send()
@@ -332,11 +330,7 @@ async fn grants_require_org_level_service() {
     client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "key": "user-svc",
-            "display_name": "User Service",
-            "hosts": ["user.example.com"],
-        }))
+        .json(&json!({ "openapi": common::minimal_openapi("user-svc") }))
         .send()
         .await
         .unwrap();
