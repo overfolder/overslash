@@ -660,6 +660,33 @@ actions:
 - **`scope_param`** — which parameter provides the `{arg}` segment in permission keys. Without `scope_param`, the arg is `*`.
 - **`risk`** — enum: `read`, `write`, `delete`. Defaults to `read` when omitted. Informational for the UI and influences auto-approve-reads behavior (`read` → non-mutating, `write`/`delete` → mutating).
 
+### OAuth Scopes
+
+Service-level `scopes:` under the `oauth` auth block is the **superset** of scopes the service can request. What's actually granted by the provider is stored on the connection — the OAuth token response returns the accepted `scope` value, which is persisted in `connections.scopes` and is the ground truth for what the access token can do.
+
+**Per-action scopes (planned).** A single connection doesn't always need every scope the service knows about — Gmail's `list_messages` only needs `gmail.readonly`, while `send_message` needs `gmail.send`. The planned model:
+
+```yaml
+auth:
+  - type: oauth
+    provider: google
+    scopes:
+      - https://www.googleapis.com/auth/gmail.readonly
+      - https://www.googleapis.com/auth/gmail.send
+      - https://www.googleapis.com/auth/gmail.modify
+actions:
+  list_messages:
+    required_scopes: [https://www.googleapis.com/auth/gmail.readonly]
+    # …
+  send_message:
+    required_scopes: [https://www.googleapis.com/auth/gmail.send]
+    # …
+```
+
+At connect time, the caller picks which scopes to request from the service's superset (e.g., "read-only" vs "full"). At execution time, Overslash checks `connections.scopes ⊇ action.required_scopes` before dispatching; on mismatch it fails fast with an upgrade hint (`"reconnect with X scope"`) instead of letting the provider 403. This enables minimal-privilege connections and progressive reconnection when an agent reaches an action it isn't scoped for. `required_scopes` defaults to the service-level set when omitted (current behavior).
+
+**Scope catalogs from upstream.** Scopes are hand-declared in YAML today. For large providers (Google, GitHub, Stripe) they can be codegen'd from Google Discovery documents or OpenAPI 3.x `security` annotations at build time — the YAML stays the runtime source of truth, the tool just keeps us honest as upstream APIs evolve.
+
 ### Secret-Token Templates
 
 Templates whose `auth.type` is `api_key` (or any other secret-token variant) declare two extra fields to make the secret-provide flow usable:

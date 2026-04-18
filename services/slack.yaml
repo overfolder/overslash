@@ -6,6 +6,9 @@ hosts:
 auth:
   - type: oauth
     provider: slack
+    scopes:
+      - chat:write
+      - channels:read
     token_injection:
       as: header
       header_name: Authorization

@@ -232,7 +232,7 @@ export interface ServiceDetail {
 }
 
 export type ServiceAuth =
-  | { type: 'oauth'; provider: string; token_injection: TokenInjection }
+  | { type: 'oauth'; provider: string; scopes?: string[]; token_injection: TokenInjection }
   | { type: 'api_key'; default_secret_name: string; injection: TokenInjection };
 
 export interface TokenInjection {

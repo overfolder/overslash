@@ -41,7 +41,6 @@ pub fn build_auth_url(
     state: &str,
     code_challenge: Option<&str>,
 ) -> String {
-    let scope_str = scopes.join(" ");
     let extra: std::collections::HashMap<String, String> =
         serde_json::from_value(provider.extra_auth_params.clone()).unwrap_or_default();
 
@@ -49,9 +48,16 @@ pub fn build_auth_url(
         ("client_id", client_id.to_string()),
         ("redirect_uri", redirect_uri.to_string()),
         ("response_type", "code".to_string()),
-        ("scope", scope_str),
         ("state", state.to_string()),
     ];
+
+    // Only include `scope` when we have scopes — Google rejects an empty
+    // `scope=` with "Missing required parameter: scope", and providers that
+    // don't need one (e.g. Eventbrite historically) are happiest when the
+    // parameter is omitted entirely.
+    if !scopes.is_empty() {
+        params.push(("scope", scopes.join(" ")));
+    }
 
     for (k, v) in &extra {
         params.push((k.as_str(), v.clone()));

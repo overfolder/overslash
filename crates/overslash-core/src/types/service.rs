@@ -75,6 +75,11 @@ pub enum ServiceAuth {
     #[serde(rename = "oauth")]
     OAuth {
         provider: String,
+        /// Superset of OAuth scopes this service may request. The caller
+        /// (dashboard/API) picks which subset to actually request at connect
+        /// time; the provider's granted scopes land on `connections.scopes`.
+        #[serde(default)]
+        scopes: Vec<String>,
         token_injection: TokenInjection,
     },
     #[serde(rename = "api_key")]
