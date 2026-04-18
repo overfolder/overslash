@@ -112,8 +112,10 @@ async fn execute_action(
 
     let ceiling_user_id = group_ceiling::ceiling_user_id_from_identity(&identity)?;
 
-    // Resolve the request to a concrete ActionRequest
-    let (action_req, meta) = resolve_request(&state, &auth, &scope, identity_id, &req).await?;
+    // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
+    // the identity lookup above so Mode C name resolution doesn't re-fetch it.
+    let (action_req, meta) =
+        resolve_request(&state, &auth, &scope, identity_id, ceiling_user_id, &req).await?;
 
     let perm_keys = if let Some(ref scope) = meta.service_scope {
         PermissionKey::from_service_action(
@@ -450,6 +452,7 @@ async fn resolve_request(
     auth: &AuthContext,
     scope: &OrgScope,
     identity_id: Uuid,
+    ceiling_user_id: Uuid,
     req: &ExecuteRequest,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
@@ -514,9 +517,8 @@ async fn resolve_request(
         // Try to resolve through a service instance first (user-shadows-org).
         // Include the ceiling user so agent callers can reach services their
         // owner user has created.
-        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(scope, auth.identity_id).await?;
         let instance = scope
-            .resolve_service_instance_by_name(auth.identity_id, ceiling, service_key)
+            .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
             .await?;
 
         // Resolve the template: if instance found use its template_key, else use service_key directly

@@ -644,3 +644,125 @@ async fn user_level_services_always_visible_despite_restrictive_group() {
         "agent must be able to resolve owner's user-level service by name"
     );
 }
+
+/// The read-visibility expansion must not leak into destructive paths. An
+/// agent that inherits admin privileges from its owner (via the overslash
+/// service group grant) shares the owner user's *read* view of services, but
+/// it must not be able to delete an owner-owned service by name — that would
+/// be an unintended privilege escalation. Deleting via UUID is still allowed
+/// (pre-existing AdminAcl capability, unchanged by this PR).
+#[tokio::test]
+async fn admin_agent_cannot_delete_owner_user_service_by_name() {
+    let (base, org_key, _user_id, _user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // The org_key is bound to the auto-minted bootstrap admin user. Pull its
+    // identity so we can create an agent whose ceiling is that admin user.
+    let whoami: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admin_user_id: Uuid = whoami["identity_id"].as_str().unwrap().parse().unwrap();
+
+    // Admin user creates a user-level service instance.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "key": "my-svc",
+            "display_name": "My Service",
+            "hosts": ["svc.example.com"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let user_svc: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "template_key": "my-svc",
+            "name": "my-svc",
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_svc_id = user_svc["id"].as_str().unwrap();
+
+    // Agent under the admin user inherits admin ACL via the ceiling.
+    let agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "admin-agent", "kind": "agent", "parent_id": admin_user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    let agent_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "org_id": agent["org_id"].as_str().unwrap(),
+            "identity_id": agent_id,
+            "name": "agent-admin-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_key = agent_key_resp["key"].as_str().unwrap();
+
+    // Sanity: the agent can still *see* the owner's service through the
+    // read-visibility path.
+    let resp = client
+        .get(format!("{base}/v1/services/my-svc"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "agent must still be able to read-resolve owner's user-level service"
+    );
+
+    // Delete by name must NOT resolve through the ceiling user. Agent cannot
+    // delete the owner's user-level service via name even with AdminAcl.
+    let resp = client
+        .delete(format!("{base}/v1/services/my-svc"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "agent must not be able to delete owner's user-level service by name"
+    );
+
+    // Service still exists.
+    let resp = client
+        .get(format!("{base}/v1/services/{user_svc_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "service must still exist after denied delete"
+    );
+}

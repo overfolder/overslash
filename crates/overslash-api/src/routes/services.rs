@@ -314,15 +314,18 @@ async fn delete_service(
     let auth = acl;
     // Resolve by name (or id) to get the row; both lookups are org-scoped
     // at the SQL boundary, so a foreign id returns None → 404.
+    // Destructive op: intentionally do NOT reach up to the ceiling user for
+    // name resolution. An agent with AdminAcl must not be able to target its
+    // owner user's services via the shadowing lookup; callers that really
+    // mean to delete a parent-owned service can address it by UUID.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
         scope
             .get_service_instance(uuid)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
-        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(&scope, auth.identity_id).await?;
         scope
-            .resolve_service_instance_by_name_any_status(auth.identity_id, ceiling, &name)
+            .resolve_service_instance_by_name_any_status(auth.identity_id, None, &name)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
