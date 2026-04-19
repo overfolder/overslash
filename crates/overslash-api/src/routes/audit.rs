@@ -25,6 +25,7 @@ struct AuditEntry {
     resource_id: Option<Uuid>,
     detail: serde_json::Value,
     ip_address: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
 

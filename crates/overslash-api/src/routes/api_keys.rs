@@ -23,8 +23,11 @@ struct ApiKeySummary {
     identity_id: Uuid,
     name: String,
     key_prefix: String,
+    #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
     last_used_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
     revoked_at: Option<OffsetDateTime>,
 }
 

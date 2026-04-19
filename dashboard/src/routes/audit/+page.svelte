@@ -162,11 +162,22 @@
 				</thead>
 				<tbody>
 					{#each entries as entry (entry.id)}
-						<AuditRow
-							{entry}
-							expanded={expandedId === entry.id}
-							ontoggle={() => toggleExpand(entry.id)}
-						/>
+						<svelte:boundary>
+							<AuditRow
+								{entry}
+								expanded={expandedId === entry.id}
+								ontoggle={() => toggleExpand(entry.id)}
+							/>
+							{#snippet failed(error)}
+								<tr>
+									<td colspan="6" class="muted">
+										Failed to render entry {entry.id}: {String(
+											(error as { message?: string })?.message ?? error
+										)}
+									</td>
+								</tr>
+							{/snippet}
+						</svelte:boundary>
 					{/each}
 				</tbody>
 			</table>

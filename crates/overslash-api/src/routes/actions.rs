@@ -295,7 +295,9 @@ async fn execute_action(
                         approval_id: approval.id,
                         approval_url: format!("/approve/{}", approval.token),
                         action_description: summary,
-                        expires_at: expires_at.to_string(),
+                        expires_at: expires_at
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_default(),
                     }),
                 )
                     .into_response());

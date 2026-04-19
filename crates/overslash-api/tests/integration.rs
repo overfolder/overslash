@@ -417,6 +417,19 @@ async fn test_approval_flow() {
     assert_eq!(body["status"], "pending_approval");
     let approval_id = body["approval_id"].as_str().unwrap();
 
+    // Regression: `expires_at` on pending_approval must be RFC 3339.
+    // The `time` crate's default Display ("2026-04-19 08:16:35 +00:00:00")
+    // is not parseable by JavaScript's `new Date(...)` and previously
+    // broke the dashboard approvals view.
+    let pending_expires = body["expires_at"].as_str().unwrap();
+    time::OffsetDateTime::parse(
+        pending_expires,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap_or_else(|e| {
+        panic!("pending_approval.expires_at {pending_expires:?} not RFC 3339: {e}")
+    });
+
     // Resolve with allow (admin key, not the agent's own)
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
@@ -428,6 +441,13 @@ async fn test_approval_flow() {
     assert_eq!(resp.status(), 200);
     let resolved: Value = resp.json().await.unwrap();
     assert_eq!(resolved["status"], "allowed");
+
+    // Regression: ApprovalResponse.{expires_at, created_at} must be RFC 3339.
+    for field in ["expires_at", "created_at"] {
+        let s = resolved[field].as_str().unwrap();
+        time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|e| panic!("ApprovalResponse.{field} {s:?} not RFC 3339: {e}"));
+    }
 }
 
 #[tokio::test]
