@@ -119,13 +119,15 @@
 	);
 	const hasFallback = $derived(
 		providerInfo
-			? providerInfo.has_org_credential || providerInfo.has_system_credential
+			? providerInfo.has_org_credential
+				|| providerInfo.has_system_credential
+				|| providerInfo.has_user_byoc_credential
 			: false
 	);
 	// When we've confirmed (via a successful provider fetch) that no org/system
-	// creds exist, the user MUST provide their own. If the provider catalog
-	// failed to load, we DON'T force BYOC — the backend cascade will resolve
-	// credentials at connect time (Sentry review feedback).
+	// creds AND no prior user BYOC exist, the user MUST provide their own. If
+	// the provider catalog failed to load, we DON'T force BYOC — the backend
+	// cascade will resolve credentials at connect time (Sentry review feedback).
 	const byocRequired = $derived(!!oauthProvider && providersLoaded && !hasFallback);
 
 	async function loadTemplates() {
@@ -411,17 +413,21 @@
 						<p class="muted">No existing connections for this provider.</p>
 					{/if}
 
-					<p class="cred-source">
-						{#if providerInfo?.has_org_credential}
+					{#if providerInfo?.has_org_credential}
+						<p class="cred-source">
 							Using <strong>org credentials</strong> configured for {providerInfo.display_name}.
-						{:else if providerInfo?.has_system_credential}
+						</p>
+					{:else if providerInfo?.has_system_credential}
+						<p class="cred-source">
 							Using <strong>Overslash system credentials</strong>.
-						{:else}
+						</p>
+					{:else if !providerInfo?.has_user_byoc_credential}
+						<p class="cred-source">
 							<span class="warn">
 								No credentials configured for this provider — paste your own below to continue.
 							</span>
-						{/if}
-					</p>
+						</p>
+					{/if}
 
 					<ByocSection
 						provider={oauthProvider.provider}
@@ -429,6 +435,7 @@
 						required={byocRequired}
 						defaultExpanded={byocRequired}
 						disabled={connectingOAuth}
+						alreadyConfigured={providerInfo?.has_user_byoc_credential ?? false}
 						bind:clientId={byocClientId}
 						bind:clientSecret={byocClientSecret}
 					/>

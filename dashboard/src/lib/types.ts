@@ -187,6 +187,7 @@ export interface OAuthProviderInfo {
   supports_pkce: boolean;
   has_org_credential: boolean;
   has_system_credential: boolean;
+  has_user_byoc_credential: boolean;
 }
 
 export interface CreateByocCredentialRequest {
