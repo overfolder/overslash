@@ -67,7 +67,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 | **Web UI** | SvelteKit | Web UI for org admins and users |
 | **PostgreSQL** | — | All persistent state |
 | **Encryption** | AES-256-GCM | Secret storage (key via env var or KMS) |
-| **Redis** (optional) | — | Webhook delivery queue, approval notification pub/sub |
+| **Valkey** (optional) | Redis-compatible | Webhook delivery queue, approval notification pub/sub, rate-limit counters. Valkey is preferred over Redis (see DECISIONS.md D4); Redis remains drop-in compatible. |
 
 ### How It Fits
 
@@ -567,6 +567,10 @@ Every request derives permission keys. Resolution follows the two-layer model (�
 1. Group ceiling check (service + access level)
 2. Permission key check (all derived keys must be covered)
 3. If uncovered → approval request → user decides → "Allow & Remember" stores keys
+
+### Approval URLs
+
+When `execute_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approve/<token>`"). The host portion is resolved from a deployment-level config value — **`OVERSLASH_DASHBOARD_URL`** in `overslash serve`, or the same-origin dashboard host in `overslash web` — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
 
 ### Secret Injection (`http` service only)
 
