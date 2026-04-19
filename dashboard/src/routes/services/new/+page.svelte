@@ -20,6 +20,7 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
 
@@ -394,10 +395,14 @@
 				<small>Defaults to the template key if left blank.</small>
 			</label>
 
-			<label class="field">
-				<input type="checkbox" bind:checked={userLevel} />
-				<span>Create as user-level (only visible to your identity)</span>
-			</label>
+			<div class="field toggle-field">
+				<ToggleSwitch
+					checked={userLevel}
+					onchange={(v) => (userLevel = v)}
+					labelledby="user-level-label"
+				/>
+				<span id="user-level-label">Create as user-level (only visible to your identity)</span>
+			</div>
 
 			{#if usesOAuth}
 				<div class="field">
@@ -627,6 +632,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.4rem;
+	}
+	.field.toggle-field {
+		flex-direction: row;
+		align-items: center;
+		gap: 0.6rem;
 	}
 	.field input[type='text'],
 	.field select {

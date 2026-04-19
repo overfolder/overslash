@@ -12,6 +12,8 @@
 	} from '$lib/types';
 	import type { OrgPageData } from './+page';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import { absoluteTime } from '$lib/utils/time';
 
 	let { data }: { data: OrgPageData } = $props();
 
@@ -280,9 +282,9 @@
 		}
 	}
 
-	async function toggleAllowUnsignedSecretProvide() {
+	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
 		if (!org || !secretRequestSettings) return;
-		const next = !secretRequestSettings.allow_unsigned_secret_provide;
+		const next = nextValue ?? !secretRequestSettings.allow_unsigned_secret_provide;
 		secretRequestSaving = true;
 		secretRequestError = null;
 		try {
@@ -385,11 +387,7 @@
 
 	function fmtDate(s: string | null): string {
 		if (!s) return '—';
-		try {
-			return new Date(s).toLocaleString();
-		} catch {
-			return s;
-		}
+		return absoluteTime(s);
 	}
 </script>
 
@@ -446,16 +444,12 @@
 							unaffected — the toggle is forward-only.
 						</div>
 					</div>
-					<button
-						type="button"
-						class="btn-toggle"
-						class:on={secretRequestSettings.allow_unsigned_secret_provide}
+					<ToggleSwitch
+						checked={secretRequestSettings.allow_unsigned_secret_provide}
+						onchange={toggleAllowUnsignedSecretProvide}
 						disabled={secretRequestSaving}
-						onclick={toggleAllowUnsignedSecretProvide}
-						aria-pressed={secretRequestSettings.allow_unsigned_secret_provide}
-					>
-						{secretRequestSettings.allow_unsigned_secret_provide ? 'On' : 'Off'}
-					</button>
+						label="Allow unsigned secret provisioning"
+					/>
 				</div>
 				{#if secretRequestError}
 					<div class="form-error">{secretRequestError}</div>
@@ -1180,27 +1174,5 @@
 		color: var(--color-text-muted);
 		font-size: 0.82rem;
 		line-height: 1.45;
-	}
-	.btn-toggle {
-		flex: 0 0 auto;
-		min-width: 72px;
-		padding: 0.45rem 0.9rem;
-		border-radius: 999px;
-		border: 1px solid var(--color-border);
-		background: var(--color-bg);
-		color: var(--color-text-muted);
-		font: inherit;
-		font-weight: 600;
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
-	.btn-toggle.on {
-		background: var(--color-primary, #5b50d8);
-		color: #fff;
-		border-color: var(--color-primary, #5b50d8);
-	}
-	.btn-toggle:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 </style>

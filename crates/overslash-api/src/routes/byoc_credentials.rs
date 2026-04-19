@@ -9,6 +9,8 @@ use uuid::Uuid;
 use overslash_core::permissions::AccessLevel;
 use overslash_db::repos::audit::AuditEntry;
 
+use super::util::fmt_time;
+
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -114,8 +116,8 @@ async fn create_byoc(
         org_id: row.org_id,
         identity_id: row.identity_id,
         provider_key: row.provider_key,
-        created_at: row.created_at.to_string(),
-        updated_at: row.updated_at.to_string(),
+        created_at: fmt_time(row.created_at),
+        updated_at: fmt_time(row.updated_at),
     }))
 }
 
@@ -137,8 +139,8 @@ async fn list_byoc(
                 org_id: r.org_id,
                 identity_id: r.identity_id,
                 provider_key: r.provider_key,
-                created_at: r.created_at.to_string(),
-                updated_at: r.updated_at.to_string(),
+                created_at: fmt_time(r.created_at),
+                updated_at: fmt_time(r.updated_at),
             })
             .collect(),
     ))

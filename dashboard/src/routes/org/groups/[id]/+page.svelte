@@ -14,6 +14,7 @@
 	} from '$lib/api/groups';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import IdentityPickerModal from '$lib/components/groups/IdentityPickerModal.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	const groupId = $derived($page.params.id as string);
 
@@ -253,14 +254,11 @@
 								</td>
 								<td>{g.access_level}</td>
 								<td>
-									<label class="toggle">
-										<input
-											type="checkbox"
-											checked={g.auto_approve_reads}
-											onchange={() => toggleAutoApprove(g)}
-										/>
-										<span>{g.auto_approve_reads ? 'On' : 'Off'}</span>
-									</label>
+									<ToggleSwitch
+										checked={g.auto_approve_reads}
+										onchange={() => toggleAutoApprove(g)}
+										label="Auto-approve reads"
+									/>
 								</td>
 								<td class="row-actions">
 									<button class="link-danger" onclick={() => removeGrant(g.id)}>Remove</button>
@@ -283,10 +281,14 @@
 					<option value="write">write</option>
 					<option value="admin">admin</option>
 				</select>
-				<label class="inline">
-					<input type="checkbox" bind:checked={newAutoApprove} />
-					Auto-approve reads
-				</label>
+				<span class="inline">
+					<ToggleSwitch
+						checked={newAutoApprove}
+						onchange={(v) => (newAutoApprove = v)}
+						labelledby="new-auto-approve-label"
+					/>
+					<span id="new-auto-approve-label">Auto-approve reads</span>
+				</span>
 				<button type="submit" class="btn btn-primary" disabled={addingGrant}>
 					{addingGrant ? 'Adding…' : 'Add grant'}
 				</button>
@@ -456,13 +458,6 @@
 	}
 	.row-actions {
 		text-align: right;
-	}
-	.toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		font: var(--text-body-sm);
-		color: var(--color-text-secondary);
 	}
 	.members {
 		list-style: none;

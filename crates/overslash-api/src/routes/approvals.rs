@@ -6,6 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::util::fmt_time;
+
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
 
@@ -68,14 +70,8 @@ impl ApprovalResponse {
             suggested_tiers,
             status: r.status,
             token: r.token,
-            expires_at: r
-                .expires_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
-            created_at: r
-                .created_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
+            expires_at: fmt_time(r.expires_at),
+            created_at: fmt_time(r.created_at),
         }
     }
 }

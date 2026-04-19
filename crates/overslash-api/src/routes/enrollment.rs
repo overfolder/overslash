@@ -12,6 +12,8 @@ use uuid::Uuid;
 use overslash_db::repos::{audit::AuditEntry, pending_enrollment};
 use overslash_db::{OrgScope, SystemScope};
 
+use super::util::fmt_time;
+
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -115,7 +117,7 @@ async fn create_enrollment_token(
         token: raw_token,
         token_prefix: prefix,
         identity_id: req.identity_id,
-        expires_at: row.expires_at.to_string(),
+        expires_at: fmt_time(row.expires_at),
     }))
 }
 
@@ -131,8 +133,8 @@ async fn list_enrollment_tokens(
                 "id": r.id,
                 "identity_id": r.identity_id,
                 "token_prefix": r.token_prefix,
-                "expires_at": r.expires_at.to_string(),
-                "created_at": r.created_at.to_string(),
+                "expires_at": fmt_time(r.expires_at),
+                "created_at": fmt_time(r.created_at),
             })
         })
         .collect();
@@ -316,7 +318,7 @@ async fn initiate_enrollment(
         "enrollment_id": row.id,
         "approval_url": approval_url,
         "poll_token": raw_poll_token,
-        "expires_at": row.expires_at.to_string(),
+        "expires_at": fmt_time(row.expires_at),
     })))
 }
 
@@ -449,14 +451,8 @@ async fn get_enrollment_approval(
             "platform": row.platform,
             "metadata": row.metadata,
             "status": row.status,
-            "expires_at": row
-                .expires_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| row.expires_at.to_string()),
-            "created_at": row
-                .created_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| row.created_at.to_string()),
+            "expires_at": fmt_time(row.expires_at),
+            "created_at": fmt_time(row.created_at),
             "requester_ip": row.requester_ip,
         })),
     )

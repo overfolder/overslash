@@ -17,6 +17,7 @@ use axum::{
 };
 use serde_json::json;
 
+use super::util::fmt_time;
 use crate::{AppState, error::AppError, extractors::AdminAcl};
 use overslash_db::repos::{mcp_refresh_token, oauth_mcp_client};
 
@@ -40,12 +41,8 @@ async fn list(
                 "software_id": r.software_id,
                 "software_version": r.software_version,
                 "redirect_uris": r.redirect_uris,
-                "created_at": r.created_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-                "last_seen_at": r.last_seen_at.map(|t: time::OffsetDateTime| t
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default()),
+                "created_at": fmt_time(r.created_at),
+                "last_seen_at": r.last_seen_at.map(fmt_time),
                 "is_revoked": r.is_revoked,
             })
         })

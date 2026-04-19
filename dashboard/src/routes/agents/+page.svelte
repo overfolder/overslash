@@ -22,6 +22,8 @@
 	} from '$lib/types';
 	import type { ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import { absoluteTime, ttlRemaining } from '$lib/utils/time';
 
 	let identities = $state<Identity[]>([]);
 	let approvals = $state<ApprovalResponse[]>([]);
@@ -39,6 +41,7 @@
 
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
+	let createInherit = $state(false);
 	let newToken = $state<CreatedEnrollmentToken | null>(null);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
@@ -136,7 +139,7 @@
 			kind
 		};
 		if (parentId) req.parent_id = parentId;
-		req.inherit_permissions = fd.get('inherit_permissions') === 'on';
+		req.inherit_permissions = createInherit;
 		try {
 			const created = await createIdentity(req);
 			createOpen = false;
@@ -312,14 +315,11 @@
 					<div class="field-row">
 						<span class="field-label">Inherits Permissions</span>
 						<span class="field-value">
-							<label class="inline-check">
-								<input
-									type="checkbox"
-									checked={selected.inherit_permissions}
-									onchange={(e) => handleToggleInherit((e.target as HTMLInputElement).checked)}
-								/>
-								{selected.inherit_permissions ? 'Enabled' : 'Disabled'}
-							</label>
+							<ToggleSwitch
+								checked={selected.inherit_permissions}
+								onchange={handleToggleInherit}
+								label="Inherit permissions from parent"
+							/>
 						</span>
 					</div>
 
@@ -331,7 +331,7 @@
 								<div class="approval-main">
 									<div class="approval-summary">{a.action_summary}</div>
 									<div class="approval-meta mono">{a.permission_keys[0] ?? ''}</div>
-									<div class="approval-meta">Requested {new Date(a.created_at).toLocaleString()}</div>
+									<div class="approval-meta">Requested {absoluteTime(a.created_at)}</div>
 								</div>
 								<div class="approval-actions">
 									<a href={`/approvals/${a.id}`} class="btn-approve">Allow &amp; Remember</a>
@@ -364,7 +364,7 @@
 											<span class="pill pill-source">{r.effect === 'allow' ? 'Approval' : r.effect}</span>
 										</td>
 										<td>—</td>
-										<td>{(r as unknown as {expires_at?: string}).expires_at ? new Date((r as unknown as {expires_at?: string}).expires_at!).toLocaleDateString() : '—'}</td>
+										<td>{ttlRemaining((r as unknown as {expires_at?: string}).expires_at)}</td>
 										<td>
 											<button class="revoke-link" onclick={() => handleRevokeRule(r.id)}>Revoke</button>
 										</td>
@@ -389,7 +389,7 @@
 								{#each detailTokens as t (t.id)}
 									<div class="token-row">
 										<code class="mono">{t.token_prefix}…</code>
-										<span class="muted" style="font-size:0.8rem;">expires {new Date(t.expires_at).toLocaleString()}</span>
+										<span class="muted" style="font-size:0.8rem;">expires {absoluteTime(t.expires_at)}</span>
 										<button class="revoke-link" onclick={() => handleRevokeToken(t.id)}>Revoke</button>
 									</div>
 								{/each}
@@ -509,10 +509,14 @@
 						{/each}
 					</select>
 				</label>
-				<label class="check">
-					<input type="checkbox" name="inherit_permissions" />
-					Inherits Permissions — inherit parent's current and future rules
-				</label>
+				<div class="check">
+					<ToggleSwitch
+						checked={createInherit}
+						onchange={(v) => (createInherit = v)}
+						labelledby="create-inherit-label"
+					/>
+					<span id="create-inherit-label">Inherits Permissions — inherit parent's current and future rules</span>
+				</div>
 				<div class="modal-actions">
 					<button type="button" class="btn-secondary" onclick={() => (createOpen = false)}>Cancel</button>
 					<button type="submit" class="btn-new">Create Agent</button>
@@ -821,13 +825,6 @@
 		font-size: 13px;
 		color: var(--color-text);
 	}
-	.inline-check {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 13px;
-		cursor: pointer;
-	}
 
 	/* ── Section titles ── */
 	.section-title {
@@ -1067,11 +1064,13 @@
 		background: var(--color-bg);
 		color: var(--color-text);
 	}
-	.modal label.check {
+	.modal .check {
+		display: flex;
 		flex-direction: row;
 		align-items: center;
 		gap: 8px;
 		font-weight: 400;
+		font-size: 14px;
 		color: var(--color-text-secondary);
 	}
 	.modal-actions {

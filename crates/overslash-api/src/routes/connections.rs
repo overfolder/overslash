@@ -9,6 +9,7 @@ use uuid::Uuid;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::{OrgScope, UserScope};
 
+use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -276,7 +277,7 @@ async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary
                 provider_key: r.provider_key,
                 account_email: r.account_email,
                 is_default: r.is_default,
-                created_at: r.created_at.to_string(),
+                created_at: fmt_time(r.created_at),
             })
             .collect(),
     ))
