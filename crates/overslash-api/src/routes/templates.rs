@@ -13,7 +13,7 @@ use overslash_core::permissions::AccessLevel;
 use overslash_core::template_validation::{
     ValidationReport, parse_normalize_compile_yaml, validate_template_yaml,
 };
-use overslash_core::types::{Risk, ServiceDefinition};
+use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateServiceTemplate};
 use overslash_db::repos::{enabled_global_template, org as org_repo};
@@ -47,6 +47,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/v1/templates/{key}", get(get_template))
         .route("/v1/templates/{key}/actions", get(list_template_actions))
+        .route(
+            "/v1/templates/{key}/actions/{action_key}",
+            get(get_template_action),
+        )
         .route(
             "/v1/templates/{id}/manage",
             put(update_template).delete(delete_template),
@@ -113,6 +117,20 @@ pub(crate) struct ActionSummary {
     path: String,
     description: String,
     risk: Risk,
+}
+
+/// Full action details including the parameter schema — used by the API
+/// Explorer to auto-generate a parameter form.
+#[derive(Serialize)]
+struct ActionDetail {
+    key: String,
+    method: String,
+    path: String,
+    description: String,
+    risk: Risk,
+    params: std::collections::HashMap<String, ActionParam>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_param: Option<String>,
 }
 
 // -- Request types --
@@ -408,46 +426,82 @@ fn load_global_yaml(key: &str) -> Option<String> {
     std::fs::read_to_string(&path).ok()
 }
 
+/// Resolve visibility for `{key}`-style template lookups: returns 404 if the
+/// template resolves to a hidden global, and reports the effective identity
+/// to use for further resolution (drops user tier when user templates are
+/// disabled org-wide).
+async fn ensure_template_visible(
+    state: &AppState,
+    auth: &AuthContext,
+    key: &str,
+) -> Result<Option<Uuid>> {
+    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+        .await?
+        .unwrap_or(false);
+    let in_user_tier = user_templates_allowed
+        && auth.identity_id.is_some()
+        && service_template::get_by_key(&state.db, auth.org_id, auth.identity_id, key)
+            .await?
+            .is_some();
+    let in_org_tier = !in_user_tier
+        && service_template::get_by_key(&state.db, auth.org_id, None, key)
+            .await?
+            .is_some();
+
+    if !in_user_tier && !in_org_tier {
+        let global_filter = visible_global_filter(state, auth.org_id).await?;
+        if !is_global_visible(&global_filter, key) {
+            return Err(AppError::NotFound(format!("template '{key}' not found")));
+        }
+    }
+
+    Ok(if user_templates_allowed {
+        auth.identity_id
+    } else {
+        None
+    })
+}
+
 /// List actions for a template.
 async fn list_template_actions(
     State(state): State<AppState>,
     auth: AuthContext,
     Path(key): Path<String>,
 ) -> Result<Json<Vec<ActionSummary>>> {
-    // Check if the template would be visible (same rules as get_template).
-    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
-        .await?
-        .unwrap_or(false);
-    let in_user_tier = user_templates_allowed
-        && auth.identity_id.is_some()
-        && service_template::get_by_key(&state.db, auth.org_id, auth.identity_id, &key)
-            .await?
-            .is_some();
-    let in_org_tier = !in_user_tier
-        && service_template::get_by_key(&state.db, auth.org_id, None, &key)
-            .await?
-            .is_some();
-
-    if !in_user_tier && !in_org_tier {
-        // Would resolve to global — check visibility
-        let global_filter = visible_global_filter(&state, auth.org_id).await?;
-        if !is_global_visible(&global_filter, &key) {
-            return Err(AppError::NotFound(format!("template '{key}' not found")));
-        }
-    }
-
-    // When user templates are disabled, mask identity so resolve skips user tier.
-    let effective_auth = if user_templates_allowed {
-        auth.clone()
-    } else {
-        AuthContext {
-            org_id: auth.org_id,
-            identity_id: None,
-            key_id: auth.key_id,
-        }
+    let effective_identity = ensure_template_visible(&state, &auth, &key).await?;
+    let effective_auth = AuthContext {
+        org_id: auth.org_id,
+        identity_id: effective_identity,
+        key_id: auth.key_id,
     };
     let actions = resolve_template_actions(&state, &effective_auth, &key).await?;
     Ok(Json(actions))
+}
+
+/// Get a single action's full details (including parameter schema) for a
+/// template. Used by the API Explorer to auto-generate parameter forms.
+async fn get_template_action(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path((key, action_key)): Path<(String, String)>,
+) -> Result<Json<ActionDetail>> {
+    let effective_identity = ensure_template_visible(&state, &auth, &key).await?;
+    let def = resolve_template_definition(&state, auth.org_id, effective_identity, &key).await?;
+    let action = def.actions.get(&action_key).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "action '{action_key}' not found in template '{key}'"
+        ))
+    })?;
+
+    Ok(Json(ActionDetail {
+        key: action_key,
+        method: action.method.clone(),
+        path: action.path.clone(),
+        description: action.description.clone(),
+        risk: action.risk,
+        params: action.params.clone(),
+        scope_param: action.scope_param.clone(),
+    }))
 }
 
 /// POST /v1/templates/validate

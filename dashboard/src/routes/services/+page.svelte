@@ -9,6 +9,7 @@
 		deleteService,
 		setServiceStatus
 	} from '$lib/api/services';
+	import { credentialStatus } from '$lib/api/service-status';
 	import type {
 		ServiceInstanceSummary,
 		ServiceStatus,
@@ -18,8 +19,35 @@
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
 	import TemplateCatalog from '$lib/components/templates/TemplateCatalog.svelte';
+	import ApiExplorer from '$lib/components/api-explorer/ApiExplorer.svelte';
 
-	let activeTab = $state<'instances' | 'catalog'>('instances');
+	type TabKey = 'instances' | 'catalog' | 'api-explorer';
+
+	function tabFromUrl(p: URL): TabKey {
+		const v = p.searchParams.get('tab');
+		return v === 'catalog' || v === 'api-explorer' ? v : 'instances';
+	}
+
+	let activeTab = $state<TabKey>(tabFromUrl($page.url));
+	let explorerInitialService = $state<string | null>($page.url.searchParams.get('service'));
+
+	function selectTab(next: TabKey) {
+		activeTab = next;
+		const url = new URL($page.url);
+		if (next === 'instances') url.searchParams.delete('tab');
+		else url.searchParams.set('tab', next);
+		if (next !== 'api-explorer') url.searchParams.delete('service');
+		goto(`${url.pathname}${url.search}`, { replaceState: true, keepFocus: true, noScroll: true });
+	}
+
+	function openInExplorer(name: string) {
+		explorerInitialService = name;
+		activeTab = 'api-explorer';
+		const url = new URL($page.url);
+		url.searchParams.set('tab', 'api-explorer');
+		url.searchParams.set('service', name);
+		goto(`${url.pathname}${url.search}`, { replaceState: false, keepFocus: true, noScroll: true });
+	}
 
 	// Derive isAdmin from layout data
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -109,12 +137,6 @@
 		}
 	}
 
-	function credentialStatus(s: ServiceInstanceSummary): 'connected' | 'needs-setup' {
-		if (s.connection_id && connectionIds.has(s.connection_id)) return 'connected';
-		if (s.secret_name) return 'connected';
-		return 'needs-setup';
-	}
-
 	async function archive(s: ServiceInstanceSummary) {
 		const next: ServiceStatus = s.status === 'archived' ? 'active' : 'archived';
 		try {
@@ -146,7 +168,13 @@
 	<header class="page-head">
 		<div>
 			<h1>Services</h1>
-			<p class="sub">Service instances bind a template to credentials your agents can use.</p>
+			<p class="sub">
+				{#if activeTab === 'api-explorer'}
+					Pick a service and action, or use Raw HTTP, then inspect the response.
+				{:else}
+					Service instances bind a template to credentials your agents can use.
+				{/if}
+			</p>
 		</div>
 		{#if activeTab === 'instances'}
 			<button type="button" class="btn primary" onclick={() => goto('/services/new')}>+ New service</button>
@@ -159,7 +187,7 @@
 			role="tab"
 			class="tab"
 			aria-selected={activeTab === 'instances'}
-			onclick={() => (activeTab = 'instances')}
+			onclick={() => selectTab('instances')}
 		>
 			Instances
 		</button>
@@ -168,9 +196,18 @@
 			role="tab"
 			class="tab"
 			aria-selected={activeTab === 'catalog'}
-			onclick={() => (activeTab = 'catalog')}
+			onclick={() => selectTab('catalog')}
 		>
 			Template Catalog
+		</button>
+		<button
+			type="button"
+			role="tab"
+			class="tab"
+			aria-selected={activeTab === 'api-explorer'}
+			onclick={() => selectTab('api-explorer')}
+		>
+			API Explorer
 		</button>
 	</div>
 
@@ -226,9 +263,17 @@
 									<StatusBadge variant={s.template_source as 'global' | 'org' | 'user'} />
 								</td>
 								<td><StatusBadge variant={s.status} /></td>
-								<td><StatusBadge variant={credentialStatus(s)} /></td>
+								<td><StatusBadge variant={credentialStatus(s, connectionIds)} /></td>
 								<td class="mono muted">{s.owner_identity_id ? 'user' : 'org'}</td>
 								<td class="actions-col">
+									<button
+										type="button"
+										class="btn small"
+										title="Open in API Explorer"
+										onclick={() => openInExplorer(s.name)}
+									>
+										⌘ Try it
+									</button>
 									<button type="button" class="btn small" onclick={() => archive(s)}>
 										{s.status === 'archived' ? 'Restore' : 'Archive'}
 									</button>
@@ -246,8 +291,10 @@
 				</table>
 			</div>
 		{/if}
-	{:else}
+	{:else if activeTab === 'catalog'}
 		<TemplateCatalog {isAdmin} />
+	{:else}
+		<ApiExplorer initialService={explorerInitialService} />
 	{/if}
 </div>
 

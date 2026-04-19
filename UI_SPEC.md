@@ -1160,49 +1160,39 @@ A **CSV export** button that downloads the currently filtered result set.
 
 ### API Explorer
 
-A sub-view within Services (accessed via a tab or button, not a top-level nav item). An interactive tool for testing and debugging service connections through Overslash. Simpler than Postman — the goal is verifying that auth works and seeing what comes back.
+A sub-view within Services (accessed via the third tab, alongside `Instances` and `Template Catalog`). An interactive tool for testing and debugging service connections through Overslash. Simpler than Postman — the goal is verifying that auth works and seeing what comes back.
 
-Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the tab is not shown.
+Rows in the `Instances` table carry an **"⌘ Try it"** button that deep-links to the explorer tab with that service pre-selected (`/services?tab=api-explorer&service=<name>`).
 
-#### Unified flow
+Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the tab is not shown. *(Toggle not yet wired — tracked as a follow-up.)*
 
-The explorer uses a single flow. The level of abstraction is determined by what the user selects:
+#### Two modes
 
-1. **Pick a service** — dropdown showing the user's service instances (connected ones prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
+A pill toggle at the top of the tab switches between two execution modes:
 
-2. **Pick an action** — adapts to the selected service and the user's group grants:
-   - **Defined actions** listed first with human-readable descriptions and mutating badges (e.g., `create_pull_request — Create a pull request [write]`)
-   - **"Custom Request"** appears at the bottom if the user's group grants HTTP verb access for this service. Opens method + path + body inputs, with auth auto-injected.
-   - For **"Raw HTTP"** service: shows method + full URL + headers + body + secret selector (pick from user's secrets, specify injection method per secret)
+1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/execute` as Mode C.
 
-3. **Fill parameters** — auto-generated form for defined actions (text, number, enum dropdowns from the registry schema). Method + path + JSON body editor for custom requests. Full URL + secret injection config for raw HTTP.
+2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/execute` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
 
-4. **Execute** → response panel
+   ```
+   Method:  [POST ▾]
+   URL:     https://api.example.com/v1/data
+   Headers: Content-Type: application/json
+            Authorization: Bearer {{MY_TOKEN}}
+   Body:    {"query": "test", "limit": 10}
+   ```
 
-#### Raw HTTP example
-
-When "Raw HTTP" is selected as the service:
-
-```
-Service: Raw HTTP
-Method:  [POST ▾]
-URL:     [https://api.example.com/v1/data                ]
-Headers: [Content-Type: application/json                 ]
-Body:    [{"query": "test", "limit": 10}                 ]
-
-Secrets:
-  [api_key ▾]  inject as [Header ▾]  name [Authorization ▾]  prefix [Bearer ]
-```
-
-This generates permission keys `http:POST:api.example.com` + `secret:api_key:api.example.com`.
+   Each header whose value contains a single `{{NAME}}` token is rewritten on submit into a `SecretRef` (`inject_as: "header"`, prefix = any text before the token) and the backend injects the decrypted secret at execute time. Body template substitution is not supported yet — `{{…}}` in the body is sent literally, with a visible warning.
 
 #### Response panel
 
-- **Status code** (color-coded: 2xx green, 4xx yellow, 5xx red)
-- **Response time**
-- **Headers** (collapsible)
-- **Body** (syntax-highlighted JSON, with raw/pretty toggle)
-- **Permission keys derived**: shows which `{service}:{action}:{arg}` keys were checked
+Renders to the right of (or below, on narrow viewports) the request card:
+
+- **Status code** chip (color-coded: 2xx green, 4xx yellow, 5xx red)
+- **Response time** in milliseconds
+- **Body** (syntax-highlighted JSON)
+- For `pending_approval`: an info card with a link to the approval detail page.
+- For `denied`: an error card with the reason.
 
 #### Identity
 
