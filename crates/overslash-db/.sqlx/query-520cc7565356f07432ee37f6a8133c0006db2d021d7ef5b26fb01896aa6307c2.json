@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE subtree AS (\n            SELECT id FROM identities WHERE parent_id = $1\n            UNION ALL\n            SELECT i.id FROM identities i\n            INNER JOIN subtree s ON i.parent_id = s.id\n        )\n        UPDATE identities SET\n            depth = depth + $2,\n            owner_id = CASE WHEN kind = 'sub_agent' THEN $3 ELSE owner_id END,\n            updated_at = now()\n        WHERE id IN (SELECT id FROM subtree)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "520cc7565356f07432ee37f6a8133c0006db2d021d7ef5b26fb01896aa6307c2"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ig.identity_id\n         FROM identity_groups ig\n         JOIN groups g ON g.id = ig.group_id\n         WHERE ig.group_id = $1 AND g.org_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f9dae85a1e8af666e1f64217dee4853333b6e1f3fd13042db0b0e42c37d886ba"
+}

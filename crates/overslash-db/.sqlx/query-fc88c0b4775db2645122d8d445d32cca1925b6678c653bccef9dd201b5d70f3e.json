@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE identities SET parent_id = $3, depth = $4, owner_id = $5, updated_at = now()\n             WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fc88c0b4775db2645122d8d445d32cca1925b6678c653bccef9dd201b5d70f3e"
+}

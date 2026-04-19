@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE approvals SET status = 'expired', resolved_at = now(), resolved_by = 'system'\n         WHERE status = 'pending' AND expires_at < now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "7ebce9e6b514200d90e6fe6f0c43562e923d0234eb58543c510e3e07f2d3c207"
+}

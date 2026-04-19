@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE chain(id, parent_id, lvl) AS (\n                SELECT id, parent_id, 1 FROM identities WHERE id = $1 AND org_id = $2\n                UNION ALL\n                SELECT i.id, i.parent_id, c.lvl + 1\n                FROM identities i\n                INNER JOIN chain c ON i.id = c.parent_id\n                WHERE i.org_id = $2 AND c.lvl < $3\n            )\n            SELECT 1 as \"hit!\" FROM chain WHERE id = $4 LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hit!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "30da70462d579b5767207a102846a0797214f99a127f4ca7c5da5d5222c8d98d"
+}

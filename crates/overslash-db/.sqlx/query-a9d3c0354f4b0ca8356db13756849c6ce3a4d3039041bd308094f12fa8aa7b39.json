@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO enabled_global_templates (org_id, template_key, enabled_by)\n         VALUES ($1, $2, $3)\n         ON CONFLICT (org_id, template_key) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a9d3c0354f4b0ca8356db13756849c6ce3a4d3039041bd308094f12fa8aa7b39"
+}

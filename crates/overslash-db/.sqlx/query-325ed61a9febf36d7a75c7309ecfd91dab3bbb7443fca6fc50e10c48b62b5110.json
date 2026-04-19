@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_enrollments SET status = 'expired', resolved_at = now()\n         WHERE status = 'pending' AND expires_at < now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "325ed61a9febf36d7a75c7309ecfd91dab3bbb7443fca6fc50e10c48b62b5110"
+}

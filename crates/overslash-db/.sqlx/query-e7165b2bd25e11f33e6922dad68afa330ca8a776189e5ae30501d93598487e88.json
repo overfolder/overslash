@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE oauth_mcp_clients SET last_seen_at = now() WHERE client_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e7165b2bd25e11f33e6922dad68afa330ca8a776189e5ae30501d93598487e88"
+}
