@@ -41,3 +41,21 @@ IdP credentials fall back to `GOOGLE_AUTH_CLIENT_ID` / `GITHUB_AUTH_CLIENT_ID` (
 ## Dashboard: no BYOC replacement UX
 
 The Create Service form surfaces user-level BYOC state via `has_user_byoc_credential` (from `/v1/oauth-providers`) and `ByocSection` renders a read-only "✓ Your {provider} OAuth app is configured" card when present. There is no in-place replace action: silently swapping the BYOC would invalidate every existing `connections` row authorized against the old client_id (tokens minted by one OAuth app are not redeemable by another). A proper replace flow needs (a) a settings page listing BYOC credentials with explicit delete, (b) a warning that lists impacted connections, and ideally (c) re-auth prompts or a dual-creds overlap window. Until then, users have to delete + recreate via `DELETE /v1/byoc-credentials/{id}` from profile/settings.
+
+---
+
+## Approval URLs point at placeholder domain
+
+Agent-facing `pending_approval` responses render URLs like `https://overslash.example/approve/<token>` (observed 2026-04-20). No `OVERSLASH_DASHBOARD_URL` (or equivalent) envvar is threaded through the approval-response builder, so agents are told to visit a non-existent host. Fix: add a config field for the canonical dashboard domain, read it at startup, and inject it wherever approval responses are constructed. Tracked under Kanban card `20ae2` (Approval System UX Overhaul) and `docs/review/2026-04-20.md`.
+
+---
+
+## Pending Approvals date renders as "Requested Invalid Date"
+
+The dashboard's approvals list shows the timestamp as `Requested Invalid Date`. Backend emits approval timestamps in a serialization format the frontend parser does not accept (likely a chrono default that skips the trailing `Z` or uses space-separated date/time). Fix: pick one ISO-8601 shape at the API boundary (probably `DateTime<Utc>` → RFC 3339 with `Z`) and update dashboard parsers to match. Tracked under card `2e268`.
+
+---
+
+## Reusing existing Google OAuth connections fails
+
+Choosing a previously-authorized Google connection on a newly-created Google service does not bind the service to the existing token; the connection stays unlinked and the service remains in `pending_credentials`. Suspected cause: the service-instance → connection mapping does not match by `(provider, subject)` — probably by `connection_id` only — so the dashboard's "reuse existing" picker writes a binding the backend doesn't honor. Relates to the broader 2026-04-20 review ask to support reusing connections across services sharing a provider. Tracked under card `c2575`.

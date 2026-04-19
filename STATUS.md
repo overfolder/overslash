@@ -37,29 +37,40 @@
 - BYOC credential resolution with fallback chain (identity → org → system)
 - Three-tier OAuth credential cascade (SPEC §7): user BYOC → org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET`) → system env vars. Org-level tier is managed via Org Settings → OAuth App Credentials (`PUT/GET/DELETE /v1/org-oauth-credentials/{provider}`). IdP configs (`org_idp_configs`) default to the same org secrets (migration 032 makes `encrypted_client_id/secret` nullable; login resolves from the org secrets when NULL), so rotating org credentials propagates to linked IdPs automatically.
 - Connections API (initiate, list, revoke)
-- Global service template registry — OpenAPI 3.1 loader with alias normalization and search API
+- Global service template registry — OpenAPI 3.1 loader with `x-overslash-*` alias normalization, search API, and parse-don't-validate pipeline (PR #118)
 - 9 service templates shipped as OpenAPI 3.1: Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X (plus the `overslash` platform namespace)
 - Template/service instance split — templates (OpenAPI 3.1 blueprints with `x-overslash-*` extensions) + service instances (named, with credentials and lifecycle)
+- Three-tier template registry — global (read-only, shipped OpenAPI) + org (CRUD by org admins) + user (CRUD, gated by `allow_user_templates`) (PR #100)
+- Template validation endpoint `POST /v1/templates/validate` (PR #108) — struct-level OpenAPI lint reusable client-side via WASM feature gate
+- User-level services always visible to owner and their agents (PR #130)
+- Per-service OAuth scopes declared end-to-end on templates and propagated through the authorization URL (PR #127)
 - Service+action execution (registry-resolved, auth auto-resolved)
 - `scope_param` on service actions — permission keys use specific args from action params
+- `on_behalf_of` for agent-initiated operations (PR #90) — agents create secrets and connections at the owner-user level so sibling agents share them
 - Description interpolation — `{param}` substitution and `[optional segments]` in action descriptions
 - Human-readable audit descriptions — interpolated descriptions for Mode C, `METHOD host/path` for Mode A, `identity_name` resolved in audit responses
 - Suggested tiers + derived_keys on approval payloads (2-4 broadening levels)
 - Approval resolution API aligned with spec (`resolution` + `remember_keys` + `ttl`)
 - X.com OAuth with PKCE support
 - Eventbrite OAuth provider support
-- E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
+- E2E tests against real providers: Eventbrite (OAuth), GitHub (PR #113), Google Calendar (PR #111), Google Drive (PR #107), Gmail (PR #115), Resend (token), X.com (OAuth+PKCE, PR #114)
 - sqlx compile-time query checking enforced across all repos
 
 ### Phase 2.5 — Dashboard (in progress)
 
 - SvelteKit dashboard scaffolded (`/dashboard/`) with TypeScript, Tailwind CSS, adapter-static
+- Agents view redesigned per Figma (PR #105) — identity hierarchy tree with user node as immutable root, inline agent management
+- Templates dashboard UI (PR #112) — global / org / user template list with Template Editor entry point and provider dropdown (PR #124)
+- Services view — create from template, connect credentials, browse instances (Create Service surfaces user-level BYOC via `has_user_byoc_credential`, PR #131)
+- Standalone Provide Secret page (PR #89) with User Signed Mode for attributed secret provisioning (PR #109)
 - Developer Connection Tool — interactive API explorer with unified execution flow
   - Service/action selector with method and risk badges
   - Auto-generated parameter forms from action schemas (text, number, enum dropdowns)
   - Supports defined actions, custom HTTP requests, and raw HTTP (`http` pseudo-service)
   - Response panel with JSON syntax highlighting, headers table, request inspector
   - API key management with localStorage persistence
+- 2026-04-10 review corrections applied — doc-level (PR #96) and dashboard-level (PR #99)
+- Build/quality — zero-warning vite builds enforced (PR #125); Inter + Roboto Mono self-hosted via `@fontsource-variable` (PR #129)
 
 ### Phase 3 — Identity Hierarchy + Hierarchical Permissions
 
@@ -118,13 +129,19 @@
 
 ### Not Yet Built
 
-- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
-- Standalone pages: approval resolution
-- `on_behalf_of` for agent-initiated connections
-- OpenAPI import
-- Org-level ACL (role-based access control for who can manage groups, services, etc.)
-- Phase 3: TTL-based sub-identity auto-cleanup, approval visibility scoping
-- Phase 4: Meta tools, semantic search, billing, documentation site
+- Dashboard gaps (tracked in TODO.md §Review Corrections 2026-04-20):
+  - Audit Log view (backend audit trail is complete; UI missing — card `504a7`)
+  - IdP config **edit** UI (create/delete/toggle ship; backend `PUT /v1/org-idp-configs/{id}` already supports full updates — see TECH_DEBT.md §3)
+  - API Explorer accessibility from main nav (card `504a7`)
+  - Notification bell dropdown (card `504a7`)
+  - Approval resolver as modal/dropdown instead of standalone page (card `20ae2`, design pending)
+  - Toggle Switch design-system component adopted everywhere (card `2e268`, in progress)
+  - Inline "Allow Once" on /agents and canonical `OVERSLASH_DASHBOARD_URL` in approval URLs (card `20ae2`)
+- OpenAPI bulk import UX (endpoint in Review, card `7187f`)
+- User-to-org template sharing (propose / approve / deny; in Review, card `7e5ee`)
+- Phase 3: approval visibility scoping (`?scope=actionable` vs `?scope=mine`), webhook `gap_identity` + `can_be_handled_by`
+- Phase 3: archived sub-agent list + restore button + cleanup config form in the Agents view (backend shipped)
+- Phase 4: Meta tools (`overslash_search`/`_execute`/`_auth` in Review, card `30b36`), semantic search, org billing / usage metering, documentation site
 
 ### CLI + MCP — Surface Restructure (OAuth transport)
 
