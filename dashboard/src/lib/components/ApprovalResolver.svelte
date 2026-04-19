@@ -6,6 +6,7 @@
 		type ResolveApprovalRequest
 	} from '$lib/session';
 	import IdentityPath from './IdentityPath.svelte';
+	import { relativeTime } from '$lib/utils/time';
 
 	let { approval, onResolved, compact = false }: {
 		approval: ApprovalResponse;
@@ -56,22 +57,6 @@
 			.split(/[_\-]/)
 			.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
 			.join(' ');
-	}
-
-	function relativeTime(iso: string): string {
-		const t = Date.parse(iso);
-		if (Number.isNaN(t)) return iso;
-		const diff = (t - Date.now()) / 1000;
-		const abs = Math.abs(diff);
-		const unit =
-			abs < 60
-				? `${Math.round(abs)}s`
-				: abs < 3600
-					? `${Math.round(abs / 60)}m`
-					: abs < 86400
-						? `${Math.round(abs / 3600)}h`
-						: `${Math.round(abs / 86400)}d`;
-		return diff < 0 ? `${unit} ago` : `in ${unit}`;
 	}
 
 	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {

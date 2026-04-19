@@ -24,4 +24,5 @@ pub mod secret_requests;
 pub mod secrets;
 pub mod services;
 pub mod templates;
+pub mod util;
 pub mod webhooks;

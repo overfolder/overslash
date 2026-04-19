@@ -4,13 +4,12 @@ use axum::{
     routing::{delete, post},
 };
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
 
+use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -46,10 +45,6 @@ struct PermissionResponse {
     effect: String,
     expires_at: Option<String>,
     created_at: String,
-}
-
-fn fmt_time(t: OffsetDateTime) -> String {
-    t.format(&Rfc3339).unwrap_or_else(|_| t.to_string())
 }
 
 async fn create_permission(

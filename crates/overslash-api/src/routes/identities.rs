@@ -12,6 +12,7 @@ use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::identity::RestoreOutcome;
 
+use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -263,11 +264,6 @@ struct IdentityResponse {
     archived_reason: Option<String>,
 }
 
-fn fmt_rfc3339(t: time::OffsetDateTime) -> String {
-    t.format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
-}
-
 impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
     fn from(r: overslash_db::repos::identity::IdentityRow) -> Self {
         let provider = r
@@ -293,9 +289,9 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             depth: r.depth,
             owner_id: r.owner_id,
             inherit_permissions: r.inherit_permissions,
-            created_at: fmt_rfc3339(r.created_at),
-            last_active_at: fmt_rfc3339(r.last_active_at),
-            archived_at: r.archived_at.map(fmt_rfc3339),
+            created_at: fmt_time(r.created_at),
+            last_active_at: fmt_time(r.last_active_at),
+            archived_at: r.archived_at.map(fmt_time),
             archived_reason: r.archived_reason,
         }
     }

@@ -11,6 +11,7 @@ use overslash_db::repos::service_instance::{
 };
 use overslash_db::scopes::OrgScope;
 
+use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -394,14 +395,8 @@ fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         secret_name: row.secret_name,
         status: row.status,
         is_system: row.is_system,
-        created_at: row
-            .created_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
-        updated_at: row
-            .updated_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
+        created_at: fmt_time(row.created_at),
+        updated_at: fmt_time(row.updated_at),
     }
 }
 

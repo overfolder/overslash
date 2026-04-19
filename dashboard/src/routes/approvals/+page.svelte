@@ -2,6 +2,7 @@
 	import ApprovalResolver from '$lib/components/ApprovalResolver.svelte';
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
 	import type { ApprovalResponse } from '$lib/session';
+	import { relativeTime as relativeTimeUtil } from '$lib/utils/time';
 	import { onMount } from 'svelte';
 
 	let { data }: { data: { approvals: ApprovalResponse[]; error: string | null } } = $props();
@@ -22,19 +23,7 @@
 	function relativeTime(iso: string): string {
 		// Reference `tick` so this re-runs on the interval above.
 		void tick;
-		const t = Date.parse(iso);
-		if (Number.isNaN(t)) return iso;
-		const diff = (t - Date.now()) / 1000;
-		const abs = Math.abs(diff);
-		const unit =
-			abs < 60
-				? `${Math.round(abs)}s`
-				: abs < 3600
-					? `${Math.round(abs / 60)}m`
-					: abs < 86400
-						? `${Math.round(abs / 3600)}h`
-						: `${Math.round(abs / 86400)}d`;
-		return diff < 0 ? `${unit} ago` : `in ${unit}`;
+		return relativeTimeUtil(iso);
 	}
 
 	function primaryKey(a: ApprovalResponse): string {

@@ -10,6 +10,7 @@ use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::rate_limit;
 
+use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -79,14 +80,8 @@ impl From<rate_limit::RateLimitRow> for RateLimitResponse {
             group_id: r.group_id,
             max_requests: r.max_requests,
             window_seconds: r.window_seconds,
-            created_at: r
-                .created_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
-            updated_at: r
-                .updated_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
+            created_at: fmt_time(r.created_at),
+            updated_at: fmt_time(r.updated_at),
         }
     }
 }

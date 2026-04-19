@@ -6,6 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::util::fmt_time;
+
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::group::GroupRow;
 use overslash_db::scopes::OrgScope;
@@ -91,8 +93,8 @@ impl From<GroupRow> for GroupResponse {
             description: r.description,
             allow_raw_http: r.allow_raw_http,
             is_system: r.is_system,
-            created_at: r.created_at.to_string(),
-            updated_at: r.updated_at.to_string(),
+            created_at: fmt_time(r.created_at),
+            updated_at: fmt_time(r.updated_at),
         }
     }
 }
@@ -339,7 +341,7 @@ async fn add_grant(
         service_name: svc.name,
         access_level: grant_row.access_level,
         auto_approve_reads: grant_row.auto_approve_reads,
-        created_at: grant_row.created_at.to_string(),
+        created_at: fmt_time(grant_row.created_at),
     }))
 }
 
@@ -363,7 +365,7 @@ async fn list_grants(
                 service_name: r.service_name,
                 access_level: r.access_level,
                 auto_approve_reads: r.auto_approve_reads,
-                created_at: r.created_at.to_string(),
+                created_at: fmt_time(r.created_at),
             })
             .collect(),
     ))
@@ -473,7 +475,7 @@ async fn assign_identity(
     Ok(Json(MemberResponse {
         identity_id: row.identity_id,
         group_id: row.group_id,
-        assigned_at: row.assigned_at.to_string(),
+        assigned_at: fmt_time(row.assigned_at),
     }))
 }
 

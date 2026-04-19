@@ -162,6 +162,18 @@ async fn agent_no_rules_gap_resolver_is_user() {
     assert_eq!(appr["identity_id"], json!(agent_id));
     assert_eq!(appr["requesting_identity_id"], json!(agent_id));
     assert_eq!(appr["current_resolver_identity_id"], json!(user_id));
+
+    // Regression: `created_at` and `expires_at` must be RFC3339 so the
+    // dashboard's Date.parse() can format them. Previously the approvals
+    // route used OffsetDateTime::to_string() which produced a space-separated
+    // layout that JS renders as "Invalid Date".
+    for field in ["created_at", "expires_at"] {
+        let s = appr[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} missing"));
+        time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|e| panic!("{field} not RFC3339: {s:?} ({e})"));
+    }
 }
 
 // ── Test 2: spec example -- service-b request goes to Chief ─────────

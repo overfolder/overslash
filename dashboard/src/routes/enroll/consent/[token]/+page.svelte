@@ -35,7 +35,9 @@
 	});
 
 	function fmtCountdown(expiresAt: string): string {
-		const ms = new Date(expiresAt).getTime() - now;
+		const t = Date.parse(expiresAt);
+		if (!Number.isFinite(t)) return expiresAt;
+		const ms = t - now;
 		if (ms <= 0) return 'expired';
 		const s = Math.floor(ms / 1000);
 		const m = Math.floor(s / 60);
@@ -43,7 +45,9 @@
 	}
 
 	function fmtRelative(iso: string): string {
-		const ms = now - new Date(iso).getTime();
+		const t = Date.parse(iso);
+		if (!Number.isFinite(t)) return iso;
+		const ms = now - t;
 		if (ms < 60_000) return 'just now';
 		const m = Math.floor(ms / 60_000);
 		if (m < 60) return `${m}m ago`;

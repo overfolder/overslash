@@ -24,6 +24,8 @@ use uuid::Uuid;
 use overslash_db::repos::{audit::AuditEntry, secret_request};
 use overslash_db::scopes::OrgScope;
 
+use super::util::fmt_time;
+
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -165,9 +167,7 @@ async fn create_secret_request(
         id: req_id,
         token,
         url,
-        expires_at: expires_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_else(|_| expires_at.to_string()),
+        expires_at: fmt_time(expires_at),
     }))
 }
 
@@ -241,14 +241,8 @@ async fn get_provide(
         identity_label,
         requested_by_label,
         reason: row.reason,
-        expires_at: row
-            .expires_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_else(|_| row.expires_at.to_string()),
-        created_at: row
-            .created_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_else(|_| row.created_at.to_string()),
+        expires_at: fmt_time(row.expires_at),
+        created_at: fmt_time(row.created_at),
         require_user_session: row.require_user_session,
         viewer,
     }))

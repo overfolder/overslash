@@ -11,6 +11,8 @@ use overslash_db::OrgScope;
 use overslash_db::repos::{audit::AuditEntry, oauth_provider};
 use overslash_db::scopes::OrgIdpConfigCredentialsUpdate;
 
+use super::util::fmt_time;
+
 use crate::{
     AppState,
     error::{AppError, Result},
@@ -269,8 +271,8 @@ async fn create_idp_config(
         allowed_email_domains: row.allowed_email_domains,
         source: "db",
         uses_org_credentials,
-        created_at: row.created_at.to_string(),
-        updated_at: row.updated_at.to_string(),
+        created_at: fmt_time(row.created_at),
+        updated_at: fmt_time(row.updated_at),
     }))
 }
 
@@ -316,8 +318,8 @@ async fn list_idp_configs(
             "enabled": config.enabled,
             "allowed_email_domains": config.allowed_email_domains,
             "uses_org_credentials": config.encrypted_client_id.is_none(),
-            "created_at": config.created_at.to_string(),
-            "updated_at": config.updated_at.to_string(),
+            "created_at": fmt_time(config.created_at),
+            "updated_at": fmt_time(config.updated_at),
         }));
     }
 
@@ -442,8 +444,8 @@ async fn update_idp_config(
         allowed_email_domains: updated.allowed_email_domains,
         source: "db",
         uses_org_credentials,
-        created_at: updated.created_at.to_string(),
-        updated_at: updated.updated_at.to_string(),
+        created_at: fmt_time(updated.created_at),
+        updated_at: fmt_time(updated.updated_at),
     }))
 }
 
