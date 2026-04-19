@@ -600,10 +600,13 @@ async fn update_template(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTemplateRequest>,
 ) -> Result<Json<TemplateDetail>> {
-    // Multi-tenancy guard + ownership check.
+    // Multi-tenancy guard + ownership check. Drafts are scoped to the
+    // `/v1/templates/drafts/*` surface — routing them through this endpoint
+    // would bypass the draft-specific audit trail and allow active-template
+    // callers to mutate work-in-progress rows they cannot otherwise see.
     let existing = service_template::get_by_id(&state.db, id)
         .await?
-        .filter(|r| r.org_id == acl.org_id)
+        .filter(|r| r.org_id == acl.org_id && r.status == "active")
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
 
     if existing.owner_identity_id.is_some() {
@@ -672,16 +675,24 @@ async fn update_template(
 }
 
 /// Delete a DB-stored template by id (cannot delete global templates).
+///
+/// Only operates on `status='active'` rows. Drafts are deleted via the
+/// dedicated `DELETE /v1/templates/drafts/{id}` endpoint so the audit trail
+/// records `template.draft.discarded` (not `template.deleted`) and so the
+/// active-template delete SQL can safely add `AND status='active'` without
+/// blocking legitimate draft cleanup.
 async fn delete_template(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    // Multi-tenancy guard + ownership check.
+    // Multi-tenancy guard + ownership check. Status filter pushes draft rows
+    // to the dedicated endpoint so a caller who knows a draft's UUID can't
+    // destroy it through here (and bypass the draft-audit action label).
     let existing = service_template::get_by_id(&state.db, id)
         .await?
-        .filter(|r| r.org_id == acl.org_id)
+        .filter(|r| r.org_id == acl.org_id && r.status == "active")
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
 
     if existing.owner_identity_id.is_some() {

@@ -277,10 +277,16 @@ pub async fn promote_draft(
     .await
 }
 
+/// Delete an active template row. The `status = 'active'` clause stops this
+/// path from destroying a draft if one slips past the handler's status check
+/// (mirrors [`delete_draft`] on the other side of the lifecycle).
 pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!("DELETE FROM service_templates WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query!(
+        "DELETE FROM service_templates WHERE id = $1 AND status = 'active'",
+        id,
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 

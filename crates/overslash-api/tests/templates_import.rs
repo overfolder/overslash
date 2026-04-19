@@ -412,6 +412,77 @@ async fn test_nonadmin_cannot_create_org_draft() {
 }
 
 #[tokio::test]
+async fn test_manage_delete_rejects_drafts() {
+    // Drafts must not be deletable through the active-template endpoint
+    // (DELETE /v1/templates/{id}/manage) — otherwise a user who knows a
+    // draft UUID could bypass the draft-scoped discard flow and its audit
+    // trail. The handler must 404 drafts so they only reach the
+    // /v1/templates/drafts/{id} surface.
+    let (base, client, _org_id, admin_key, _) = bootstrap().await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates/import"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "source": { "type": "body", "body": SAMPLE_OPENAPI } }))
+        .send()
+        .await
+        .unwrap();
+    let draft: Value = resp.json().await.unwrap();
+    let draft_id = draft["id"].as_str().unwrap().to_string();
+
+    let del = client
+        .delete(format!("{base}/v1/templates/{draft_id}/manage"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 404, "manage-delete must refuse drafts");
+
+    // The draft must still be reachable via the drafts surface.
+    let get = client
+        .get(format!("{base}/v1/templates/drafts/{draft_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status(), 200);
+}
+
+#[tokio::test]
+async fn test_manage_update_rejects_drafts() {
+    let (base, client, _org_id, admin_key, _) = bootstrap().await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates/import"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "source": { "type": "body", "body": SAMPLE_OPENAPI } }))
+        .send()
+        .await
+        .unwrap();
+    let draft: Value = resp.json().await.unwrap();
+    let draft_id = draft["id"].as_str().unwrap().to_string();
+
+    let edit = r#"
+openapi: 3.1.0
+info:
+  title: Edited
+  x-overslash-key: widgets-api
+servers: [{"url": "https://api.widgets.test"}]
+paths:
+  /widgets:
+    get: {operationId: list_widgets, summary: List, x-overslash-risk: read}
+"#;
+    let put = client
+        .put(format!("{base}/v1/templates/{draft_id}/manage"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": edit }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 404, "manage-update must refuse drafts");
+}
+
+#[tokio::test]
 async fn test_discard_refuses_if_draft_was_promoted_between_check_and_delete() {
     let (base, client, _org_id, admin_key, _) = bootstrap().await;
 
