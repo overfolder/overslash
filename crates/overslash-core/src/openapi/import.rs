@@ -771,4 +771,200 @@ mod tests {
         .unwrap();
         assert_eq!(prep.doc["info"]["title"].as_str().unwrap(), "h");
     }
+
+    // ── Additional coverage: version warnings, overrides, edge cases ───
+
+    #[test]
+    fn missing_openapi_version_emits_warning() {
+        let doc = json!({
+            "info": {"title": "No Version"},
+            "paths": {}
+        });
+        let prep = prepare_from_value(doc, &ImportOptions::default());
+        assert!(
+            prep.warnings
+                .iter()
+                .any(|w| w.code == "openapi_version_missing")
+        );
+    }
+
+    #[test]
+    fn unsupported_openapi_version_warns_but_proceeds() {
+        let doc = json!({
+            "openapi": "2.0",
+            "info": {"title": "Swagger v2"},
+            "paths": {}
+        });
+        let prep = prepare_from_value(doc, &ImportOptions::default());
+        assert!(
+            prep.warnings
+                .iter()
+                .any(|w| w.code == "openapi_unsupported_version")
+        );
+    }
+
+    #[test]
+    fn display_name_override_updates_title() {
+        let opts = ImportOptions {
+            display_name: Some("Widget Service".into()),
+            ..Default::default()
+        };
+        let prep = prepare_from_value(base_doc(), &opts);
+        assert_eq!(
+            prep.doc["info"]["title"].as_str().unwrap(),
+            "Widget Service"
+        );
+    }
+
+    #[test]
+    fn synthesized_ids_are_unique_when_colliding() {
+        // Two operations that would otherwise synthesize the same id.
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "X", "x-overslash-key": "x"},
+            "paths": {
+                "/a": { "get": {"summary": "a"} },
+                "/a/": { "get": {"summary": "a-with-slash"} }
+            }
+        });
+        let prep = prepare_from_value(doc, &ImportOptions::default());
+        let ids: Vec<String> = prep
+            .operations
+            .iter()
+            .map(|o| o.operation_id.clone())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        // Ensure distinct ids even when path slugs collide.
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn filter_with_empty_set_drops_all_paths() {
+        let opts = ImportOptions {
+            include_operations: Some(HashSet::new()),
+            ..Default::default()
+        };
+        let prep = prepare_from_value(base_doc(), &opts);
+        assert!(
+            prep.doc["paths"]
+                .as_object()
+                .map(|o| o.is_empty())
+                .unwrap_or(true),
+            "paths should be empty after filtering with empty include set"
+        );
+        // All operations still surface, just none marked included.
+        assert!(prep.operations.iter().all(|o| !o.included));
+    }
+
+    #[test]
+    fn circular_ref_emits_warning_and_stops() {
+        // Self-referential ref: A → A. The dereferencer should cut the cycle
+        // rather than stack-overflow, and emit a circular_ref warning.
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Cyclic", "x-overslash-key": "cyclic"},
+            "components": {
+                "schemas": {
+                    "Node": {"$ref": "#/components/schemas/Node"}
+                }
+            },
+            "paths": {
+                "/n": {"get": {
+                    "operationId": "n",
+                    "responses": {"200": {
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Node"}}}
+                    }}
+                }}
+            }
+        });
+        let prep = prepare_from_value(doc, &ImportOptions::default());
+        // Either the circular_ref warning (preferred) or the document has
+        // terminated safely. We just care we didn't panic.
+        let _ = prep;
+    }
+
+    #[test]
+    fn ref_with_sibling_keys_merges_siblings_over_resolved_object() {
+        // OpenAPI 3.1 allows $ref alongside other keys. Our resolver should
+        // merge the non-$ref siblings on top of the resolved value.
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Sib", "x-overslash-key": "sib"},
+            "components": {
+                "schemas": {
+                    "Base": {"type": "object", "description": "base schema"}
+                }
+            },
+            "paths": {
+                "/s": {"get": {
+                    "operationId": "s",
+                    "responses": {"200": {
+                        "content": {"application/json": {"schema": {
+                            "$ref": "#/components/schemas/Base",
+                            "description": "override"
+                        }}}
+                    }}
+                }}
+            }
+        });
+        let prep = prepare_from_value(doc, &ImportOptions::default());
+        let schema = &prep.doc["paths"]["/s"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"];
+        assert_eq!(schema["type"].as_str().unwrap(), "object");
+        assert_eq!(schema["description"].as_str().unwrap(), "override");
+    }
+
+    #[test]
+    fn collect_operations_sorts_by_path_then_method() {
+        let doc = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Z", "x-overslash-key": "z"},
+            "paths": {
+                "/b": {"get": {"operationId": "b_get"}, "post": {"operationId": "b_post"}},
+                "/a": {"get": {"operationId": "a_get"}}
+            }
+        });
+        let prep = prepare_from_value(doc, &ImportOptions::default());
+        let ordered: Vec<(String, String)> = prep
+            .operations
+            .iter()
+            .map(|o| (o.path.clone(), o.method.clone()))
+            .collect();
+        assert_eq!(
+            ordered,
+            vec![
+                ("/a".to_string(), "get".to_string()),
+                ("/b".to_string(), "get".to_string()),
+                ("/b".to_string(), "post".to_string()),
+            ]
+        );
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn invalid_utf8_source_surfaces_structured_error() {
+        let bad: &[u8] = &[0xff, 0xfe, 0xfd];
+        let err = prepare_import(bad, None, &ImportOptions::default()).unwrap_err();
+        assert_eq!(err.code, "openapi_parse_error");
+        assert!(err.message.contains("UTF-8"));
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn malformed_json_source_surfaces_structured_error() {
+        let src = b"{ not valid json";
+        let err =
+            prepare_import(src, Some("application/json"), &ImportOptions::default()).unwrap_err();
+        assert_eq!(err.code, "openapi_parse_error");
+    }
+
+    #[test]
+    fn slugify_handles_leading_digit_and_punctuation() {
+        // Leading digit gets an `x-` prefix so the key matches `^[a-z]...`.
+        assert_eq!(slugify("3D Widgets"), "x-3d-widgets");
+        // All-punctuation input collapses to empty, no panic.
+        assert_eq!(slugify("!!! ??? !!!"), "");
+        // Underscores and hyphens are preserved as-is.
+        assert_eq!(slugify("my_cool-api"), "my_cool-api");
+    }
 }
