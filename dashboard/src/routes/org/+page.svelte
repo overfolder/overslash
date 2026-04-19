@@ -91,6 +91,7 @@
 	let oauthCredClientSecret = $state('');
 	let oauthCredError = $state<string | null>(null);
 	let oauthCredSubmitting = $state(false);
+	let oauthCredSuccess = $state<string | null>(null);
 
 	/** True when an org credential exists (from any source) for this provider. */
 	function hasOrgCredFor(providerKey: string): boolean {
@@ -227,7 +228,9 @@
 	async function submitOauthCred(e: Event) {
 		e.preventDefault();
 		oauthCredError = null;
+		oauthCredSuccess = null;
 		oauthCredSubmitting = true;
+		const provider = oauthCredProvider;
 		try {
 			await session.put<OAuthCredential>(
 				`/v1/org-oauth-credentials/${oauthCredProvider}`,
@@ -239,6 +242,8 @@
 			showOauthCredForm = false;
 			oauthCredClientId = '';
 			oauthCredClientSecret = '';
+			oauthCredSuccess =
+				`Saved. Existing ${provider} services keep using their current connection — new services will use this credential.`;
 			await refetchOauthCreds();
 		} catch (err) {
 			oauthCredError = asMessage(err);
@@ -480,6 +485,14 @@
 					{showIdpForm ? 'Cancel' : 'Add provider'}
 				</button>
 			</div>
+			<p class="section-desc">
+				Controls <strong>how users log in to Overslash</strong>. Separate from the
+				<a href="#oauth-app-credentials">OAuth App Credentials</a> below, which power service
+				connections (Google Calendar, Drive, Gmail, etc.). Rows marked <span class="badge badge-env">env</span>
+				come from environment variables — they appear automatically when the instance is launched with
+				<code>GOOGLE_AUTH_CLIENT_ID</code> / <code>GITHUB_AUTH_CLIENT_ID</code> set, and aren't affected
+				by adding OAuth App Credentials here.
+			</p>
 
 			{#if idpConfigs.length === 0}
 				<p class="muted">No identity providers configured.</p>
@@ -602,7 +615,7 @@
 		</section>
 
 		<!-- OAuth App Credentials -->
-		<section class="card">
+		<section class="card" id="oauth-app-credentials">
 			<div class="card-head">
 				<h2>OAuth App Credentials</h2>
 				<button
@@ -619,6 +632,10 @@
 				cascade — Google Calendar, Drive, and Gmail share one set of Google
 				credentials.
 			</p>
+
+			{#if oauthCredSuccess}
+				<p class="form-success">{oauthCredSuccess}</p>
+			{/if}
 
 			{#if oauthCredentials.length === 0}
 				<p class="muted">No OAuth App Credentials configured.</p>
@@ -1094,6 +1111,15 @@
 	}
 	.form-error {
 		color: var(--color-danger, #b42318);
+		font-size: 0.85rem;
+	}
+	.form-success {
+		color: var(--color-success, #0e7a51);
+		background: rgba(14, 122, 81, 0.08);
+		border: 1px solid rgba(14, 122, 81, 0.25);
+		border-radius: 6px;
+		padding: 0.5rem 0.75rem;
+		margin: 0 0 0.6rem;
 		font-size: 0.85rem;
 	}
 

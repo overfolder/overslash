@@ -257,6 +257,174 @@ pub struct TokenResponse {
     pub scope: Option<String>,
 }
 
+impl TokenResponse {
+    /// Parse the `scope` field into a normalized Vec. OAuth providers return
+    /// granted scopes as a space-separated string (RFC 6749 §5.1); some
+    /// (GitHub) use commas instead. We accept either.
+    pub fn granted_scopes(&self) -> Vec<String> {
+        match &self.scope {
+            None => vec![],
+            Some(raw) => raw
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect(),
+        }
+    }
+}
+
+/// Fetch the user's profile from the provider's userinfo endpoint and extract
+/// their email address, if any. Never fails the overall flow: a missing
+/// userinfo URL, a non-2xx response, or a response without a recognised email
+/// field all return `Ok(None)` — the connection still lands, just unlabeled.
+///
+/// Response shapes vary per provider:
+/// - Google / generic OIDC: `{"email": "..."}`
+/// - GitHub: `{"email": null, "login": "..."}` when email is private — fall
+///   back to `login@users.noreply.github.com` for a stable label.
+/// - Slack (users.identity): `{"user": {"email": "..."}}`
+pub async fn fetch_account_email(
+    http_client: &reqwest::Client,
+    provider: &oauth_provider::OAuthProviderRow,
+    access_token: &str,
+) -> Result<Option<String>, OAuthError> {
+    let Some(url) = provider.userinfo_endpoint.as_deref() else {
+        return Ok(None);
+    };
+
+    let resp = http_client
+        .get(url)
+        .bearer_auth(access_token)
+        .header("Accept", "application/json")
+        .header("User-Agent", "overslash")
+        .send()
+        .await
+        .map_err(|e| OAuthError::HttpError(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| OAuthError::ParseError(e.to_string()))?;
+
+    Ok(extract_email(&body, &provider.key))
+}
+
+fn extract_email(body: &serde_json::Value, provider_key: &str) -> Option<String> {
+    // Direct hits at the root — covers Google, Microsoft (mail), most OIDC.
+    for field in ["email", "mail", "emailAddress", "preferred_username"] {
+        if let Some(s) = body.get(field).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    // Slack's users.identity nests it.
+    if let Some(s) = body
+        .get("user")
+        .and_then(|u| u.get("email"))
+        .and_then(|v| v.as_str())
+    {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    // GitHub returns `email: null` when the user has hidden it; fall back to
+    // a synthesized noreply address so the UI still shows something
+    // meaningful rather than a UUID.
+    if provider_key == "github" {
+        if let Some(login) = body.get("login").and_then(|v| v.as_str()) {
+            if !login.is_empty() {
+                return Some(format!("{login}@users.noreply.github.com"));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn granted_scopes_parses_space_delimited() {
+        let t = TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: None,
+            token_type: None,
+            scope: Some("openid email profile".into()),
+        };
+        assert_eq!(t.granted_scopes(), vec!["openid", "email", "profile"]);
+    }
+
+    #[test]
+    fn granted_scopes_parses_comma_delimited_github() {
+        let t = TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: None,
+            token_type: None,
+            scope: Some("repo,read:user".into()),
+        };
+        assert_eq!(t.granted_scopes(), vec!["repo", "read:user"]);
+    }
+
+    #[test]
+    fn granted_scopes_empty_when_missing() {
+        let t = TokenResponse {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_in: None,
+            token_type: None,
+            scope: None,
+        };
+        assert!(t.granted_scopes().is_empty());
+    }
+
+    #[test]
+    fn extract_email_google_shape() {
+        let body = serde_json::json!({"sub": "1", "email": "alice@example.com"});
+        assert_eq!(
+            extract_email(&body, "google"),
+            Some("alice@example.com".into())
+        );
+    }
+
+    #[test]
+    fn extract_email_slack_nested() {
+        let body = serde_json::json!({"ok": true, "user": {"email": "bob@slack.com"}});
+        assert_eq!(extract_email(&body, "slack"), Some("bob@slack.com".into()));
+    }
+
+    #[test]
+    fn extract_email_github_falls_back_to_login() {
+        let body = serde_json::json!({"login": "octocat", "email": null});
+        assert_eq!(
+            extract_email(&body, "github"),
+            Some("octocat@users.noreply.github.com".into())
+        );
+    }
+
+    #[test]
+    fn extract_email_github_uses_real_email_when_public() {
+        let body = serde_json::json!({"login": "octocat", "email": "real@octocat.dev"});
+        assert_eq!(
+            extract_email(&body, "github"),
+            Some("real@octocat.dev".into())
+        );
+    }
+
+    #[test]
+    fn extract_email_returns_none_when_no_hint() {
+        let body = serde_json::json!({"name": "Alice"});
+        assert_eq!(extract_email(&body, "google"), None);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OAuthError {
     #[error("http error: {0}")]
