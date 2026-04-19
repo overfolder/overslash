@@ -976,8 +976,6 @@ async fn import_template(
     ip: ClientIp,
     Json(req): Json<ImportTemplateRequest>,
 ) -> Result<Json<DraftTemplateDetail>> {
-    let owner_identity_id = resolve_draft_owner(&state, &acl, req.user_level).await?;
-
     let (bytes, content_type_hint, mut import_warnings) = match req.source {
         ImportSource::Url { url } => fetch_openapi_url(&url).await?,
         ImportSource::Body { content_type, body } => {
@@ -1029,6 +1027,12 @@ async fn import_template(
             .await?
             .ok_or_else(|| AppError::NotFound("draft not found".into()))?
     } else {
+        // Tier rules (admin-only for org, allow_user_templates for user) only
+        // apply when creating a new row. When updating an existing draft,
+        // authorization is handled above via `load_draft_for_write` and the
+        // request's `user_level` field is not meaningful — the draft's tier
+        // is already fixed.
+        let owner_identity_id = resolve_draft_owner(&state, &acl, req.user_level).await?;
         let input = CreateServiceTemplate {
             org_id: acl.org_id,
             owner_identity_id,
@@ -1241,23 +1245,23 @@ async fn promote_draft(
     }
 
     // Key collision: refuse if an active template already owns this key at
-    // the same tier.
+    // the same tier (global, org, or user). `get_by_key` filters for
+    // `status='active'`, and this row is still `status='draft'`, so any
+    // match is guaranteed to be a different row — no id comparison needed.
     if state.registry.get(&def.key).is_some() {
         return Err(AppError::Conflict(format!(
             "template key '{}' conflicts with a global template",
             def.key
         )));
     }
-    if let Some(clash) =
-        service_template::get_by_key(&state.db, acl.org_id, existing.owner_identity_id, &def.key)
-            .await?
+    if service_template::get_by_key(&state.db, acl.org_id, existing.owner_identity_id, &def.key)
+        .await?
+        .is_some()
     {
-        if clash.id != existing.id {
-            return Err(AppError::Conflict(format!(
-                "template key '{}' is already in use",
-                def.key
-            )));
-        }
+        return Err(AppError::Conflict(format!(
+            "template key '{}' is already in use (delete the existing active template first)",
+            def.key
+        )));
     }
 
     let promoted = service_template::promote_draft(&state.db, existing.id)
