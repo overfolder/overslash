@@ -119,13 +119,15 @@
 	);
 	const hasFallback = $derived(
 		providerInfo
-			? providerInfo.has_org_credential || providerInfo.has_system_credential
+			? providerInfo.has_org_credential
+				|| providerInfo.has_system_credential
+				|| providerInfo.has_user_byoc_credential
 			: false
 	);
 	// When we've confirmed (via a successful provider fetch) that no org/system
-	// creds exist, the user MUST provide their own. If the provider catalog
-	// failed to load, we DON'T force BYOC — the backend cascade will resolve
-	// credentials at connect time (Sentry review feedback).
+	// creds AND no prior user BYOC exist, the user MUST provide their own. If
+	// the provider catalog failed to load, we DON'T force BYOC — the backend
+	// cascade will resolve credentials at connect time (Sentry review feedback).
 	const byocRequired = $derived(!!oauthProvider && providersLoaded && !hasFallback);
 
 	async function loadTemplates() {
@@ -416,6 +418,8 @@
 							Using <strong>org credentials</strong> configured for {providerInfo.display_name}.
 						{:else if providerInfo?.has_system_credential}
 							Using <strong>Overslash system credentials</strong>.
+						{:else if providerInfo?.has_user_byoc_credential}
+							Reusing your <strong>existing OAuth app</strong> for {providerInfo.display_name}.
 						{:else}
 							<span class="warn">
 								No credentials configured for this provider — paste your own below to continue.

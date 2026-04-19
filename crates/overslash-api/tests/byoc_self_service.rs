@@ -234,7 +234,7 @@ async fn oauth_providers_lists_known_providers() {
     assert!(keys.contains(&"github"), "missing github: {keys:?}");
     assert!(keys.contains(&"slack"), "missing slack: {keys:?}");
 
-    // Fresh org, no org creds, no env fallback: all flags false.
+    // Fresh org, no org creds, no env fallback, no user BYOC: all flags false.
     for row in &list {
         assert_eq!(
             row["has_org_credential"], false,
@@ -244,8 +244,61 @@ async fn oauth_providers_lists_known_providers() {
             row["has_system_credential"], false,
             "row {row}: expected has_system_credential=false without env opt-in"
         );
+        assert_eq!(
+            row["has_user_byoc_credential"], false,
+            "row {row}: expected has_user_byoc_credential=false on fresh user"
+        );
         assert!(row["supports_pkce"].is_boolean());
     }
+}
+
+#[tokio::test]
+async fn oauth_providers_has_user_byoc_reflects_own_credential() {
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, agent_ident, agent_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Agent stores their own google BYOC (e.g. from a google_calendar setup).
+    let resp = client
+        .post(format!("{base}/v1/byoc-credentials"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "provider": "google",
+            "client_id": "my.apps.googleusercontent.com",
+            "client_secret": "GOCSPX-my_secret",
+            "identity_id": agent_ident,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Provider catalog should now mark google as having a user BYOC, but
+    // other providers (e.g. github) must stay false.
+    let list: Vec<Value> = client
+        .get(format!("{base}/v1/oauth-providers"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let google = list
+        .iter()
+        .find(|r| r["key"] == "google")
+        .expect("google row");
+    let github = list
+        .iter()
+        .find(|r| r["key"] == "github")
+        .expect("github row");
+    assert_eq!(google["has_user_byoc_credential"], true);
+    assert_eq!(github["has_user_byoc_credential"], false);
+    // Org/system flags unchanged.
+    assert_eq!(google["has_org_credential"], false);
+    assert_eq!(google["has_system_credential"], false);
 }
 
 #[tokio::test]
