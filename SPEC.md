@@ -841,7 +841,71 @@ Once the user has supplied credentials at the returned URL, the service flips to
 
 ### OpenAPI Import
 
-Upload an OpenAPI 3.x spec (file or URL) → Overslash parses it and generates a **template** with actions and parameter schemas. Available at both org and user tier. The import is a starting point — the user reviews and edits the generated template before saving. Partial import supported: pick which endpoints become actions, skip the rest.
+Upload an OpenAPI 3.x spec (file or URL) → Overslash parses it and stores a **draft template** with actions and parameter schemas. Available at both org and user tier. Because the template format is already an OpenAPI 3.1 superset, import is a mapping/augment pass rather than a translation: fetch → parse YAML/JSON → dereference local `$ref`s → synthesize missing `operationId`s → apply overrides (`key`, `display_name`) → optionally filter to the selected operations → normalize aliases to canonical `x-overslash-*` form → lenient compile.
+
+**Drafts are DB-backed** (a `service_templates` row with `status='draft'`), not client-side state. This is the only way the flow works for agents invoking the REST API / MCP without a browser session: import in one call, promote in another. Dashboard users get the same benefit — half-finished imports survive browser reloads.
+
+**Endpoints:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/v1/templates/import` | Create a draft from a source. Accepts `draft_id` to replace an existing draft's source without re-creating the row. |
+| `GET`  | `/v1/templates/drafts` | List caller-visible drafts (org drafts for admins, user drafts for their owner). |
+| `GET`  | `/v1/templates/drafts/{id}` | Fetch draft detail for review/edit. |
+| `PUT`  | `/v1/templates/drafts/{id}` | Replace the draft's YAML (manual edits). Re-runs the lenient validator. |
+| `POST` | `/v1/templates/drafts/{id}/promote` | Run the strict validator; on success flip `status='active'`. Fails closed with `TemplateValidationFailed` if the draft still has errors. |
+| `DELETE` | `/v1/templates/drafts/{id}` | Discard. |
+
+Drafts are **invisible** to `GET /v1/templates`, `overslash_search`, the runtime registry, and service-instance creation — they cannot be instantiated until promoted. The unique-key index on `service_templates` is scoped to `WHERE status='active'` so a draft can coexist with the template it plans to replace.
+
+**Request shape:**
+
+```json
+{
+  "source": { "type": "url",  "url":  "https://example.com/openapi.yaml" }
+         | { "type": "body", "body": "...", "content_type": "application/yaml" },
+  "include_operations": ["list_widgets", "create_widget"],  // optional; default = all
+  "key":          "my-widgets",        // optional override of info.x-overslash-key
+  "display_name": "My Widgets",         // optional override of info.title
+  "user_level":   false,
+  "draft_id":     null                  // pass to update an existing draft in place
+}
+```
+
+**Response shape** (shared by import, get-draft, put-draft):
+
+```json
+{
+  "id": "<uuid>",
+  "tier": "org" | "user",
+  "openapi": "<canonical YAML string>",
+  "preview": { "key": "...", "display_name": "...", "hosts": [...], "auth": [...], "actions": [...] },
+  "validation": { "valid": false, "errors": [...], "warnings": [...] },
+  "import_warnings": [
+    { "code": "derived_key",           "message": "...", "path": "info.x-overslash-key" },
+    { "code": "derived_operation_id",  "message": "...", "path": "paths./widgets.post.operationId" },
+    { "code": "openapi_3_0_source",    "message": "...", "path": "openapi" },
+    { "code": "unresolved_external_ref","message": "...", "path": "..." },
+    { "code": "http_insecure",         "message": "...", "path": "source.url" }
+  ],
+  "operations": [
+    { "operation_id": "list_widgets", "method": "get", "path": "/widgets",
+      "summary": "...", "included": true, "synthesized_id": false }
+  ]
+}
+```
+
+`preview` may be `null` when the source didn't compile cleanly; `validation.errors` explains why. The draft still persists so the user can fix it in the editor and re-save.
+
+**URL-fetch policy** (for `source.type == "url"`):
+- Accept `https://` silently; `http://` is accepted with an `http_insecure` warning (rendered as a dashboard banner).
+- DNS-resolve the host up-front and reject if *any* resolved address is loopback, private (rfc1918, fc00::/7), link-local (169.254/16, fe80::/10), multicast, unspecified, broadcast, documentation, carrier-grade NAT (100.64/10), or IPv4-mapped private v6. Sidesteps basic DNS-rebinding.
+- Manual redirect handling, max 3 hops, each hop re-validated.
+- 10-second connect + read timeout; 512 KiB body cap (same as `POST /v1/templates/validate`).
+
+**Partial import / selection:** `include_operations` takes `operationId`s (or the synthesized `{method}_{path-slug}` id for operations missing one). The response always enumerates *every* operation from the source with an `included` flag — the dashboard renders a checkbox tree so users refine selection without re-parsing the source. Unchecking an operation and re-submitting with the new `include_operations` (+ the same `draft_id`) rewrites the draft's YAML.
+
+**OpenAPI 3.0 inputs** are accepted with a warning but not translated — schema objects using JSON-Schema-draft-04 semantics may fail the strict validator at promote time. Users fix those inline before promoting.
 
 ### Template Validation
 

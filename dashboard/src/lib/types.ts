@@ -119,8 +119,71 @@ export interface ValidationResult {
 }
 
 export interface ValidationMessage {
+  /** Stable machine-readable identifier, e.g. `"unknown_path_param"`. */
+  code?: string;
   path?: string;
   message: string;
+}
+
+// -- OpenAPI import / drafts --
+
+/** Request body for `POST /v1/templates/import`. */
+export interface ImportTemplateRequest {
+  source: ImportSource;
+  /** Keep only the listed operationIds (real or synthesized) as actions. */
+  include_operations?: string[];
+  /** Override `info.x-overslash-key` (or seed it if the source has none). */
+  key?: string;
+  /** Override `info.title` (used as `display_name`). */
+  display_name?: string;
+  user_level?: boolean;
+  /** Update an existing draft instead of creating a new one. */
+  draft_id?: string;
+}
+
+export type ImportSource =
+  | { type: 'url'; url: string }
+  | { type: 'body'; content_type?: string; body: string };
+
+export interface ImportWarning {
+  code: string;
+  message: string;
+  path: string;
+}
+
+export interface OperationInfo {
+  operation_id: string;
+  method: string;
+  path: string;
+  summary?: string | null;
+  included: boolean;
+  synthesized_id: boolean;
+}
+
+export interface TemplatePreview {
+  key: string;
+  display_name: string;
+  description?: string | null;
+  category?: string | null;
+  hosts: string[];
+  auth: ServiceAuth[];
+  actions: ActionSummary[];
+}
+
+export interface DraftTemplateDetail {
+  id: string;
+  tier: TemplateTier;
+  /** Canonical OpenAPI 3.1 YAML, editable in the dashboard. */
+  openapi: string;
+  /** May be null when the draft doesn't yet compile cleanly; `validation.errors` explains why. */
+  preview: TemplatePreview | null;
+  validation: ValidationResult;
+  import_warnings: ImportWarning[];
+  operations: OperationInfo[];
+}
+
+export interface UpdateDraftRequest {
+  openapi: string;
 }
 
 export interface ActionSummary {

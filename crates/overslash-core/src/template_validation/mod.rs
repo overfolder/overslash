@@ -38,7 +38,7 @@ pub mod yaml;
 pub use core::validate_service_definition;
 pub use json::{parse_template_parts, validate_template_parts};
 #[cfg(feature = "yaml")]
-pub use yaml::{parse_normalize_compile_yaml, validate_template_yaml};
+pub use yaml::{parse_normalize_compile_yaml, prepare_draft_from_value, validate_template_yaml};
 
 /// The outcome of validating a template. Returned by every entry point.
 #[derive(Debug, Clone, Serialize, Deserialize)]

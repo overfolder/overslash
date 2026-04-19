@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, created_at, updated_at FROM service_templates WHERE org_id = $1 AND (owner_identity_id IS NULL OR owner_identity_id = $2) ORDER BY key",
+  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, status, created_at, updated_at FROM service_templates WHERE org_id = $1 AND status = 'draft' ORDER BY updated_at DESC",
   "describe": {
     "columns": [
       {
@@ -50,18 +50,22 @@
       },
       {
         "ordinal": 9,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -76,8 +80,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "561900d7fa50764d70822bd434ff41cbe1868c0e9e9bf6b085e4a6e64b4c1252"
+  "hash": "c116c6e554867649611f42704242f7de640e15a05f7d261086499a78c049db66"
 }
