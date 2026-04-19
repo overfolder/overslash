@@ -15,6 +15,11 @@ set -uo pipefail
 MAX_BLOCKS=5
 CI_WAIT_SECONDS=600  # 10 minutes total CI settle wait
 
+# Set to 1 when we hit a failure mode the agent cannot fix in-loop (gh/API
+# errors, owner/repo resolution, graphql failures). Fatal failures surface
+# once and allow stop instead of consuming MAX_BLOCKS retries.
+FATAL=0
+
 # ----- read hook input -----------------------------------------------------
 INPUT="$(cat || true)"
 
@@ -112,6 +117,9 @@ if [[ "$CI" == PENDING:* ]]; then
   timeout "$CI_WAIT_SECONDS" gh pr checks "$PR_NUMBER" --watch >/dev/null 2>&1 || true
   CI="$(ci_status)"
 fi
+if [[ "$CI" == ERROR:* ]]; then
+  FATAL=1
+fi
 
 # ----- gate 2: unresolved review conversations ----------------------------
 OWNER="$(gh repo view --json owner -q .owner.login 2>/dev/null || true)"
@@ -120,6 +128,7 @@ UNRESOLVED_ERR=""
 UNRESOLVED=0
 if [[ -z "$OWNER" || -z "$REPO" ]]; then
   UNRESOLVED_ERR="could not resolve owner/repo via gh"
+  FATAL=1
 else
   GQL_OUT="$(gh api graphql -f query='
     query($owner:String!,$repo:String!,$num:Int!) {
@@ -133,6 +142,7 @@ else
   GQL_RC=$?
   if [[ $GQL_RC -ne 0 ]]; then
     UNRESOLVED_ERR="gh api graphql failed (rc=$GQL_RC)"
+    FATAL=1
   else
     PARSED="$(printf '%s' "$GQL_OUT" | python3 -c '
 import sys, json
@@ -148,8 +158,10 @@ except Exception as e:
 ' 2>/dev/null)"
     if [[ "$PARSED" == ERR:* ]]; then
       UNRESOLVED_ERR="${PARSED#ERR:}"
+      FATAL=1
     elif [[ -z "$PARSED" ]]; then
       UNRESOLVED_ERR="empty graphql response"
+      FATAL=1
     else
       UNRESOLVED="$PARSED"
     fi
@@ -202,6 +214,16 @@ if [[ "$CONFLICTING" -eq 1 ]]; then
 fi
 
 if [[ ${#FAILS[@]} -eq 0 ]]; then
+  echo 0 > "$COUNTER_FILE"
+  exit 0
+fi
+
+# ----- fail fast on unactionable failures ---------------------------------
+# gh/graphql/owner-repo errors can't be fixed by the agent in-loop; surface
+# once and allow stop instead of burning MAX_BLOCKS retries.
+if [[ "$FATAL" -eq 1 ]]; then
+  REASON="PR #${PR_NUMBER}: $(IFS='; '; echo "${FAILS[*]}")"
+  echo "pr-mergeability-gate: unactionable failure, surfacing instead of retrying. ${REASON}" >&2
   echo 0 > "$COUNTER_FILE"
   exit 0
 fi
