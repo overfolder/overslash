@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "DELETE FROM service_templates WHERE id = $1",
+  "query": "DELETE FROM service_templates WHERE id = $1 AND status = 'draft'",
   "describe": {
     "columns": [],
     "parameters": {
@@ -10,5 +10,5 @@
     },
     "nullable": []
   },
-  "hash": "bd46dfe9335c48065c95f6fa4b96cf5829359582d2ee2c35db39d79216898f67"
+  "hash": "7071efb2749e0e0c2b7555b6e246e177d6ec5edfeb77b77e02eaecd4b370160e"
 }

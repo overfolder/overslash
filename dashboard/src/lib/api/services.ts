@@ -10,6 +10,8 @@ import type {
 	CreateByocCredentialRequest,
 	CreateServiceRequest,
 	CreateTemplateRequest,
+	DraftTemplateDetail,
+	ImportTemplateRequest,
 	InitiateConnectionRequest,
 	InitiateConnectionResponse,
 	OAuthProviderInfo,
@@ -18,6 +20,7 @@ import type {
 	ServiceStatus,
 	TemplateDetail,
 	TemplateSummary,
+	UpdateDraftRequest,
 	UpdateServiceRequest,
 	UpdateTemplateRequest,
 	ValidationResult
@@ -46,6 +49,29 @@ export const updateTemplate = (id: string, patch: UpdateTemplateRequest) =>
 
 export const deleteTemplate = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/templates/${id}/manage`);
+
+// -- OpenAPI import / drafts --
+
+export const importTemplate = (req: ImportTemplateRequest) =>
+	session.post<DraftTemplateDetail>('/v1/templates/import', req);
+
+export const listDrafts = (signal?: AbortSignal) =>
+	session.get<DraftTemplateDetail[]>('/v1/templates/drafts', signal);
+
+export const getDraft = (id: string, signal?: AbortSignal) =>
+	session.get<DraftTemplateDetail>(`/v1/templates/drafts/${encodeURIComponent(id)}`, signal);
+
+export const updateDraft = (id: string, patch: UpdateDraftRequest) =>
+	session.put<DraftTemplateDetail>(`/v1/templates/drafts/${encodeURIComponent(id)}`, patch);
+
+export const promoteDraft = (id: string) =>
+	session.post<TemplateDetail>(
+		`/v1/templates/drafts/${encodeURIComponent(id)}/promote`,
+		{}
+	);
+
+export const discardDraft = (id: string) =>
+	session.delete<{ deleted: boolean }>(`/v1/templates/drafts/${encodeURIComponent(id)}`);
 
 // -- Template validation (pending endpoint, graceful 404) --
 

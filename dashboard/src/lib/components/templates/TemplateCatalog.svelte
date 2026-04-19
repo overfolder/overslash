@@ -2,8 +2,14 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/session';
-	import { listTemplates, getTemplate, deleteTemplate } from '$lib/api/services';
-	import type { TemplateSummary } from '$lib/types';
+	import {
+		listTemplates,
+		getTemplate,
+		deleteTemplate,
+		listDrafts,
+		discardDraft
+	} from '$lib/api/services';
+	import type { DraftTemplateDetail, TemplateSummary } from '$lib/types';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
@@ -11,10 +17,12 @@
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 
 	let templates = $state<TemplateSummary[]>([]);
+	let drafts = $state<DraftTemplateDetail[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
 	let pendingDelete = $state<TemplateSummary | null>(null);
+	let pendingDiscard = $state<DraftTemplateDetail | null>(null);
 
 	const searchKeys = $derived<SearchKey[]>([
 		{
@@ -90,7 +98,9 @@
 		loading = true;
 		error = null;
 		try {
-			templates = await listTemplates();
+			const [t, d] = await Promise.all([listTemplates(), listDrafts().catch(() => [])]);
+			templates = t;
+			drafts = d;
 		} catch (e) {
 			error =
 				e instanceof ApiError
@@ -98,6 +108,21 @@
 					: 'Failed to load templates';
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function confirmDiscardDraft() {
+		if (!pendingDiscard) return;
+		const target = pendingDiscard;
+		pendingDiscard = null;
+		try {
+			await discardDraft(target.id);
+			drafts = drafts.filter((d) => d.id !== target.id);
+		} catch (e) {
+			error =
+				e instanceof ApiError
+					? `Failed to discard draft (${e.status})`
+					: 'Failed to discard draft';
 		}
 	}
 
@@ -142,16 +167,69 @@
 <div class="catalog">
 	<div class="catalog-head">
 		<p class="sub">Browse and manage service templates across all tiers.</p>
-		{#if isAdmin}
+		<div class="head-actions">
 			<button
 				type="button"
-				class="btn primary"
-				onclick={() => goto('/services/templates/new')}
+				class="btn"
+				onclick={() => goto('/services/templates/import')}
 			>
-				+ New Template
+				Import OpenAPI
 			</button>
-		{/if}
+			{#if isAdmin}
+				<button
+					type="button"
+					class="btn primary"
+					onclick={() => goto('/services/templates/new')}
+				>
+					+ New Template
+				</button>
+			{/if}
+		</div>
 	</div>
+
+	{#if drafts.length > 0}
+		<section class="drafts">
+			<h3 class="drafts-title">Drafts ({drafts.length})</h3>
+			<div class="drafts-list">
+				{#each drafts as d (d.id)}
+					<div class="draft-row">
+						<a
+							href={`/services/templates/drafts/${encodeURIComponent(d.id)}`}
+							class="link"
+						>
+							{d.preview?.display_name || d.preview?.key || 'Untitled draft'}
+						</a>
+						<StatusBadge variant={d.tier} />
+						{#if d.preview?.key}
+							<span class="mono muted">{d.preview.key}</span>
+						{/if}
+						<span class="ops-count muted">
+							{d.operations.filter((o) => o.included).length} ops
+						</span>
+						<span class="spacer"></span>
+						{#if !d.validation.valid}
+							<span class="issue-badge">{d.validation.errors.length} issues</span>
+						{/if}
+						<button
+							type="button"
+							class="btn small"
+							onclick={() =>
+								goto(`/services/templates/drafts/${encodeURIComponent(d.id)}`)}
+						>
+							Resume
+						</button>
+						<button
+							type="button"
+							class="btn small danger"
+							onclick={() => (pendingDiscard = d)}
+						>
+							Discard
+						</button>
+					</div>
+				{/each}
+			</div>
+		</section>
+	{/if}
 
 	{#if error}
 		<div class="error">{error}</div>
@@ -258,6 +336,18 @@
 	oncancel={() => (pendingDelete = null)}
 />
 
+<ConfirmDialog
+	open={pendingDiscard !== null}
+	title="Discard draft?"
+	message={pendingDiscard
+		? `Discard the draft for "${pendingDiscard.preview?.display_name ?? pendingDiscard.preview?.key ?? 'this draft'}"? You will need to re-import the source to start over.`
+		: ''}
+	confirmLabel="Discard"
+	danger
+	onconfirm={confirmDiscardDraft}
+	oncancel={() => (pendingDiscard = null)}
+/>
+
 <style>
 	.catalog-head {
 		display: flex;
@@ -265,6 +355,55 @@
 		align-items: center;
 		gap: 1rem;
 		margin-bottom: 1rem;
+	}
+	.head-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.drafts {
+		margin-bottom: 1.25rem;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: 10px;
+		padding: 0.75rem 1rem 0.85rem;
+	}
+	.drafts-title {
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--color-text-muted);
+		margin: 0 0 0.5rem;
+	}
+	.drafts-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.draft-row {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.35rem 0.45rem;
+		border-radius: 6px;
+		font-size: 0.85rem;
+	}
+	.draft-row:hover {
+		background: var(--color-bg-muted, rgba(0, 0, 0, 0.03));
+	}
+	.draft-row .spacer {
+		flex: 1;
+	}
+	.ops-count {
+		font-size: 0.78rem;
+	}
+	.issue-badge {
+		padding: 0.15rem 0.5rem;
+		border-radius: 4px;
+		background: rgba(220, 38, 38, 0.12);
+		color: #b91c1c;
+		font-size: 0.72rem;
+		font-weight: 600;
 	}
 	.sub {
 		color: var(--color-text-muted);
