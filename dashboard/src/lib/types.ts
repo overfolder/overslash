@@ -131,6 +131,19 @@ export interface ActionSummary {
   risk: string;
 }
 
+/** Full action details including the parameter schema — returned by
+ *  `GET /v1/templates/{key}/actions/{action_key}`. Used by the API Explorer
+ *  to auto-generate a parameter form. */
+export interface ActionDetail {
+  key: string;
+  method: string;
+  path: string;
+  description: string;
+  risk: string;
+  params: Record<string, ActionParam>;
+  scope_param?: string;
+}
+
 // -- Service instances --
 
 export type ServiceStatus = 'draft' | 'active' | 'archived';
