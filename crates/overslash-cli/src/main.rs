@@ -71,6 +71,11 @@ async fn main() -> anyhow::Result<()> {
     // (e.g. --port / PORT) see values from the dotenv file. Otherwise clap
     // only sees the real process env, falls back to `default_value`, and
     // the CLI silently ignores .env overrides.
+    //
+    // Load .env.local first and .env second: dotenvy is first-wins (it never
+    // overwrites an existing env var), so a worktree's .env.local (written by
+    // bin/worktree-env.sh) takes precedence over the repo-default .env.
+    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
     let cli = Cli::parse();
     match cli.command {
@@ -80,7 +85,17 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Web { host, port } => {
             common::bootstrap_server();
-            web::run(host, port).await
+            // Worktree isolation: bin/worktree-env.sh writes OVERSLASH_WEB_PORT
+            // to .env.local so the bare `overslash web` binary gets a unique
+            // port that does not collide with sibling worktrees or with the
+            // Docker API container (which uses API_HOST_PORT). When set, it
+            // wins — users who want a different port can unset the variable or
+            // invoke with `OVERSLASH_WEB_PORT=<n> overslash web`.
+            let effective_port = std::env::var("OVERSLASH_WEB_PORT")
+                .ok()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(port);
+            web::run(host, effective_port).await
         }
         Command::Mcp {
             command,
