@@ -10,6 +10,7 @@
 		required = false,
 		defaultExpanded = false,
 		disabled = false,
+		alreadyConfigured = false,
 		clientId = $bindable(''),
 		clientSecret = $bindable(''),
 		providerDisplayName = ''
@@ -18,6 +19,10 @@
 		required?: boolean;
 		defaultExpanded?: boolean;
 		disabled?: boolean;
+		/** Caller has a BYOC credential for this provider already. Changes
+		 * the toggle into a "Replace" affordance and surfaces a configured
+		 * badge so the current state is obvious even when collapsed. */
+		alreadyConfigured?: boolean;
 		clientId?: string;
 		clientSecret?: string;
 		providerDisplayName?: string;
@@ -49,8 +54,26 @@
 		microsoft: 'e.g. 12345678-abcd-1234-abcd-123456789abc',
 	};
 	const clientIdPlaceholder = $derived(placeholders[provider] ?? 'Paste client ID');
+
+	// When the caller already has a BYOC credential for this provider we render
+	// a read-only confirmation card instead of the paste form. Replacing a
+	// BYOC would invalidate every existing connection that was authorized
+	// against the old OAuth app, so we route that flow through a separate UI
+	// (tracked in TECH_DEBT.md) rather than surfacing it inline here.
 </script>
 
+{#if alreadyConfigured && !required}
+	<section class="byoc configured">
+		<div class="configured-row">
+			<span class="check" aria-hidden="true">✓</span>
+			<span class="configured-title">Your {label} OAuth app is configured</span>
+		</div>
+		<p class="configured-hint">
+			To replace it, remove it from your profile first. Replacing here would
+			invalidate existing {label} connections.
+		</p>
+	</section>
+{:else}
 <section class="byoc" class:expanded class:required>
 	<header>
 		<button
@@ -133,6 +156,7 @@
 		</div>
 	{/if}
 </section>
+{/if}
 
 <style>
 	.byoc {
@@ -249,5 +273,29 @@
 	}
 	.help:hover {
 		text-decoration: underline;
+	}
+	.byoc.configured {
+		padding: 0.65rem 0.8rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.configured-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.88rem;
+	}
+	.check {
+		color: #15803d;
+		font-weight: 700;
+	}
+	.configured-title {
+		font-weight: 500;
+	}
+	.configured-hint {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
 	}
 </style>

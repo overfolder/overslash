@@ -413,19 +413,21 @@
 						<p class="muted">No existing connections for this provider.</p>
 					{/if}
 
-					<p class="cred-source">
-						{#if providerInfo?.has_org_credential}
+					{#if providerInfo?.has_org_credential}
+						<p class="cred-source">
 							Using <strong>org credentials</strong> configured for {providerInfo.display_name}.
-						{:else if providerInfo?.has_system_credential}
+						</p>
+					{:else if providerInfo?.has_system_credential}
+						<p class="cred-source">
 							Using <strong>Overslash system credentials</strong>.
-						{:else if providerInfo?.has_user_byoc_credential}
-							Reusing your <strong>existing OAuth app</strong> for {providerInfo.display_name}.
-						{:else}
+						</p>
+					{:else if !providerInfo?.has_user_byoc_credential}
+						<p class="cred-source">
 							<span class="warn">
 								No credentials configured for this provider — paste your own below to continue.
 							</span>
-						{/if}
-					</p>
+						</p>
+					{/if}
 
 					<ByocSection
 						provider={oauthProvider.provider}
@@ -433,6 +435,7 @@
 						required={byocRequired}
 						defaultExpanded={byocRequired}
 						disabled={connectingOAuth}
+						alreadyConfigured={providerInfo?.has_user_byoc_credential ?? false}
 						bind:clientId={byocClientId}
 						bind:clientSecret={byocClientSecret}
 					/>

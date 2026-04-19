@@ -35,3 +35,9 @@ IdP credentials fall back to `GOOGLE_AUTH_CLIENT_ID` / `GITHUB_AUTH_CLIENT_ID` (
 - **Auto-approve toggle uses DELETE + POST.** `/v1/groups/{id}/grants` has no PATCH endpoint, so toggling `auto_approve_reads` removes the grant and re-adds it with the new value. Add a PATCH route and switch the dashboard to use it.
 - **Member and grant counts derived client-side.** The list view fetches per-group grants/members in parallel to compute counts. Add aggregated counts to `GroupResponse` (or a `/v1/groups?include=counts` query) once group volume grows.
 - **"Everyone" group not implemented.** UI_SPEC §Groups specifies an always-present "Everyone" group containing all users. Backend has no concept of it yet — the dashboard does not synthesize one.
+
+---
+
+## Dashboard: no BYOC replacement UX
+
+The Create Service form surfaces user-level BYOC state via `has_user_byoc_credential` (from `/v1/oauth-providers`) and `ByocSection` renders a read-only "✓ Your {provider} OAuth app is configured" card when present. There is no in-place replace action: silently swapping the BYOC would invalidate every existing `connections` row authorized against the old client_id (tokens minted by one OAuth app are not redeemable by another). A proper replace flow needs (a) a settings page listing BYOC credentials with explicit delete, (b) a warning that lists impacted connections, and ideally (c) re-auth prompts or a dual-creds overlap window. Until then, users have to delete + recreate via `DELETE /v1/byoc-credentials/{id}` from profile/settings.
