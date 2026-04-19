@@ -34,8 +34,9 @@ enum Command {
     Web {
         #[arg(long, env = "HOST", default_value = "0.0.0.0")]
         host: String,
-        #[arg(long, env = "PORT", default_value = "8080")]
-        port: u16,
+        /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 8080.
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// MCP server and configuration helper.
     Mcp {
@@ -65,12 +66,22 @@ enum McpCommand {
     },
 }
 
+/// Parse a port env var, returning `None` when unset or unparseable.
+fn env_port(name: &str) -> Option<u16> {
+    std::env::var(name).ok().and_then(|v| v.parse().ok())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env BEFORE clap parses, so flags with `env = "…"` fallbacks
     // (e.g. --port / PORT) see values from the dotenv file. Otherwise clap
     // only sees the real process env, falls back to `default_value`, and
     // the CLI silently ignores .env overrides.
+    //
+    // Load .env.local first and .env second: dotenvy is first-wins (it never
+    // overwrites an existing env var), so a worktree's .env.local (written by
+    // bin/worktree-env.sh) takes precedence over the repo-default .env.
+    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
     let cli = Cli::parse();
     match cli.command {
@@ -80,7 +91,19 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Web { host, port } => {
             common::bootstrap_server();
-            web::run(host, port).await
+            // Precedence (CLI convention: explicit flag wins over env):
+            //   1. --port (from the user)
+            //   2. OVERSLASH_WEB_PORT — worktree-isolated port written by
+            //      bin/worktree-env.sh into .env.local so the bare binary
+            //      doesn't collide with sibling worktrees or the Docker API
+            //      container (which uses API_HOST_PORT / internal :3000).
+            //   3. PORT — legacy fallback from .env / shell env.
+            //   4. 8080 default.
+            let effective_port = port
+                .or_else(|| env_port("OVERSLASH_WEB_PORT"))
+                .or_else(|| env_port("PORT"))
+                .unwrap_or(8080);
+            web::run(host, effective_port).await
         }
         Command::Mcp {
             command,
@@ -144,10 +167,59 @@ mod cli_tests {
     fn web_parses() {
         let cli = parse(&["overslash", "web", "--port", "18080"]);
         if let Command::Web { port, .. } = cli.command {
-            assert_eq!(port, 18080);
+            assert_eq!(port, Some(18080));
         } else {
             panic!("expected Web");
         }
+    }
+
+    #[test]
+    fn web_port_defaults_to_none_so_env_can_participate() {
+        let cli = parse(&["overslash", "web"]);
+        if let Command::Web { port, .. } = cli.command {
+            assert!(port.is_none(), "port must be None when --port is absent");
+        } else {
+            panic!("expected Web");
+        }
+    }
+
+    // Precedence helper mirrors main(): --port > OVERSLASH_WEB_PORT > PORT > 8080.
+    fn resolve_web_port(
+        cli_port: Option<u16>,
+        web_env: Option<&str>,
+        port_env: Option<&str>,
+    ) -> u16 {
+        cli_port
+            .or_else(|| web_env.and_then(|v| v.parse().ok()))
+            .or_else(|| port_env.and_then(|v| v.parse().ok()))
+            .unwrap_or(8080)
+    }
+
+    #[test]
+    fn web_port_cli_flag_beats_env() {
+        // The Sentry-flagged regression: an explicit --port must not be
+        // silently overridden by OVERSLASH_WEB_PORT from .env.local.
+        let got = resolve_web_port(Some(9001), Some("20425"), Some("3000"));
+        assert_eq!(got, 9001);
+    }
+
+    #[test]
+    fn web_port_overslash_web_port_beats_port_env() {
+        let got = resolve_web_port(None, Some("20425"), Some("3000"));
+        assert_eq!(got, 20425);
+    }
+
+    #[test]
+    fn web_port_falls_back_to_port_env_then_default() {
+        assert_eq!(resolve_web_port(None, None, Some("3000")), 3000);
+        assert_eq!(resolve_web_port(None, None, None), 8080);
+    }
+
+    #[test]
+    fn web_port_ignores_unparseable_env_values() {
+        // If OVERSLASH_WEB_PORT is garbage, skip it and try PORT next.
+        let got = resolve_web_port(None, Some("not-a-port"), Some("3000"));
+        assert_eq!(got, 3000);
     }
 
     #[test]

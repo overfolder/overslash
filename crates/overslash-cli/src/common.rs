@@ -14,22 +14,27 @@ fn init_tracing(to_stderr: bool) {
     }
 }
 
-/// Bootstrap shared by `serve` and `web`: load .env and init stdout tracing.
+/// Bootstrap shared by `serve` and `web`: load dotenv files and init stdout
+/// tracing. `.env.local` is loaded first so worktree overrides win over `.env`
+/// (dotenvy never overwrites an existing env var).
 pub fn bootstrap_server() {
+    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
     init_tracing(false);
 }
 
-/// Bootstrap for `mcp` stdio: load .env and route tracing to stderr so it
-/// does not corrupt the JSON-RPC stream on stdout.
+/// Bootstrap for `mcp` stdio: load dotenv files and route tracing to stderr
+/// so it does not corrupt the JSON-RPC stream on stdout.
 pub fn bootstrap_mcp() {
+    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
     init_tracing(true);
 }
 
-/// Bootstrap for interactive CLI helpers (`mcp setup`): load .env, no tracing
-/// (the helper prints its own user-facing output).
+/// Bootstrap for interactive CLI helpers (`mcp setup`): load dotenv files,
+/// no tracing (the helper prints its own user-facing output).
 pub fn bootstrap_cli() {
+    let _ = dotenvy::from_filename(".env.local");
     let _ = dotenvy::dotenv();
 }
 
