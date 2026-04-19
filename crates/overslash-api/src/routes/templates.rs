@@ -1299,9 +1299,16 @@ async fn discard_draft(
     let existing = load_draft_for_write(&state, &acl, id).await?;
     let key = existing.key.clone();
 
-    let deleted = service_template::delete(&state.db, existing.id).await?;
+    // `delete_draft` has `AND status = 'draft'` baked into the SQL. If a
+    // concurrent `promote_draft` flipped the row to `'active'` between our
+    // load check and this call, the delete matches zero rows and we return
+    // 409 rather than destroying an active template. Closes the TOCTOU
+    // window on the draft-discard surface.
+    let deleted = service_template::delete_draft(&state.db, existing.id).await?;
     if !deleted {
-        return Err(AppError::NotFound("draft not found".into()));
+        return Err(AppError::Conflict(
+            "draft was promoted concurrently; nothing to discard".into(),
+        ));
     }
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())

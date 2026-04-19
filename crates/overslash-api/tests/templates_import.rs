@@ -412,6 +412,57 @@ async fn test_nonadmin_cannot_create_org_draft() {
 }
 
 #[tokio::test]
+async fn test_discard_refuses_if_draft_was_promoted_between_check_and_delete() {
+    let (base, client, _org_id, admin_key, _) = bootstrap().await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates/import"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "source": { "type": "body", "body": SAMPLE_OPENAPI } }))
+        .send()
+        .await
+        .unwrap();
+    let draft: Value = resp.json().await.unwrap();
+    let draft_id = draft["id"].as_str().unwrap().to_string();
+
+    // Simulate a successful race: promote the draft first, then try to discard.
+    // `delete_draft`'s SQL filters `status = 'draft'`, so the delete matches
+    // zero rows and the handler must return 4xx instead of dropping the now-
+    // active row.
+    let promote = client
+        .post(format!("{base}/v1/templates/drafts/{draft_id}/promote"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(promote.status(), 200);
+
+    let discard = client
+        .delete(format!("{base}/v1/templates/drafts/{draft_id}"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    // Draft-scoped load_draft_for_write filters status='draft' too, so the
+    // handler 404s before it ever reaches delete_draft. Either way, we must
+    // not return 200 — that would mean we deleted an active template.
+    let status = discard.status();
+    assert!(
+        status == 404 || status == 409,
+        "discard against a promoted draft must fail; got {status}"
+    );
+
+    // The active template must still be reachable via the normal lookup.
+    let detail = client
+        .get(format!("{base}/v1/templates/widgets-api"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), 200);
+}
+
+#[tokio::test]
 async fn test_import_draft_id_replaces_source() {
     let (base, client, _org_id, admin_key, _) = bootstrap().await;
 

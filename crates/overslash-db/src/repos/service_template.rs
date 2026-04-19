@@ -283,3 +283,18 @@ pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
         .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Delete a row only if it's still `status='draft'`. Used by `discard_draft`
+/// to close the TOCTOU window between the handler's status check and the
+/// actual delete — a concurrent `promote_draft` could flip the row to
+/// `'active'` in between, and we must never delete an active template via
+/// the draft endpoint. Returns `true` iff a draft row was removed.
+pub async fn delete_draft(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM service_templates WHERE id = $1 AND status = 'draft'",
+        id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
