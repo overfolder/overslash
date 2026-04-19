@@ -673,6 +673,12 @@ async fn test_audit_api_response_shape() {
     assert!(entry.get("resource_type").is_some());
     assert!(entry.get("resource_id").is_some());
     assert!(entry.get("ip_address").is_some());
+
+    // Regression: `created_at` must be RFC 3339 so `new Date(...)` can parse
+    // it in the dashboard. The `time` crate's Display impl is NOT RFC 3339.
+    let created_at = entry["created_at"].as_str().expect("created_at is string");
+    time::OffsetDateTime::parse(created_at, &time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|e| panic!("created_at {created_at:?} not RFC 3339: {e}"));
 }
 
 #[tokio::test]

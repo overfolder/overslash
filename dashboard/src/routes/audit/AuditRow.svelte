@@ -10,6 +10,7 @@
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
+		if (!Number.isFinite(then)) return iso || '—';
 		const now = Date.now();
 		const diff = Math.max(0, now - then);
 		const s = Math.floor(diff / 1000);
@@ -23,6 +24,7 @@
 
 	function fullTime(iso: string): string {
 		const d = new Date(iso);
+		if (!Number.isFinite(d.getTime())) return iso || '';
 		return `${d.toISOString()}\n${d.toLocaleString()}`;
 	}
 </script>

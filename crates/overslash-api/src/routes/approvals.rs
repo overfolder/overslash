@@ -68,8 +68,14 @@ impl ApprovalResponse {
             suggested_tiers,
             status: r.status,
             token: r.token,
-            expires_at: r.expires_at.to_string(),
-            created_at: r.created_at.to_string(),
+            expires_at: r
+                .expires_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            created_at: r
+                .created_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
         }
     }
 }
