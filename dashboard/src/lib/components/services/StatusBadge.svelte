@@ -1,5 +1,15 @@
 <script lang="ts">
-	type Variant = 'draft' | 'active' | 'archived' | 'connected' | 'needs-setup' | 'global' | 'org' | 'user';
+	type Variant =
+		| 'draft'
+		| 'active'
+		| 'archived'
+		| 'connected'
+		| 'needs-setup'
+		| 'needs-reconnect'
+		| 'partially-degraded'
+		| 'global'
+		| 'org'
+		| 'user';
 	let { variant, label }: { variant: Variant; label?: string } = $props();
 	const text = $derived(label ?? variant.replace('-', ' '));
 </script>
@@ -25,10 +35,16 @@
 		border-color: rgba(34, 197, 94, 0.3);
 	}
 	.draft,
-	.needs-setup {
+	.needs-setup,
+	.partially-degraded {
 		background: rgba(234, 179, 8, 0.14);
 		color: #a16207;
 		border-color: rgba(234, 179, 8, 0.35);
+	}
+	.needs-reconnect {
+		background: rgba(220, 38, 38, 0.1);
+		color: #b91c1c;
+		border-color: rgba(220, 38, 38, 0.35);
 	}
 	.archived {
 		background: var(--color-bg, #f4f4f5);

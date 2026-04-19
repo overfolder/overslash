@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT connection_id AS \"connection_id!: Uuid\", template_key\n         FROM service_instances\n         WHERE org_id = $1 AND connection_id = ANY($2) AND status = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "connection_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "template_key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "9ed7828574e4b0e3b376333ec8cc989c366f7b67318e38e0db1bb8a359aacf1f"
+}

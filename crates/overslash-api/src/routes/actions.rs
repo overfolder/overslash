@@ -616,6 +616,13 @@ async fn resolve_request(
             headers.insert("Content-Type".to_string(), "application/json".to_string());
         }
 
+        // Scope gate: if the action declares `required_scopes`, and the
+        // connection we'd use to auth doesn't carry all of them, return
+        // `missing_scopes` with the upgrade URL *before* the outgoing call
+        // happens. This is the fail-fast path promised by SPEC §9 — we don't
+        // want the provider's 403 to surface as a generic upstream error.
+        check_required_scopes(state, scope, identity_id, instance.as_ref(), &svc, action).await?;
+
         // Auth resolution: if instance has a bound connection/secret, use that;
         // otherwise fall back to auto-resolve from the template's auth config
         let (secrets, oauth_injected) = if let Some(ref inst) = instance {
@@ -811,6 +818,84 @@ async fn resolve_service_auth(
     }
 
     (Vec::new(), false)
+}
+
+/// Fail-fast scope gate: before the outgoing request is built, compare the
+/// connection's granted scopes against what this action declares. When a
+/// template doesn't declare `required_scopes`, returns `Ok(())` — preserves
+/// today's behavior for templates that haven't adopted the field.
+///
+/// Returns `AppError::Forbidden` with a body carrying `missing_scopes` and an
+/// `upgrade_url` the caller can `POST` to kick off an incremental-auth flow.
+async fn check_required_scopes(
+    state: &AppState,
+    scope: &OrgScope,
+    identity_id: Uuid,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    svc: &overslash_core::types::ServiceDefinition,
+    action: &overslash_core::types::ServiceAction,
+) -> Result<(), AppError> {
+    if action.required_scopes.is_empty() {
+        return Ok(());
+    }
+
+    // Find the OAuth service-auth entry; a template without OAuth can't have
+    // its scopes checked here.
+    let provider = svc.auth.iter().find_map(|a| match a {
+        overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
+        _ => None,
+    });
+    let Some(provider) = provider else {
+        return Ok(());
+    };
+
+    let org_id = scope.org_id();
+    let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
+
+    // Resolve the connection the exec path would actually use — instance's
+    // explicit binding takes precedence, else `find_my_connection_by_provider`.
+    let connection = if let Some(inst) = instance {
+        if let Some(conn_id) = inst.connection_id {
+            scope.get_connection(conn_id).await?
+        } else {
+            user_scope.find_my_connection_by_provider(&provider).await?
+        }
+    } else {
+        user_scope.find_my_connection_by_provider(&provider).await?
+    };
+
+    let Some(connection) = connection else {
+        // Fall through — auth resolution will report the missing connection
+        // in its own way. The scope gate is only meaningful when a
+        // connection exists.
+        return Ok(());
+    };
+
+    let granted: std::collections::HashSet<&str> =
+        connection.scopes.iter().map(String::as_str).collect();
+    let missing: Vec<String> = action
+        .required_scopes
+        .iter()
+        .filter(|s| !granted.contains(s.as_str()))
+        .cloned()
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let upgrade_url = format!(
+        "{}/v1/connections/{}/upgrade_scopes",
+        state.config.public_url.trim_end_matches('/'),
+        connection.id
+    );
+    let body = serde_json::json!({
+        "error": "missing_scopes",
+        "missing": missing,
+        "connection_id": connection.id,
+        "upgrade_url": upgrade_url,
+    });
+    Err(AppError::Forbidden(body.to_string()))
 }
 
 /// Resolve auth for a service instance. If the instance has a bound connection_id or secret_name,
