@@ -159,8 +159,15 @@
 		modalError = null;
 		void (async () => {
 			try {
-				modalApproval = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
+				const fetched = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
+				// Staleness check: the user may have closed the modal or
+				// navigated to a different approval while this fetch was in
+				// flight. Drop the result rather than reopening the modal
+				// with stale data.
+				if (modalApprovalId !== id) return;
+				modalApproval = fetched;
 			} catch (e) {
+				if (modalApprovalId !== id) return;
 				modalApproval = null;
 				if (e instanceof ApiError) {
 					modalError =
