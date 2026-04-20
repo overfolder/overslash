@@ -508,11 +508,13 @@ fn slugify_agent_name(raw: &str) -> String {
     let mut out = String::with_capacity(lower.len());
     let mut prev_dash = false;
     for ch in lower.chars() {
-        let keep = ch.is_ascii_alphanumeric() || ch == '-';
-        if keep {
+        if ch.is_ascii_alphanumeric() {
             out.push(ch);
-            prev_dash = ch == '-';
+            prev_dash = false;
         } else if !prev_dash && !out.is_empty() {
+            // Any non-alphanumeric run (including literal dashes) collapses
+            // to a single `-` — matches the frontend's
+            // `.replace(/[^a-z0-9-]+/g, '-').replace(/-{2,}/g, '-')`.
             out.push('-');
             prev_dash = true;
         }
@@ -524,6 +526,21 @@ fn slugify_agent_name(raw: &str) -> String {
         "mcp-client".to_string()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::slugify_agent_name;
+
+    #[test]
+    fn slug_matches_frontend_behaviour() {
+        assert_eq!(slugify_agent_name("Claude Desktop"), "claude-desktop");
+        assert_eq!(slugify_agent_name("foo--bar"), "foo-bar");
+        assert_eq!(slugify_agent_name("---foo___bar!!!"), "foo-bar");
+        assert_eq!(slugify_agent_name("  spaces  "), "spaces");
+        assert_eq!(slugify_agent_name(""), "mcp-client");
+        assert_eq!(slugify_agent_name("!!!"), "mcp-client");
     }
 }
 
