@@ -5,6 +5,7 @@
 		type ApprovalResponse,
 		type ResolveApprovalRequest
 	} from '$lib/session';
+	import { page } from '$app/stores';
 	import IdentityPath from './IdentityPath.svelte';
 	import { relativeTime } from '$lib/utils/time';
 
@@ -26,6 +27,16 @@
 	const hasBubbled = $derived(
 		!!current.current_resolver_identity_id &&
 			current.current_resolver_identity_id !== current.requesting_identity_id
+	);
+
+	// Hide "Bubble up" when the signed-in viewer is already the assigned
+	// resolver — it's a no-op (the chain can't bubble further) and only
+	// confuses users.
+	const viewerIdentityId = $derived(
+		($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null
+	);
+	const isCurrentResolver = $derived(
+		!!viewerIdentityId && viewerIdentityId === current.current_resolver_identity_id
 	);
 
 	const ttlOptions = [
@@ -230,14 +241,16 @@
 			>
 				Allow &amp; Remember
 			</button>
-			<button
-				class="btn btn-bubble"
-				disabled={submitting}
-				title="Hand this approval off to the next ancestor in the chain"
-				onclick={() => resolve('bubble_up')}
-			>
-				Bubble up
-			</button>
+			{#if !isCurrentResolver}
+				<button
+					class="btn btn-bubble"
+					disabled={submitting}
+					title="Hand this approval off to the next ancestor in the chain"
+					onclick={() => resolve('bubble_up')}
+				>
+					Bubble up
+				</button>
+			{/if}
 			<button class="btn btn-deny" disabled={submitting} onclick={() => resolve('deny')}>
 				Deny
 			</button>

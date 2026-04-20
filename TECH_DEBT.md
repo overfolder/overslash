@@ -44,12 +44,6 @@ The Create Service form surfaces user-level BYOC state via `has_user_byoc_creden
 
 ---
 
-## Approval URLs point at placeholder domain
-
-Agent-facing `pending_approval` responses render URLs like `https://overslash.example/approve/<token>` (observed 2026-04-20). No `OVERSLASH_DASHBOARD_URL` (or equivalent) envvar is threaded through the approval-response builder, so agents are told to visit a non-existent host. Fix: add a config field for the canonical dashboard domain, read it at startup, and inject it wherever approval responses are constructed. Tracked under Kanban card `20ae2` (Approval System UX Overhaul) and `docs/review/2026-04-20.md`.
-
----
-
 ## Pending Approvals date renders as "Requested Invalid Date"
 
 The dashboard's approvals list shows the timestamp as `Requested Invalid Date`. Backend emits approval timestamps in a serialization format the frontend parser does not accept (likely a chrono default that skips the trailing `Z` or uses space-separated date/time). Fix: pick one ISO-8601 shape at the API boundary (probably `DateTime<Utc>` → RFC 3339 with `Z`) and update dashboard parsers to match. Tracked under card `2e268`.

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import {
 		listIdentities,
 		listPermissions,
@@ -20,9 +21,11 @@
 		EnrollmentToken,
 		CreatedEnrollmentToken
 	} from '$lib/types';
-	import type { ApprovalResponse } from '$lib/session';
+	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import ApprovalResolver from '$lib/components/ApprovalResolver.svelte';
+	import ApprovalModal from '$lib/components/ApprovalModal.svelte';
 	import { absoluteTime, ttlRemaining } from '$lib/utils/time';
 
 	let identities = $state<Identity[]>([]);
@@ -118,6 +121,74 @@
 	function selectIdentity(id: string) {
 		selectedId = id;
 		void loadDetail(id);
+	}
+
+	async function onApprovalResolved(updated: ApprovalResponse) {
+		// Drop the resolved approval from both the agent-scoped and the global
+		// lists so badge counts refresh immediately. Also refetch permissions
+		// for the selected agent — an "Allow & Remember" resolution creates
+		// new permission rules that should show up in the Rules table.
+		approvals = approvals.filter((a) => a.id !== updated.id);
+		detailApprovals = detailApprovals.filter((a) => a.id !== updated.id);
+		if (selectedId) {
+			try {
+				detailRules = await listPermissions(selectedId);
+			} catch {
+				// Non-fatal — the approval itself was already resolved.
+			}
+		}
+	}
+
+	// Deep-link modal: when the URL has `?approval=<id>` (e.g. from a
+	// redirected `/approvals/<id>` visit or an agent-emitted link), load
+	// that approval and open the modal on top of the agents view.
+	let modalApproval = $state<ApprovalResponse | null>(null);
+	let modalError = $state<string | null>(null);
+	let lastLoadedApprovalId = $state<string | null>(null);
+	const modalApprovalId = $derived($page.url.searchParams.get('approval'));
+
+	$effect(() => {
+		const id = modalApprovalId;
+		if (id === lastLoadedApprovalId) return;
+		lastLoadedApprovalId = id;
+		if (!id) {
+			modalApproval = null;
+			modalError = null;
+			return;
+		}
+		modalError = null;
+		void (async () => {
+			try {
+				modalApproval = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
+			} catch (e) {
+				modalApproval = null;
+				if (e instanceof ApiError) {
+					modalError =
+						e.status === 404
+							? 'This approval does not exist or has been deleted.'
+							: `Failed to load approval (${e.status}).`;
+				} else {
+					modalError = 'Network error loading approval.';
+				}
+			}
+		})();
+	});
+
+	function closeApprovalModal() {
+		modalApproval = null;
+		modalError = null;
+		// Drop `?approval=<id>` from the URL without adding a history entry.
+		const url = new URL($page.url);
+		url.searchParams.delete('approval');
+		void goto(`${url.pathname}${url.search}${url.hash}`, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true
+		});
+	}
+
+	function onModalResolved(updated: ApprovalResponse) {
+		void onApprovalResolved(updated);
 	}
 
 	function toggle(id: string) {
@@ -333,10 +404,7 @@
 									<div class="approval-meta mono">{a.permission_keys[0] ?? ''}</div>
 									<div class="approval-meta">Requested {absoluteTime(a.created_at)}</div>
 								</div>
-								<div class="approval-actions">
-									<a href={`/approvals/${a.id}`} class="btn-approve">Allow &amp; Remember</a>
-									<a href={`/approvals/${a.id}`} class="btn-deny-outline">Deny</a>
-								</div>
+								<ApprovalResolver approval={a} compact onResolved={onApprovalResolved} />
 							</div>
 						{/each}
 					{/if}
@@ -540,6 +608,23 @@
 		onConfirm={confirmDelete}
 		onCancel={() => (deleteModalOpen = false)}
 	/>
+{/if}
+
+<ApprovalModal
+	open={!!modalApproval}
+	approval={modalApproval}
+	onClose={closeApprovalModal}
+	onResolved={onModalResolved}
+/>
+
+{#if modalApprovalId && !modalApproval && modalError}
+	<div class="backdrop-error" role="dialog" aria-modal="true">
+		<div class="error-card">
+			<h2>Approval unavailable</h2>
+			<p>{modalError}</p>
+			<button class="btn-close" onclick={closeApprovalModal}>Close</button>
+		</div>
+	</div>
 {/if}
 
 <style>
@@ -838,12 +923,11 @@
 	.approval-card {
 		border: 1px solid var(--color-border);
 		border-radius: 8px;
-		padding: 8px 12px;
+		padding: 12px;
 		margin-bottom: 8px;
 		display: flex;
-		align-items: flex-end;
-		justify-content: space-between;
-		gap: 12px;
+		flex-direction: column;
+		gap: 10px;
 	}
 	.approval-main {
 		display: flex;
@@ -859,33 +943,6 @@
 	.approval-meta {
 		font-size: 11px;
 		color: var(--color-text-muted);
-	}
-	.approval-actions {
-		display: flex;
-		gap: 6px;
-		flex-shrink: 0;
-	}
-	.btn-approve {
-		background: var(--success-500, #21b86b);
-		color: #fff;
-		padding: 6px 12px;
-		border-radius: 6px;
-		font-size: 13px;
-		font-weight: 500;
-		text-decoration: none;
-		border: none;
-		cursor: pointer;
-	}
-	.btn-deny-outline {
-		background: none;
-		border: 1px solid var(--color-danger, #e53836);
-		color: var(--color-danger, #e53836);
-		padding: 6px 12px;
-		border-radius: 6px;
-		font-size: 13px;
-		font-weight: 500;
-		text-decoration: none;
-		cursor: pointer;
 	}
 
 	/* ── Permission rules table ── */
@@ -1078,5 +1135,50 @@
 		gap: 8px;
 		justify-content: flex-end;
 		margin-top: 8px;
+	}
+
+	/* Error modal shown when the deep-linked approval can't be loaded. */
+	.backdrop-error {
+		position: fixed;
+		inset: 0;
+		background: rgba(23, 25, 28, 0.45);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+		padding: 16px;
+	}
+	.error-card {
+		background: var(--color-surface, #fff);
+		border: 1px solid var(--color-border);
+		border-radius: 16px;
+		padding: 24px 28px;
+		max-width: 360px;
+		width: 100%;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.error-card h2 {
+		margin: 0;
+		font-weight: 700;
+		font-size: 16px;
+		color: var(--color-text-heading, var(--color-text));
+	}
+	.error-card p {
+		margin: 0;
+		font-size: 14px;
+		color: var(--color-text-secondary, var(--color-text));
+	}
+	.btn-close {
+		align-self: flex-end;
+		padding: 8px 14px;
+		border-radius: 8px;
+		border: 1px solid var(--color-border);
+		background: var(--color-surface, #fff);
+		color: var(--color-text);
+		cursor: pointer;
+		font-size: 13px;
 	}
 </style>

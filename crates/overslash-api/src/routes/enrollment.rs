@@ -287,17 +287,9 @@ async fn initiate_enrollment(
     )
     .await?;
 
-    // Approval URL points to the dashboard consent page, not the backend API.
-    // dashboard_url defaults to "/" so prefer public_url when it's relative.
-    let dash = state.config.dashboard_url.trim_end_matches('/');
-    let approval_url = if dash.starts_with("http://") || dash.starts_with("https://") {
-        format!("{dash}/enroll/consent/{approval_token}")
-    } else {
-        format!(
-            "{}{dash}/enroll/consent/{approval_token}",
-            state.config.public_url.trim_end_matches('/')
-        )
-    };
+    let approval_url = state
+        .config
+        .dashboard_url_for(&format!("/enroll/consent/{approval_token}"));
 
     // Pending enrollment is not yet bound to an org — `Uuid::nil()` is
     // the sentinel org_id for these audit rows.
