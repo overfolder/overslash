@@ -100,6 +100,29 @@ impl Config {
             .collect()
     }
 
+    /// Build a URL for a dashboard deep-link path (e.g., `/approvals/<id>`,
+    /// `/enroll/consent/<token>`, `/secrets/provide/<id>?token=...`).
+    ///
+    /// `dashboard_url` is the canonical dashboard host. When it's already
+    /// absolute (`http://` or `https://`) it's used directly; when relative
+    /// (the default `/` in local/single-process deployments), `public_url`
+    /// is prepended so the resulting URL is reachable from outside the
+    /// host process. The dashboard URL must be suitable to paste into an
+    /// agent's conversation and have the owner click it.
+    pub fn dashboard_url_for(&self, path: &str) -> String {
+        let dash = self.dashboard_url.trim_end_matches('/');
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+        if dash.starts_with("http://") || dash.starts_with("https://") {
+            format!("{dash}{path}")
+        } else {
+            format!("{}{dash}{path}", self.public_url.trim_end_matches('/'))
+        }
+    }
+
     /// Returns env-var-based auth credentials for a given provider key, if configured.
     /// Env vars take precedence over DB-stored IdP configs.
     pub fn env_auth_credentials(&self, provider_key: &str) -> Option<(String, String)> {

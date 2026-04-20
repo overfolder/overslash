@@ -291,11 +291,15 @@ async fn execute_action(
                     });
                 }
 
+                let approval_url = state
+                    .config
+                    .dashboard_url_for(&format!("/approvals/{}", approval.id));
+
                 return Ok((
                     StatusCode::ACCEPTED,
                     Json(ExecuteResponse::PendingApproval {
                         approval_id: approval.id,
-                        approval_url: format!("/approve/{}", approval.token),
+                        approval_url,
                         action_description: summary,
                         expires_at: fmt_time(expires_at),
                     }),

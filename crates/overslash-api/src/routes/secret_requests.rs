@@ -134,16 +134,9 @@ async fn create_secret_request(
     )
     .await?;
 
-    // Approval/consent URL pattern mirrors enrollment.rs::initiate_enrollment.
-    let dash = state.config.dashboard_url.trim_end_matches('/');
-    let url = if dash.starts_with("http://") || dash.starts_with("https://") {
-        format!("{dash}/secrets/provide/{req_id}?token={token}")
-    } else {
-        format!(
-            "{}{dash}/secrets/provide/{req_id}?token={token}",
-            state.config.public_url.trim_end_matches('/')
-        )
-    };
+    let url = state
+        .config
+        .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
 
     let _ = OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {

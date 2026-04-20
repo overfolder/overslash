@@ -417,6 +417,19 @@ async fn test_approval_flow() {
     assert_eq!(body["status"], "pending_approval");
     let approval_id = body["approval_id"].as_str().unwrap();
 
+    // Regression: `approval_url` must point at the dashboard deep-link page
+    // (`/approvals/{id}`), not the old placeholder `/approve/{token}` that
+    // agents were suggesting to users and 404'd.
+    let approval_url = body["approval_url"].as_str().unwrap();
+    assert!(
+        approval_url.ends_with(&format!("/approvals/{approval_id}")),
+        "approval_url {approval_url:?} should end with /approvals/{approval_id}"
+    );
+    assert!(
+        !approval_url.contains("/approve/"),
+        "approval_url {approval_url:?} should not use the legacy /approve/{{token}} path"
+    );
+
     // Regression: `expires_at` on pending_approval must be RFC 3339.
     // The `time` crate's default Display ("2026-04-19 08:16:35 +00:00:00")
     // is not parseable by JavaScript's `new Date(...)` and previously

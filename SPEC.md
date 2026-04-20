@@ -570,7 +570,7 @@ Every request derives permission keys. Resolution follows the two-layer model (�
 
 ### Approval URLs
 
-When `execute_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approve/<token>`"). The host portion is resolved from a deployment-level config value — **`OVERSLASH_DASHBOARD_URL`** in `overslash serve`, or the same-origin dashboard host in `overslash web` — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
+When `execute_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approvals/<id>`"). The URL points at the dashboard deep-link page (`/approvals/{id}`), which renders as a modal overlay on top of `/agents` after login. The host portion is resolved from the deployment-level **`DASHBOARD_URL`** envvar (served by `overslash serve`; `overslash web` uses the same-origin dashboard host) — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
 
 ### Secret Injection (`http` service only)
 
