@@ -328,6 +328,7 @@
 
 	async function addGroupGrant() {
 		if (!svc || !newGroupId) return;
+		const ctrl = new AbortController();
 		savingGroup = true;
 		error = null;
 		try {
@@ -336,11 +337,15 @@
 				access_level: newAccessLevel,
 				auto_approve_reads: newAutoApprove
 			});
-			serviceGroups = await listServiceGroups(svc.id);
+			if (destroyed) return;
+			const fresh = await listServiceGroups(svc.id, ctrl.signal);
+			if (destroyed || ctrl.signal.aborted) return;
+			serviceGroups = fresh;
 			newGroupId = '';
 			newAccessLevel = 'read';
 			newAutoApprove = false;
 		} catch (e) {
+			if (destroyed || ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `Failed to add group (${e.status})` : 'Failed to add group';
 		} finally {
 			savingGroup = false;

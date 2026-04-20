@@ -263,6 +263,11 @@ async fn list_services(
 }
 
 /// List the groups that grant access to a single service instance.
+///
+/// Read access matches the sibling `GET /v1/groups/{id}/grants` endpoint,
+/// which the project already treats as org-readable — any authenticated
+/// caller can enumerate which groups grant what. Mutations (`add_grant`,
+/// `remove_grant`) remain admin-only.
 async fn list_service_groups(
     _: AuthContext,
     scope: OrgScope,
