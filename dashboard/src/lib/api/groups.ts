@@ -62,7 +62,7 @@ export interface Identity {
 }
 
 export const groupsApi = {
-	list: () => session.get<Group[]>('/v1/groups'),
+	list: (signal?: AbortSignal) => session.get<Group[]>('/v1/groups', signal),
 	get: (id: string) => session.get<Group>(`/v1/groups/${id}`),
 	create: (body: CreateGroupRequest) => session.post<Group>('/v1/groups', body),
 	update: (id: string, body: UpdateGroupRequest) => session.put<Group>(`/v1/groups/${id}`, body),

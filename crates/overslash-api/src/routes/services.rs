@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -6,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::group::ServiceGroupRow;
 use overslash_db::repos::service_instance::{
     CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
 };
@@ -29,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{name}/actions", get(list_service_actions))
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
+        .route("/v1/services/{id}/groups", get(list_service_groups))
 }
 
 // -- Response types --
@@ -40,16 +44,42 @@ struct ServiceInstanceSummary {
     template_source: String,
     template_key: String,
     status: String,
+    is_system: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_identity_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_name: Option<String>,
+    /// Groups that grant access to this service instance. Empty when the
+    /// service is not assigned to any group.
+    #[serde(default)]
+    groups: Vec<ServiceGroupRef>,
     /// Derived from the bound connection's granted scopes vs. the template's
     /// per-action `required_scopes`. See [`CredentialsStatus`] for the values.
     #[serde(skip_serializing_if = "Option::is_none")]
     credentials_status: Option<CredentialsStatus>,
+}
+
+#[derive(Serialize, Clone)]
+struct ServiceGroupRef {
+    grant_id: Uuid,
+    group_id: Uuid,
+    group_name: String,
+    access_level: String,
+    auto_approve_reads: bool,
+}
+
+impl From<ServiceGroupRow> for ServiceGroupRef {
+    fn from(r: ServiceGroupRow) -> Self {
+        Self {
+            grant_id: r.grant_id,
+            group_id: r.group_id,
+            group_name: r.group_name,
+            access_level: r.access_level,
+            auto_approve_reads: r.auto_approve_reads,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -170,6 +200,18 @@ async fn list_services(
         )
         .await?;
 
+    // Batch-load the group assignments for the returned service ids so the UI
+    // can render a Groups column without an N+1 follow-up.
+    let service_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let grants = scope.list_groups_for_services(&service_ids).await?;
+    let mut groups_by_service: HashMap<Uuid, Vec<ServiceGroupRef>> = HashMap::new();
+    for g in grants {
+        groups_by_service
+            .entry(g.service_instance_id)
+            .or_default()
+            .push(g.into());
+    }
+
     // Pre-load connections and templates in bulk so we don't issue an
     // N-per-row burst of lookups while computing credentials_status. The
     // dashboard's services list page calls this on every visit.
@@ -211,12 +253,34 @@ async fn list_services(
                 .and_then(|cid| connections_by_id.get(&cid))
                 .zip(templates.get(&tpl_key))
                 .and_then(|(conn, tpl)| classify_scopes(&conn.scopes, tpl));
-            let mut summary = row_to_summary(row);
+            let groups = groups_by_service.remove(&row.id).unwrap_or_default();
+            let mut summary = row_to_summary(row, groups);
             summary.credentials_status = credentials_status;
             summary
         })
         .collect();
     Ok(Json(services))
+}
+
+/// List the groups that grant access to a single service instance.
+///
+/// Read access matches the sibling `GET /v1/groups/{id}/grants` endpoint,
+/// which the project already treats as org-readable — any authenticated
+/// caller can enumerate which groups grant what. Mutations (`add_grant`,
+/// `remove_grant`) remain admin-only.
+async fn list_service_groups(
+    _: AuthContext,
+    scope: OrgScope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ServiceGroupRef>>> {
+    // Confirm the service exists in this org before returning the grant list.
+    // An id from another tenant returns None here and we surface 404.
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    let grants = scope.list_groups_for_service(instance.id).await?;
+    Ok(Json(grants.into_iter().map(Into::into).collect()))
 }
 
 #[derive(Deserialize, Default)]
@@ -523,16 +587,18 @@ async fn list_service_actions(
 
 // -- Helpers --
 
-fn row_to_summary(row: ServiceInstanceRow) -> ServiceInstanceSummary {
+fn row_to_summary(row: ServiceInstanceRow, groups: Vec<ServiceGroupRef>) -> ServiceInstanceSummary {
     ServiceInstanceSummary {
         id: row.id,
         name: row.name,
         template_source: row.template_source,
         template_key: row.template_key,
         status: row.status,
+        is_system: row.is_system,
         owner_identity_id: row.owner_identity_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        groups,
         credentials_status: None,
     }
 }

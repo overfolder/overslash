@@ -5,6 +5,7 @@
 		| 'archived'
 		| 'connected'
 		| 'needs-setup'
+		| 'built-in'
 		| 'needs-reconnect'
 		| 'partially-degraded'
 		| 'global'
@@ -46,7 +47,8 @@
 		color: #b91c1c;
 		border-color: rgba(220, 38, 38, 0.35);
 	}
-	.archived {
+	.archived,
+	.built-in {
 		background: var(--color-bg, #f4f4f5);
 		color: var(--color-text-muted, #6b7280);
 		border-color: var(--color-border, #e5e7eb);

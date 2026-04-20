@@ -2,6 +2,7 @@ openapi: 3.1.0
 info:
   title: Slack
   key: slack
+  category: Communication
 servers:
   - url: https://slack.com
   - url: https://api.slack.com

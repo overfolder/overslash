@@ -2,6 +2,7 @@ openapi: 3.1.0
 info:
   title: Google Calendar
   key: google_calendar
+  category: Productivity
 servers:
   - url: https://www.googleapis.com
 components:

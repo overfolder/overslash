@@ -3,7 +3,7 @@ info:
   title: Google Drive
   description: Google Drive API — files, folders, permissions, and sharing.
   key: google_drive
-  category: productivity
+  category: Storage
 servers:
   - url: https://www.googleapis.com
 components:
