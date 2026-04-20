@@ -672,13 +672,14 @@ async fn consent_finish(
     let session_claims = session::extract_session(&state, &headers)
         .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
 
-    // Peek at the pending record rather than taking it — a transient DB
-    // failure during the lookups below shouldn't burn the authorization
-    // and force the user to restart. We only call `.take()` once all
-    // read-only checks pass and we're about to mutate.
+    // Consume the pending record up front — consent is single-use, and a
+    // replayable `request_id` would let a second finish call create a
+    // duplicate agent and a second auth code. If any downstream lookup
+    // fails the user re-starts the flow; the 60s TTL is short enough that
+    // this is acceptable.
     let pending = state
         .pending_authorize_store
-        .get(&request_id)
+        .take(&request_id)
         .ok_or_else(|| AppError::BadRequest("authorization request expired".into()))?;
 
     if pending.user_identity_id != session_claims.sub {
