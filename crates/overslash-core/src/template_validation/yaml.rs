@@ -131,6 +131,68 @@ pub fn parse_normalize_compile_yaml(
     Ok((doc, def))
 }
 
+/// Lenient variant of [`parse_normalize_compile_yaml`] that operates on an
+/// already-parsed `serde_json::Value` (the output of the import pipeline) and
+/// never returns a transport-level error. The caller gets back:
+///  - the canonical document (alias-normalized, with any available compile
+///    fix-ups applied; stored as-is to the DB for drafts),
+///  - the compiled [`ServiceDefinition`] if the document was well-formed
+///    enough to compile, or `None` if it wasn't,
+///  - a [`ValidationReport`] describing what's still wrong.
+///
+/// This is the entry point used by `POST /v1/templates/import`: drafts can
+/// legitimately persist with validation errors because the user intends to
+/// fix them in the editor before promoting. `POST
+/// /v1/templates/drafts/{id}/promote` re-runs `parse_normalize_compile_yaml`
+/// against the edited source and rejects promotion if it still has errors.
+pub fn prepare_draft_from_value(
+    mut doc: serde_json::Value,
+) -> (
+    serde_json::Value,
+    Option<ServiceDefinition>,
+    ValidationReport,
+) {
+    let mut issues = Issues::default();
+
+    let alias_issues = crate::openapi::normalize_aliases(&mut doc);
+    for i in alias_issues {
+        issues.err(i.code, i.message, i.path);
+    }
+
+    let mut dup_issues = Issues::default();
+    check_duplicate_operation_ids(&doc, &mut dup_issues);
+    let dup_report = dup_issues.finish();
+    for e in dup_report.errors {
+        issues.err(e.code, e.message, e.path);
+    }
+    for w in dup_report.warnings {
+        issues.warn(w.code, w.message, w.path);
+    }
+
+    let compiled = match crate::openapi::compile_service(&doc) {
+        Ok((def, _warnings)) => Some(def),
+        Err(errors) => {
+            for i in errors {
+                issues.err(i.code, i.message, i.path);
+            }
+            None
+        }
+    };
+
+    // Struct-level linting: only meaningful when compile succeeded.
+    if let Some(ref def) = compiled {
+        let struct_report = validate_service_definition(def, &[]);
+        for e in struct_report.errors {
+            issues.err(e.code, e.message, e.path);
+        }
+        for w in struct_report.warnings {
+            issues.warn(w.code, w.message, w.path);
+        }
+    }
+
+    (doc, compiled, issues.finish())
+}
+
 fn check_duplicate_operation_ids(doc: &serde_json::Value, issues: &mut Issues) {
     let Some(paths) = doc.get("paths").and_then(|v| v.as_object()) else {
         return;

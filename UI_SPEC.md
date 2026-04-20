@@ -932,7 +932,11 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 - **`[Edit]`** — opens the Template Editor (only for user/org templates)
 - **`[Share]`** — proposes sharing a user template to org level
 
-`[+ New Template]` button — opens the template creation flow. Only visible if the org allows user-created templates.
+Two buttons in the catalog header:
+- `[Import OpenAPI]` — always visible, opens the OpenAPI import wizard (see below). Non-admins can still import, but org-level drafts require admin and user-level drafts require `allow_user_templates`.
+- `[+ New Template]` — opens the blank template editor. Only visible if the org allows user-created templates (admin) or to admins for org-level templates.
+
+If the caller has any open drafts, a **Drafts** card renders above this table; see *Template Catalog — Drafts section* below.
 
 ### Create service flow
 
@@ -967,11 +971,41 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 4. Save as Draft or Active
 
 **OpenAPI import:**
-1. **Input**: upload an OpenAPI 3.x spec file (JSON/YAML) or paste a URL. A loading spinner shows while parsing.
-2. **Parse preview**: Overslash parses the spec and shows a structured preview — template identity (key, name, base URL inferred from `servers`), auth config (inferred from `securitySchemes`), and a list of all endpoints grouped by tag.
-3. **Endpoint picker**: each endpoint shows as a row with checkbox, HTTP method badge, path, and inferred description. User picks which endpoints become actions, can edit generated names/descriptions, and skip the rest. "Select all" / "Deselect all" toggles at the top.
-4. **Parameter mapping**: for selected endpoints, parameter schemas are extracted from path params, query params, and request body. User can edit types, mark required/optional, and set `scope_param`.
-5. **Review**: opens the **Template Editor** with the generated OpenAPI YAML pre-filled — including any `x-overslash-*` overlay defaults the importer could infer. User makes final edits before saving as Draft or Active.
+
+`[Import OpenAPI]` button (next to `[+ New Template]` at the top of the Template Catalog) opens a two-page flow: a lightweight **source wizard** creates a draft, then the **Draft Editor** handles review, selection, and promotion.
+
+**Source wizard** (`/services/templates/import`):
+
+A single page with three cards:
+
+1. *Source* — tabs for **Fetch URL** and **Paste or upload**.
+   - URL tab: single text field. HTTPS is encouraged; an HTTP URL shows an amber banner (`⚠ Plain HTTP URLs are fetched over an unencrypted connection`). Private and loopback addresses are blocked server-side — the error surfaces inline.
+   - Paste tab: a file picker (`.yaml` / `.yml` / `.json`, 512 KiB cap) plus a monospace textarea. Picking a file populates the textarea; the user can then edit inline before submitting.
+2. *Metadata (optional)* — two inputs: **Template key** (leave blank to derive from `info.title`) and **Display name**. These are the only structured fields at this stage; everything else is edited in the draft editor.
+3. *Tier* — Org-level (admin only) vs User-level (requires the org setting). Mirrors the New-Template flow.
+
+`[Import & Review]` submits `POST /v1/templates/import`. On success the wizard navigates directly to the draft editor. On validation failure (e.g. the source didn't parse as YAML or JSON) the error banner at the top renders the first few `report.errors`.
+
+Because drafts are DB-backed, the agent-led flow is the same endpoint with no UI: `POST /v1/templates/import → POST /v1/templates/drafts/{id}/promote`.
+
+**Draft Editor** (`/services/templates/drafts/{id}`):
+
+Page header: breadcrumb back to Services, the draft's display name (falls back to the key), a tier badge, and a yellow `draft` pill. Layout is a vertical stack of cards:
+
+1. *Import notes* (only when non-empty) — yellow-tinted card listing `ImportWarning`s: `derived_key`, `derived_operation_id`, `openapi_3_0_source`, `unresolved_external_ref`, `circular_ref`, `http_insecure`. Each entry shows `code`, message, and path in monospace.
+2. *Validation errors* (only when `validation.valid === false`) — red-tinted card listing unresolved issues with their `code` + `path`. Editing the YAML below or toggling operations usually clears these; promotion is blocked until the list is empty.
+3. *Operations* — one row per operation returned by the server, grouped by path. Each row has a checkbox, color-coded HTTP method badge, path, operationId (with `(auto-named)` marker for synthesized ids), and summary. Toggling any checkbox re-submits `POST /v1/templates/import` with the same `draft_id` and the new `include_operations` — the backend rewrites the draft's canonical YAML so selection and manual edits stay in sync. While the request is in flight all checkboxes are disabled.
+4. *YAML* — reuses `TemplateEditorYaml` (CodeMirror, live `POST /v1/templates/validate` on keystroke). Drafts share the *same* editor with the New Template flow; the only differences live in the action footer.
+5. *Actions footer* — `[Discard draft]` on the left (danger style, opens a confirmation dialog), `[Save draft]` and `[Save & promote]` on the right. Save-draft is disabled when the YAML matches the last-known server copy. Save-and-promote auto-saves any pending edits first, then calls `POST /v1/templates/drafts/{id}/promote`; on success the user lands on the (now active) template detail page. If promotion fails validation the error banner renders the backend report and the draft stays put.
+
+**Template Catalog — Drafts section** (above the active templates list, rendered only when the user has any):
+
+A light card titled `Drafts (N)` with one row per draft. Each row shows display name + tier badge + key + operation count, plus an `N issues` badge (red) when `validation.valid === false`. Row actions: `[Resume]` (navigates to the draft editor) and `[Discard]` (confirmation dialog). Drafts stay local to their owner (user tier) or to org-admins (org tier); they never show up in the main active-templates table or in agent-facing catalogs.
+
+**Behavioral notes:**
+- Unlike the old multi-step wizard, parameter mapping is done *inline in the YAML editor* rather than via a dedicated screen. The validation card makes unknown-scope-param / missing-resolver errors visible, and the YAML editor is where they're fixed.
+- Promotion is gated on the *strict* validator, not the lenient one used for drafts: a draft that persists with issues cannot be promoted until those issues are gone.
+- Users can iterate freely: import → tweak selection → edit YAML → save draft → come back later → promote. The draft `id` is the durable handle across browser sessions and API callers.
 
 ### Template Editor
 
@@ -1160,49 +1194,39 @@ A **CSV export** button that downloads the currently filtered result set.
 
 ### API Explorer
 
-A sub-view within Services (accessed via a tab or button, not a top-level nav item). An interactive tool for testing and debugging service connections through Overslash. Simpler than Postman — the goal is verifying that auth works and seeing what comes back.
+A sub-view within Services (accessed via the third tab, alongside `Instances` and `Template Catalog`). An interactive tool for testing and debugging service connections through Overslash. Simpler than Postman — the goal is verifying that auth works and seeing what comes back.
 
-Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the tab is not shown.
+Rows in the `Instances` table carry an **"⌘ Try it"** button that deep-links to the explorer tab with that service pre-selected (`/services?tab=api-explorer&service=<name>`).
 
-#### Unified flow
+Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the tab is not shown. *(Toggle not yet wired — tracked as a follow-up.)*
 
-The explorer uses a single flow. The level of abstraction is determined by what the user selects:
+#### Two modes
 
-1. **Pick a service** — dropdown showing the user's service instances (connected ones prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
+A pill toggle at the top of the tab switches between two execution modes:
 
-2. **Pick an action** — adapts to the selected service and the user's group grants:
-   - **Defined actions** listed first with human-readable descriptions and mutating badges (e.g., `create_pull_request — Create a pull request [write]`)
-   - **"Custom Request"** appears at the bottom if the user's group grants HTTP verb access for this service. Opens method + path + body inputs, with auth auto-injected.
-   - For **"Raw HTTP"** service: shows method + full URL + headers + body + secret selector (pick from user's secrets, specify injection method per secret)
+1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/execute` as Mode C.
 
-3. **Fill parameters** — auto-generated form for defined actions (text, number, enum dropdowns from the registry schema). Method + path + JSON body editor for custom requests. Full URL + secret injection config for raw HTTP.
+2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/execute` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
 
-4. **Execute** → response panel
+   ```
+   Method:  [POST ▾]
+   URL:     https://api.example.com/v1/data
+   Headers: Content-Type: application/json
+            Authorization: Bearer {{MY_TOKEN}}
+   Body:    {"query": "test", "limit": 10}
+   ```
 
-#### Raw HTTP example
-
-When "Raw HTTP" is selected as the service:
-
-```
-Service: Raw HTTP
-Method:  [POST ▾]
-URL:     [https://api.example.com/v1/data                ]
-Headers: [Content-Type: application/json                 ]
-Body:    [{"query": "test", "limit": 10}                 ]
-
-Secrets:
-  [api_key ▾]  inject as [Header ▾]  name [Authorization ▾]  prefix [Bearer ]
-```
-
-This generates permission keys `http:POST:api.example.com` + `secret:api_key:api.example.com`.
+   Each header whose value contains a single `{{NAME}}` token is rewritten on submit into a `SecretRef` (`inject_as: "header"`, prefix = any text before the token) and the backend injects the decrypted secret at execute time. Body template substitution is not supported yet — `{{…}}` in the body is sent literally, with a visible warning.
 
 #### Response panel
 
-- **Status code** (color-coded: 2xx green, 4xx yellow, 5xx red)
-- **Response time**
-- **Headers** (collapsible)
-- **Body** (syntax-highlighted JSON, with raw/pretty toggle)
-- **Permission keys derived**: shows which `{service}:{action}:{arg}` keys were checked
+Renders to the right of (or below, on narrow viewports) the request card:
+
+- **Status code** chip (color-coded: 2xx green, 4xx yellow, 5xx red)
+- **Response time** in milliseconds
+- **Body** (syntax-highlighted JSON)
+- For `pending_approval`: an info card with a link to the approval detail page.
+- For `denied`: an error card with the reason.
 
 #### Identity
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, created_at, updated_at FROM service_templates WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $2 AND key = $3",
+  "query": "UPDATE service_templates SET status = 'active', updated_at = now() WHERE id = $1 AND status = 'draft' RETURNING id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, status, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -50,20 +50,23 @@
       },
       {
         "ordinal": 9,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -77,8 +80,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "929a105d8b0691dcef430fa6768307bb01f14a805044fe59db7382f49079a145"
+  "hash": "609af1348df62d2dec3a1ad118d7047e2538c5a63f839c365aaa0ee629e384ad"
 }

@@ -643,6 +643,80 @@ async fn test_template_actions_respects_global_filter() {
 }
 
 // ---------------------------------------------------------------------------
+// Single-action detail endpoint
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_action_detail_returns_params() {
+    let (base, client, _, _, write_key, _, _, _) = bootstrap(true).await;
+
+    let resp = client
+        .get(format!(
+            "{base}/v1/templates/github/actions/create_pull_request"
+        ))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["key"], "create_pull_request");
+    assert_eq!(body["method"], "POST");
+    assert!(
+        body["path"].as_str().unwrap().contains("{repo}"),
+        "path should contain the repo placeholder, got {}",
+        body["path"]
+    );
+    assert!(body["description"].as_str().is_some());
+    assert!(body["risk"].as_str().is_some());
+
+    let params = body["params"].as_object().expect("params object");
+    assert!(!params.is_empty(), "action should expose params");
+    let title = params.get("title").expect("title param present");
+    assert_eq!(title["type"], "string");
+    assert_eq!(title["required"], true);
+}
+
+#[tokio::test]
+async fn test_action_detail_missing_action_returns_404() {
+    let (base, client, _, _, write_key, _, _, _) = bootstrap(true).await;
+
+    let resp = client
+        .get(format!(
+            "{base}/v1/templates/github/actions/definitely_not_a_real_action"
+        ))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_action_detail_hidden_global_returns_404() {
+    let (base, client, org_id, admin_key, write_key, _, _, _) = bootstrap(true).await;
+
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"global_templates_enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{base}/v1/templates/github/actions/create_pull_request"
+        ))
+        .header(auth(&write_key).0, auth(&write_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// ---------------------------------------------------------------------------
 // Enable nonexistent global template returns 404
 // ---------------------------------------------------------------------------
 
