@@ -189,6 +189,10 @@
 
 	function onModalResolved(updated: ApprovalResponse) {
 		void onApprovalResolved(updated);
+		// Close the overlay and strip `?approval=<id>` from the URL — the
+		// agents view's pending list and rules table reflect the resolution
+		// already, so leaving the modal open just shows a stale banner.
+		closeApprovalModal();
 	}
 
 	function toggle(id: string) {
