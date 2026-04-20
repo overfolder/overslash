@@ -133,7 +133,7 @@
 					.get<Identity[]>('/v1/identities', ctrl.signal)
 					.catch(() => [] as Identity[]),
 				listServiceGroups(fresh.id, ctrl.signal).catch(() => [] as ServiceGroupRef[]),
-				groupsApi.list().catch(() => [] as Group[])
+				groupsApi.list(ctrl.signal).catch(() => [] as Group[])
 			]);
 			if (ctrl.signal.aborted) return;
 			template = tpl;
