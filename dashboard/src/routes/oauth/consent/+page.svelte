@@ -56,7 +56,10 @@
 		try {
 			const body =
 				data.context.mode === 'reauth'
-					? { mode: 'reauth' }
+					? {
+							mode: 'reauth',
+							reauth_agent_id: data.context.reauth_target?.agent_id
+						}
 					: {
 							mode: 'new',
 							agent_name: agentName.trim(),

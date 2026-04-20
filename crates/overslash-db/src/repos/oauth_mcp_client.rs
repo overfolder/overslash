@@ -115,6 +115,31 @@ pub struct SimilarBoundClient {
 // matching NULL-to-NULL would collapse every metadata-less client the
 // user has ever enrolled into the most recent one and silently rebind
 // distinct clients to the same agent.
+// Does this user already have a (non-revoked) binding to this agent via
+// any MCP client? Used to authorize a reauth: the user can only rebind
+// a re-registered MCP client to an agent they'd previously enrolled
+// some MCP client against.
+pub async fn user_has_binding_to_agent(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+    agent_identity_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT 1 AS one
+           FROM mcp_client_agent_bindings b
+           JOIN oauth_mcp_clients c ON c.client_id = b.client_id
+          WHERE b.user_identity_id = $1
+            AND b.agent_identity_id = $2
+            AND c.is_revoked = false
+          LIMIT 1",
+        user_identity_id,
+        agent_identity_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn find_similar_for_user(
     pool: &PgPool,
     user_identity_id: Uuid,

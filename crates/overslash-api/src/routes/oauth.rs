@@ -485,6 +485,12 @@ struct ConsentFinishRequest {
     inherit_permissions: bool,
     #[serde(default)]
     group_names: Vec<String>,
+    /// The `reauth_target.agent_id` shown to the user on the consent page,
+    /// echoed back verbatim so mode="reauth" binds to the exact agent the
+    /// user saw — not whatever a second `find_similar_for_user` call
+    /// happens to return (newer enrollments, revocations, etc. could
+    /// shift it between GET context and POST finish).
+    reauth_agent_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -782,28 +788,42 @@ async fn consent_finish(
             agent.id
         }
         "reauth" => {
-            // Reauth reuses the existing agent identified by
-            // `find_similar_for_user`. We re-resolve on the server rather
-            // than trust a client-supplied agent_id so the caller can't
-            // rebind the new client_id to any arbitrary agent they know
-            // the id of.
-            let similar = oauth_mcp_client::find_similar_for_user(
-                &state.db,
-                pending.user_identity_id,
-                client.client_name.as_deref(),
-                client.software_id.as_deref(),
-            )
-            .await?
-            .ok_or_else(|| AppError::BadRequest("no matching prior enrollment".into()))?;
-            let agent = identity::get_by_id(&state.db, pending.org_id, similar.agent_identity_id)
+            // The client must echo back the reauth_target.agent_id that
+            // `consent_context` resolved — binding to whatever
+            // `find_similar_for_user` returns at finish-time would open
+            // a race where a concurrent enrollment or revocation between
+            // the GET and the POST shifts the target under the user.
+            let echoed_agent_id = body
+                .reauth_agent_id
+                .ok_or_else(|| AppError::BadRequest("reauth_agent_id required".into()))?;
+
+            // Guard against a caller submitting an arbitrary agent_id they
+            // happen to know: the agent must be live, an agent-kind
+            // identity, owned by the caller, AND there must be at least
+            // one non-revoked prior binding from this user to that agent.
+            // Together those invariants reduce to "the user already
+            // enrolled this MCP client (or a previous one) against this
+            // agent" — which is the honest definition of reauth.
+            let agent = identity::get_by_id(&state.db, pending.org_id, echoed_agent_id)
                 .await?
-                .ok_or_else(|| AppError::BadRequest("prior agent no longer exists".into()))?;
+                .ok_or_else(|| AppError::BadRequest("agent not found".into()))?;
             if agent.kind != "agent"
                 || agent.archived_at.is_some()
                 || agent.owner_id != Some(user.id)
             {
                 return Err(AppError::Forbidden(
-                    "prior agent is not available for reauth".into(),
+                    "agent is not available for reauth".into(),
+                ));
+            }
+            if !oauth_mcp_client::user_has_binding_to_agent(
+                &state.db,
+                pending.user_identity_id,
+                agent.id,
+            )
+            .await?
+            {
+                return Err(AppError::Forbidden(
+                    "agent has no prior enrollment for this user".into(),
                 ));
             }
             agent.id
