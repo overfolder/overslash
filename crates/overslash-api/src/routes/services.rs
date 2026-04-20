@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -6,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use overslash_db::repos::group::ServiceGroupRow;
 use overslash_db::repos::service_instance::{
     CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
 };
@@ -29,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{name}/actions", get(list_service_actions))
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
+        .route("/v1/services/{id}/groups", get(list_service_groups))
 }
 
 // -- Response types --
@@ -40,12 +44,38 @@ struct ServiceInstanceSummary {
     template_source: String,
     template_key: String,
     status: String,
+    is_system: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_identity_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_name: Option<String>,
+    /// Groups that grant access to this service instance. Empty when the
+    /// service is not assigned to any group.
+    #[serde(default)]
+    groups: Vec<ServiceGroupRef>,
+}
+
+#[derive(Serialize, Clone)]
+struct ServiceGroupRef {
+    grant_id: Uuid,
+    group_id: Uuid,
+    group_name: String,
+    access_level: String,
+    auto_approve_reads: bool,
+}
+
+impl From<ServiceGroupRow> for ServiceGroupRef {
+    fn from(r: ServiceGroupRow) -> Self {
+        Self {
+            grant_id: r.grant_id,
+            group_id: r.group_id,
+            group_name: r.group_name,
+            access_level: r.access_level,
+            auto_approve_reads: r.auto_approve_reads,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -142,8 +172,42 @@ async fn list_services(
         )
         .await?;
 
-    let services = rows.into_iter().map(row_to_summary).collect();
+    // Batch-load the group assignments for the returned service ids so the UI
+    // can render a Groups column without an N+1 follow-up.
+    let service_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let grants = scope.list_groups_for_services(&service_ids).await?;
+    let mut groups_by_service: HashMap<Uuid, Vec<ServiceGroupRef>> = HashMap::new();
+    for g in grants {
+        groups_by_service
+            .entry(g.service_instance_id)
+            .or_default()
+            .push(g.into());
+    }
+
+    let services = rows
+        .into_iter()
+        .map(|row| {
+            let groups = groups_by_service.remove(&row.id).unwrap_or_default();
+            row_to_summary(row, groups)
+        })
+        .collect();
     Ok(Json(services))
+}
+
+/// List the groups that grant access to a single service instance.
+async fn list_service_groups(
+    _: AuthContext,
+    scope: OrgScope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ServiceGroupRef>>> {
+    // Confirm the service exists in this org before returning the grant list.
+    // An id from another tenant returns None here and we surface 404.
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    let grants = scope.list_groups_for_service(instance.id).await?;
+    Ok(Json(grants.into_iter().map(Into::into).collect()))
 }
 
 #[derive(Deserialize, Default)]
@@ -369,16 +433,18 @@ async fn list_service_actions(
 
 // -- Helpers --
 
-fn row_to_summary(row: ServiceInstanceRow) -> ServiceInstanceSummary {
+fn row_to_summary(row: ServiceInstanceRow, groups: Vec<ServiceGroupRef>) -> ServiceInstanceSummary {
     ServiceInstanceSummary {
         id: row.id,
         name: row.name,
         template_source: row.template_source,
         template_key: row.template_key,
         status: row.status,
+        is_system: row.is_system,
         owner_identity_id: row.owner_identity_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        groups,
     }
 }
 

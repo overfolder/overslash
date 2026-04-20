@@ -135,15 +135,25 @@ export interface ActionSummary {
 
 export type ServiceStatus = 'draft' | 'active' | 'archived';
 
+export interface ServiceGroupRef {
+  grant_id: string;
+  group_id: string;
+  group_name: string;
+  access_level: string;
+  auto_approve_reads: boolean;
+}
+
 export interface ServiceInstanceSummary {
   id: string;
   name: string;
   template_source: string;
   template_key: string;
   status: ServiceStatus;
+  is_system: boolean;
   owner_identity_id?: string;
   connection_id?: string;
   secret_name?: string;
+  groups?: ServiceGroupRef[];
 }
 
 export interface ServiceInstanceDetail extends ServiceInstanceSummary {
@@ -297,16 +307,24 @@ export type ExecuteResponse =
     }
   | { status: 'denied'; reason: string };
 
+/** Mirrors crates/overslash-api/src/routes/identities.rs IdentityResponse. */
 export interface Identity {
   id: string;
   org_id: string;
   name: string;
   kind: 'user' | 'agent' | 'sub_agent';
   external_id: string | null;
+  email?: string | null;
+  provider?: string | null;
+  picture?: string | null;
   parent_id: string | null;
   depth: number;
   owner_id: string | null;
   inherit_permissions: boolean;
+  created_at?: string;
+  last_active_at?: string;
+  archived_at?: string | null;
+  archived_reason?: string | null;
 }
 
 export interface PermissionRule {

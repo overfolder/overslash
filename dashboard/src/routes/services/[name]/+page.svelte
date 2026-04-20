@@ -2,20 +2,24 @@
 	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
+	import { ApiError, session } from '$lib/session';
 	import {
 		getService,
 		getServiceActions,
 		getTemplate,
 		listConnections,
+		listServiceGroups,
 		initiateOAuth,
 		updateService,
 		setServiceStatus,
 		deleteService
 	} from '$lib/api/services';
+	import { groupsApi, type Group } from '$lib/api/groups';
 	import type {
 		ActionSummary,
 		ConnectionSummary,
+		Identity,
+		ServiceGroupRef,
 		ServiceInstanceDetail,
 		ServiceStatus,
 		TemplateDetail
@@ -24,11 +28,16 @@
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 
 	const name = $derived($page.params.name ?? '');
+	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
+	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 
 	let svc = $state<ServiceInstanceDetail | null>(null);
 	let template = $state<TemplateDetail | null>(null);
 	let actions = $state<ActionSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
+	let identities = $state<Identity[]>([]);
+	let serviceGroups = $state<ServiceGroupRef[]>([]);
+	let allGroups = $state<Group[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
@@ -43,6 +52,12 @@
 	let confirmDelete = $state(false);
 	let activeTab = $state<'overview' | 'credentials' | 'actions'>('overview');
 
+	// Group-assignment form state
+	let newGroupId = $state('');
+	let newAccessLevel = $state<'read' | 'write' | 'admin'>('read');
+	let newAutoApprove = $state(false);
+	let savingGroup = $state(false);
+
 	const oauthAuth = $derived(
 		(template?.auth ?? []).find((a: any) => a?.type === 'oauth') as any
 	);
@@ -50,6 +65,18 @@
 	const usesApiKey = $derived(
 		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
 	);
+	const isSystem = $derived(!!svc?.is_system);
+	const ownerDisplay = $derived.by(() => {
+		const s = svc;
+		if (!s) return '';
+		const ownerId = s.owner_identity_id;
+		if (!ownerId) return 'Org';
+		if (currentUserId && ownerId === currentUserId) return 'You';
+		const match = identities.find((i) => i.id === ownerId);
+		return match?.name ?? 'user';
+	});
+	const assignedGroupIds = $derived(new Set(serviceGroups.map((g) => g.group_id)));
+	const unassignedGroups = $derived(allGroups.filter((g) => !assignedGroupIds.has(g.id)));
 	const matchingConnections = $derived(
 		oauthAuth ? connections.filter((c) => c.provider_key === oauthAuth.provider) : connections
 	);
@@ -78,17 +105,25 @@
 			editName = fresh.name;
 			editConnection = fresh.connection_id ?? '';
 			editSecret = fresh.secret_name ?? '';
-			const [tpl, acts, conns] = await Promise.all([
+			const [tpl, acts, conns, ids, sGroups, gs] = await Promise.all([
 				getTemplate(fresh.template_key, ctrl.signal).catch(() => null),
 				// Use svc.id (not name) so user-shadows-org can't return actions
 				// from a same-named user instance.
 				getServiceActions(fresh.id, ctrl.signal).catch(() => [] as ActionSummary[]),
-				listConnections(ctrl.signal).catch(() => [] as ConnectionSummary[])
+				listConnections(ctrl.signal).catch(() => [] as ConnectionSummary[]),
+				session
+					.get<Identity[]>('/v1/identities', ctrl.signal)
+					.catch(() => [] as Identity[]),
+				listServiceGroups(fresh.id, ctrl.signal).catch(() => [] as ServiceGroupRef[]),
+				groupsApi.list().catch(() => [] as Group[])
 			]);
 			if (ctrl.signal.aborted) return;
 			template = tpl;
 			actions = acts;
 			connections = conns;
+			identities = ids;
+			serviceGroups = sGroups;
+			allGroups = gs;
 		} catch (e) {
 			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `Failed to load service (${e.status})` : 'Failed to load service';
@@ -216,10 +251,49 @@
 		}
 	}
 
+	async function addGroupGrant() {
+		if (!svc || !newGroupId) return;
+		savingGroup = true;
+		error = null;
+		try {
+			await groupsApi.addGrant(newGroupId, {
+				service_instance_id: svc.id,
+				access_level: newAccessLevel,
+				auto_approve_reads: newAutoApprove
+			});
+			serviceGroups = await listServiceGroups(svc.id);
+			newGroupId = '';
+			newAccessLevel = 'read';
+			newAutoApprove = false;
+		} catch (e) {
+			error = e instanceof ApiError ? `Failed to add group (${e.status})` : 'Failed to add group';
+		} finally {
+			savingGroup = false;
+		}
+	}
+
+	async function removeGroupGrant(ref: ServiceGroupRef) {
+		if (!svc) return;
+		try {
+			await groupsApi.removeGrant(ref.group_id, ref.grant_id);
+			serviceGroups = serviceGroups.filter((g) => g.grant_id !== ref.grant_id);
+		} catch (e) {
+			error = e instanceof ApiError ? `Failed to remove group (${e.status})` : 'Failed to remove group';
+		}
+	}
+
 	$effect(() => {
 		// Re-run when the route param changes (client-side nav between services).
 		if (name && !destroyed) {
 			void load();
+		}
+	});
+
+	$effect(() => {
+		// System services don't expose a credentials tab — snap back to overview
+		// if state somehow landed on credentials (e.g. rapid nav between instances).
+		if (isSystem && activeTab === 'credentials') {
+			activeTab = 'overview';
 		}
 	});
 
@@ -250,17 +324,21 @@
 				</div>
 			</div>
 			<div class="head-actions">
-				{#if svc.status !== 'archived'}
-					<button type="button" class="btn" onclick={() => changeStatus('archived')}>Archive</button>
+				{#if isSystem}
+					<StatusBadge variant="built-in" />
 				{:else}
-					<button type="button" class="btn" onclick={() => changeStatus('active')}>Restore</button>
+					{#if svc.status !== 'archived'}
+						<button type="button" class="btn" onclick={() => changeStatus('archived')}>Archive</button>
+					{:else}
+						<button type="button" class="btn" onclick={() => changeStatus('active')}>Restore</button>
+					{/if}
+					{#if svc.status === 'draft'}
+						<button type="button" class="btn primary" onclick={() => changeStatus('active')}>
+							Activate
+						</button>
+					{/if}
+					<button type="button" class="btn danger" onclick={() => (confirmDelete = true)}>Delete</button>
 				{/if}
-				{#if svc.status === 'draft'}
-					<button type="button" class="btn primary" onclick={() => changeStatus('active')}>
-						Activate
-					</button>
-				{/if}
-				<button type="button" class="btn danger" onclick={() => (confirmDelete = true)}>Delete</button>
 			</div>
 		</header>
 
@@ -269,7 +347,7 @@
 		{/if}
 
 		<nav class="tabs">
-			{#each ['overview', 'credentials', 'actions'] as t}
+			{#each (isSystem ? ['overview', 'actions'] : ['overview', 'credentials', 'actions']) as t}
 				<button
 					type="button"
 					class="tab"
@@ -285,9 +363,9 @@
 			<div class="card">
 				<label class="field">
 					<span class="label">Name</span>
-					<input type="text" bind:value={editName} required minlength="1" />
+					<input type="text" bind:value={editName} required minlength="1" disabled={isSystem} />
 				</label>
-				{#if usesApiKey}
+				{#if usesApiKey && !isSystem}
 					<label class="field">
 						<span class="label">API key secret name</span>
 						<input type="text" bind:value={editSecret} placeholder="my-api-key" />
@@ -295,7 +373,7 @@
 				{/if}
 				<div class="row">
 					<span class="label">Owner</span>
-					<span class="mono">{svc.owner_identity_id ?? '(org-level)'}</span>
+					<span title={svc.owner_identity_id ?? ''}>{ownerDisplay}</span>
 				</div>
 				<div class="row">
 					<span class="label">Created</span>
@@ -305,11 +383,93 @@
 					<span class="label">Updated</span>
 					<span class="mono">{svc.updated_at}</span>
 				</div>
-				<div class="actions">
-					<button type="button" class="btn primary" onclick={save} disabled={saving}>
-						{saving ? 'Saving…' : 'Save changes'}
-					</button>
+				{#if !isSystem}
+					<div class="actions">
+						<button type="button" class="btn primary" onclick={save} disabled={saving}>
+							{saving ? 'Saving…' : 'Save changes'}
+						</button>
+					</div>
+				{/if}
+			</div>
+
+			<div class="card">
+				<div class="section-head">
+					<h2>Groups</h2>
+					<p class="muted small">Groups with a grant on this service. Members of these groups can reach its actions, subject to agent permissions.</p>
 				</div>
+				{#if serviceGroups.length === 0}
+					<p class="muted">No groups have access to this service yet.</p>
+				{:else}
+					<table>
+						<thead>
+							<tr>
+								<th>Group</th>
+								<th>Access</th>
+								<th>Auto-approve reads</th>
+								{#if isAdmin && !isSystem}<th class="actions-col"></th>{/if}
+							</tr>
+						</thead>
+						<tbody>
+							{#each serviceGroups as g (g.grant_id)}
+								<tr>
+									<td>
+										<a class="link" href={`/org/groups/${g.group_id}`}>{g.group_name}</a>
+									</td>
+									<td><span class="mono">{g.access_level}</span></td>
+									<td>{g.auto_approve_reads ? 'Yes' : 'No'}</td>
+									{#if isAdmin && !isSystem}
+										<td class="actions-col">
+											<button
+												type="button"
+												class="btn small danger"
+												onclick={() => removeGroupGrant(g)}
+											>
+												Remove
+											</button>
+										</td>
+									{/if}
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+				{#if isAdmin && !isSystem}
+					{#if unassignedGroups.length > 0}
+						<div class="add-group">
+							<label class="field">
+								<span class="label">Group</span>
+								<select bind:value={newGroupId}>
+									<option value="">— Select a group —</option>
+									{#each unassignedGroups as g (g.id)}
+										<option value={g.id}>{g.name}</option>
+									{/each}
+								</select>
+							</label>
+							<label class="field">
+								<span class="label">Access</span>
+								<select bind:value={newAccessLevel}>
+									<option value="read">Read</option>
+									<option value="write">Write</option>
+									<option value="admin">Admin</option>
+								</select>
+							</label>
+							<label class="inline-field">
+								<input type="checkbox" bind:checked={newAutoApprove} />
+								<span>Auto-approve reads</span>
+							</label>
+							<button
+								type="button"
+								class="btn primary"
+								onclick={addGroupGrant}
+								disabled={!newGroupId || savingGroup}
+							>
+								{savingGroup ? 'Adding…' : 'Add group'}
+							</button>
+						</div>
+					{:else if allGroups.length === 0}
+						<p class="muted small">No groups exist yet. Create one in <a href="/org/groups" class="link">Org → Groups</a>.</p>
+					{/if}
+				{/if}
 			</div>
 		{:else if activeTab === 'credentials'}
 			<div class="card">
@@ -569,5 +729,43 @@
 	p {
 		margin: 0;
 		font-size: 0.9rem;
+	}
+	.section-head h2 {
+		margin: 0 0 0.25rem;
+		font-size: 0.95rem;
+	}
+	.section-head .small {
+		font-size: 0.8rem;
+	}
+	.small {
+		font-size: 0.8rem;
+	}
+	.link {
+		color: var(--color-primary, #6366f1);
+		text-decoration: none;
+	}
+	.link:hover {
+		text-decoration: underline;
+	}
+	.actions-col {
+		text-align: right;
+		white-space: nowrap;
+	}
+	.add-group {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: 0.75rem;
+		padding-top: 0.5rem;
+		border-top: 1px dashed var(--color-border);
+	}
+	.add-group .field {
+		min-width: 180px;
+	}
+	.inline-field {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.85rem;
 	}
 </style>

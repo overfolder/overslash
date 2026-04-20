@@ -39,6 +39,17 @@ pub struct GroupGrantDetailRow {
     pub created_at: OffsetDateTime,
 }
 
+/// Reverse view of a group grant: a group that a given service is assigned to.
+#[derive(Debug, sqlx::FromRow)]
+pub struct ServiceGroupRow {
+    pub grant_id: Uuid,
+    pub service_instance_id: Uuid,
+    pub group_id: Uuid,
+    pub group_name: String,
+    pub access_level: String,
+    pub auto_approve_reads: bool,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct IdentityGroupRow {
     pub identity_id: Uuid,
@@ -189,6 +200,69 @@ pub(crate) async fn list_grants(
          WHERE gg.group_id = $1 AND g.org_id = $2
          ORDER BY si.name",
         group_id,
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// List the groups granting access to a single service instance, with the
+/// grant metadata. Used by the service detail view to surface "who can use
+/// this service" without forcing the caller to walk groups individually.
+pub(crate) async fn list_groups_for_service(
+    pool: &PgPool,
+    org_id: Uuid,
+    service_instance_id: Uuid,
+) -> Result<Vec<ServiceGroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceGroupRow,
+        "SELECT gg.id AS grant_id,
+                gg.service_instance_id,
+                gg.group_id,
+                g.name AS group_name,
+                gg.access_level,
+                gg.auto_approve_reads
+         FROM group_grants gg
+         JOIN groups g ON g.id = gg.group_id
+         JOIN service_instances si ON si.id = gg.service_instance_id
+         WHERE gg.service_instance_id = $1
+           AND g.org_id = $2
+           AND si.org_id = $2
+         ORDER BY g.name",
+        service_instance_id,
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Batch variant: list groups for many services in a single query. Used by
+/// the services list to annotate each row with its assigned groups without
+/// incurring N+1.
+pub(crate) async fn list_groups_for_services(
+    pool: &PgPool,
+    org_id: Uuid,
+    service_instance_ids: &[Uuid],
+) -> Result<Vec<ServiceGroupRow>, sqlx::Error> {
+    if service_instance_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as!(
+        ServiceGroupRow,
+        "SELECT gg.id AS grant_id,
+                gg.service_instance_id,
+                gg.group_id,
+                g.name AS group_name,
+                gg.access_level,
+                gg.auto_approve_reads
+         FROM group_grants gg
+         JOIN groups g ON g.id = gg.group_id
+         JOIN service_instances si ON si.id = gg.service_instance_id
+         WHERE gg.service_instance_id = ANY($1)
+           AND g.org_id = $2
+           AND si.org_id = $2
+         ORDER BY g.name",
+        service_instance_ids,
         org_id,
     )
     .fetch_all(pool)

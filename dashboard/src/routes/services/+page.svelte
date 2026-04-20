@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
+	import { ApiError, session } from '$lib/session';
 	import {
 		listServices,
 		listConnections,
@@ -10,6 +10,7 @@
 		setServiceStatus
 	} from '$lib/api/services';
 	import type {
+		Identity,
 		ServiceInstanceSummary,
 		ServiceStatus,
 		ConnectionSummary
@@ -21,14 +22,18 @@
 
 	let activeTab = $state<'instances' | 'catalog'>('instances');
 
-	// Derive isAdmin from layout data
+	// Derive isAdmin + current user id from layout data
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
+	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
+	let identities = $state<Identity[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
+
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
 	let pendingDelete = $state<ServiceInstanceSummary | null>(null);
 
@@ -99,9 +104,16 @@
 		loading = true;
 		error = null;
 		try {
-			const [s, c] = await Promise.all([listServices(), listConnections()]);
+			const [s, c, ids] = await Promise.all([
+				listServices(),
+				listConnections(),
+				// Identity list is used to map owner UUIDs to display names. Soft-fail
+				// if it can't load so the services view is still usable.
+				session.get<Identity[]>('/v1/identities').catch(() => [] as Identity[])
+			]);
 			services = s;
 			connections = c;
+			identities = ids;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load services (${e.status})` : 'Failed to load services';
 		} finally {
@@ -113,6 +125,13 @@
 		if (s.connection_id && connectionIds.has(s.connection_id)) return 'connected';
 		if (s.secret_name) return 'connected';
 		return 'needs-setup';
+	}
+
+	function ownerLabel(s: ServiceInstanceSummary): string {
+		if (!s.owner_identity_id) return 'Org';
+		if (currentUserId && s.owner_identity_id === currentUserId) return 'You';
+		const ident = identityById.get(s.owner_identity_id);
+		return ident?.name ?? 'user';
 	}
 
 	async function archive(s: ServiceInstanceSummary) {
@@ -212,6 +231,7 @@
 							<th>Status</th>
 							<th>Credentials</th>
 							<th>Owner</th>
+							<th>Groups</th>
 							<th class="actions-col"></th>
 						</tr>
 					</thead>
@@ -226,19 +246,38 @@
 									<StatusBadge variant={s.template_source as 'global' | 'org' | 'user'} />
 								</td>
 								<td><StatusBadge variant={s.status} /></td>
-								<td><StatusBadge variant={credentialStatus(s)} /></td>
-								<td class="mono muted">{s.owner_identity_id ? 'user' : 'org'}</td>
+								<td>
+									{#if s.is_system}
+										<StatusBadge variant="built-in" />
+									{:else}
+										<StatusBadge variant={credentialStatus(s)} />
+									{/if}
+								</td>
+								<td class="muted" title={s.owner_identity_id ?? ''}>{ownerLabel(s)}</td>
+								<td>
+									{#if s.groups && s.groups.length > 0}
+										<span class="group-pills">
+											{#each s.groups as g (g.grant_id)}
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.group_name}</span>
+											{/each}
+										</span>
+									{:else}
+										<span class="muted">—</span>
+									{/if}
+								</td>
 								<td class="actions-col">
-									<button type="button" class="btn small" onclick={() => archive(s)}>
-										{s.status === 'archived' ? 'Restore' : 'Archive'}
-									</button>
-									<button
-										type="button"
-										class="btn small danger"
-										onclick={() => (pendingDelete = s)}
-									>
-										Delete
-									</button>
+									{#if !s.is_system}
+										<button type="button" class="btn small" onclick={() => archive(s)}>
+											{s.status === 'archived' ? 'Restore' : 'Archive'}
+										</button>
+										<button
+											type="button"
+											class="btn small danger"
+											onclick={() => (pendingDelete = s)}
+										>
+											Delete
+										</button>
+									{/if}
 								</td>
 							</tr>
 						{/each}
@@ -409,5 +448,20 @@
 	}
 	.actions-col .btn + .btn {
 		margin-left: 0.35rem;
+	}
+	.group-pills {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+	}
+	.group-pill {
+		display: inline-block;
+		padding: 0.1rem 0.5rem;
+		border-radius: 999px;
+		background: var(--color-bg, #f4f4f5);
+		border: 1px solid var(--color-border, #e5e7eb);
+		color: var(--color-text-muted, #6b7280);
+		font-size: 0.72rem;
+		line-height: 1.4;
 	}
 </style>

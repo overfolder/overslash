@@ -3,6 +3,7 @@ info:
   title: Gmail
   description: Gmail API — send, read, search, and manage email messages and labels.
   key: gmail
+  category: Communication
 servers:
   - url: https://gmail.googleapis.com
 components:

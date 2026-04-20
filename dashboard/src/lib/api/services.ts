@@ -13,6 +13,7 @@ import type {
 	InitiateConnectionRequest,
 	InitiateConnectionResponse,
 	OAuthProviderInfo,
+	ServiceGroupRef,
 	ServiceInstanceDetail,
 	ServiceInstanceSummary,
 	ServiceStatus,
@@ -88,6 +89,9 @@ export const deleteService = (id: string) =>
 
 export const getServiceActions = (name: string, signal?: AbortSignal) =>
 	session.get<ActionSummary[]>(`/v1/services/${encodeURIComponent(name)}/actions`, signal);
+
+export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
+	session.get<ServiceGroupRef[]>(`/v1/services/${serviceId}/groups`, signal);
 
 // -- OAuth connections --
 

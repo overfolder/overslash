@@ -3,7 +3,7 @@ info:
   title: Overslash Platform
   description: Administrative access to the Overslash platform
   key: overslash
-  category: platform
+  category: Platform
 platform_actions:
   manage_members:
     description: "Manage org member roles and group assignments"

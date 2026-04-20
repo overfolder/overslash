@@ -10,7 +10,8 @@
 use uuid::Uuid;
 
 use crate::repos::group::{
-    self, GroupGrantDetailRow, GroupGrantRow, GroupRow, IdentityGroupRow, UserCeiling,
+    self, GroupGrantDetailRow, GroupGrantRow, GroupRow, IdentityGroupRow, ServiceGroupRow,
+    UserCeiling,
 };
 use crate::scopes::OrgScope;
 
@@ -109,6 +110,24 @@ impl OrgScope {
         group_id: Uuid,
     ) -> Result<bool, sqlx::Error> {
         group::remove_grant(self.db(), self.org_id(), grant_id, group_id).await
+    }
+
+    /// List the groups that grant access to a single service instance. The
+    /// service instance and groups are bounded to this org.
+    pub async fn list_groups_for_service(
+        &self,
+        service_instance_id: Uuid,
+    ) -> Result<Vec<ServiceGroupRow>, sqlx::Error> {
+        group::list_groups_for_service(self.db(), self.org_id(), service_instance_id).await
+    }
+
+    /// Batch list of group grants keyed by service instance id. Used by the
+    /// services list to annotate each row without N+1 queries.
+    pub async fn list_groups_for_services(
+        &self,
+        service_instance_ids: &[Uuid],
+    ) -> Result<Vec<ServiceGroupRow>, sqlx::Error> {
+        group::list_groups_for_services(self.db(), self.org_id(), service_instance_ids).await
     }
 
     // ── Identity ↔ Group membership ──────────────────────────────────
