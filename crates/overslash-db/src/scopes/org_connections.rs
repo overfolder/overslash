@@ -31,6 +31,18 @@ impl OrgScope {
         connection::get_by_id(self.db(), self.org_id(), id).await
     }
 
+    /// Batch fetch connections by ids, indexed by id. Returns only connections
+    /// that belong to this org — foreign ids are silently dropped. Used by
+    /// the services list to avoid N+1 lookups while classifying credential
+    /// health.
+    pub async fn get_connections_by_ids(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, ConnectionRow>, sqlx::Error> {
+        let rows = connection::get_by_ids(self.db(), self.org_id(), ids).await?;
+        Ok(rows.into_iter().map(|r| (r.id, r)).collect())
+    }
+
     /// Update the encrypted access/refresh token pair for a connection in
     /// this org. Used by the OAuth refresh path. No-ops silently if the id
     /// belongs to another tenant.
@@ -50,6 +62,41 @@ impl OrgScope {
             token_expires_at,
         )
         .await
+    }
+
+    /// Update tokens *and* scopes in place. Used by the incremental scope
+    /// upgrade callback — keeps the existing `connection_id` so services
+    /// bound to it stay bound.
+    pub async fn update_connection_tokens_and_scopes(
+        &self,
+        id: Uuid,
+        encrypted_access_token: &[u8],
+        encrypted_refresh_token: Option<&[u8]>,
+        token_expires_at: Option<time::OffsetDateTime>,
+        scopes: &[String],
+        account_email: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        connection::update_tokens_and_scopes(
+            self.db(),
+            self.org_id(),
+            id,
+            encrypted_access_token,
+            encrypted_refresh_token,
+            token_expires_at,
+            scopes,
+            account_email,
+        )
+        .await
+    }
+
+    /// For each given connection id, return the template keys of active
+    /// service instances currently bound to it. Scoped to this org. Used by
+    /// the dashboard's existing-connection picker.
+    pub async fn connection_usage_by_template(
+        &self,
+        connection_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+        connection::usage_by_template(self.db(), self.org_id(), connection_ids).await
     }
 
     /// Delete a connection by id, scoped to this org. Returns `false` if the

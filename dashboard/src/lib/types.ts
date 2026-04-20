@@ -219,6 +219,10 @@ export interface ServiceGroupRef {
   auto_approve_reads: boolean;
 }
 
+/** Derived from the bound connection's scopes vs. the template's per-action
+ *  required_scopes. `needs_reconnect` is the "no action at all will work" state. */
+export type CredentialsStatus = 'ok' | 'partially_degraded' | 'needs_reconnect';
+
 export interface ServiceInstanceSummary {
   id: string;
   name: string;
@@ -230,6 +234,7 @@ export interface ServiceInstanceSummary {
   connection_id?: string;
   secret_name?: string;
   groups?: ServiceGroupRef[];
+  credentials_status?: CredentialsStatus;
 }
 
 export interface ServiceInstanceDetail extends ServiceInstanceSummary {
@@ -345,6 +350,8 @@ export interface ConnectionSummary {
   id: string;
   provider_key: string;
   account_email: string | null;
+  scopes: string[];
+  used_by_service_templates: string[];
   is_default: boolean;
   created_at: string;
 }

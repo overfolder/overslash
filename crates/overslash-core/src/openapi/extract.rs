@@ -303,6 +303,32 @@ pub(super) fn extract_http_action(
     }
     collect_body_parameters(op.get("requestBody"), &mut params);
 
+    // Per-action OAuth scopes: look at the operation's `security` clause.
+    // For each security requirement object pick the first non-empty scope
+    // list — matches the OpenAPI 3.1 spec's "requirements are OR-ed" model
+    // for the common case of a single `oauth2` security scheme.
+    let required_scopes = op
+        .get("security")
+        .and_then(Value::as_array)
+        .and_then(|reqs| {
+            reqs.iter().find_map(|req| {
+                req.as_object()?.values().find_map(|scopes| {
+                    let arr = scopes.as_array()?;
+                    if arr.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            arr.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                })
+            })
+        })
+        .unwrap_or_default();
+
     sink.insert(
         action_key,
         ServiceAction {
@@ -313,6 +339,7 @@ pub(super) fn extract_http_action(
             response_type,
             params,
             scope_param,
+            required_scopes,
         },
     );
 
@@ -356,6 +383,7 @@ pub(super) fn extract_platform_action(
             .get("x-overslash-scope_param")
             .and_then(Value::as_str)
             .map(str::to_string),
+        required_scopes: Vec::new(),
     })
 }
 

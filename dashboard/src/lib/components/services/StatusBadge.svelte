@@ -6,6 +6,8 @@
 		| 'connected'
 		| 'needs-setup'
 		| 'built-in'
+		| 'needs-reconnect'
+		| 'partially-degraded'
 		| 'global'
 		| 'org'
 		| 'user';
@@ -34,10 +36,16 @@
 		border-color: rgba(34, 197, 94, 0.3);
 	}
 	.draft,
-	.needs-setup {
+	.needs-setup,
+	.partially-degraded {
 		background: rgba(234, 179, 8, 0.14);
 		color: #a16207;
 		border-color: rgba(234, 179, 8, 0.35);
+	}
+	.needs-reconnect {
+		background: rgba(220, 38, 38, 0.1);
+		color: #b91c1c;
+		border-color: rgba(220, 38, 38, 0.35);
 	}
 	.archived,
 	.built-in {

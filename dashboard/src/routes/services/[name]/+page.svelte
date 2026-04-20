@@ -12,7 +12,8 @@
 		initiateOAuth,
 		updateService,
 		setServiceStatus,
-		deleteService
+		deleteService,
+		upgradeConnectionScopes
 	} from '$lib/api/services';
 	import { groupsApi, type Group } from '$lib/api/groups';
 	import type {
@@ -84,6 +85,23 @@
 		const cid = svc?.connection_id;
 		return cid ? (connections.find((c) => c.id === cid) ?? null) : null;
 	});
+
+	function connectionLabel(c: ConnectionSummary): string {
+		if (c.account_email) return c.account_email;
+		return `Unlabeled (${c.id.slice(0, 8)}…)`;
+	}
+
+	// The template's superset scopes — what it *might* want at full power.
+	// If the connection's granted scopes don't cover this set, the dashboard
+	// prompts for an incremental upgrade.
+	const templateScopes = $derived<string[]>(oauthAuth?.scopes ?? []);
+	const missingScopes = $derived.by<string[]>(() => {
+		if (!currentConnection || templateScopes.length === 0) return [];
+		const granted = new Set(currentConnection.scopes);
+		return templateScopes.filter((s: string) => !granted.has(s));
+	});
+	let upgrading = $state(false);
+	let upgradeAbort: AbortController | null = null;
 
 	async function load() {
 		// Cancel any in-flight load from a previous service navigation so
@@ -240,6 +258,63 @@
 		}
 	}
 
+	async function startScopeUpgrade() {
+		if (!currentConnection || missingScopes.length === 0) return;
+		// Snapshot the id once so the polling loop stays stable even if the
+		// user navigates and `currentConnection` re-derives to null mid-flight.
+		const connectionIdAtStart = currentConnection.id;
+		upgradeAbort?.abort();
+		const ctrl = new AbortController();
+		upgradeAbort = ctrl;
+		upgrading = true;
+		error = null;
+		try {
+			const beforeScopes = new Set(currentConnection.scopes);
+			const resp = await upgradeConnectionScopes(
+				connectionIdAtStart,
+				missingScopes,
+				ctrl.signal
+			);
+			if (ctrl.signal.aborted) return;
+			const popup = window.open(resp.auth_url, 'oss_oauth_upgrade', 'width=520,height=680');
+			if (!popup) {
+				error = 'Pop-up blocked. Allow pop-ups and try again.';
+				return;
+			}
+			const deadline = Date.now() + 90_000;
+			while (Date.now() < deadline) {
+				if (ctrl.signal.aborted) {
+					try { popup.close(); } catch { /* ignore */ }
+					return;
+				}
+				await new Promise((r) => setTimeout(r, 1500));
+				if (ctrl.signal.aborted) return;
+				try {
+					connections = await listConnections(ctrl.signal);
+				} catch {
+					if (ctrl.signal.aborted) return;
+				}
+				const updated = connections.find((c) => c.id === connectionIdAtStart);
+				if (updated && updated.scopes.some((s) => !beforeScopes.has(s))) {
+					try { popup.close(); } catch { /* ignore */ }
+					return;
+				}
+				if (popup.closed) break;
+			}
+			if (!ctrl.signal.aborted) {
+				error = 'Scope upgrade did not complete in time.';
+			}
+		} catch (e) {
+			if (ctrl.signal.aborted) return;
+			error = e instanceof ApiError ? `Upgrade failed (${e.status})` : 'Upgrade failed';
+		} finally {
+			if (upgradeAbort === ctrl) {
+				upgradeAbort = null;
+				upgrading = false;
+			}
+		}
+	}
+
 	async function doDelete() {
 		if (!svc) return;
 		confirmDelete = false;
@@ -321,6 +396,11 @@
 					<span class="mono">{svc.template_key}</span>
 					<StatusBadge variant={svc.template_source as 'global' | 'org' | 'user'} />
 					<StatusBadge variant={svc.status} />
+					{#if svc.credentials_status === 'needs_reconnect'}
+						<StatusBadge variant="needs-reconnect" label="needs reconnection" />
+					{:else if svc.credentials_status === 'partially_degraded'}
+						<StatusBadge variant="partially-degraded" label="partial scopes" />
+					{/if}
 				</div>
 			</div>
 			<div class="head-actions">
@@ -482,17 +562,51 @@
 						<span class="label">Status</span>
 						{#if currentConnection}
 							<StatusBadge variant="connected" />
-							<span class="muted">{currentConnection.account_email ?? currentConnection.id}</span>
+							<span class="muted">{connectionLabel(currentConnection)}</span>
 						{:else}
 							<StatusBadge variant="needs-setup" />
 						{/if}
 					</div>
+					{#if currentConnection && currentConnection.scopes.length > 0}
+						<div class="row scope-row">
+							<span class="label">Scopes</span>
+							<div class="scope-chips">
+								{#each currentConnection.scopes as s}
+									<span class="scope-chip">{s}</span>
+								{/each}
+							</div>
+						</div>
+					{/if}
+					{#if currentConnection && missingScopes.length > 0}
+						<div class="scope-warning">
+							<div>
+								<strong>Missing scopes.</strong> This connection doesn't cover
+								everything the template declares:
+								<ul>
+									{#each missingScopes as s}
+										<li class="mono small">{s}</li>
+									{/each}
+								</ul>
+								Actions that need these scopes will fail until the connection
+								is upgraded — the provider will skip the consent screen for
+								scopes you've already granted.
+							</div>
+							<button
+								type="button"
+								class="btn"
+								onclick={startScopeUpgrade}
+								disabled={upgrading}
+							>
+								{upgrading ? 'Waiting…' : 'Request additional access'}
+							</button>
+						</div>
+					{/if}
 					<div class="field">
 						<span class="label">Connection</span>
 						<select bind:value={editConnection}>
 							<option value="">— None —</option>
 							{#each matchingConnections as c}
-								<option value={c.id}>{c.account_email ?? c.id}</option>
+								<option value={c.id}>{connectionLabel(c)}</option>
 							{/each}
 						</select>
 					</div>
@@ -738,7 +852,7 @@
 		font-size: 0.8rem;
 	}
 	.small {
-		font-size: 0.8rem;
+		font-size: 0.75rem;
 	}
 	.link {
 		color: var(--color-primary, #6366f1);
@@ -767,5 +881,39 @@
 		align-items: center;
 		gap: 0.4rem;
 		font-size: 0.85rem;
+	}
+	.scope-row {
+		align-items: flex-start;
+	}
+	.scope-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem;
+	}
+	.scope-chip {
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		border-radius: 999px;
+		padding: 0.1rem 0.55rem;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		color: var(--color-text-muted);
+	}
+	.scope-warning {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 1rem;
+		background: rgba(245, 158, 11, 0.08);
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		border-radius: 8px;
+		padding: 0.75rem 0.9rem;
+		margin: 0.5rem 0;
+		font-size: 0.85rem;
+		color: #92400e;
+	}
+	.scope-warning ul {
+		margin: 0.3rem 0;
+		padding-left: 1.2rem;
 	}
 </style>

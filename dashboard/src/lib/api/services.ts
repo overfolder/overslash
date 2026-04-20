@@ -129,6 +129,29 @@ export const initiateOAuth = (req: InitiateConnectionRequest, signal?: AbortSign
 
 export const deleteConnection = (id: string) => session.delete<void>(`/v1/connections/${id}`);
 
+export interface UpgradeScopesResponse {
+	auth_url: string;
+	state: string;
+	connection_id: string;
+	requested_scopes: string[];
+}
+
+/**
+ * Start an incremental-scope OAuth flow for an existing connection. The
+ * returned auth URL re-runs OAuth and the callback updates the connection
+ * row in place — services bound to this connection stay bound.
+ */
+export const upgradeConnectionScopes = (
+	connectionId: string,
+	scopes: string[],
+	signal?: AbortSignal
+) =>
+	session.post<UpgradeScopesResponse>(
+		`/v1/connections/${connectionId}/upgrade_scopes`,
+		{ scopes },
+		signal
+	);
+
 // -- OAuth providers (read-only catalog) --
 
 export const listOAuthProviders = (signal?: AbortSignal) =>

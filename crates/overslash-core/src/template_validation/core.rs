@@ -508,6 +508,7 @@ mod tests {
                         response_type: None,
                         params: HashMap::new(),
                         scope_param: None,
+                        required_scopes: Vec::new(),
                     },
                 );
                 m
@@ -789,6 +790,7 @@ mod tests {
                 response_type: None,
                 params: HashMap::new(),
                 scope_param: None,
+                required_scopes: Vec::new(),
             },
         );
         let r = run(&d);

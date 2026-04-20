@@ -115,6 +115,56 @@
 			? connections.filter((c) => c.provider_key === oauthProvider.provider)
 			: connections
 	);
+	// Dashboard-side reuse heuristic: prefer a connection that is (1) not
+	// already bound to a service from this template, (2) already carries the
+	// scopes the template wants, (3) most recently created. When everything's
+	// already bound we still offer the most recent one — the user can always
+	// flip to "Connect new" if they want a fresh account.
+	function rankConnection(c: ConnectionSummary, tplKey: string, wantedScopes: string[]): number {
+		const alreadyUsed = c.used_by_service_templates.includes(tplKey) ? 0 : 1;
+		const granted = new Set(c.scopes);
+		const covered = wantedScopes.every((s) => granted.has(s)) ? 1 : 0;
+		return alreadyUsed * 10 + covered * 5;
+	}
+	const preferredConnection = $derived.by<ConnectionSummary | null>(() => {
+		if (!oauthProvider || !selectedDetail) return null;
+		const tplKey = selectedDetail.key;
+		const wanted: string[] = oauthProvider.scopes ?? [];
+		const ranked = [...matchingConnections].sort((a, b) => {
+			const rb = rankConnection(b, tplKey, wanted);
+			const ra = rankConnection(a, tplKey, wanted);
+			if (rb !== ra) return rb - ra;
+			// tiebreak: most recently created first
+			return b.created_at.localeCompare(a.created_at);
+		});
+		return ranked[0] ?? null;
+	});
+	type ConnectionChoice = 'existing' | 'new';
+	let connectionChoice = $state<ConnectionChoice>('new');
+	function connectionLabel(c: ConnectionSummary): string {
+		if (c.account_email) return c.account_email;
+		return `Unlabeled (${c.id.slice(0, 8)}…)`;
+	}
+	function connectionUsageHint(c: ConnectionSummary, tplKey: string): string {
+		// Flag only when another active service from *this same template* already
+		// uses this connection — that's the case where reusing it would create
+		// a duplicate. Cross-template reuse (Drive + Calendar on the same Google
+		// connection) is the whole point of this feature, so stay quiet there.
+		return c.used_by_service_templates.includes(tplKey) ? '(already connected)' : '';
+	}
+	// When we enter the configure step with matching connections available,
+	// default to the existing-connection path and pre-select the best match.
+	$effect(() => {
+		if (step !== 'configure' || !oauthProvider) return;
+		if (matchingConnections.length > 0) {
+			connectionChoice = 'existing';
+			if (!connectionId && preferredConnection) {
+				connectionId = preferredConnection.id;
+			}
+		} else {
+			connectionChoice = 'new';
+		}
+	});
 	const providerInfo = $derived(
 		oauthProvider ? providers.find((p) => p.key === oauthProvider.provider) ?? null : null
 	);
@@ -407,52 +457,94 @@
 			{#if usesOAuth}
 				<div class="field">
 					<span class="label">OAuth credential ({oauthProvider?.provider})</span>
+
 					{#if matchingConnections.length}
-						<select bind:value={connectionId}>
-							<option value="">— Select existing connection —</option>
-							{#each matchingConnections as c}
-								<option value={c.id}>{c.account_email ?? c.id}</option>
-							{/each}
-						</select>
-					{:else}
-						<p class="muted">No existing connections for this provider.</p>
+						<label class="radio-row">
+							<input
+								type="radio"
+								name="connection-choice"
+								value="existing"
+								checked={connectionChoice === 'existing'}
+								onchange={() => {
+									connectionChoice = 'existing';
+									if (!connectionId && preferredConnection) {
+										connectionId = preferredConnection.id;
+									}
+								}}
+							/>
+							<span>Use an existing connection</span>
+						</label>
+
+						{#if connectionChoice === 'existing'}
+							<select bind:value={connectionId} class="connection-select">
+								{#each matchingConnections as c}
+									<option value={c.id}>
+										{connectionLabel(c)}
+										{connectionUsageHint(c, selectedDetail?.key ?? '')}
+									</option>
+								{/each}
+							</select>
+							<small class="hint">
+								Connections are labelled with the account's email when the
+								provider supplies one. Reusing a connection avoids a fresh
+								OAuth flow.
+							</small>
+						{/if}
+
+						<label class="radio-row">
+							<input
+								type="radio"
+								name="connection-choice"
+								value="new"
+								checked={connectionChoice === 'new'}
+								onchange={() => {
+									connectionChoice = 'new';
+									connectionId = '';
+								}}
+							/>
+							<span>Connect a new account</span>
+						</label>
 					{/if}
 
-					{#if providerInfo?.has_org_credential}
-						<p class="cred-source">
-							Using <strong>org credentials</strong> configured for {providerInfo.display_name}.
-						</p>
-					{:else if providerInfo?.has_system_credential}
-						<p class="cred-source">
-							Using <strong>Overslash system credentials</strong>.
-						</p>
-					{:else if !providerInfo?.has_user_byoc_credential}
-						<p class="cred-source">
-							<span class="warn">
-								No credentials configured for this provider — paste your own below to continue.
-							</span>
-						</p>
+					{#if connectionChoice === 'new' || matchingConnections.length === 0}
+						<div class="new-connection">
+							{#if providerInfo?.has_org_credential}
+								<p class="cred-source">
+									Using <strong>org credentials</strong> configured for {providerInfo.display_name}.
+								</p>
+							{:else if providerInfo?.has_system_credential}
+								<p class="cred-source">
+									Using <strong>Overslash system credentials</strong>.
+								</p>
+							{:else if !providerInfo?.has_user_byoc_credential}
+								<p class="cred-source">
+									<span class="warn">
+										No credentials configured for this provider — paste your own below to continue.
+									</span>
+								</p>
+							{/if}
+
+							<ByocSection
+								provider={oauthProvider.provider}
+								providerDisplayName={providerInfo?.display_name ?? oauthProvider.provider}
+								required={byocRequired}
+								defaultExpanded={byocRequired}
+								disabled={connectingOAuth}
+								alreadyConfigured={providerInfo?.has_user_byoc_credential ?? false}
+								bind:clientId={byocClientId}
+								bind:clientSecret={byocClientSecret}
+							/>
+
+							<button
+								type="button"
+								class="btn"
+								onclick={startOAuth}
+								disabled={connectingOAuth}
+							>
+								{connectingOAuth ? 'Waiting for authorization…' : '+ Connect new'}
+							</button>
+						</div>
 					{/if}
-
-					<ByocSection
-						provider={oauthProvider.provider}
-						providerDisplayName={providerInfo?.display_name ?? oauthProvider.provider}
-						required={byocRequired}
-						defaultExpanded={byocRequired}
-						disabled={connectingOAuth}
-						alreadyConfigured={providerInfo?.has_user_byoc_credential ?? false}
-						bind:clientId={byocClientId}
-						bind:clientSecret={byocClientSecret}
-					/>
-
-					<button
-						type="button"
-						class="btn"
-						onclick={startOAuth}
-						disabled={connectingOAuth}
-					>
-						{connectingOAuth ? 'Waiting for authorization…' : '+ Connect new'}
-					</button>
 				</div>
 			{/if}
 
@@ -659,6 +751,29 @@
 	}
 	.cred-source .warn {
 		color: #b45309;
+	}
+	.radio-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.3rem 0;
+		font-size: 0.9rem;
+		cursor: pointer;
+	}
+	.connection-select {
+		margin: 0.2rem 0 0.25rem 1.55rem;
+	}
+	.hint {
+		display: block;
+		margin: 0 0 0.3rem 1.55rem;
+		color: var(--color-text-muted);
+		font-size: 0.72rem;
+	}
+	.new-connection {
+		margin-left: 1.55rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
 	}
 	.actions {
 		display: flex;
