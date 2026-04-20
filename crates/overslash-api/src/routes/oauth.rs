@@ -672,9 +672,13 @@ async fn consent_finish(
     let session_claims = session::extract_session(&state, &headers)
         .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
 
+    // Peek at the pending record rather than taking it — a transient DB
+    // failure during the lookups below shouldn't burn the authorization
+    // and force the user to restart. We only call `.take()` once all
+    // read-only checks pass and we're about to mutate.
     let pending = state
         .pending_authorize_store
-        .take(&request_id)
+        .get(&request_id)
         .ok_or_else(|| AppError::BadRequest("authorization request expired".into()))?;
 
     if pending.user_identity_id != session_claims.sub {
