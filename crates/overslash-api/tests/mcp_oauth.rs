@@ -304,7 +304,7 @@ async fn authorize_full_flow_issues_code_and_token() {
         .unwrap()
         .to_string();
     assert!(
-        consent_loc.starts_with("/oauth/consent"),
+        consent_loc.contains("/oauth/consent"),
         "first authorize redirects to consent, got: {consent_loc}"
     );
     let loc =
@@ -673,8 +673,8 @@ async fn authorize_first_time_redirects_to_consent() {
     assert_eq!(resp.status(), reqwest::StatusCode::SEE_OTHER);
     let loc = resp.headers()[reqwest::header::LOCATION].to_str().unwrap();
     assert!(
-        loc.starts_with("/oauth/consent?request_id="),
-        "first authorize must redirect to consent, got: {loc}"
+        loc.contains("/oauth/consent?request_id="),
+        "first authorize must redirect to dashboard consent, got: {loc}"
     );
 }
 
@@ -768,24 +768,24 @@ async fn consent_finish_rejects_invalid_request_id() {
         .to_string();
 
     let resp = client
-        .post(format!("{base}/oauth/consent/finish"))
+        .post(format!("{base}/v1/oauth/consent/forged-or-expired/finish"))
         .header("cookie", session_cookie)
-        .form(&[
-            ("request_id", "forged-or-expired"),
-            ("mode", "new"),
-            ("name", "evil"),
-        ])
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "mode": "new",
+                "agent_name": "evil",
+                "inherit_permissions": false,
+                "group_names": [],
+            })
+            .to_string(),
+        )
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
-    // Body is the HTML error page — just confirm we got a content-type back.
-    let ct = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    assert!(ct.starts_with("text/html"), "expected HTML error page");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].is_string(), "expected JSON error body");
 }
 
 #[tokio::test]
@@ -868,4 +868,267 @@ async fn revoke_returns_200_for_unknown_token() {
         .unwrap();
     // RFC 7009: always 200 on success, including for unknown tokens.
     assert_eq!(resp.status(), 200);
+}
+
+// ---------------------------------------------------------------------------
+// Consent JSON API + defaults + reauth
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn consent_new_defaults_inherit_permissions_false() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let redirect = "http://127.0.0.1:9991/callback";
+    let client_id = register_client(&client, &base, redirect).await;
+    let (_, challenge) = pkce();
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let r = no_redirect
+        .get(&url)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc = r.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // Finish via the helper (which posts inherit_permissions=false).
+    let _ = common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "locked-agent")
+        .await;
+
+    // The enrolled agent should have inherit_permissions=false — it's
+    // user-granted, not inherited. We check via the /v1/identities listing
+    // which includes the field.
+    let list = client
+        .get(format!("{base}/v1/identities"))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 200);
+    let rows: Value = list.json().await.unwrap();
+    let agents = rows.as_array().expect("identities list is an array");
+    let agent = agents
+        .iter()
+        .find(|i| i["name"].as_str() == Some("locked-agent"))
+        .expect("newly-enrolled agent is in the identities list");
+    assert_eq!(
+        agent["kind"].as_str(),
+        Some("agent"),
+        "enrolled identity must be an agent"
+    );
+    assert_eq!(
+        agent["inherit_permissions"].as_bool(),
+        Some(false),
+        "MCP enrollment must default to inherit_permissions=false"
+    );
+}
+
+#[tokio::test]
+async fn consent_context_reports_reauth_for_similar_reregistered_client() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let redirect = "http://127.0.0.1:9992/callback";
+    let (_, challenge) = pkce();
+
+    // Register the first client with a distinctive name + software_id —
+    // these are what the reauth matcher joins on.
+    let body = client
+        .post(format!("{base}/oauth/register"))
+        .json(&json!({
+            "client_name": "Claude Desktop",
+            "software_id": "com.anthropic.claude",
+            "software_version": "0.7.3",
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let client_id_1 = body["client_id"].as_str().unwrap().to_string();
+
+    // Sign in.
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url1 = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id_1),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let r1 = no_redirect
+        .get(&url1)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc = r1.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let _ =
+        common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "claude-desktop")
+            .await;
+
+    // Re-register — same client_name + software_id, different client_id
+    // (this is what happens when a client loses its persisted DCR config).
+    let body2 = client
+        .post(format!("{base}/oauth/register"))
+        .json(&json!({
+            "client_name": "Claude Desktop",
+            "software_id": "com.anthropic.claude",
+            "software_version": "0.7.4",
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let client_id_2 = body2["client_id"].as_str().unwrap().to_string();
+    assert_ne!(
+        client_id_1, client_id_2,
+        "DCR must issue distinct client_ids"
+    );
+
+    // Authorize with the new client_id → dashboard redirect with a request_id.
+    let url2 = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id_2),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let r2 = no_redirect
+        .get(&url2)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), reqwest::StatusCode::SEE_OTHER);
+    let consent_loc2 = r2.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let request_id = consent_loc2
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .unwrap();
+    let request_id = urlencoding::decode(request_id).unwrap().into_owned();
+
+    // GET the consent context — should report mode=reauth with the prior agent.
+    let ctx: Value = client
+        .get(format!(
+            "{base}/v1/oauth/consent/{}",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        ctx["mode"].as_str(),
+        Some("reauth"),
+        "re-registering the same Claude Desktop must be recognised as reauth: {ctx}"
+    );
+    assert_eq!(
+        ctx["reauth_target"]["agent_name"].as_str(),
+        Some("claude-desktop"),
+        "reauth target must be the previously-enrolled agent: {ctx}"
+    );
+
+    // Finish as reauth → server should re-resolve the similar client
+    // rather than trust a client-supplied agent_id.
+    let finish: Value = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        .body(json!({ "mode": "reauth" }).to_string())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let redirect_uri = finish["redirect_uri"]
+        .as_str()
+        .expect("reauth finish returns redirect_uri")
+        .to_string();
+    assert!(
+        redirect_uri.starts_with(redirect) && redirect_uri.contains("code="),
+        "reauth must complete the OAuth flow with an auth code: {redirect_uri}"
+    );
+
+    // And the agents list should STILL only have one "claude-desktop" — we
+    // rebound, not re-created.
+    let list: Value = client
+        .get(format!("{base}/v1/identities"))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let count = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["name"].as_str() == Some("claude-desktop") && i["kind"] == "agent")
+        .count();
+    assert_eq!(count, 1, "reauth must not create a second agent");
 }

@@ -1067,45 +1067,53 @@ pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
-/// Submit the MCP OAuth consent form with mode=new to enroll a fresh agent.
-/// Returns the final redirect Location (the MCP client's `redirect_uri` with
-/// `?code=…`), which is the value tests would otherwise read directly from
-/// `/oauth/authorize` pre-consent.
+/// Submit the MCP OAuth consent JSON endpoint with mode=new to enroll a
+/// fresh agent. Returns the `redirect_uri` (the MCP client's `redirect_uri`
+/// with `?code=…`) that the dashboard would forward the browser to.
 pub async fn finish_oauth_consent_new(
     base: &str,
     consent_redirect_location: &str,
     session_cookie: &str,
     agent_name: &str,
 ) -> String {
+    // The authorize redirect now points at the dashboard
+    // (`<dashboard>/oauth/consent?request_id=…`), but we only care about
+    // the `request_id` parameter.
     let request_id = consent_redirect_location
         .split(&['?', '&'][..])
         .find_map(|p| p.strip_prefix("request_id="))
         .expect("consent redirect missing request_id");
     let request_id = urlencoding::decode(request_id).unwrap().into_owned();
 
-    let no_redirect = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let resp = no_redirect
-        .post(format!("{base}/oauth/consent/finish"))
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id)
+        ))
         .header("cookie", session_cookie)
-        .form(&[
-            ("request_id", request_id.as_str()),
-            ("mode", "new"),
-            ("name", agent_name),
-        ])
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "mode": "new",
+                "agent_name": agent_name,
+                "inherit_permissions": false,
+                "group_names": [],
+            })
+            .to_string(),
+        )
         .send()
         .await
         .unwrap();
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::SEE_OTHER,
-        "consent finish must redirect to client's redirect_uri"
+        reqwest::StatusCode::OK,
+        "consent finish must return 200 with redirect_uri"
     );
-    resp.headers()[reqwest::header::LOCATION]
-        .to_str()
-        .unwrap()
+    let body: serde_json::Value = resp.json().await.unwrap();
+    body["redirect_uri"]
+        .as_str()
+        .expect("redirect_uri missing")
         .to_string()
 }
 

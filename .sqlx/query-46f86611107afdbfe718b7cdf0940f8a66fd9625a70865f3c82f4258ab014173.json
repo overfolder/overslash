@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id            AS \"id!\",\n                  c.client_id     AS \"client_id!\",\n                  c.client_name,\n                  c.redirect_uris AS \"redirect_uris!\",\n                  c.software_id,\n                  c.software_version,\n                  c.created_at    AS \"created_at!\",\n                  c.last_seen_at,\n                  c.created_ip,\n                  c.created_user_agent,\n                  c.is_revoked    AS \"is_revoked!\",\n                  b.agent_identity_id AS \"agent_identity_id!\",\n                  b.updated_at        AS \"binding_updated_at!\"\n             FROM oauth_mcp_clients c\n             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id\n            WHERE b.user_identity_id = $1\n         ORDER BY b.updated_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "redirect_uris!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "software_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "software_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_ip",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_user_agent",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_revoked!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "agent_identity_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "binding_updated_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "46f86611107afdbfe718b7cdf0940f8a66fd9625a70865f3c82f4258ab014173"
+}

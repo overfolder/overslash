@@ -69,6 +69,85 @@ pub async fn get_by_client_id(
     .await
 }
 
+#[derive(Debug)]
+pub struct UserBoundClient {
+    pub client: OauthMcpClientRow,
+    pub agent_identity_id: Uuid,
+    pub binding_updated_at: OffsetDateTime,
+}
+
+// List clients that are bound to this user via `mcp_client_agent_bindings`.
+// Unlike `list_all` (admin-only), this filters to the caller's own clients
+// so the dashboard can surface a per-user MCP Clients section without
+// requiring admin privileges.
+pub async fn list_bound_to_user(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+) -> Result<Vec<UserBoundClient>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT c.id            AS "id!",
+                  c.client_id     AS "client_id!",
+                  c.client_name,
+                  c.redirect_uris AS "redirect_uris!",
+                  c.software_id,
+                  c.software_version,
+                  c.created_at    AS "created_at!",
+                  c.last_seen_at,
+                  c.created_ip,
+                  c.created_user_agent,
+                  c.is_revoked    AS "is_revoked!",
+                  b.agent_identity_id AS "agent_identity_id!",
+                  b.updated_at        AS "binding_updated_at!"
+             FROM oauth_mcp_clients c
+             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id
+            WHERE b.user_identity_id = $1
+         ORDER BY b.updated_at DESC"#,
+        user_identity_id,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| UserBoundClient {
+            client: OauthMcpClientRow {
+                id: r.id,
+                client_id: r.client_id,
+                client_name: r.client_name,
+                redirect_uris: r.redirect_uris,
+                software_id: r.software_id,
+                software_version: r.software_version,
+                created_at: r.created_at,
+                last_seen_at: r.last_seen_at,
+                created_ip: r.created_ip,
+                created_user_agent: r.created_user_agent,
+                is_revoked: r.is_revoked,
+            },
+            agent_identity_id: r.agent_identity_id,
+            binding_updated_at: r.binding_updated_at,
+        })
+        .collect())
+}
+
+// Does this user own a binding to this client? Used to authorize the
+// user-scoped revoke endpoint — only clients the caller has enrolled can
+// be revoked by that caller.
+pub async fn user_has_binding(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+    client_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT 1 AS one FROM mcp_client_agent_bindings
+          WHERE user_identity_id = $1 AND client_id = $2 LIMIT 1",
+        user_identity_id,
+        client_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn list_all(pool: &PgPool) -> Result<Vec<OauthMcpClientRow>, sqlx::Error> {
     sqlx::query_as!(
         OauthMcpClientRow,
@@ -100,4 +179,65 @@ pub async fn revoke(pool: &PgPool, client_id: &str) -> Result<bool, sqlx::Error>
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+#[derive(Debug)]
+pub struct SimilarBoundClient {
+    pub client: OauthMcpClientRow,
+    pub agent_identity_id: Uuid,
+}
+
+// `IS NOT DISTINCT FROM` handles the common case where one or both sides are
+// NULL — a client that re-registers without software_id should still match
+// a previous registration that also had no software_id.
+pub async fn find_similar_for_user(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+    client_name: Option<&str>,
+    software_id: Option<&str>,
+) -> Result<Option<SimilarBoundClient>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT c.id            AS "id!",
+                  c.client_id     AS "client_id!",
+                  c.client_name,
+                  c.redirect_uris AS "redirect_uris!",
+                  c.software_id,
+                  c.software_version,
+                  c.created_at    AS "created_at!",
+                  c.last_seen_at,
+                  c.created_ip,
+                  c.created_user_agent,
+                  c.is_revoked    AS "is_revoked!",
+                  b.agent_identity_id AS "agent_identity_id!"
+             FROM oauth_mcp_clients c
+             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id
+            WHERE b.user_identity_id = $1
+              AND c.is_revoked = false
+              AND c.client_name IS NOT DISTINCT FROM $2
+              AND c.software_id IS NOT DISTINCT FROM $3
+         ORDER BY b.updated_at DESC
+            LIMIT 1"#,
+        user_identity_id,
+        client_name,
+        software_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| SimilarBoundClient {
+        client: OauthMcpClientRow {
+            id: r.id,
+            client_id: r.client_id,
+            client_name: r.client_name,
+            redirect_uris: r.redirect_uris,
+            software_id: r.software_id,
+            software_version: r.software_version,
+            created_at: r.created_at,
+            last_seen_at: r.last_seen_at,
+            created_ip: r.created_ip,
+            created_user_agent: r.created_user_agent,
+            is_revoked: r.is_revoked,
+        },
+        agent_identity_id: r.agent_identity_id,
+    }))
 }

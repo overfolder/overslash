@@ -17,32 +17,37 @@ use std::time::Instant;
 
 use axum::{
     Form, Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::{
     AppState,
+    error::AppError,
     services::{jwt, oauth_as, session},
 };
 use overslash_db::repos::{
     identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client,
 };
+use overslash_db::scopes::OrgScope;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/register", post(register))
         .route("/oauth/authorize", get(authorize))
-        .route("/oauth/consent", get(consent_get))
-        .route("/oauth/consent/finish", post(consent_finish))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
+        .route("/v1/oauth/consent/{request_id}", get(consent_context))
+        .route(
+            "/v1/oauth/consent/{request_id}/finish",
+            post(consent_finish),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -327,10 +332,10 @@ async fn authorize(
             issued_at: Instant::now(),
         },
     );
-    Redirect::to(&format!(
+    Redirect::to(&state.config.dashboard_url_for(&format!(
         "/oauth/consent?request_id={}",
         urlencoding::encode(&request_id)
-    ))
+    )))
     .into_response()
 }
 
@@ -410,260 +415,410 @@ fn default_idp_provider(state: &AppState) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// Consent (agent enrollment)
+// Consent (agent enrollment) — JSON API backing the dashboard
 // ---------------------------------------------------------------------------
 //
 // When /oauth/authorize finds no prior (user, client_id) → agent binding, it
-// parks the request in `pending_authorize_store` and redirects here. This
-// server-rendered page is intentionally self-contained — no SvelteKit
-// coupling — so the Authorization Server can run in modes where the
-// dashboard isn't served (e.g. the `overslash serve` cloud mode).
+// parks the request in `pending_authorize_store` and redirects the user's
+// browser to the dashboard at `/oauth/consent?request_id=...`. The dashboard
+// page then calls these endpoints (same session cookie as the rest of /v1)
+// to render the enrollment card and to complete the flow. The final
+// authorization-code redirect back to the MCP client is done by the
+// dashboard itself (window.location) based on the `redirect_uri` returned
+// from `finish`.
 
-#[derive(Deserialize)]
-struct ConsentQuery {
-    request_id: String,
+#[derive(Serialize)]
+struct ConsentClientInfo {
+    client_name: Option<String>,
+    software_id: Option<String>,
+    software_version: Option<String>,
 }
 
-async fn consent_get(
-    State(state): State<AppState>,
-    Query(q): Query<ConsentQuery>,
-    headers: HeaderMap,
-) -> Response {
-    // Session must still be valid — consent is a user-authenticated action.
-    let session_claims = match session::extract_session(&state, &headers) {
-        Some(c) => c,
-        None => {
-            return consent_error_page(
-                StatusCode::UNAUTHORIZED,
-                "Your session has expired. Restart the sign-in from your MCP client.",
-            );
-        }
-    };
+#[derive(Serialize)]
+struct ConsentConnectionInfo {
+    ip: Option<String>,
+}
 
-    let pending = match state.pending_authorize_store.get(&q.request_id) {
-        Some(p) => p,
-        None => {
-            return consent_error_page(
-                StatusCode::BAD_REQUEST,
-                "This authorization request has expired. Restart the sign-in from your MCP client.",
-            );
+#[derive(Serialize)]
+struct ConsentParentOption {
+    id: Uuid,
+    name: String,
+    kind: String,
+    is_you: bool,
+}
+
+#[derive(Serialize)]
+struct ConsentGroupOption {
+    id: Uuid,
+    name: String,
+    member_count: i64,
+}
+
+#[derive(Serialize)]
+struct ConsentReauthTarget {
+    agent_id: Uuid,
+    agent_name: String,
+    parent_id: Option<Uuid>,
+    parent_name: Option<String>,
+    last_seen_at: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ConsentContextResponse {
+    request_id: String,
+    user_email: String,
+    client: ConsentClientInfo,
+    connection: ConsentConnectionInfo,
+    mode: &'static str,
+    reauth_target: Option<ConsentReauthTarget>,
+    suggested_agent_name: String,
+    parents: Vec<ConsentParentOption>,
+    groups: Vec<ConsentGroupOption>,
+}
+
+#[derive(Deserialize)]
+struct ConsentFinishRequest {
+    mode: String,
+    agent_name: Option<String>,
+    parent_id: Option<Uuid>,
+    #[serde(default)]
+    inherit_permissions: bool,
+    #[serde(default)]
+    group_names: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ConsentFinishResponse {
+    redirect_uri: String,
+}
+
+// Slugify a human-typed name into an `agent:<slug>` identifier the way the
+// design card does — lowercase, dashes only, no leading/trailing dashes,
+// no double dashes. Mirrors the frontend `slugify` so the server and UI
+// produce identical output whether the user edits the field or accepts the
+// default.
+fn slugify_agent_name(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    let mut out = String::with_capacity(lower.len());
+    let mut prev_dash = false;
+    for ch in lower.chars() {
+        let keep = ch.is_ascii_alphanumeric() || ch == '-';
+        if keep {
+            out.push(ch);
+            prev_dash = ch == '-';
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
         }
-    };
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "mcp-client".to_string()
+    } else {
+        out
+    }
+}
+
+async fn consent_context(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> Result<Json<ConsentContextResponse>, AppError> {
+    let session_claims = session::extract_session(&state, &headers)
+        .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
+
+    let pending = state
+        .pending_authorize_store
+        .get(&request_id)
+        .ok_or_else(|| AppError::NotFound("authorization request expired".into()))?;
 
     // The session that landed on /oauth/authorize must be the one finishing
     // consent — protects against a swap-after-redirect attack where a second
     // tab's session accidentally completes someone else's flow.
     if pending.user_identity_id != session_claims.sub {
-        return consent_error_page(
-            StatusCode::FORBIDDEN,
-            "You're signed in as a different user than started this authorization.",
-        );
+        return Err(AppError::Forbidden(
+            "signed in as a different user than started this authorization".into(),
+        ));
+    }
+    if pending.org_id != session_claims.org {
+        return Err(AppError::Forbidden(
+            "signed in to a different org than started this authorization".into(),
+        ));
     }
 
-    let client = match oauth_mcp_client::get_by_client_id(&state.db, &pending.client_id).await {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return consent_error_page(
-                StatusCode::BAD_REQUEST,
-                "The MCP client that started this authorization is no longer registered.",
-            );
-        }
-        Err(e) => {
-            tracing::error!("consent: client lookup failed: {e}");
-            return consent_error_page(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "We couldn't load this authorization request. Try again.",
-            );
-        }
-    };
+    let client = oauth_mcp_client::get_by_client_id(&state.db, &pending.client_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("MCP client is no longer registered".into()))?;
 
-    let existing_agents =
-        match identity::list_children(&state.db, pending.org_id, pending.user_identity_id).await {
-            Ok(rows) => rows
-                .into_iter()
-                .filter(|r| r.kind == "agent" && r.archived_at.is_none())
-                .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("consent: list_children failed: {e}");
-                Vec::new()
-            }
-        };
+    // Reauth detection: if there's a non-revoked prior binding for this user
+    // that matches by client_name + software_id, offer that agent as the
+    // reauth target. This covers the case where a client re-registered (new
+    // client_id) after losing its persisted config.
+    let similar = oauth_mcp_client::find_similar_for_user(
+        &state.db,
+        pending.user_identity_id,
+        client.client_name.as_deref(),
+        client.software_id.as_deref(),
+    )
+    .await?;
 
-    let suggested_name = client
+    let suggested_agent_name = client
         .client_name
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "MCP Client".into());
+        .map(|s| slugify_agent_name(&s))
+        .unwrap_or_else(|| "mcp-client".into());
 
-    Html(render_consent_page(
-        &q.request_id,
-        &session_claims.email,
-        client.client_name.as_deref().unwrap_or("(unnamed client)"),
-        &suggested_name,
-        &existing_agents,
-    ))
-    .into_response()
-}
+    // User's direct children that qualify as "parents" for a new agent.
+    // We include the user themselves plus any existing agents under them
+    // so the user can attach the new MCP agent to an automation root.
+    let user_row = identity::get_by_id(&state.db, pending.org_id, pending.user_identity_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("user identity not found".into()))?;
+    let mut parents = vec![ConsentParentOption {
+        id: user_row.id,
+        name: user_row.name.clone(),
+        kind: user_row.kind.clone(),
+        is_you: true,
+    }];
+    let children = identity::list_children(&state.db, pending.org_id, pending.user_identity_id)
+        .await
+        .unwrap_or_default();
+    for c in children {
+        if c.kind == "agent" && c.archived_at.is_none() {
+            parents.push(ConsentParentOption {
+                id: c.id,
+                name: c.name,
+                kind: c.kind,
+                is_you: false,
+            });
+        }
+    }
 
-#[derive(Deserialize)]
-struct ConsentForm {
-    request_id: String,
-    /// "new" | "existing"
-    mode: String,
-    /// Populated when `mode == "new"`.
-    name: Option<String>,
-    /// Populated when `mode == "existing"`.
-    agent_id: Option<String>,
+    let scope = OrgScope::new(pending.org_id, state.db.clone());
+    let groups_rows = scope.list_groups().await.unwrap_or_default();
+    let mut groups = Vec::with_capacity(groups_rows.len());
+    for g in groups_rows {
+        // Filter out system groups ("Everyone", "Admins") — not user-
+        // selectable for a new MCP agent.
+        if g.is_system {
+            continue;
+        }
+        let member_count = scope.count_members_in_group(g.id).await.unwrap_or(0);
+        groups.push(ConsentGroupOption {
+            id: g.id,
+            name: g.name,
+            member_count,
+        });
+    }
+
+    let (mode, reauth_target) = if let Some(sim) = similar {
+        let agent = identity::get_by_id(&state.db, pending.org_id, sim.agent_identity_id).await?;
+        match agent {
+            Some(a) if a.kind == "agent" && a.archived_at.is_none() => {
+                let parent_name = if let Some(pid) = a.parent_id {
+                    identity::get_by_id(&state.db, pending.org_id, pid)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|p| p.name)
+                } else {
+                    None
+                };
+                (
+                    "reauth",
+                    Some(ConsentReauthTarget {
+                        agent_id: a.id,
+                        agent_name: a.name,
+                        parent_id: a.parent_id,
+                        parent_name,
+                        last_seen_at: sim.client.last_seen_at.map(super::util::fmt_time),
+                    }),
+                )
+            }
+            _ => ("new", None),
+        }
+    } else {
+        ("new", None)
+    };
+
+    Ok(Json(ConsentContextResponse {
+        request_id: request_id.clone(),
+        user_email: session_claims.email.clone(),
+        client: ConsentClientInfo {
+            client_name: client.client_name.clone(),
+            software_id: client.software_id.clone(),
+            software_version: client.software_version.clone(),
+        },
+        connection: ConsentConnectionInfo {
+            ip: client.created_ip.clone(),
+        },
+        mode,
+        reauth_target,
+        suggested_agent_name,
+        parents,
+        groups,
+    }))
 }
 
 async fn consent_finish(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(form): Form<ConsentForm>,
-) -> Response {
-    let session_claims = match session::extract_session(&state, &headers) {
-        Some(c) => c,
-        None => {
-            return consent_error_page(
-                StatusCode::UNAUTHORIZED,
-                "Your session has expired. Restart the sign-in from your MCP client.",
-            );
-        }
-    };
+    Path(request_id): Path<String>,
+    Json(body): Json<ConsentFinishRequest>,
+) -> Result<Json<ConsentFinishResponse>, AppError> {
+    let session_claims = session::extract_session(&state, &headers)
+        .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
 
-    let pending = match state.pending_authorize_store.take(&form.request_id) {
-        Some(p) => p,
-        None => {
-            return consent_error_page(
-                StatusCode::BAD_REQUEST,
-                "This authorization request has expired. Restart the sign-in from your MCP client.",
-            );
-        }
-    };
+    let pending = state
+        .pending_authorize_store
+        .take(&request_id)
+        .ok_or_else(|| AppError::BadRequest("authorization request expired".into()))?;
 
     if pending.user_identity_id != session_claims.sub {
-        return consent_error_page(
-            StatusCode::FORBIDDEN,
-            "You're signed in as a different user than started this authorization.",
-        );
+        return Err(AppError::Forbidden(
+            "signed in as a different user than started this authorization".into(),
+        ));
+    }
+    if pending.org_id != session_claims.org {
+        return Err(AppError::Forbidden(
+            "signed in to a different org than started this authorization".into(),
+        ));
     }
 
-    let agent_identity_id =
-        match form.mode.as_str() {
-            "new" => {
-                let name = form
-                    .name
+    let user = identity::get_by_id(&state.db, pending.org_id, pending.user_identity_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("user identity not found".into()))?;
+
+    let client = oauth_mcp_client::get_by_client_id(&state.db, &pending.client_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("MCP client is no longer registered".into()))?;
+
+    let agent_identity_id = match body.mode.as_str() {
+        "new" => {
+            let raw_name = body.agent_name.as_deref().unwrap_or("").trim();
+            let agent_name = if raw_name.is_empty() {
+                client
+                    .client_name
                     .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("MCP Client");
-                let user =
-                    match identity::get_by_id(&state.db, pending.org_id, pending.user_identity_id)
-                        .await
-                    {
-                        Ok(Some(u)) => u,
-                        Ok(None) => {
-                            return consent_error_page(
-                                StatusCode::BAD_REQUEST,
-                                "Your user identity could not be located.",
-                            );
+                    .map(slugify_agent_name)
+                    .unwrap_or_else(|| "mcp-client".into())
+            } else {
+                slugify_agent_name(raw_name)
+            };
+
+            // Parent must be the user themselves or one of their existing
+            // agents — we already exposed exactly that list in the
+            // context endpoint, so anything else is a forged submission.
+            let parent_id = body.parent_id.unwrap_or(user.id);
+            let parent = identity::get_by_id(&state.db, pending.org_id, parent_id)
+                .await?
+                .ok_or_else(|| AppError::BadRequest("parent identity not found".into()))?;
+            if parent.id != user.id
+                && !(parent.kind == "agent"
+                    && parent.archived_at.is_none()
+                    && parent.owner_id == Some(user.id))
+            {
+                return Err(AppError::Forbidden(
+                    "parent is not eligible for this enrollment".into(),
+                ));
+            }
+
+            let agent = identity::create_with_parent(
+                &state.db,
+                pending.org_id,
+                &agent_name,
+                "agent",
+                None,
+                parent.id,
+                parent.depth + 1,
+                user.id,
+                body.inherit_permissions,
+            )
+            .await?;
+
+            // Attach to selected groups, creating any missing ones by name.
+            // System groups and duplicates are skipped. Failures are
+            // logged but don't abort the enrollment — the user can always
+            // fix group membership later from the dashboard.
+            if !body.group_names.is_empty() {
+                let scope = OrgScope::new(pending.org_id, state.db.clone());
+                let existing = scope.list_groups().await.unwrap_or_default();
+                for raw in &body.group_names {
+                    let name = raw.trim();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let group_id = if let Some(g) = existing.iter().find(|g| g.name == name) {
+                        if g.is_system {
+                            continue;
                         }
-                        Err(e) => {
-                            tracing::error!("consent: user lookup failed: {e}");
-                            return consent_error_page(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "We couldn't complete the authorization. Try again.",
-                            );
+                        g.id
+                    } else {
+                        match scope.create_group(name, "", false).await {
+                            Ok(g) => g.id,
+                            Err(e) => {
+                                tracing::warn!("consent: create group '{name}' failed: {e}");
+                                continue;
+                            }
                         }
                     };
-                match identity::create_with_parent(
-                    &state.db,
-                    pending.org_id,
-                    name,
-                    "agent",
-                    None,
-                    user.id,
-                    user.depth + 1,
-                    user.id,
-                    true, // inherit_permissions: sensible default, user can tighten later
-                )
-                .await
-                {
-                    Ok(row) => row.id,
-                    Err(e) => {
-                        tracing::error!("consent: agent create failed: {e}");
-                        return consent_error_page(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "We couldn't create the agent. Try again.",
+                    if let Err(e) = scope.assign_identity_to_group(agent.id, group_id).await {
+                        tracing::warn!(
+                            "consent: assign agent {} to group '{name}' failed: {e}",
+                            agent.id
                         );
                     }
                 }
             }
-            "existing" => {
-                let agent_id_str = match form.agent_id.as_deref() {
-                    Some(s) if !s.is_empty() => s,
-                    _ => {
-                        return consent_error_page(
-                            StatusCode::BAD_REQUEST,
-                            "Select an existing agent or create a new one.",
-                        );
-                    }
-                };
-                let agent_id = match Uuid::parse_str(agent_id_str) {
-                    Ok(u) => u,
-                    Err(_) => {
-                        return consent_error_page(StatusCode::BAD_REQUEST, "Invalid agent id.");
-                    }
-                };
-                let agent = match identity::get_by_id(&state.db, pending.org_id, agent_id).await {
-                    Ok(Some(a)) => a,
-                    Ok(None) => {
-                        return consent_error_page(StatusCode::BAD_REQUEST, "Unknown agent.");
-                    }
-                    Err(e) => {
-                        tracing::error!("consent: agent lookup failed: {e}");
-                        return consent_error_page(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "We couldn't complete the authorization. Try again.",
-                        );
-                    }
-                };
-                // Only the user's own agents are eligible — guards against a
-                // crafted form submitting another user's agent id.
-                if agent.kind != "agent"
-                    || agent.archived_at.is_some()
-                    || agent.owner_id != Some(pending.user_identity_id)
-                {
-                    return consent_error_page(
-                        StatusCode::FORBIDDEN,
-                        "That agent isn't available for this authorization.",
-                    );
-                }
-                agent.id
-            }
-            _ => {
-                return consent_error_page(
-                    StatusCode::BAD_REQUEST,
-                    "Invalid selection. Restart from your MCP client.",
-                );
-            }
-        };
 
-    if let Err(e) = mcp_client_agent_binding::upsert(
+            agent.id
+        }
+        "reauth" => {
+            // Reauth reuses the existing agent identified by
+            // `find_similar_for_user`. We re-resolve on the server rather
+            // than trust a client-supplied agent_id so the caller can't
+            // rebind the new client_id to any arbitrary agent they know
+            // the id of.
+            let similar = oauth_mcp_client::find_similar_for_user(
+                &state.db,
+                pending.user_identity_id,
+                client.client_name.as_deref(),
+                client.software_id.as_deref(),
+            )
+            .await?
+            .ok_or_else(|| AppError::BadRequest("no matching prior enrollment".into()))?;
+            let agent = identity::get_by_id(&state.db, pending.org_id, similar.agent_identity_id)
+                .await?
+                .ok_or_else(|| AppError::BadRequest("prior agent no longer exists".into()))?;
+            if agent.kind != "agent"
+                || agent.archived_at.is_some()
+                || agent.owner_id != Some(user.id)
+            {
+                return Err(AppError::Forbidden(
+                    "prior agent is not available for reauth".into(),
+                ));
+            }
+            agent.id
+        }
+        _ => {
+            return Err(AppError::BadRequest(format!(
+                "invalid mode '{}' (expected 'new' or 'reauth')",
+                body.mode
+            )));
+        }
+    };
+
+    mcp_client_agent_binding::upsert(
         &state.db,
         pending.org_id,
         pending.user_identity_id,
         &pending.client_id,
         agent_identity_id,
     )
-    .await
-    {
-        tracing::error!("consent: binding upsert failed: {e}");
-        return consent_error_page(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "We couldn't record the agent binding. Try again.",
-        );
-    }
+    .await?;
 
     // Fetch the agent's email (if any) so the access-token JWT carries a
     // sensible `email` claim. Agents usually inherit the owner's email
@@ -673,77 +828,30 @@ async fn consent_finish(
         _ => pending.email.clone(),
     };
 
-    issue_authorization_code(
-        &state,
-        &pending.client_id,
-        agent_identity_id,
-        pending.org_id,
-        &email,
-        &pending.redirect_uri,
-        &pending.code_challenge,
-        pending.state_param.as_deref(),
-    )
-}
-
-const CONSENT_TEMPLATE: &str = include_str!("oauth_consent.html");
-const CONSENT_ERROR_TEMPLATE: &str = include_str!("oauth_consent_error.html");
-
-fn consent_error_page(status: StatusCode, message: &str) -> Response {
-    let body = CONSENT_ERROR_TEMPLATE.replace("{{message}}", &html_escape(message));
-    (status, Html(body)).into_response()
-}
-
-fn render_consent_page(
-    request_id: &str,
-    user_email: &str,
-    client_display_name: &str,
-    suggested_name: &str,
-    existing_agents: &[identity::IdentityRow],
-) -> String {
-    let existing_options = if existing_agents.is_empty() {
-        "<option value=\"\">(no existing agents)</option>".to_string()
-    } else {
-        existing_agents
-            .iter()
-            .map(|a| {
-                format!(
-                    "<option value=\"{}\">{}</option>",
-                    html_escape(&a.id.to_string()),
-                    html_escape(&a.name),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
-    };
-
-    let existing_disabled = if existing_agents.is_empty() {
-        " disabled"
-    } else {
-        ""
-    };
-
-    CONSENT_TEMPLATE
-        .replace("{{user_email}}", &html_escape(user_email))
-        .replace("{{client}}", &html_escape(client_display_name))
-        .replace("{{request_id}}", &html_escape(request_id))
-        .replace("{{suggested}}", &html_escape(suggested_name))
-        .replace("{{existing_disabled}}", existing_disabled)
-        .replace("{{existing_options}}", &existing_options)
-}
-
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
+    let code = oauth_as::generate_auth_code();
+    state.auth_code_store.insert(
+        code.clone(),
+        oauth_as::AuthCodeRecord {
+            client_id: pending.client_id.clone(),
+            identity_id: agent_identity_id,
+            org_id: pending.org_id,
+            email,
+            redirect_uri: pending.redirect_uri.clone(),
+            code_challenge: pending.code_challenge.clone(),
+            issued_at: Instant::now(),
+        },
+    );
+    let mut redirect = format!(
+        "{}?code={}",
+        pending.redirect_uri,
+        urlencoding::encode(&code)
+    );
+    if let Some(s) = pending.state_param.as_deref() {
+        redirect.push_str(&format!("&state={}", urlencoding::encode(s)));
     }
-    out
+    Ok(Json(ConsentFinishResponse {
+        redirect_uri: redirect,
+    }))
 }
 
 // ---------------------------------------------------------------------------
