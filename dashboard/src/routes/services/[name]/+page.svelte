@@ -553,6 +553,8 @@
 						</div>
 					{:else if allGroups.length === 0}
 						<p class="muted small">No groups exist yet. Create one in <a href="/org/groups" class="link">Org → Groups</a>.</p>
+					{:else}
+						<p class="muted small">All groups already have access to this service.</p>
 					{/if}
 				{/if}
 			</div>
