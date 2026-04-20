@@ -951,6 +951,115 @@ async fn consent_new_defaults_inherit_permissions_false() {
 }
 
 #[tokio::test]
+async fn consent_context_does_not_match_reauth_for_anonymous_reregistration() {
+    // Two DCR registrations with NULL client_name + NULL software_id are
+    // not "the same client" — matching them would silently fold distinct
+    // enrollments into one agent.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let redirect = "http://127.0.0.1:9993/callback";
+    let (_, challenge) = pkce();
+
+    let register_anon = || async {
+        let body = client
+            .post(format!("{base}/oauth/register"))
+            .json(&json!({
+                "redirect_uris": [redirect],
+                "token_endpoint_auth_method": "none",
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        body["client_id"].as_str().unwrap().to_string()
+    };
+
+    let client_id_1 = register_anon().await;
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = |cid: &str| {
+        format!(
+            "{base}/oauth/authorize?response_type=code&client_id={}\
+             &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+            urlencoding::encode(cid),
+            urlencoding::encode(redirect),
+            urlencoding::encode(&challenge),
+        )
+    };
+
+    let r1 = no_redirect
+        .get(url(&client_id_1))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc = r1.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let _ =
+        common::finish_oauth_consent_new(&base, &consent_loc, &session_cookie, "anon-agent").await;
+
+    // A second anonymous DCR should NOT be considered a reauth of the first.
+    let client_id_2 = register_anon().await;
+    let r2 = no_redirect
+        .get(url(&client_id_2))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc2 = r2.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let request_id = consent_loc2
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .unwrap();
+    let request_id = urlencoding::decode(request_id).unwrap().into_owned();
+    let ctx: Value = client
+        .get(format!(
+            "{base}/v1/oauth/consent/{}",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        ctx["mode"].as_str(),
+        Some("new"),
+        "two NULL-metadata DCRs must not collapse into reauth: {ctx}"
+    );
+    assert!(
+        ctx["reauth_target"].is_null(),
+        "reauth_target must be null when metadata is missing: {ctx}"
+    );
+}
+
+#[tokio::test]
 async fn consent_context_reports_reauth_for_similar_reregistered_client() {
     let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;
