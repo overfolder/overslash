@@ -21,6 +21,9 @@
 	let idpConfigs = $state<IdpConfig[]>([]);
 	let oauthCredentials = $state<OAuthCredential[]>([]);
 	let mcpClients = $state<McpClient[]>([]);
+	// client_ids currently fading out after a local revoke. Entries auto-
+	// expire from the visible list 3 s after revocation.
+	let revokingIds = $state<Set<string>>(new Set());
 	let webhooks = $state<Webhook[]>([]);
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
@@ -150,6 +153,13 @@
 		mcpClients = resp.clients;
 	}
 
+	// Revoked clients stay mounted for a short animation then splice out. We
+	// filter `is_revoked` entries that aren't in the local animating set so a
+	// page reload after revocation doesn't bring stale rows back.
+	const visibleMcpClients = $derived(
+		mcpClients.filter((c) => !c.is_revoked || revokingIds.has(c.client_id))
+	);
+
 	function revokeMcpClient(c: McpClient) {
 		openConfirm(
 			'Revoke MCP client?',
@@ -158,7 +168,18 @@
 			async () => {
 				try {
 					await session.post(`/v1/oauth/mcp-clients/${encodeURIComponent(c.client_id)}/revoke`, {});
-					await refetchMcpClients();
+					revokingIds = new Set([...revokingIds, c.client_id]);
+					// Flip is_revoked locally so the row renders the "revoked"
+					// badge while it fades. The 3 s timer matches the review
+					// note ("remove them from view after 3 secs").
+					mcpClients = mcpClients.map((x) =>
+						x.client_id === c.client_id ? { ...x, is_revoked: true } : x
+					);
+					setTimeout(() => {
+						revokingIds = new Set(
+							[...revokingIds].filter((id) => id !== c.client_id)
+						);
+					}, 3000);
 				} catch (e) {
 					console.error('revoke mcp client failed', e);
 				}
@@ -737,7 +758,7 @@
 				Client Registration — revoke any you no longer want to accept.
 			</p>
 
-			{#if mcpClients.length === 0}
+			{#if visibleMcpClients.length === 0}
 				<p class="muted">No MCP clients have registered yet.</p>
 			{:else}
 				<table>
@@ -752,8 +773,8 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each mcpClients as c (c.client_id)}
-							<tr>
+						{#each visibleMcpClients as c (c.client_id)}
+							<tr class:revoking={revokingIds.has(c.client_id)}>
 								<td>{c.client_name ?? '—'}</td>
 								<td class="mono small">{c.client_id}</td>
 								<td class="small">{fmtDate(c.created_at)}</td>
@@ -1052,6 +1073,28 @@
 	.badge-off {
 		background: #fbe9e9;
 		color: #b42318;
+	}
+
+	tr.revoking {
+		animation: revoke-fade 3s linear forwards;
+		pointer-events: none;
+	}
+	@keyframes revoke-fade {
+		0% {
+			opacity: 1;
+		}
+		70% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		tr.revoking {
+			animation: none;
+			opacity: 0.5;
+		}
 	}
 
 	.btn {
