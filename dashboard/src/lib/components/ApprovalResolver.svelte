@@ -79,6 +79,14 @@
 		return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 	}
 
+	// String.length counts UTF-16 code units, not bytes. The server reports
+	// size_bytes in UTF-8 (Rust String::len), so match the unit here — otherwise
+	// non-ASCII payloads (emoji, CJK) show mismatched "X of Y" figures.
+	const utf8Encoder = new TextEncoder();
+	function utf8ByteLength(s: string): number {
+		return utf8Encoder.encode(s).byteLength;
+	}
+
 	function humanize(slug: string): string {
 		// "github" -> "GitHub", "google_calendar" -> "Google Calendar"
 		const known: Record<string, string> = {
@@ -193,7 +201,7 @@
 			<pre class="code">{@html renderPayload(current.action_detail)}</pre>
 			{#if current.action_detail_truncated}
 				<p class="truncated-note">
-					Showing first {formatBytes(current.action_detail.length)} of {formatBytes(
+					Showing first {formatBytes(utf8ByteLength(current.action_detail))} of {formatBytes(
 						current.action_detail_size_bytes
 					)} — truncated.
 				</p>
