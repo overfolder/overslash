@@ -8,6 +8,7 @@
 	import { page } from '$app/stores';
 	import IdentityPath from './IdentityPath.svelte';
 	import { relativeTime } from '$lib/utils/time';
+	import { highlightJson } from '$lib/api';
 
 	let { approval, onResolved, compact = false }: {
 		approval: ApprovalResponse;
@@ -54,6 +55,37 @@
 	const primary = $derived(current.derived_keys[0] ?? null);
 	const serviceLabel = $derived(primary ? humanize(primary.service) : '—');
 	const actionLabel = $derived(primary ? primary.action : '—');
+
+	function escapeHtml(s: string): string {
+		return s
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
+	}
+
+	// Parse+highlight when possible; fall back to escaped plain text. Truncated
+	// payloads are no longer valid JSON, so the fallback path handles them.
+	function renderPayload(raw: string): string {
+		try {
+			return highlightJson(JSON.parse(raw));
+		} catch {
+			return escapeHtml(raw);
+		}
+	}
+
+	function formatBytes(n: number): string {
+		if (n < 1024) return `${n} B`;
+		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+		return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+	}
+
+	// String.length counts UTF-16 code units, not bytes. The server reports
+	// size_bytes in UTF-8 (Rust String::len), so match the unit here — otherwise
+	// non-ASCII payloads (emoji, CJK) show mismatched "X of Y" figures.
+	const utf8Encoder = new TextEncoder();
+	function utf8ByteLength(s: string): number {
+		return utf8Encoder.encode(s).byteLength;
+	}
 
 	function humanize(slug: string): string {
 		// "github" -> "GitHub", "google_calendar" -> "Google Calendar"
@@ -160,6 +192,20 @@
 					<li><code class="mono">{dk.service} · {dk.action} · {dk.arg}</code></li>
 				{/each}
 			</ul>
+		</details>
+	{/if}
+
+	{#if current.action_detail}
+		<details class="raw-payload">
+			<summary>Show Raw Payload</summary>
+			<pre class="code">{@html renderPayload(current.action_detail)}</pre>
+			{#if current.action_detail_truncated}
+				<p class="truncated-note">
+					Showing first {formatBytes(utf8ByteLength(current.action_detail))} of {formatBytes(
+						current.action_detail_size_bytes
+					)} — truncated.
+				</p>
+			{/if}
 		</details>
 	{/if}
 
@@ -273,7 +319,8 @@
 		padding: 1.75rem 2rem;
 		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
 	}
-	.derived summary {
+	.derived summary,
+	.raw-payload summary {
 		cursor: pointer;
 		font-size: 0.8rem;
 		color: var(--color-text-muted);
@@ -286,6 +333,30 @@
 		flex-direction: column;
 		gap: 0.2rem;
 	}
+	.raw-payload .code {
+		margin: 0.4rem 0 0 0;
+		padding: 0.75rem 0.9rem;
+		background: var(--color-bg);
+		border: 1px solid var(--color-border-subtle);
+		border-radius: var(--radius-md);
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		color: var(--color-text);
+		overflow: auto;
+		max-height: 420px;
+		white-space: pre;
+	}
+	.raw-payload .truncated-note {
+		margin: 0.45rem 0 0 0;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+	}
+	:global(.raw-payload .json-key) { color: var(--primary-600); }
+	:global(.raw-payload .json-string) { color: var(--success-500); }
+	:global(.raw-payload .json-number) { color: var(--orange-500); }
+	:global(.raw-payload .json-bool) { color: var(--primary-600); }
+	:global(.raw-payload .json-null) { color: var(--color-text-muted); }
+	:global(.raw-payload .json-bracket) { color: var(--color-text-muted); }
 	.custom-key {
 		margin-top: 0.4rem;
 		width: 100%;
