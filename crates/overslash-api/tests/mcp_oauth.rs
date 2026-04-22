@@ -350,7 +350,15 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(frame["jsonrpc"], "2.0");
     assert_eq!(frame["id"], 1);
     let tools = frame["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 3);
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"overslash_search"));
+    assert!(names.contains(&"overslash_execute"));
+    assert!(names.contains(&"overslash_auth"));
+    assert!(
+        !names.contains(&"overslash_approve"),
+        "overslash_approve must not be exposed — self-management is dashboard-only"
+    );
 
     // Refresh rotates the refresh token.
     let refresh_resp = client
@@ -624,6 +632,95 @@ async fn mcp_tools_call_forwards_to_rest_with_bearer() {
         payload["kind"].as_str(),
         Some("agent"),
         "MCP whoami must return the enrolled agent, got: {payload}"
+    );
+
+    // tools/call overslash_auth.service_status → forwards to /v1/services/{name}.
+    // The enrolled test agent has no services, so the upstream returns 404 —
+    // that still exercises the dispatch + path-building branch.
+    let frame = client
+        .post(format!("{base}/mcp"))
+        .bearer_auth(&access)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 43,
+            "method": "tools/call",
+            "params": {
+                "name": "overslash_auth",
+                "arguments": {
+                    "action": "service_status",
+                    "params": { "service": "nonexistent_service" }
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(frame.status(), 200);
+    let body: Value = frame.json().await.unwrap();
+    let err_msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err_msg.contains("API 404"),
+        "service_status should forward and surface upstream 404, got: {body}"
+    );
+
+    // tools/call overslash_auth.service_status without `service` param →
+    // validation error from the dispatcher (covers the Err branch).
+    let frame = client
+        .post(format!("{base}/mcp"))
+        .bearer_auth(&access)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 44,
+            "method": "tools/call",
+            "params": {
+                "name": "overslash_auth",
+                "arguments": {
+                    "action": "service_status",
+                    "params": {}
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = frame.json().await.unwrap();
+    let err_msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err_msg.contains("requires `service`"),
+        "missing-param should surface a validation message, got: {body}"
+    );
+
+    // tools/call overslash_auth with an unknown sub-action → dispatcher
+    // error listing the supported set (covers the unknown-action branch,
+    // and implicitly confirms removed self-management sub-actions are no
+    // longer advertised).
+    let frame = client
+        .post(format!("{base}/mcp"))
+        .bearer_auth(&access)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 45,
+            "method": "tools/call",
+            "params": {
+                "name": "overslash_auth",
+                "arguments": {
+                    "action": "create_subagent",
+                    "params": { "name": "x" }
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = frame.json().await.unwrap();
+    let err_msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        err_msg.contains("unknown action `create_subagent`"),
+        "removed sub-action must be rejected at dispatch, got: {body}"
+    );
+    assert!(
+        err_msg.contains("whoami") && err_msg.contains("service_status"),
+        "error must list supported actions, got: {body}"
     );
 }
 
