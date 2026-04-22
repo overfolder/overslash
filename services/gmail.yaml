@@ -19,12 +19,6 @@ components:
             https://www.googleapis.com/auth/gmail.readonly: ""
             https://www.googleapis.com/auth/gmail.send: ""
             https://www.googleapis.com/auth/gmail.modify: ""
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: gmail_token
 paths:
   /gmail/v1/users/{userId}/profile:
     get:

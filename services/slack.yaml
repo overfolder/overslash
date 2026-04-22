@@ -18,12 +18,6 @@ components:
           scopes:
             chat:write: ""
             channels:read: ""
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: slack_token
 paths:
   /api/chat.postMessage:
     post:

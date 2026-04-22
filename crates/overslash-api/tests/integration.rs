@@ -793,15 +793,6 @@ async fn test_mode_c_service_action() {
     let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
-    // Store a secret matching the service's default_secret_name
-    client
-        .put(format!("{base}/v1/secrets/github_token"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"value": "ghp_test123"}))
-        .send()
-        .await
-        .unwrap();
-
     // Create a broad permission rule
     client
         .post(format!("{base}/v1/permissions"))

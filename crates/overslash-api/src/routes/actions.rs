@@ -725,9 +725,9 @@ async fn resolve_request(
     ))
 }
 
-/// Auto-resolve auth for a service. Tries OAuth connection first, then API key secret.
-/// Returns (secret_refs, oauth_was_injected).
-/// If OAuth token is resolved, it's injected directly into headers (not via SecretRef).
+/// Auto-resolve auth for a service. Uses the identity's OAuth connection when the
+/// template declares OAuth auth. Returns (secret_refs, oauth_was_injected).
+/// If an OAuth token is resolved, it's injected directly into headers (not via SecretRef).
 async fn resolve_service_auth(
     state: &AppState,
     scope: &OrgScope,
@@ -794,30 +794,6 @@ async fn resolve_service_auth(
                     return (vec![], true); // OAuth token injected into headers
                 }
             }
-        }
-    }
-
-    // Fall back to API key secret
-    for service_auth in &svc.auth {
-        if let overslash_core::types::ServiceAuth::ApiKey {
-            default_secret_name,
-            injection,
-        } = service_auth
-        {
-            return (
-                vec![SecretRef {
-                    name: default_secret_name.clone(),
-                    inject_as: if injection.inject_as == "query" {
-                        InjectAs::Query
-                    } else {
-                        InjectAs::Header
-                    },
-                    header_name: injection.header_name.clone(),
-                    query_param: injection.query_param.clone(),
-                    prefix: injection.prefix.clone(),
-                }],
-                false, // API key via SecretRef, not OAuth
-            );
         }
     }
 
@@ -997,9 +973,10 @@ async fn resolve_instance_auth(
         }
     }
 
-    // If instance has a bound secret_name, use it
+    // If instance has a bound secret_name AND the template declares ApiKey auth, use it.
+    // OAuth-only templates never reach the ApiKey branch; `secret_name` would be either
+    // already NULL (migration 037) or blocked at create/update by the services API.
     if let Some(ref secret_name) = instance.secret_name {
-        // Find the matching API key auth config from the template for injection settings
         for service_auth in &svc.auth {
             if let overslash_core::types::ServiceAuth::ApiKey { injection, .. } = service_auth {
                 return (
@@ -1018,17 +995,6 @@ async fn resolve_instance_auth(
                 );
             }
         }
-        // No API key auth config in template — inject as header with no prefix
-        return (
-            vec![SecretRef {
-                name: secret_name.clone(),
-                inject_as: InjectAs::Header,
-                header_name: Some("Authorization".into()),
-                query_param: None,
-                prefix: Some("Bearer ".into()),
-            }],
-            false,
-        );
     }
 
     // No bound credentials on instance — fall back to auto-resolve

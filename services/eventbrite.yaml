@@ -15,12 +15,6 @@ components:
           authorizationUrl: https://www.eventbrite.com/oauth/authorize
           tokenUrl: https://www.eventbrite.com/oauth/token
           scopes: {}
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: eventbrite_token
 paths:
   /v3/users/me/:
     get:

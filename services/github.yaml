@@ -18,12 +18,6 @@ components:
             repo: ""
             read:user: ""
             user:email: ""
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: github_token
 paths:
   /user:
     get:

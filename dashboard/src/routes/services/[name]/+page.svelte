@@ -450,7 +450,7 @@
 					<span class="label">Name</span>
 					<input type="text" bind:value={editName} required minlength="1" disabled={isSystem} />
 				</label>
-				{#if usesApiKey && !isSystem}
+				{#if usesApiKey && !usesOAuth && !isSystem}
 					<label class="field">
 						<span class="label">API key secret name</span>
 						<input type="text" bind:value={editSecret} placeholder="my-api-key" />
