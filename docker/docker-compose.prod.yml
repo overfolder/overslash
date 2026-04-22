@@ -2,7 +2,7 @@ name: overslash
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: overslash
       POSTGRES_PASSWORD: ${DB_PASSWORD:-overslash_prod}

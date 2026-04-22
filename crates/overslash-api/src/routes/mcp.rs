@@ -5,10 +5,17 @@
 //! request in the body; this handler dispatches it and returns the JSON-RPC
 //! response.
 //!
-//! Dispatch is intentionally small: the four tools (`overslash_search`,
-//! `overslash_execute`, `overslash_auth`, `overslash_approve`) are the whole
-//! catalog. Each tool call is forwarded to the corresponding REST endpoint
-//! over loopback reqwest so we get the same rate-limiting, audit, and ACL
+//! Dispatch is intentionally small: the three tools (`overslash_search`,
+//! `overslash_execute`, `overslash_auth`) are the whole catalog. The MCP
+//! surface is execute-only — it lets an agent discover and run already-
+//! configured services, plus introspect its own identity. Self-management
+//! (creating services, minting subagents, resolving approvals, listing
+//! secrets) lives in the dashboard; see
+//! `docs/design/agent-self-management.md` for the roadmap to bring those
+//! capabilities back under Overslash + Claude Code permission gates.
+//!
+//! Each tool call is forwarded to the corresponding REST endpoint over
+//! loopback reqwest so we get the same rate-limiting, audit, and ACL
 //! plumbing the REST callers go through. Forwarded bearer tokens carry the
 //! caller's credential (either the same `aud=mcp` JWT presented on `/mcp`,
 //! or an `osk_` agent key).
@@ -183,9 +190,9 @@ fn initialize_response(id: Value) -> Response {
                 "name": "overslash",
                 "version": env!("CARGO_PKG_VERSION"),
             },
-            "instructions": "Overslash MCP server. Use overslash_search to discover services, \
-        overslash_execute to run actions, overslash_auth for credential / identity ops, \
-        and overslash_approve to resolve approvals inline.",
+            "instructions": "Overslash MCP server. Use overslash_search to discover \
+        services, overslash_execute to run actions, and overslash_auth for \
+        identity introspection (whoami, service_status).",
         }),
     )
 }
@@ -222,7 +229,7 @@ fn tools_list_response(id: Value) -> Response {
                 },
                 {
                     "name": "overslash_auth",
-                    "description": "Auth / identity sub-actions (whoami, list_secrets, request_secret, create_subagent, create_service_from_template, service_status).",
+                    "description": "Identity introspection sub-actions: whoami, service_status.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -230,21 +237,6 @@ fn tools_list_response(id: Value) -> Response {
                             "params": {}
                         },
                         "required": ["action"],
-                        "additionalProperties": false
-                    }
-                },
-                {
-                    "name": "overslash_approve",
-                    "description": "Resolve a pending approval using the caller's user credential.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "approval_id":   { "type": "string" },
-                            "resolution":    { "type": "string" },
-                            "remember_keys": { "type": "array", "items": { "type": "string" } },
-                            "ttl":           { "type": "string" }
-                        },
-                        "required": ["approval_id", "resolution"],
                         "additionalProperties": false
                     }
                 }
@@ -282,7 +274,6 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
         "overslash_search" => call_search(state, bearer, &params.arguments).await,
         "overslash_execute" => call_execute(state, bearer, &params.arguments).await,
         "overslash_auth" => call_auth(state, bearer, &params.arguments).await,
-        "overslash_approve" => call_approve(state, bearer, &params.arguments).await,
         other => {
             return rpc_error_response(req.id, METHOD_NOT_FOUND, format!("unknown tool `{other}`"));
         }
@@ -301,11 +292,14 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
 
 async fn call_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let path = if q.is_empty() {
-        "/v1/services".to_string()
-    } else {
-        format!("/v1/services?query={}", urlencoding::encode(q))
-    };
+    if q.is_empty() {
+        return Err(
+            "overslash_search requires a non-empty `query` — pass the natural-language string \
+             describing what you want to do (e.g. \"send an email\")"
+                .into(),
+        );
+    }
+    let path = format!("/v1/search?q={}", urlencoding::encode(q));
     forward(state, bearer, Method::GET, &path, None).await
 }
 
@@ -340,16 +334,14 @@ async fn call_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value
         .ok_or_else(|| "action required".to_string())?;
     let params = args.get("params").cloned().unwrap_or(Value::Null);
 
+    // Self-management sub-actions (list_secrets, request_secret,
+    // create_subagent, create_service_from_template) have been removed from
+    // the MCP surface intentionally. Agents should use already-configured
+    // services via overslash_execute; creation and credential plumbing live
+    // in the dashboard until the work in
+    // docs/design/agent-self-management.md lands.
     let (method, path, body) = match action {
         "whoami" => (Method::GET, "/v1/whoami".to_string(), None),
-        "list_secrets" => (Method::GET, "/v1/secrets".to_string(), None),
-        "request_secret" => (
-            Method::POST,
-            "/v1/secrets/requests".to_string(),
-            Some(params),
-        ),
-        "create_subagent" => (Method::POST, "/v1/identities".to_string(), Some(params)),
-        "create_service_from_template" => (Method::POST, "/v1/services".to_string(), Some(params)),
         "service_status" => {
             let name = params
                 .get("service")
@@ -363,43 +355,11 @@ async fn call_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value
         }
         other => {
             return Err(format!(
-                "unknown action `{other}` — supported: whoami, list_secrets, request_secret, create_subagent, create_service_from_template, service_status"
+                "unknown action `{other}` — supported: whoami, service_status"
             ));
         }
     };
     forward(state, bearer, method, &path, body).await
-}
-
-async fn call_approve(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
-    let approval_id = args
-        .get("approval_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "approval_id required".to_string())?;
-    let raw_resolution = args
-        .get("resolution")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "resolution required".to_string())?;
-    let resolution = normalize_resolution(raw_resolution)?;
-    let body = json!({
-        "resolution": resolution,
-        "remember_keys": args.get("remember_keys"),
-        "ttl": args.get("ttl"),
-    });
-    let path = format!("/v1/approvals/{}/resolve", urlencoding::encode(approval_id));
-    forward(state, bearer, Method::POST, &path, Some(body)).await
-}
-
-/// Canonicalize an approval resolution string. Shared with the stdio shim.
-fn normalize_resolution(raw: &str) -> Result<&'static str, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "allow" | "allow_once" | "approve" | "approved" | "ok" => Ok("allow"),
-        "allow_remember" | "remember" | "always" => Ok("allow_remember"),
-        "deny" | "denied" | "reject" | "rejected" | "no" => Ok("deny"),
-        "bubble_up" | "bubble" | "escalate" | "defer" => Ok("bubble_up"),
-        other => Err(format!(
-            "unknown resolution `{other}` — use one of allow, allow_remember, deny, bubble_up"
-        )),
-    }
 }
 
 async fn forward(

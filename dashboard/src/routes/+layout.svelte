@@ -21,7 +21,8 @@
 		$page.url.pathname === '/login' ||
 			$page.url.pathname.startsWith('/approvals/') ||
 			$page.url.pathname.startsWith('/enroll/consent/') ||
-			$page.url.pathname.startsWith('/secrets/provide/')
+			$page.url.pathname.startsWith('/secrets/provide/') ||
+			$page.url.pathname.startsWith('/oauth/consent')
 	);
 	const isAdmin = $derived(data?.user?.is_org_admin === true);
 	const collapsed = $derived($sidebarCollapsed);

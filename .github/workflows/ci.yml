@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: overslash
           POSTGRES_PASSWORD: overslash
@@ -133,7 +133,7 @@ jobs:
         partition: [1, 2, 3]
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: overslash
           POSTGRES_PASSWORD: overslash
