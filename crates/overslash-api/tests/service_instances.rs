@@ -444,6 +444,117 @@ async fn test_service_name_defaults_to_template_key() {
 }
 
 #[tokio::test]
+async fn test_secret_name_rejected_on_oauth_template() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
+
+    // Two org-level templates: one OAuth-only, one api-key-only. The gate
+    // should reject `secret_name` for the OAuth one and accept it for the
+    // other.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": common::render_openapi(
+                include_str!("fixtures/openapi/oauth_google.yaml.tmpl"),
+                &[("key", "oauth-svc"), ("display_name", "OAuth Svc")],
+            ),
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": "openapi: 3.1.0\n\
+                info:\n  title: Apikey Svc\n  key: apikey-svc\n\
+                servers:\n  - url: https://apikey-svc.example.com\n\
+                components:\n  securitySchemes:\n    token:\n      type: http\n      scheme: bearer\n      x-overslash-default_secret_name: apikey_svc_token\n\
+                security:\n  - token: []\n\
+                paths:\n  /items:\n    get:\n      operationId: list_items\n      summary: List items\n      risk: read\n",
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Reject: `secret_name` on a create against an OAuth-only template.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "oauth-svc",
+            "name": "oauth-reject",
+            "secret_name": "leftover-secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("does not use api key auth"),
+        "expected api-key-auth error, got: {body}"
+    );
+
+    // Update path: clean OAuth instance, then try to set `secret_name` via PUT.
+    let created: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "oauth-svc",
+            "name": "oauth-clean",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let update = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "secret_name": "foo" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(update.status(), 400);
+
+    // Clearing `secret_name` (null) is always allowed, even on OAuth — callers
+    // need a way to scrub stale values left over from before the gate landed.
+    let clear = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "secret_name": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clear.status(), 200);
+
+    // Regression guard: the gate must NOT over-reject — api-key templates
+    // continue to accept `secret_name`.
+    let ok = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "apikey-svc",
+            "name": "apikey-accepted",
+            "secret_name": "apikey_svc_token",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+}
+
+#[tokio::test]
 async fn test_duplicate_instance_name_conflict() {
     let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
