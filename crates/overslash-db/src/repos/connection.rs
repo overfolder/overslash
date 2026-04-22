@@ -89,8 +89,15 @@ pub(crate) async fn update_tokens(
     encrypted_refresh_token: Option<&[u8]>,
     token_expires_at: Option<OffsetDateTime>,
 ) -> Result<(), sqlx::Error> {
+    // COALESCE preserves the existing refresh_token when the caller passes
+    // None. Google (and other OAuth2 providers) routinely omit the
+    // refresh_token from refresh responses — only the initial code exchange
+    // and re-consent flows mint one. Unconditionally writing $4 would wipe
+    // the stored refresh_token on the first refresh, leaving the connection
+    // unable to refresh ever again.
     sqlx::query!(
-        "UPDATE connections SET encrypted_access_token = $3, encrypted_refresh_token = $4,
+        "UPDATE connections SET encrypted_access_token = $3,
+         encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),
          token_expires_at = $5, updated_at = now() WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -125,7 +132,8 @@ pub(crate) async fn update_tokens_and_scopes(
     account_email: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
-        "UPDATE connections SET encrypted_access_token = $3, encrypted_refresh_token = $4,
+        "UPDATE connections SET encrypted_access_token = $3,
+         encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),
          token_expires_at = $5, scopes = $6,
          account_email = COALESCE($7, account_email), updated_at = now()
          WHERE id = $1 AND org_id = $2",
