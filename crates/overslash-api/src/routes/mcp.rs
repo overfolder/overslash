@@ -191,11 +191,8 @@ fn initialize_response(id: Value) -> Response {
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "instructions": "Overslash MCP server. Use overslash_search to discover \
-        configured services, overslash_execute to run actions, and overslash_auth \
-        for identity introspection (whoami, service_status). Self-management \
-        (creating services, minting subagents, resolving approvals, listing \
-        secrets) is dashboard-only; see docs/design/agent-self-management.md \
-        for the future roadmap.",
+        services, overslash_execute to run actions, and overslash_auth for \
+        identity introspection (whoami, service_status).",
         }),
     )
 }
@@ -232,7 +229,7 @@ fn tools_list_response(id: Value) -> Response {
                 },
                 {
                     "name": "overslash_auth",
-                    "description": "Identity introspection sub-actions (whoami, service_status). Self-management actions have been removed from the MCP surface; use the dashboard for creating services, minting subagents, requesting secrets, or resolving approvals.",
+                    "description": "Identity introspection sub-actions: whoami, service_status.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
