@@ -108,6 +108,7 @@ pub async fn execute(
         headers: resp_headers,
         body,
         duration_ms,
+        filtered_body: None,
     })
 }
 

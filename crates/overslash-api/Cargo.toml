@@ -40,6 +40,9 @@ jsonwebtoken = { workspace = true }
 futures-util = "0.3"
 redis = { workspace = true }
 dashmap = { workspace = true }
+jaq-core = "=3.0.0"
+jaq-std = "=3.0.0"
+jaq-json = { version = "=2.0.0", features = ["serde"] }
 
 [dev-dependencies]
 sqlx = { workspace = true }

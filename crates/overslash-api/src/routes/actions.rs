@@ -19,13 +19,16 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{AuthContext, ClientIp},
-    services::{group_ceiling, http_executor},
+    services::{
+        group_ceiling, http_executor,
+        response_filter::{self, ResponseFilter},
+    },
 };
 use overslash_core::{
     crypto,
     permissions::{GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
-    types::{ActionRequest, ActionResult, InjectAs, SecretRef, service::Risk},
+    types::{ActionRequest, ActionResult, FilteredBody, InjectAs, SecretRef, service::Risk},
 };
 
 pub fn router() -> Router<AppState> {
@@ -56,6 +59,12 @@ struct ExecuteRequest {
     // Large file handling
     #[serde(default)]
     prefer_stream: Option<bool>,
+
+    // Optional server-side filter applied to the upstream response body
+    // (e.g., jq). Output is attached to `result.filtered_body`; the
+    // original `body` is always preserved.
+    #[serde(default)]
+    filter: Option<ResponseFilter>,
 }
 
 #[derive(Serialize)]
@@ -102,6 +111,21 @@ async fn execute_action(
     ip: ClientIp,
     Json(req): Json<ExecuteRequest>,
 ) -> Result<Response, AppError> {
+    // Reject filter + streaming up front — silently dropping the filter
+    // could let an agent think it's getting a small slice and instead
+    // pipe a multi-MB stream into its context window.
+    if req.prefer_stream.unwrap_or(false) && req.filter.is_some() {
+        return Err(AppError::BadRequest(
+            "filter cannot be combined with prefer_stream".into(),
+        ));
+    }
+
+    // Validate filter syntax before any upstream call so a malformed
+    // expression is a clean 400 — not a wasted upstream quota burn.
+    if let Some(filter) = req.filter.as_ref() {
+        response_filter::validate_syntax(filter).map_err(AppError::FilterSyntax)?;
+    }
+
     let identity_id = auth
         .identity_id
         .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
@@ -399,7 +423,7 @@ async fn execute_action(
     }
 
     // Buffered execution path (default)
-    let result = http_executor::execute(
+    let mut result = http_executor::execute(
         &state.http_client,
         &action_req.method,
         &resolved_url,
@@ -421,6 +445,36 @@ async fn execute_action(
         http_executor::ExecuteError::Request(e) => AppError::Request(e),
     })?;
 
+    // Apply the optional response filter (jq today). The original body is
+    // preserved on `result.body` either way; the filtered output goes on
+    // `result.filtered_body` (Some on both ok and error envelopes).
+    let filter_audit = if let Some(filter) = req.filter.clone() {
+        let lang = filter.lang().to_string();
+        let expr = filter.expr().to_string();
+        let timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
+        let filtered = response_filter::apply(filter, result.body.clone(), timeout).await;
+        let audit = filter_audit_entry(&lang, &expr, &filtered);
+        result.filtered_body = Some(filtered);
+        Some(audit)
+    } else {
+        None
+    };
+
+    let mut audit_detail = serde_json::json!({
+        "method": action_req.method,
+        "url": action_req.url,
+        "status_code": result.status_code,
+        "duration_ms": result.duration_ms,
+        "service": req.service,
+        "action": req.action,
+    });
+    if let Some(filter_audit) = filter_audit {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert("filter".to_string(), filter_audit);
+    }
+
     let _ = OrgScope::new(auth.org_id, state.db.clone())
         .log_audit(AuditEntry {
             org_id: auth.org_id,
@@ -428,14 +482,7 @@ async fn execute_action(
             action: "action.executed",
             resource_type: req.service.as_deref(),
             resource_id: None,
-            detail: serde_json::json!({
-                "method": action_req.method,
-                "url": action_req.url,
-                "status_code": result.status_code,
-                "duration_ms": result.duration_ms,
-                "service": req.service,
-                "action": req.action,
-            }),
+            detail: audit_detail,
             description: meta.description.as_deref(),
             ip_address: ip.0.as_deref(),
         })
@@ -1040,4 +1087,52 @@ fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill(&mut bytes);
     hex::encode(bytes)
+}
+
+/// Build the audit-log `filter` block. Truncates the expression for
+/// log readability and includes a sha256 so identical filters can be
+/// grouped across calls. Filter output values are never logged — same
+/// reasoning that already keeps response bodies out of audit logs.
+fn filter_audit_entry(lang: &str, expr: &str, outcome: &FilteredBody) -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    const EXPR_LOG_MAX: usize = 256;
+
+    let expr_truncated: String = expr.chars().take(EXPR_LOG_MAX).collect();
+    let expr_sha256 = hex::encode(Sha256::digest(expr.as_bytes()));
+
+    let (result, original_bytes, filtered_bytes) = match outcome {
+        FilteredBody::Ok {
+            original_bytes,
+            filtered_bytes,
+            ..
+        } => ("ok", *original_bytes, Some(*filtered_bytes)),
+        FilteredBody::Error {
+            kind,
+            original_bytes,
+            ..
+        } => {
+            let r = match kind {
+                overslash_core::types::FilterErrorKind::BodyNotJson => "body_not_json",
+                overslash_core::types::FilterErrorKind::RuntimeError => "runtime_error",
+                overslash_core::types::FilterErrorKind::Timeout => "timeout",
+                overslash_core::types::FilterErrorKind::OutputOverflow => "output_overflow",
+            };
+            (r, *original_bytes, None)
+        }
+    };
+
+    let mut entry = serde_json::json!({
+        "lang": lang,
+        "expr_truncated": expr_truncated,
+        "expr_sha256": expr_sha256,
+        "result": result,
+        "original_bytes": original_bytes,
+    });
+    if let Some(fb) = filtered_bytes {
+        entry
+            .as_object_mut()
+            .expect("entry is a json object")
+            .insert("filtered_bytes".to_string(), serde_json::json!(fb));
+    }
+    entry
 }
