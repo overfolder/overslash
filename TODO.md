@@ -129,7 +129,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 ## Phase 4: Polish + Meta Tools
 
 - [ ] Meta tool definitions (overslash_search, overslash_execute, overslash_auth)
-- [ ] Semantic search for service/action discovery
+- [x] Semantic search for service/action discovery — `GET /v1/search` with keyword + fuzzy + local pgvector embeddings (PR pending)
 - [x] Rate limiting per identity — two-tier model (User bucket + identity caps), Redis/Valkey or in-memory
 - [ ] Org billing / usage metering
 - [x] Human-readable audit descriptions — interpolated descriptions for Mode C, method+URL for Mode A, identity name resolution in audit responses

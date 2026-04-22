@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict YOLBK8GnYfJ9Nu8SHYQWmEytYdDmYfOlBjnYFjWQPW6AmudH1io7SJCk1CyDEZk
+\restrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
 
--- Dumped from database version 16.13
+-- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
@@ -457,6 +457,24 @@ CREATE TABLE public.secrets (
 
 
 --
+-- Name: service_action_embeddings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_action_embeddings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tier text NOT NULL,
+    org_id uuid,
+    owner_identity_id uuid,
+    template_key text NOT NULL,
+    action_key text NOT NULL,
+    source_text text NOT NULL,
+    embedding public.vector(384) NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT service_action_embeddings_tier_check CHECK ((tier = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
+);
+
+
+--
 -- Name: service_instances; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -494,7 +512,9 @@ CREATE TABLE public.service_templates (
     hosts text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    openapi jsonb NOT NULL
+    openapi jsonb NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    CONSTRAINT service_templates_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text])))
 );
 
 
@@ -809,6 +829,14 @@ ALTER TABLE ONLY public.secrets
 
 ALTER TABLE ONLY public.secrets
     ADD CONSTRAINT secrets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: service_action_embeddings service_action_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_action_embeddings
+    ADD CONSTRAINT service_action_embeddings_pkey PRIMARY KEY (id);
 
 
 --
@@ -1183,14 +1211,21 @@ CREATE INDEX idx_service_templates_org ON public.service_templates USING btree (
 -- Name: idx_service_templates_org_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_service_templates_org_key ON public.service_templates USING btree (org_id, key) WHERE (owner_identity_id IS NULL);
+CREATE UNIQUE INDEX idx_service_templates_org_key ON public.service_templates USING btree (org_id, key) WHERE ((owner_identity_id IS NULL) AND (status = 'active'::text));
+
+
+--
+-- Name: idx_service_templates_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_templates_status ON public.service_templates USING btree (status);
 
 
 --
 -- Name: idx_service_templates_user_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates USING btree (org_id, owner_identity_id, key) WHERE (owner_identity_id IS NOT NULL);
+CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates USING btree (org_id, owner_identity_id, key) WHERE ((owner_identity_id IS NOT NULL) AND (status = 'active'::text));
 
 
 --
@@ -1198,6 +1233,34 @@ CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates U
 --
 
 CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btree (next_retry_at) WHERE ((delivered_at IS NULL) AND (attempts < 5));
+
+
+--
+-- Name: service_action_embeddings_global_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_action_embeddings_global_unique ON public.service_action_embeddings USING btree (template_key, action_key) WHERE (tier = 'global'::text);
+
+
+--
+-- Name: service_action_embeddings_hnsw; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX service_action_embeddings_hnsw ON public.service_action_embeddings USING hnsw (embedding public.vector_cosine_ops);
+
+
+--
+-- Name: service_action_embeddings_org_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_action_embeddings_org_unique ON public.service_action_embeddings USING btree (org_id, template_key, action_key) WHERE (tier = 'org'::text);
+
+
+--
+-- Name: service_action_embeddings_user_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_action_embeddings USING btree (org_id, owner_identity_id, template_key, action_key) WHERE (tier = 'user'::text);
 
 
 --
@@ -1617,6 +1680,22 @@ ALTER TABLE ONLY public.secrets
 
 
 --
+-- Name: service_action_embeddings service_action_embeddings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_action_embeddings
+    ADD CONSTRAINT service_action_embeddings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: service_action_embeddings service_action_embeddings_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_action_embeddings
+    ADD CONSTRAINT service_action_embeddings_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: service_instances service_instances_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1684,5 +1763,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict YOLBK8GnYfJ9Nu8SHYQWmEytYdDmYfOlBjnYFjWQPW6AmudH1io7SJCk1CyDEZk
+\unrestrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
 
