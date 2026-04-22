@@ -292,11 +292,14 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
 
 async fn call_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let path = if q.is_empty() {
-        "/v1/services".to_string()
-    } else {
-        format!("/v1/services?query={}", urlencoding::encode(q))
-    };
+    if q.is_empty() {
+        return Err(
+            "overslash_search requires a non-empty `query` — pass the natural-language string \
+             describing what you want to do (e.g. \"send an email\")"
+                .into(),
+        );
+    }
+    let path = format!("/v1/search?q={}", urlencoding::encode(q));
     forward(state, bearer, Method::GET, &path, None).await
 }
 

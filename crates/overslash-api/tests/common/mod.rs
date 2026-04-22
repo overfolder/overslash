@@ -567,6 +567,8 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -647,6 +649,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -732,6 +736,8 @@ pub async fn start_api_with_auth_providers(
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -1178,6 +1184,8 @@ pub async fn start_api_with_registry(
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -1208,6 +1216,85 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::oauth::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::search::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    (format!("http://{addr}"), Client::new())
+}
+
+/// Start API wired for semantic-search integration tests. Loads the real
+/// `services/` registry (so gmail/google_calendar/resend/etc. are present),
+/// injects the deterministic [`StubEmbedder`] so the cosine path runs
+/// without downloading model weights, and flips `embeddings_available` to
+/// true so the endpoint actually issues pgvector queries.
+pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
+    let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let registry =
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+            .unwrap_or_default();
+
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
+        dashboard_url: "/".into(),
+        dashboard_origin: "*localhost*".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(registry),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::StubEmbedder),
+        embeddings_available: true,
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::oauth_providers::router())
+        .merge(overslash_api::routes::search::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1256,6 +1343,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()

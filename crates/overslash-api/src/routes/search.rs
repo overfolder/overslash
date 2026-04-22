@@ -1,0 +1,372 @@
+//! `GET /v1/search?q=...` — the unified service/action discovery endpoint
+//! spec'd in SPEC.md §10. Backs the MCP `overslash_search` tool.
+//!
+//! Blends three sources of ranking signal:
+//!   1. **Keyword + Jaro-Winkler fuzzy** over every visible
+//!      `(service, action)` pair (in `overslash-core::search`).
+//!   2. **Embedding cosine similarity** via pgvector top-K, when available
+//!      (`state.embeddings_available`). Gracefully skipped when the env
+//!      flag is off or the extension isn't installed.
+//!   3. **Post-rank bonuses**: a connected-instance bonus (floats up actions
+//!      the caller can run right now) and a small read-safer bonus.
+//!
+//! Candidate visibility matches the other routes: identity-bound keys
+//! apply group-ceiling filtering the same way `list_services` does; org-
+//! level keys bypass. See `routes/services.rs::list_services` for the
+//! underlying scope machinery reused here.
+
+use std::collections::{HashMap, HashSet};
+
+use axum::{Json, Router, extract::Query, extract::State, routing::get};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
+use overslash_core::types::{Risk, ServiceAuth, ServiceDefinition};
+use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
+use overslash_db::scopes::OrgScope;
+
+use crate::{
+    AppState,
+    error::{AppError, Result},
+    extractors::AuthContext,
+    services::group_ceiling,
+};
+
+/// Weight split when blending keyword+fuzzy with embedding cosine. Biased
+/// toward embeddings because that's the whole point of natural-language
+/// queries, but keyword still carries meaningful signal for exact matches
+/// like `"stripe"` or `"list_repos"`.
+const KEYWORD_WEIGHT: f32 = 0.4;
+const EMBEDDING_WEIGHT: f32 = 0.6;
+
+/// Default `limit` when the caller doesn't pass one. Deliberately small so
+/// agents get a short actionable list rather than a dump of the whole
+/// registry.
+const DEFAULT_LIMIT: usize = 20;
+/// Upper bound on `limit`. Caps the response size even if an agent asks for
+/// more — at this corpus size 100 is already well past the point of
+/// diminishing returns.
+const MAX_LIMIT: usize = 100;
+/// Top-K fetched from pgvector. Larger than MAX_LIMIT because we still
+/// re-rank in the endpoint (and filter by visibility the SQL couldn't
+/// enforce cleanly, e.g. hidden global templates).
+const EMBEDDING_CANDIDATES: i64 = 50;
+
+pub fn router() -> Router<AppState> {
+    Router::new().route("/v1/search", get(search))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct SearchResponse {
+    query: String,
+    results: Vec<SearchResult>,
+}
+
+#[derive(Serialize)]
+struct SearchResult {
+    /// Template key (same across all instances). Agents use this to call
+    /// `overslash_execute` in template-keyed mode, or pick an
+    /// `auth.instances[i].name` for instance-keyed mode.
+    service: String,
+    service_display_name: String,
+    action: String,
+    description: String,
+    risk: Risk,
+    tier: String,
+    auth: AuthStatus,
+    score: f32,
+}
+
+#[derive(Serialize, Clone)]
+struct AuthStatus {
+    /// `"oauth"` or `"api_key"`. Mirrors `ServiceAuth` so agents don't have
+    /// to crack open the template themselves.
+    #[serde(rename = "type")]
+    kind: String,
+    /// OAuth provider key when `kind == "oauth"`. Absent for api-key auth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    connected: bool,
+    /// All visible active instances for this template. Multiple accounts
+    /// of the same provider (e.g., work + personal Gmail) each surface
+    /// here with the owner's email so the agent can pick deterministically.
+    /// Omitted when `connected == false`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    instances: Vec<InstanceRef>,
+}
+
+#[derive(Serialize, Clone)]
+struct InstanceRef {
+    /// The instance's runtime name — the string to pass as
+    /// `overslash_execute.service`.
+    name: String,
+    /// Owner's email, resolved from `identities.email`. Never a raw UUID.
+    /// Absent for org-tier instances (no owner identity) and for users
+    /// whose profile didn't record an email.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_email: Option<String>,
+}
+
+async fn search(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    scope: OrgScope,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>> {
+    let q = params.q.trim();
+    if q.is_empty() {
+        return Err(AppError::BadRequest(
+            "query parameter `q` is required".into(),
+        ));
+    }
+    let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+
+    // --- Visibility: global-tier filter + group ceiling for instances ---
+    let global_filter = visible_global_filter(&state, auth.org_id).await?;
+    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+        .await?
+        .unwrap_or(false);
+
+    // Replicates routes/services.rs:list_services so the "which services
+    // can this caller see?" story is identical between listing and search.
+    let (ceiling_user_id, visible_instance_ids) = if let Some(identity_id) = auth.identity_id {
+        let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
+        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
+        let has_user_groups = groups.iter().any(|g| !g.is_system);
+        let visible_ids = if !has_user_groups {
+            None
+        } else {
+            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
+        };
+        (Some(ceiling_user_id), visible_ids)
+    } else {
+        (None, None)
+    };
+
+    // --- Collect template definitions (global + org + user tiers) ---
+    let mut templates: Vec<TemplateCandidate> = Vec::new();
+
+    for svc in state.registry.all() {
+        if !is_global_visible(&global_filter, &svc.key) {
+            continue;
+        }
+        templates.push(TemplateCandidate {
+            tier: "global",
+            def: svc.clone(),
+        });
+    }
+
+    for t in service_template::list_available(&state.db, auth.org_id, auth.identity_id).await? {
+        let is_user_tier = t.owner_identity_id.is_some();
+        if is_user_tier && !user_templates_allowed {
+            continue;
+        }
+        let (def, _warnings) =
+            overslash_core::openapi::compile_service(&t.openapi).map_err(|errors| {
+                AppError::Internal(format!(
+                    "template '{}' failed to compile: {errors:?}",
+                    t.key
+                ))
+            })?;
+        templates.push(TemplateCandidate {
+            tier: if is_user_tier { "user" } else { "org" },
+            def,
+        });
+    }
+
+    // --- Active instances → connected/instances map, keyed by template_key ---
+    let instances = scope
+        .list_available_service_instances_with_groups(
+            auth.identity_id,
+            ceiling_user_id,
+            visible_instance_ids.as_deref(),
+        )
+        .await?;
+
+    // Preload owner_email per unique owner identity (batched to avoid N+1).
+    let owner_ids: Vec<Uuid> = instances
+        .iter()
+        .filter_map(|r| r.owner_identity_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut emails_by_owner: HashMap<Uuid, Option<String>> = HashMap::new();
+    for owner_id in owner_ids {
+        if let Some(row) = scope.get_identity(owner_id).await? {
+            emails_by_owner.insert(owner_id, row.email);
+        }
+    }
+
+    let mut instances_by_template: HashMap<String, Vec<InstanceRef>> = HashMap::new();
+    for r in instances {
+        if r.status != "active" {
+            continue;
+        }
+        let owner_email = r
+            .owner_identity_id
+            .and_then(|id| emails_by_owner.get(&id).cloned())
+            .flatten();
+        instances_by_template
+            .entry(r.template_key.clone())
+            .or_default()
+            .push(InstanceRef {
+                name: r.name,
+                owner_email,
+            });
+    }
+
+    // --- Embedding cosine retrieval (optional) ---
+    // Keyed by (tier, template_key, action_key) so we can merge with the
+    // keyword score per-candidate without ambiguity. A template key alone
+    // isn't unique across tiers when an org shadows a global.
+    let mut emb_scores: HashMap<(String, String, String), f32> = HashMap::new();
+    if state.embeddings_available && state.embedder.is_enabled() {
+        match state.embedder.embed(&[q]) {
+            Ok(vecs) if !vecs.is_empty() => {
+                match service_action_embedding::top_k_cosine(
+                    &state.db,
+                    vecs[0].clone(),
+                    auth.org_id,
+                    auth.identity_id,
+                    EMBEDDING_CANDIDATES,
+                )
+                .await
+                {
+                    Ok(hits) => {
+                        for h in hits {
+                            emb_scores.insert(
+                                (h.tier, h.template_key, h.action_key),
+                                h.score.clamp(0.0, 1.0),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("pgvector top-k failed, falling back: {e}");
+                    }
+                }
+            }
+            Ok(_) => {
+                // Empty result from embedder — treat as disabled for this
+                // request; keyword+fuzzy still runs below.
+            }
+            Err(e) => {
+                tracing::warn!("query embedding failed, falling back: {e}");
+            }
+        }
+    }
+
+    // --- Score every (template, action) candidate ---
+    let mut scored: Vec<SearchResult> = Vec::new();
+    for t in &templates {
+        let connected_instances = instances_by_template
+            .get(&t.def.key)
+            .cloned()
+            .unwrap_or_default();
+        let connected = !connected_instances.is_empty();
+        let auth_status = build_auth_status(&t.def, connected, connected_instances);
+
+        for (action_key, action) in t.def.actions.iter() {
+            let cand = Candidate {
+                service: &t.def,
+                action_key,
+                action,
+            };
+            let kw = keyword_fuzzy_score(q, &cand);
+            let emb = emb_scores
+                .get(&(t.tier.to_string(), t.def.key.clone(), action_key.clone()))
+                .copied()
+                .unwrap_or(0.0);
+
+            // When the embedder didn't contribute (disabled / unavailable /
+            // query out of domain), blend to pure keyword — otherwise
+            // embedding-zero drags every result below MIN_SCORE.
+            let raw = if emb > 0.0 {
+                KEYWORD_WEIGHT * kw + EMBEDDING_WEIGHT * emb
+            } else {
+                kw
+            };
+            let final_score = apply_post_bonuses(raw, connected, action.risk);
+            if final_score < MIN_SCORE {
+                continue;
+            }
+            scored.push(SearchResult {
+                service: t.def.key.clone(),
+                service_display_name: t.def.display_name.clone(),
+                action: action_key.clone(),
+                description: action.description.clone(),
+                risk: action.risk,
+                tier: t.tier.into(),
+                auth: auth_status.clone(),
+                score: final_score,
+            });
+        }
+    }
+
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    scored.truncate(limit);
+
+    Ok(Json(SearchResponse {
+        query: q.to_string(),
+        results: scored,
+    }))
+}
+
+struct TemplateCandidate {
+    tier: &'static str,
+    def: ServiceDefinition,
+}
+
+fn build_auth_status(
+    def: &ServiceDefinition,
+    connected: bool,
+    instances: Vec<InstanceRef>,
+) -> AuthStatus {
+    // Pick the first declared auth method as the primary face the caller
+    // sees. Templates that mix auth methods (rare) still surface here with
+    // the preferred one first — exactly how the dashboard displays them.
+    let (kind, provider) = match def.auth.first() {
+        Some(ServiceAuth::OAuth { provider, .. }) => ("oauth".into(), Some(provider.clone())),
+        Some(ServiceAuth::ApiKey { .. }) => ("api_key".into(), None),
+        None => ("none".into(), None),
+    };
+    AuthStatus {
+        kind,
+        provider,
+        connected,
+        instances: if connected { instances } else { Vec::new() },
+    }
+}
+
+// Reproduce the global-template visibility filter used by routes/templates.rs.
+// Kept inline (not imported) to avoid cross-route coupling; the logic is
+// two lines of SQL wrapped in a hash-set check.
+async fn visible_global_filter(state: &AppState, org_id: Uuid) -> Result<Option<HashSet<String>>> {
+    let enabled = org_repo::get_global_templates_enabled(&state.db, org_id)
+        .await?
+        .unwrap_or(true);
+    if enabled {
+        return Ok(None);
+    }
+    let keys =
+        overslash_db::repos::enabled_global_template::list_enabled_keys(&state.db, org_id).await?;
+    Ok(Some(keys.into_iter().collect()))
+}
+
+fn is_global_visible(filter: &Option<HashSet<String>>, key: &str) -> bool {
+    match filter {
+        None => true,
+        Some(set) => set.contains(key),
+    }
+}

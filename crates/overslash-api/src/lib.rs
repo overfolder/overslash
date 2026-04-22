@@ -18,6 +18,7 @@ use tower_http::{
 };
 
 use crate::config::Config;
+use overslash_core::embeddings::{DisabledEmbedder, Embedder};
 use overslash_core::registry::ServiceRegistry;
 
 /// Application state shared across handlers.
@@ -36,6 +37,17 @@ pub struct AppState {
     /// In-memory store for `/oauth/authorize` requests paused at the consent
     /// step, keyed by a single-use `request_id`. Same 60s TTL as auth codes.
     pub pending_authorize_store: services::oauth_as::PendingAuthorizeStore,
+    /// Embedding backend for `/v1/search`. Holds [`DisabledEmbedder`] when
+    /// `OVERSLASH_EMBEDDINGS=off` or when the pgvector preflight fails;
+    /// otherwise the real `FastembedEmbedder`. Checked on every query via
+    /// `embedder.is_enabled()` before touching the vector store.
+    pub embedder: Arc<dyn Embedder>,
+    /// Cached result of the pgvector preflight (see [`init_embeddings`]).
+    /// `true` iff both the env flag is on *and* the extension is present
+    /// in the connected Postgres. When `false`, the search endpoint
+    /// short-circuits the cosine retrieval and blends only keyword +
+    /// fuzzy scores.
+    pub embeddings_available: bool,
 }
 
 /// Create the application router with all routes and middleware.
@@ -59,6 +71,8 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         std::time::Duration::from_secs(30),
     ));
 
+    let (embedder, embeddings_available) = init_embeddings(&db).await;
+
     let state = AppState {
         db,
         config,
@@ -68,6 +82,8 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         rate_limit_cache,
         auth_code_store: services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: services::oauth_as::PendingAuthorizeStore::new(),
+        embedder,
+        embeddings_available,
     };
 
     // Spawn background tasks
@@ -125,6 +141,18 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                 }
             });
         }
+
+        // Embedding backfill — only runs when the preflight passed and the
+        // embedder is real. Spawns detached; search stays usable while it
+        // progresses because keyword+fuzzy covers gaps until vectors land.
+        if state.embeddings_available {
+            let db = state.db.clone();
+            let registry = Arc::clone(&state.registry);
+            let embedder = Arc::clone(&state.embedder);
+            tokio::spawn(async move {
+                services::embedding_backfill::run_once(db, registry, embedder).await;
+            });
+        }
     }
 
     let rate_limited_routes = Router::new()
@@ -138,6 +166,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::approvals::router())
         .merge(routes::audit::router())
         .merge(routes::webhooks::router())
+        .merge(routes::search::router())
         .merge(routes::services::router())
         .merge(routes::templates::router())
         .merge(routes::connections::router())
@@ -213,4 +242,89 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .layer(cors);
 
     Ok(app)
+}
+
+/// Construct the embedding backend for this process lifetime.
+///
+/// Order of precedence:
+///   1. `OVERSLASH_EMBEDDINGS=off` → always return [`DisabledEmbedder`].
+///      Honored even when pgvector is present so operators can explicitly
+///      opt out without rebuilding.
+///   2. Otherwise: probe pgvector availability via `pg_extension`. If
+///      missing, warn and return [`DisabledEmbedder`] — the search
+///      endpoint still works, just without the cosine signal.
+///   3. If pgvector is present and embeddings are enabled, initialize the
+///      real [`FastembedEmbedder`] (or fall through to disabled if the
+///      model init itself fails — e.g. HuggingFace download in an
+///      airgapped env).
+///
+/// Returns `(embedder, embeddings_available)`. `embeddings_available` is
+/// `true` only when both the backend is real *and* the vector store exists
+/// to write to — the endpoint uses this flag to decide whether the cosine
+/// query is worth issuing at all.
+pub async fn init_embeddings(db: &PgPool) -> (Arc<dyn Embedder>, bool) {
+    let env_flag = std::env::var("OVERSLASH_EMBEDDINGS").unwrap_or_else(|_| "on".to_string());
+    if env_flag.eq_ignore_ascii_case("off") {
+        if has_pgvector(db).await {
+            tracing::info!(
+                "pgvector available but embeddings disabled via OVERSLASH_EMBEDDINGS=off"
+            );
+        } else {
+            tracing::info!("embeddings disabled via OVERSLASH_EMBEDDINGS=off");
+        }
+        return (Arc::new(DisabledEmbedder) as Arc<dyn Embedder>, false);
+    }
+
+    if !has_pgvector(db).await {
+        tracing::warn!(
+            "pgvector extension not present; semantic search disabled, \
+             falling back to keyword + fuzzy"
+        );
+        return (Arc::new(DisabledEmbedder) as Arc<dyn Embedder>, false);
+    }
+
+    #[cfg(feature = "embeddings")]
+    {
+        let cache_dir = std::env::var("OVERSLASH_EMBED_CACHE_DIR")
+            .ok()
+            .map(std::path::PathBuf::from);
+        match overslash_core::embeddings::FastembedEmbedder::new(cache_dir) {
+            Ok(e) => {
+                tracing::info!("semantic search enabled (pgvector + fastembed/bge-small-en-v1.5)");
+                (Arc::new(e) as Arc<dyn Embedder>, true)
+            }
+            Err(err) => {
+                tracing::warn!("fastembed init failed; falling back to keyword + fuzzy: {err}");
+                (Arc::new(DisabledEmbedder), false)
+            }
+        }
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        tracing::info!(
+            "overslash-api built without `embeddings` feature; semantic search disabled"
+        );
+        (Arc::new(DisabledEmbedder), false)
+    }
+}
+
+/// Probe whether the `vector` extension is installed in the connected
+/// Postgres. Cheap single-row query; runs once at boot. Uses a runtime
+/// sqlx call so it doesn't force the compile-time macro to know about the
+/// vector extension — the rest of the embeddings machinery is similarly
+/// macro-free (see `overslash_db::repos::service_action_embedding`).
+#[allow(clippy::disallowed_methods)]
+async fn has_pgvector(db: &PgPool) -> bool {
+    match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')",
+    )
+    .fetch_one(db)
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("pgvector preflight failed: {e}");
+            false
+        }
+    }
 }
