@@ -350,7 +350,15 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(frame["jsonrpc"], "2.0");
     assert_eq!(frame["id"], 1);
     let tools = frame["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 3);
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"overslash_search"));
+    assert!(names.contains(&"overslash_execute"));
+    assert!(names.contains(&"overslash_auth"));
+    assert!(
+        !names.contains(&"overslash_approve"),
+        "overslash_approve must not be exposed — self-management is dashboard-only"
+    );
 
     // Refresh rotates the refresh token.
     let refresh_resp = client
