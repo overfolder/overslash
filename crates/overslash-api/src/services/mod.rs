@@ -1,4 +1,5 @@
 pub mod client_credentials;
+pub mod embedding_backfill;
 pub mod group_ceiling;
 pub mod http_executor;
 pub mod identity_path;

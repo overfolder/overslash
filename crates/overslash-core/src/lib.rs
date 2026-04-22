@@ -1,11 +1,13 @@
 pub mod crypto;
 pub mod description;
 pub(crate) mod description_grammar;
+pub mod embeddings;
 pub mod identity_path;
 pub mod openapi;
 pub mod param_resolver;
 pub mod permissions;
 pub mod registry;
+pub mod search;
 pub mod secret_injection;
 pub mod template_validation;
 pub mod types;

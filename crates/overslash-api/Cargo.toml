@@ -5,8 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["embeddings"]
+# Propagates to overslash-core; when off, `init_embeddings` short-circuits
+# to `DisabledEmbedder` and the search endpoint runs keyword+fuzzy only.
+embeddings = ["overslash-core/embeddings"]
+
 [dependencies]
-overslash-core = { path = "../overslash-core" }
+overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }
 overslash-db = { path = "../overslash-db" }
 axum = { workspace = true }
 tower-http = { workspace = true }

@@ -101,3 +101,96 @@ pub async fn revoke(pool: &PgPool, client_id: &str) -> Result<bool, sqlx::Error>
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+#[derive(Debug)]
+pub struct SimilarBoundClient {
+    pub client: OauthMcpClientRow,
+    pub agent_identity_id: Uuid,
+}
+
+// Match on `client_name` + `software_id` with `IS NOT DISTINCT FROM` so a
+// client re-registering with the same identity (even without software_id)
+// still pairs with its previous binding. A caller with **both** fields
+// NULL is treated as anonymous — returning early with `None` — because
+// matching NULL-to-NULL would collapse every metadata-less client the
+// user has ever enrolled into the most recent one and silently rebind
+// distinct clients to the same agent.
+// Does this user already have a (non-revoked) binding to this agent via
+// any MCP client? Used to authorize a reauth: the user can only rebind
+// a re-registered MCP client to an agent they'd previously enrolled
+// some MCP client against.
+pub async fn user_has_binding_to_agent(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+    agent_identity_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT 1 AS one
+           FROM mcp_client_agent_bindings b
+           JOIN oauth_mcp_clients c ON c.client_id = b.client_id
+          WHERE b.user_identity_id = $1
+            AND b.agent_identity_id = $2
+            AND c.is_revoked = false
+          LIMIT 1",
+        user_identity_id,
+        agent_identity_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+pub async fn find_similar_for_user(
+    pool: &PgPool,
+    user_identity_id: Uuid,
+    client_name: Option<&str>,
+    software_id: Option<&str>,
+) -> Result<Option<SimilarBoundClient>, sqlx::Error> {
+    if client_name.is_none() && software_id.is_none() {
+        return Ok(None);
+    }
+    let row = sqlx::query!(
+        r#"SELECT c.id            AS "id!",
+                  c.client_id     AS "client_id!",
+                  c.client_name,
+                  c.redirect_uris AS "redirect_uris!",
+                  c.software_id,
+                  c.software_version,
+                  c.created_at    AS "created_at!",
+                  c.last_seen_at,
+                  c.created_ip,
+                  c.created_user_agent,
+                  c.is_revoked    AS "is_revoked!",
+                  b.agent_identity_id AS "agent_identity_id!"
+             FROM oauth_mcp_clients c
+             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id
+            WHERE b.user_identity_id = $1
+              AND c.is_revoked = false
+              AND c.client_name IS NOT DISTINCT FROM $2
+              AND c.software_id IS NOT DISTINCT FROM $3
+         ORDER BY b.updated_at DESC
+            LIMIT 1"#,
+        user_identity_id,
+        client_name,
+        software_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| SimilarBoundClient {
+        client: OauthMcpClientRow {
+            id: r.id,
+            client_id: r.client_id,
+            client_name: r.client_name,
+            redirect_uris: r.redirect_uris,
+            software_id: r.software_id,
+            software_version: r.software_version,
+            created_at: r.created_at,
+            last_seen_at: r.last_seen_at,
+            created_ip: r.created_ip,
+            created_user_agent: r.created_user_agent,
+            is_revoked: r.is_revoked,
+        },
+        agent_identity_id: r.agent_identity_id,
+    }))
+}

@@ -36,6 +36,7 @@ pub mod permission_rule;
 pub mod rate_limit;
 pub mod secret;
 pub mod secret_request;
+pub mod service_action_embedding;
 pub mod service_instance;
 pub mod service_template;
 pub mod webhook;

@@ -55,6 +55,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -880,6 +882,8 @@ async fn test_service_registry_api() {
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -1358,6 +1362,82 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     assert_eq!(token, "still_valid_token");
 }
 
+// Regression: Google (and most OAuth2 providers) do not return a new
+// refresh_token on routine refresh responses. The refresh path must preserve
+// the existing refresh_token when `None` is passed, otherwise the first
+// refresh wipes it and every subsequent access-token expiry is terminal.
+#[tokio::test]
+async fn test_update_tokens_preserves_refresh_token_when_none() {
+    let pool = common::test_pool().await;
+    let enc_key_hex = "ab".repeat(32);
+    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+
+    let org = overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test")
+        .await
+        .unwrap();
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+        .await
+        .unwrap();
+
+    let initial_access = overslash_core::crypto::encrypt(&enc_key, b"access_v1").unwrap();
+    let initial_refresh = overslash_core::crypto::encrypt(&enc_key, b"refresh_v1").unwrap();
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
+            org_id: org.id,
+            identity_id: ident.id,
+            provider_key: "google",
+            encrypted_access_token: &initial_access,
+            encrypted_refresh_token: Some(&initial_refresh),
+            token_expires_at: Some(time::OffsetDateTime::now_utc() - time::Duration::hours(1)),
+            scopes: &[],
+            account_email: None,
+            byoc_credential_id: None,
+        })
+        .await
+        .unwrap();
+
+    // Simulate a refresh response that includes a new access_token but no
+    // new refresh_token — the common Google case.
+    let rotated_access = overslash_core::crypto::encrypt(&enc_key, b"access_v2").unwrap();
+    scope
+        .update_connection_tokens(
+            conn.id,
+            &rotated_access,
+            None,
+            Some(time::OffsetDateTime::now_utc() + time::Duration::hours(1)),
+        )
+        .await
+        .unwrap();
+
+    let reloaded = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let refresh_still_there = reloaded
+        .encrypted_refresh_token
+        .expect("refresh_token must be preserved when update passes None");
+    let decrypted_refresh =
+        overslash_core::crypto::decrypt(&enc_key, &refresh_still_there).unwrap();
+    assert_eq!(String::from_utf8(decrypted_refresh).unwrap(), "refresh_v1");
+
+    // Also verify a subsequent update with Some(new) does rotate it.
+    let rotated_refresh = overslash_core::crypto::encrypt(&enc_key, b"refresh_v2").unwrap();
+    scope
+        .update_connection_tokens(
+            conn.id,
+            &rotated_access,
+            Some(&rotated_refresh),
+            Some(time::OffsetDateTime::now_utc() + time::Duration::hours(1)),
+        )
+        .await
+        .unwrap();
+    let reloaded = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let decrypted_refresh = overslash_core::crypto::decrypt(
+        &enc_key,
+        reloaded.encrypted_refresh_token.as_ref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(decrypted_refresh).unwrap(), "refresh_v2");
+}
+
 // ============================================================================
 // BYOC Credential Tests
 // ============================================================================
@@ -1742,6 +1822,8 @@ async fn start_api_with_registry(
         ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()

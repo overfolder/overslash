@@ -141,7 +141,7 @@
 - User-to-org template sharing (propose / approve / deny; in Review, card `7e5ee`)
 - Phase 3: approval visibility scoping (`?scope=actionable` vs `?scope=mine`), webhook `gap_identity` + `can_be_handled_by`
 - Phase 3: archived sub-agent list + restore button + cleanup config form in the Agents view (backend shipped)
-- Phase 4: Meta tools (`overslash_search`/`_execute`/`_auth` in Review, card `30b36`), semantic search, org billing / usage metering, documentation site
+- Phase 4: Meta tools (`overslash_search`/`_execute`/`_auth` in Review, card `30b36`), org billing / usage metering, documentation site
 
 ### CLI + MCP — Surface Restructure (OAuth transport)
 
@@ -155,7 +155,7 @@
 - `overslash mcp` is a thin stdio↔HTTP pipe: reads `~/.config/overslash/mcp.json` (`{ server_url, token, refresh_token?, client_id? }`), forwards stdin frames to `POST /mcp`, auto-refreshes on 401 once when a refresh_token is present.
 - `overslash mcp login` runs the standard OAuth Authorization Code + PKCE flow against `/oauth/authorize` (browser + 127.0.0.1 one-shot listener), persists the resulting token, prints the editor config snippet.
 - Four tools exposed by `POST /mcp`:
-  - `overslash_search` → `GET /v1/services`
+  - `overslash_search` → `GET /v1/search` — unified service/action discovery (§10) with keyword + Jaro-Winkler fuzzy + optional local pgvector embeddings (`bge-small-en-v1.5`). Hybrid ranker; `auth.instances[]` lists every connected instance with `owner_email`. Env kill-switch `OVERSLASH_EMBEDDINGS=off` + boot-time pgvector preflight — falls back to keyword+fuzzy transparently on vanilla Postgres.
   - `overslash_execute` → `POST /v1/actions/execute`
   - `overslash_auth` → dispatched per-action: `whoami`/`list_secrets`/`request_secret`/`create_subagent`/`create_service_from_template`/`service_status`. `rotate_secret` and a few others from SPEC §10 not yet wired (return `invalid_params` with a clear message).
   - `overslash_approve` → `POST /v1/approvals/{id}/resolve` — no longer "MCP only"; usable from any user-mode surface.

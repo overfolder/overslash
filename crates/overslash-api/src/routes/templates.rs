@@ -643,6 +643,16 @@ async fn create_template(
         })
         .await;
 
+    crate::services::embedding_backfill::refresh_template(
+        &state.db,
+        state.embedder.as_ref(),
+        tier,
+        Some(acl.org_id),
+        row.owner_identity_id,
+        &def,
+    )
+    .await;
+
     Ok(Json(db_row_to_detail(row, tier)?))
 }
 
@@ -725,6 +735,16 @@ async fn update_template(
         })
         .await;
 
+    crate::services::embedding_backfill::refresh_template(
+        &state.db,
+        state.embedder.as_ref(),
+        tier,
+        Some(acl.org_id),
+        row.owner_identity_id,
+        &def,
+    )
+    .await;
+
     Ok(Json(db_row_to_detail(row, tier)?))
 }
 
@@ -785,13 +805,22 @@ async fn delete_template(
             resource_type: Some("template"),
             resource_id: Some(id),
             detail: serde_json::json!({
-                "key": key,
+                "key": &key,
                 "tier": tier,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
+
+    crate::services::embedding_backfill::delete_template_embeddings(
+        &state.db,
+        tier,
+        Some(acl.org_id),
+        existing.owner_identity_id,
+        &key,
+    )
+    .await;
 
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
@@ -1350,6 +1379,16 @@ async fn promote_draft(
             ip_address: ip.0.as_deref(),
         })
         .await;
+
+    crate::services::embedding_backfill::refresh_template(
+        &state.db,
+        state.embedder.as_ref(),
+        if tier == "user" { "user" } else { "org" },
+        Some(acl.org_id),
+        promoted.owner_identity_id,
+        &def,
+    )
+    .await;
 
     Ok(Json(db_row_to_detail(promoted, tier)?))
 }
