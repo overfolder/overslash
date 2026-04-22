@@ -20,6 +20,12 @@ use crate::{
     extractors::{AuthContext, ClientIp, WriteAcl},
 };
 
+/// Maximum bytes of `action_detail` returned on approval responses. The raw
+/// payload is surfaced to reviewers (behind a "Show Raw Payload" disclosure);
+/// the cap bounds response size and browser render cost. The original
+/// untruncated size is still reported via `action_detail_size_bytes`.
+const MAX_ACTION_DETAIL_BYTES: usize = 100 * 1024;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/approvals", get(list_approvals))
@@ -45,10 +51,31 @@ struct ApprovalResponse {
     permission_keys: Vec<String>,
     derived_keys: Vec<overslash_core::permissions::DerivedKey>,
     suggested_tiers: Vec<overslash_core::permissions::SuggestedTier>,
+    /// Pretty-printed serialization of the stored `action_detail` JSONB,
+    /// truncated at a UTF-8 char boundary if the full form exceeds
+    /// `MAX_ACTION_DETAIL_BYTES`. `None` when no detail was stored.
+    action_detail: Option<String>,
+    action_detail_truncated: bool,
+    /// Byte length of the full pretty-printed `action_detail` prior to
+    /// truncation. `0` when no detail was stored.
+    action_detail_size_bytes: usize,
     status: String,
     token: String,
     expires_at: String,
     created_at: String,
+}
+
+/// Truncate a UTF-8 string to at most `max` bytes, walking backward from the
+/// boundary so multibyte characters are never split.
+fn truncate_utf8(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut idx = max;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
 }
 
 impl ApprovalResponse {
@@ -58,6 +85,22 @@ impl ApprovalResponse {
     ) -> Self {
         let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
         let suggested_tiers = overslash_core::permissions::suggest_tiers(&r.permission_keys);
+        let (action_detail, action_detail_truncated, action_detail_size_bytes) = match r
+            .action_detail
+            .as_ref()
+            .and_then(|v| serde_json::to_string_pretty(v).ok())
+        {
+            Some(full) => {
+                let size = full.len();
+                if size > MAX_ACTION_DETAIL_BYTES {
+                    let trimmed = truncate_utf8(&full, MAX_ACTION_DETAIL_BYTES).to_string();
+                    (Some(trimmed), true, size)
+                } else {
+                    (Some(full), false, size)
+                }
+            }
+            None => (None, false, 0),
+        };
         Self {
             id: r.id,
             identity_id: r.identity_id,
@@ -68,6 +111,9 @@ impl ApprovalResponse {
             permission_keys: r.permission_keys,
             derived_keys,
             suggested_tiers,
+            action_detail,
+            action_detail_truncated,
+            action_detail_size_bytes,
             status: r.status,
             token: r.token,
             expires_at: fmt_time(r.expires_at),

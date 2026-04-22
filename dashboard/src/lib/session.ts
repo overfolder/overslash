@@ -179,6 +179,14 @@ export interface ApprovalResponse {
 	permission_keys: string[];
 	derived_keys: DerivedKey[];
 	suggested_tiers: SuggestedTier[];
+	/** Pretty-printed serialization of the stored action_detail JSONB.
+	 *  Truncated server-side at MAX_ACTION_DETAIL_BYTES (100 KB) on a
+	 *  UTF-8 char boundary. Null when no detail was stored. */
+	action_detail: string | null;
+	action_detail_truncated: boolean;
+	/** Byte length of the full pretty-printed action_detail prior to
+	 *  truncation. 0 when no detail was stored. */
+	action_detail_size_bytes: number;
 	status: string;
 	token: string;
 	expires_at: string;

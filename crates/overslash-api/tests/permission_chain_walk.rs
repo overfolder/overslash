@@ -174,6 +174,90 @@ async fn agent_no_rules_gap_resolver_is_user() {
         time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|e| panic!("{field} not RFC3339: {s:?} ({e})"));
     }
+
+    // Small payloads are surfaced whole: `action_detail` is a pretty-printed
+    // JSON string containing the original request, not truncated, and the
+    // reported size matches the string length.
+    let detail = appr["action_detail"]
+        .as_str()
+        .expect("action_detail should be a string for stored payloads");
+    assert!(
+        detail.contains("\"method\""),
+        "action_detail missing method"
+    );
+    assert!(detail.contains("\"url\""), "action_detail missing url");
+    assert!(detail.contains("\"body\""), "action_detail missing body");
+    assert_eq!(appr["action_detail_truncated"], json!(false));
+    assert_eq!(
+        appr["action_detail_size_bytes"].as_u64().unwrap() as usize,
+        detail.len(),
+        "action_detail_size_bytes should equal the serialized string length when not truncated"
+    );
+}
+
+// ── action_detail is truncated on a UTF-8 boundary at 100 KB ─────────
+
+#[tokio::test]
+async fn action_detail_truncated_at_100kb_on_char_boundary() {
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let agent_id = create_identity(&base, &org_key, "bot", "agent", Some(user_id)).await;
+    let agent_key = create_api_key(&base, &org_key, org_id, agent_id, "agent-key").await;
+
+    // Build a body well above 100 KB but below the ~2 MB Axum inbound cap.
+    // Use a 4-byte multibyte glyph repeated so truncation that sliced
+    // mid-character would corrupt the output; we verify via UTF-8 validity.
+    let large_body: String = "🌵".repeat(40_000); // 40_000 × 4 bytes = 160_000 bytes
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/execute"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo"),
+            "headers": {"Content-Type": "text/plain"},
+            "body": large_body,
+            "secrets": [{"name": "test_token", "inject_as": "header", "header_name": "X-Token"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    let approval_id = body["approval_id"].as_str().unwrap().to_string();
+
+    let appr: Value = reqwest::Client::new()
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(appr["action_detail_truncated"], json!(true));
+    let full_size = appr["action_detail_size_bytes"].as_u64().unwrap() as usize;
+    assert!(
+        full_size > 100 * 1024,
+        "expected full payload > 100 KB, got {full_size}"
+    );
+
+    let detail = appr["action_detail"].as_str().expect("action_detail");
+    assert!(
+        detail.len() <= 100 * 1024,
+        "truncated payload exceeds cap: {} bytes",
+        detail.len()
+    );
+    // UTF-8 safety: serde deserialization into `String` already fails if the
+    // truncated bytes aren't valid UTF-8, but assert the char boundary
+    // explicitly to make the intent of this regression clear.
+    assert!(
+        std::str::from_utf8(detail.as_bytes()).is_ok(),
+        "truncation split a multibyte character"
+    );
 }
 
 // ── Test 2: spec example -- service-b request goes to Chief ─────────
