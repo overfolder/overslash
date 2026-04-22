@@ -16,12 +16,6 @@ components:
           tokenUrl: https://oauth2.googleapis.com/token
           scopes:
             https://www.googleapis.com/auth/calendar: ""
-    token:
-      type: apiKey
-      in: header
-      name: Authorization
-      x-overslash-prefix: "Bearer "
-      default_secret_name: google_calendar_token
 paths:
   /calendar/v3/users/me/calendarList:
     get:

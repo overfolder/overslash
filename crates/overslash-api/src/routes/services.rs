@@ -435,6 +435,30 @@ async fn create_service(
         }
     }
 
+    // `secret_name` is only meaningful when the template declares ApiKey auth.
+    // OAuth-only templates must not carry one — accepting it would create a
+    // dead value the resolver ignores, yet the dashboard would surface the
+    // instance as "connected" based on `secret_name` alone.
+    if req.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
+        let template_def = crate::routes::templates::resolve_template_definition(
+            &state,
+            auth.org_id,
+            template_lookup_identity,
+            &req.template_key,
+        )
+        .await?;
+        let has_api_key = template_def
+            .auth
+            .iter()
+            .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
+        if !has_api_key {
+            return Err(AppError::BadRequest(format!(
+                "template '{}' does not use api key auth",
+                req.template_key
+            )));
+        }
+    }
+
     let input = CreateServiceInstance {
         org_id: auth.org_id,
         owner_identity_id,
@@ -468,7 +492,8 @@ async fn create_service(
 
 /// Update a service instance by id.
 async fn update_service(
-    _: AdminAcl,
+    State(state): State<AppState>,
+    AdminAcl(auth): AdminAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceRequest>,
@@ -480,6 +505,31 @@ async fn update_service(
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
+    }
+
+    // Block setting a non-empty `secret_name` on templates without ApiKey auth
+    // (clearing it via Some(None) or Some("") is always allowed).
+    if let Some(Some(ref new_secret)) = req.secret_name {
+        if !new_secret.is_empty() {
+            let template_lookup_identity = existing.owner_identity_id.or(auth.identity_id);
+            let template_def = crate::routes::templates::resolve_template_definition(
+                &state,
+                auth.org_id,
+                template_lookup_identity,
+                &existing.template_key,
+            )
+            .await?;
+            let has_api_key = template_def
+                .auth
+                .iter()
+                .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
+            if !has_api_key {
+                return Err(AppError::BadRequest(format!(
+                    "template '{}' does not use api key auth",
+                    existing.template_key
+                )));
+            }
+        }
     }
 
     let input = UpdateServiceInstance {

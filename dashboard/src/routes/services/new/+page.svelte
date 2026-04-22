@@ -548,7 +548,7 @@
 				</div>
 			{/if}
 
-			{#if usesApiKey}
+			{#if usesApiKey && !usesOAuth}
 				<label class="field">
 					<span class="label">API key secret name</span>
 					<input
