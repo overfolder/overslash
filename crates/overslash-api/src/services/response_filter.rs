@@ -256,13 +256,19 @@ fn run_jq_blocking(expr: &str, body: &str) -> Result<(Vec<serde_json::Value>, us
     Ok((values, filtered_bytes))
 }
 
-fn cap_message(mut msg: String) -> String {
-    const MAX: usize = 512;
-    if msg.len() > MAX {
-        msg.truncate(MAX);
-        msg.push('…');
+fn cap_message(msg: String) -> String {
+    // Char-based cap. `String::truncate` is byte-indexed and panics if the
+    // boundary lands inside a multi-byte UTF-8 sequence — reachable any time
+    // the upstream error message contains non-ASCII (provider error strings
+    // routinely do).
+    const MAX_CHARS: usize = 512;
+    let mut iter = msg.chars();
+    let prefix: String = iter.by_ref().take(MAX_CHARS).collect();
+    if iter.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
     }
-    msg
 }
 
 #[cfg(test)]
@@ -286,6 +292,19 @@ mod tests {
     fn validate_rejects_garbage() {
         assert!(validate_syntax(&jq(".items[")).is_err());
         assert!(validate_syntax(&jq("|||")).is_err());
+    }
+
+    #[test]
+    fn cap_message_does_not_panic_on_multibyte_utf8() {
+        // Pre-fix bug: `String::truncate(512)` would panic when byte 512
+        // landed inside a multi-byte char. With 4-byte chars, byte 512 falls
+        // exactly between the 128th and 129th char — safe — so use a 3-byte
+        // char (€) to land mid-char: 171 chars × 3 bytes = 513 bytes, so
+        // byte 512 is the 3rd byte of the 171st char.
+        let big = "€".repeat(600);
+        let out = cap_message(big);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), 513); // 512 chars + ellipsis
     }
 
     #[test]
