@@ -377,7 +377,34 @@ export interface ExecuteRequest {
   service?: string;
   action?: string;
   params?: Record<string, unknown>;
+  // Optional server-side filter applied to the upstream JSON response.
+  prefer_stream?: boolean;
+  filter?: ResponseFilter;
 }
+
+export type ResponseFilter = { lang: 'jq'; expr: string };
+
+export type FilterErrorKind =
+  | 'body_not_json'
+  | 'runtime_error'
+  | 'timeout'
+  | 'output_overflow';
+
+export type FilteredBody =
+  | {
+      status: 'ok';
+      lang: string;
+      values: unknown[];
+      original_bytes: number;
+      filtered_bytes: number;
+    }
+  | {
+      status: 'error';
+      lang: string;
+      kind: FilterErrorKind;
+      message: string;
+      original_bytes: number;
+    };
 
 export type ExecuteResponse =
   | { status: 'executed'; result: ActionResult; action_description: string | null }
@@ -438,4 +465,5 @@ export interface ActionResult {
   headers: Record<string, string>;
   body: string;
   duration_ms: number;
+  filtered_body?: FilteredBody;
 }

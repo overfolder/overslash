@@ -16,6 +16,7 @@ pub struct Config {
     pub public_url: String,
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
+    pub filter_timeout_ms: u64,
     pub dashboard_url: String,
     pub dashboard_origin: String,
     pub redis_url: Option<String>,
@@ -73,6 +74,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
+            filter_timeout_ms: env::var("FILTER_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2000),
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
             // "*localhost*" matches any http://localhost:<port> / http://127.0.0.1:<port>
             // origin so that worktrees with dynamic dashboard ports work out of the box.

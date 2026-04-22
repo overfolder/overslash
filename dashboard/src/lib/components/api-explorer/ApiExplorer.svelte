@@ -54,6 +54,8 @@
 	let rawHeaders = $state('');
 	let rawBody = $state('');
 
+	let filterExpr = $state('');
+
 	let running = $state(false);
 	let response = $state<ExecuteResponse | null>(null);
 	let runError = $state<string | null>(null);
@@ -189,6 +191,12 @@
 		return raw;
 	}
 
+	function attachFilter(req: ExecuteRequest): ExecuteRequest {
+		const expr = filterExpr.trim();
+		if (!expr) return req;
+		return { ...req, filter: { lang: 'jq', expr } };
+	}
+
 	function buildServiceActionRequest(): ExecuteRequest | null {
 		if (!selectedService || !selectedAction || !actionDetail) return null;
 		const params: Record<string, unknown> = {};
@@ -197,23 +205,23 @@
 			if (raw === undefined || raw === '') continue;
 			params[name] = paramToValue(raw, p.type);
 		}
-		return {
+		return attachFilter({
 			service: selectedService,
 			action: selectedAction,
 			params
-		};
+		});
 	}
 
 	function buildRawHttpRequest(): ExecuteRequest | null {
 		if (!rawUrl.trim()) return null;
 		const { literal, secrets: parsedSecrets } = parseHeaders(rawHeaders);
-		return {
+		return attachFilter({
 			method: rawMethod,
 			url: rawUrl.trim(),
 			headers: literal,
 			secrets: parsedSecrets,
 			body: rawBody.trim() ? rawBody : undefined
-		};
+		});
 	}
 
 	async function run() {
@@ -304,6 +312,21 @@
 				/>
 			{/if}
 
+			<details class="filter">
+				<summary>Filter response (jq)</summary>
+				<p class="muted">
+					Optional. Server-side jq filter applied to the upstream response.
+					The original body is always preserved on <code>result.body</code>.
+				</p>
+				<textarea
+					class="filter-input"
+					rows="2"
+					spellcheck="false"
+					placeholder={'.items[] | {id, summary, start.dateTime}'}
+					bind:value={filterExpr}
+				></textarea>
+			</details>
+
 			<div class="actions">
 				<button type="button" class="btn primary" disabled={!canRun} onclick={run}>
 					{running ? 'Executing…' : 'Execute'}
@@ -357,6 +380,32 @@
 		color: var(--color-text-heading);
 		text-transform: none;
 		margin: 0 0 0.6rem;
+	}
+	.filter {
+		margin-top: 1rem;
+		border-top: 1px solid var(--color-border-subtle);
+		padding-top: 0.85rem;
+	}
+	.filter summary {
+		cursor: pointer;
+		font: var(--text-label);
+		color: var(--color-text-heading);
+		text-transform: none;
+		margin-bottom: 0.4rem;
+	}
+	.filter .muted {
+		margin: 0.3rem 0 0.5rem;
+	}
+	.filter-input {
+		width: 100%;
+		padding: 0.55rem 0.7rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg);
+		color: var(--color-text);
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		resize: vertical;
 	}
 	.actions {
 		margin-top: 1rem;

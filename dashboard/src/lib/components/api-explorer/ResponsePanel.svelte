@@ -37,6 +37,16 @@
 			.replace(/</g, '&lt;')
 			.replace(/>/g, '&gt;');
 	}
+
+	// When a filter ran successfully, default the body view to the filter
+	// output. The user can toggle back to the original via "Show original".
+	let showOriginal = $state(false);
+
+	function bytesPct(filtered: number, original: number): string {
+		if (original <= 0) return '';
+		const pct = Math.round((filtered / original) * 100);
+		return `${pct}% of original`;
+	}
 </script>
 
 <section class="card" aria-label="Response">
@@ -61,7 +71,40 @@
 	{:else if !response}
 		<p class="placeholder">Run a request to see the response here.</p>
 	{:else if response.status === 'executed'}
-		<pre class="code">{@html prettyBody(response.result.body)}</pre>
+		{@const fb = response.result.filtered_body}
+		{#if fb && fb.status === 'error'}
+			<div class="filter-warning">
+				<strong>Filter error</strong>
+				<p>
+					<span class="kind">{fb.kind}</span>
+					{fb.message}
+				</p>
+				<p class="muted">Showing original response below.</p>
+			</div>
+			<pre class="code">{@html prettyBody(response.result.body)}</pre>
+		{:else if fb && fb.status === 'ok' && !showOriginal}
+			<div class="filter-meta">
+				<span class="chip ok">jq</span>
+				<span class="muted">
+					{fb.values.length} {fb.values.length === 1 ? 'value' : 'values'}
+					· {fb.filtered_bytes} bytes ({bytesPct(fb.filtered_bytes, fb.original_bytes)})
+				</span>
+				<button type="button" class="link" onclick={() => (showOriginal = true)}>
+					Show original
+				</button>
+			</div>
+			<pre class="code">{@html highlightJson(fb.values.length === 1 ? fb.values[0] : fb.values)}</pre>
+		{:else if fb && fb.status === 'ok' && showOriginal}
+			<div class="filter-meta">
+				<span class="muted">Original response (filter hidden).</span>
+				<button type="button" class="link" onclick={() => (showOriginal = false)}>
+					Show filtered
+				</button>
+			</div>
+			<pre class="code">{@html prettyBody(response.result.body)}</pre>
+		{:else}
+			<pre class="code">{@html prettyBody(response.result.body)}</pre>
+		{/if}
 	{:else if response.status === 'pending_approval'}
 		<div class="info">
 			<strong>Pending approval</strong>
@@ -183,5 +226,43 @@
 	.muted {
 		color: var(--color-text-muted);
 		font-size: 0.78rem;
+	}
+	.filter-warning {
+		padding: 0.6rem 0.85rem;
+		margin-bottom: 0.6rem;
+		border-radius: var(--radius-md);
+		background: var(--badge-bg-warning);
+		color: var(--warning-500);
+		border: 1px solid rgba(235, 176, 31, 0.25);
+		font-size: 0.85rem;
+	}
+	.filter-warning strong {
+		display: block;
+		margin-bottom: 0.2rem;
+	}
+	.filter-warning .kind {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		padding: 0 0.4rem;
+		border-radius: 4px;
+		background: rgba(235, 176, 31, 0.18);
+		margin-right: 0.4rem;
+	}
+	.filter-meta {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		margin-bottom: 0.6rem;
+		flex-wrap: wrap;
+	}
+	.link {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-primary);
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.82rem;
+		text-decoration: underline;
 	}
 </style>
