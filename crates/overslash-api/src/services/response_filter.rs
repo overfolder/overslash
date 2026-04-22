@@ -124,11 +124,16 @@ fn format_compile_errors<P>(
 }
 
 fn short(s: &str) -> String {
+    // Truncate by chars, not bytes — `&s[..60]` panics on a non-char-boundary
+    // index, which is reachable any time the source contains multi-byte UTF-8
+    // (cyrillic, CJK, emoji, etc.) within the first 60 bytes.
     let s = s.trim();
-    if s.len() > 60 {
-        format!("{}…", &s[..60])
+    let mut iter = s.chars();
+    let prefix: String = iter.by_ref().take(60).collect();
+    if iter.next().is_some() {
+        format!("{prefix}…")
     } else {
-        s.to_string()
+        prefix
     }
 }
 
@@ -281,6 +286,20 @@ mod tests {
     fn validate_rejects_garbage() {
         assert!(validate_syntax(&jq(".items[")).is_err());
         assert!(validate_syntax(&jq("|||")).is_err());
+    }
+
+    #[test]
+    fn short_does_not_panic_on_multibyte_utf8() {
+        // A pre-fix bug: `&s[..60]` would panic when byte 60 fell inside a
+        // multi-byte char. Each "🦀" is 4 bytes, so 30 of them = 120 bytes,
+        // and the 60-byte boundary lands mid-char. Char-based truncation
+        // handles this cleanly.
+        let crabby = "🦀".repeat(80);
+        let out = short(&crabby);
+        assert!(out.ends_with('…'));
+        assert!(out.starts_with('🦀'));
+        // Should hold exactly 60 crab chars + the ellipsis.
+        assert_eq!(out.chars().count(), 61);
     }
 
     #[tokio::test]
