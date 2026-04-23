@@ -837,10 +837,18 @@ async fn build_runtime_spec(
     std::collections::HashMap<String, String>,
     String,
 )> {
+    // The MCP subprocess is shared across all callers of this service
+    // instance, so both template tier resolution and env bindings (secrets,
+    // OAuth tokens) must be keyed off the service *owner*, not the admin
+    // calling wake/restart. A user-tier template owned by user A would
+    // otherwise be invisible when admin B pokes the runtime. Fall back to
+    // the caller only for org-owned services where `owner_identity_id` is
+    // NULL — same pattern as `template_lookup_identity` on create/update.
+    let subject_id = inst.owner_identity_id.unwrap_or(caller_id);
     let tpl = super::templates::resolve_template_definition(
         state,
         scope.org_id(),
-        Some(caller_id),
+        Some(subject_id),
         &inst.template_key,
     )
     .await?;
@@ -849,7 +857,7 @@ async fn build_runtime_spec(
         .clone()
         .ok_or_else(|| AppError::Internal("template has runtime=mcp but no mcp spec".into()))?;
     let (env, hash) =
-        crate::services::mcp_env::resolve_env(state, scope, caller_id, scope.org_id(), &mcp)
+        crate::services::mcp_env::resolve_env(state, scope, subject_id, scope.org_id(), &mcp)
             .await?;
     Ok((mcp, env, hash))
 }
