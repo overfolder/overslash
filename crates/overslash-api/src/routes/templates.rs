@@ -140,6 +140,23 @@ struct TemplateDetail {
     /// DB id for org/user templates; None for global.
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Uuid>,
+    /// "http" (default) or "mcp". Dashboard uses this to switch the actions
+    /// tab column layout and to reveal the MCP-only "Resync tools" button.
+    runtime: String,
+    /// Summary of the MCP block when `runtime == "mcp"`. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp: Option<McpDetail>,
+}
+
+#[derive(Serialize)]
+struct McpDetail {
+    url: String,
+    /// `none` or `bearer`. The dashboard uses this to gate the secret-name UI.
+    auth_kind: String,
+    autodiscover: bool,
+    /// ISO-8601 timestamp of the most recent tools/list sync. `None` if never.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovered_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -167,6 +184,18 @@ pub(crate) struct ActionSummary {
     path: String,
     description: String,
     risk: Risk,
+    /// MCP tool name when the owning service has `runtime: mcp`; None for HTTP.
+    /// The dashboard switches its column layout on this field's presence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_tool: Option<String>,
+    /// MCP outputSchema (JSON Schema). Present for MCP tools declaring one;
+    /// callers may render it as a typed shape hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_schema: Option<serde_json::Value>,
+    /// Admin-hidden tool. Dashboard shows these with a "hidden" pill and
+    /// `/v1/actions/execute` rejects invocation at resolve time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disabled: bool,
 }
 
 /// Full action details including the parameter schema — used by the API
@@ -247,6 +276,9 @@ fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
             path: a.path.clone(),
             description: a.description.clone(),
             risk: a.risk,
+            mcp_tool: a.mcp_tool.clone(),
+            output_schema: a.output_schema.clone(),
+            disabled: a.disabled,
         })
         .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));
@@ -263,6 +295,8 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
+    let runtime = runtime_string(&def);
+    let mcp = mcp_detail_from(&def, &t.openapi);
     Ok(TemplateDetail {
         key: t.key,
         display_name: t.display_name,
@@ -274,6 +308,36 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         actions: actions_from_definition(&def),
         tier: tier.into(),
         id: Some(t.id),
+        runtime,
+        mcp,
+    })
+}
+
+fn runtime_string(def: &ServiceDefinition) -> String {
+    use overslash_core::types::Runtime;
+    match def.runtime {
+        Runtime::Http => "http".into(),
+        Runtime::Mcp => "mcp".into(),
+    }
+}
+
+fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
+    use overslash_core::types::McpAuth;
+    let spec = def.mcp.as_ref()?;
+    let auth_kind = match &spec.auth {
+        McpAuth::None => "none".to_string(),
+        McpAuth::Bearer { .. } => "bearer".to_string(),
+    };
+    let discovered_at = openapi
+        .get("x-overslash-mcp")
+        .and_then(|v| v.get("discovered_at"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some(McpDetail {
+        url: spec.url.clone(),
+        auth_kind,
+        autodiscover: spec.autodiscover,
+        discovered_at,
     })
 }
 
@@ -451,6 +515,10 @@ async fn get_template(
         .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
+    let runtime = runtime_string(svc);
+    // Globals ship their tool list in the YAML on disk; discovered_at is
+    // never populated on a global (resync is not available).
+    let mcp = mcp_detail_from(svc, &serde_json::Value::Null);
     Ok(Json(TemplateDetail {
         key: svc.key.clone(),
         display_name: svc.display_name.clone(),
@@ -462,6 +530,8 @@ async fn get_template(
         actions: actions_from_definition(svc),
         tier: "global".into(),
         id: None,
+        runtime,
+        mcp,
     }))
 }
 
