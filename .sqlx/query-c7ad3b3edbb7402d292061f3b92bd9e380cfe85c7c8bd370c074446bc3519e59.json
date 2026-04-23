@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n         SET email = COALESCE($2, email),\n             display_name = COALESCE($3, display_name),\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "overslash_idp_provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "overslash_idp_subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "personal_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c7ad3b3edbb7402d292061f3b92bd9e380cfe85c7c8bd370c074446bc3519e59"
+}

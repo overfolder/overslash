@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)\n         VALUES ($1, $2, $3, $4)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "overslash_idp_provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "overslash_idp_subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "personal_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1d9b163cd0d9b3ec7d6715b64903848305cccaab4e113a58ee8f892973f90244"
+}

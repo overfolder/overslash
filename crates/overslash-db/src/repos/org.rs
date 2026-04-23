@@ -9,6 +9,7 @@ pub struct OrgRow {
     pub slug: String,
     pub subagent_idle_timeout_secs: i32,
     pub subagent_archive_retention_days: i32,
+    pub is_personal: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -17,7 +18,7 @@ pub async fn create(pool: &PgPool, name: &str, slug: &str) -> Result<OrgRow, sql
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug) VALUES ($1, $2)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at",
         name,
         slug,
     )
@@ -28,7 +29,7 @@ pub async fn create(pool: &PgPool, name: &str, slug: &str) -> Result<OrgRow, sql
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -180,7 +181,7 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -202,7 +203,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

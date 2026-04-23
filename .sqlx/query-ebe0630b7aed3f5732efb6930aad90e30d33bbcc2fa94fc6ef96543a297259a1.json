@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE identities SET name = $3, metadata = $4, updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, created_at, updated_at",
+  "query": "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at\n         FROM identities WHERE org_id = $1 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -85,21 +85,23 @@
       },
       {
         "ordinal": 16,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Jsonb"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -119,9 +121,10 @@
       true,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "b545edcf53b7256e4cff0cac6af9e2b9ce63823f843fd7b464c6efdbc9e73760"
+  "hash": "ebe0630b7aed3f5732efb6930aad90e30d33bbcc2fa94fc6ef96543a297259a1"
 }
