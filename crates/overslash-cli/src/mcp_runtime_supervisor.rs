@@ -47,11 +47,23 @@ pub struct Supervisor {
 }
 
 /// Pick a free loopback port by binding to :0 and letting the OS assign.
+///
+/// There is an inherent TOCTOU window between dropping this listener and
+/// the child binding the same port. Callers mitigate it by retrying on
+/// bind failure with a fresh port rather than reusing this one.
 fn pick_free_port() -> anyhow::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
+}
+
+/// Probe the loopback port to confirm the child has bound it. Returns `Ok(true)`
+/// if something is listening, `Ok(false)` otherwise. Used after spawn to tell
+/// "child started successfully" apart from "child raced another process for the
+/// port and died with EADDRINUSE".
+async fn port_is_bound(addr: SocketAddr) -> bool {
+    tokio::net::TcpStream::connect(addr).await.is_ok()
 }
 
 fn rand_secret() -> String {
@@ -121,50 +133,94 @@ pub async fn spawn(cfg: SupervisorConfig) -> anyhow::Result<Supervisor> {
     let tmpdir = std::env::temp_dir().join(format!("overslash-mcp-runtime-{}", std::process::id()));
     let bundle_path = extract_bundle(&tmpdir)?;
 
-    let port = if cfg.port == 0 {
-        pick_free_port()?
-    } else {
-        cfg.port
-    };
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+    // Helper: spawn the child on a given port, tee its stdio, and probe the
+    // port to confirm it bound. Returns the live child, or an error if the
+    // port was taken (EADDRINUSE) or the child died during startup.
+    async fn try_spawn(
+        bundle_path: &std::path::Path,
+        port: u16,
+        shared_secret: &str,
+    ) -> anyhow::Result<Child> {
+        let mut cmd = Command::new("node");
+        cmd.arg(bundle_path)
+            .env("PORT", port.to_string())
+            .env("HOST", "127.0.0.1")
+            .env("MCP_RUNTIME_SHARED_SECRET", shared_secret)
+            // Dev hosts won't have prlimit wrapping be appropriate when the
+            // runtime runs as the same UID as the user's shell.
+            .env("REQUIRE_PRLIMIT", "false")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn()?;
 
-    // 3. Spawn. Pipe stdout+stderr so we can tee them into tracing.
+        if let Some(out) = child.stdout.take() {
+            tokio::spawn(async move {
+                let mut r = BufReader::new(out).lines();
+                while let Ok(Some(line)) = r.next_line().await {
+                    tracing::info!(target: "mcp-runtime", "{line}");
+                }
+            });
+        }
+        if let Some(err) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut r = BufReader::new(err).lines();
+                while let Ok(Some(line)) = r.next_line().await {
+                    tracing::warn!(target: "mcp-runtime", "{line}");
+                }
+            });
+        }
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+        // Poll for the child to bind. Most startups complete well under 1s;
+        // cap at ~2s so a truly broken startup fails fast into the retry loop.
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Ok(Some(_)) = child.try_wait() {
+                anyhow::bail!("child exited during startup");
+            }
+            if port_is_bound(addr).await {
+                return Ok(child);
+            }
+        }
+        let _ = child.start_kill();
+        anyhow::bail!("child did not bind 127.0.0.1:{port} within 2s")
+    }
+
+    // Initial spawn with bounded retry. Each attempt picks a fresh port
+    // (when caller asked for `0`) so a TOCTOU loss to another process
+    // doesn't wedge us on the same lost port.
     let shared_secret = cfg.shared_secret;
-    let mut cmd = Command::new("node");
-    cmd.arg(&bundle_path)
-        .env("PORT", port.to_string())
-        .env("HOST", "127.0.0.1")
-        .env("MCP_RUNTIME_SHARED_SECRET", &shared_secret)
-        // Dev hosts won't have prlimit wrapping be appropriate when the
-        // runtime runs as the same UID as the user's shell.
-        .env("REQUIRE_PRLIMIT", "false")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = cmd.spawn()?;
-
-    // 4. Tee child stdio into tracing.
-    if let Some(out) = child.stdout.take() {
-        tokio::spawn(async move {
-            let mut r = BufReader::new(out).lines();
-            while let Ok(Some(line)) = r.next_line().await {
-                tracing::info!(target: "mcp-runtime", "{line}");
+    let mut last_err: Option<anyhow::Error> = None;
+    let mut spawned: Option<(Child, u16)> = None;
+    for attempt in 0..5u32 {
+        let port = if cfg.port == 0 {
+            pick_free_port()?
+        } else {
+            cfg.port
+        };
+        match try_spawn(&bundle_path, port, &shared_secret).await {
+            Ok(child) => {
+                spawned = Some((child, port));
+                break;
             }
-        });
-    }
-    if let Some(err) = child.stderr.take() {
-        tokio::spawn(async move {
-            let mut r = BufReader::new(err).lines();
-            while let Ok(Some(line)) = r.next_line().await {
-                tracing::warn!(target: "mcp-runtime", "{line}");
+            Err(e) => {
+                tracing::warn!(
+                    target: "mcp-runtime",
+                    "spawn attempt {attempt} on port {port} failed: {e}"
+                );
+                last_err = Some(e);
+                // If the caller pinned a port, don't churn attempts on a
+                // collision we can't resolve.
+                if cfg.port != 0 {
+                    break;
+                }
             }
-        });
+        }
     }
-
-    // 5. Wait briefly for the child to start listening. The runtime logs
-    //    "incoming request"/"listening" via Pino — we just give it a
-    //    short grace period rather than parsing stdout for readiness.
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    let (child, port) =
+        spawned.ok_or_else(|| last_err.unwrap_or_else(|| anyhow::anyhow!("spawn failed")))?;
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
 
     tracing::info!(
         target: "mcp-runtime",
@@ -175,15 +231,18 @@ pub async fn spawn(cfg: SupervisorConfig) -> anyhow::Result<Supervisor> {
     let handle = Arc::new(Mutex::new(Some(child)));
 
     // Restart watcher. If the child exits while the main process is still
-    // up, respawn with exponential backoff. Capped at 30s and 8 attempts
-    // per 5min window — beyond that we surrender and log loud errors so
-    // the operator can investigate (missing node, bad bundle, OOM).
+    // up, respawn with exponential backoff on the same port so the api's
+    // `MCP_RUNTIME_URL` stays valid. If the port stays stuck (EADDRINUSE or
+    // child can't bind) for `MAX_CONSECUTIVE_FAILS`, give up and log a
+    // clear fatal rather than looping forever — operator must intervene.
     {
         let handle = handle.clone();
         let shared_secret = shared_secret.clone();
         let bundle_path = bundle_path.clone();
         tokio::spawn(async move {
+            const MAX_CONSECUTIVE_FAILS: u32 = 8;
             let mut backoff = Duration::from_millis(500);
+            let mut consecutive_fails: u32 = 0;
             loop {
                 let exit = {
                     let mut guard = handle.lock().await;
@@ -200,23 +259,30 @@ pub async fn spawn(cfg: SupervisorConfig) -> anyhow::Result<Supervisor> {
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
 
-                let mut cmd = Command::new("node");
-                cmd.arg(&bundle_path)
-                    .env("PORT", port.to_string())
-                    .env("HOST", "127.0.0.1")
-                    .env("MCP_RUNTIME_SHARED_SECRET", &shared_secret)
-                    .env("REQUIRE_PRLIMIT", "false")
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .kill_on_drop(true);
-                match cmd.spawn() {
+                match try_spawn(&bundle_path, port, &shared_secret).await {
                     Ok(new_child) => {
                         let mut guard = handle.lock().await;
                         *guard = Some(new_child);
+                        consecutive_fails = 0;
+                        backoff = Duration::from_millis(500);
                     }
                     Err(e) => {
-                        tracing::error!(target: "mcp-runtime", "respawn failed: {e}");
-                        // Keep the loop going — next attempt respects backoff.
+                        consecutive_fails += 1;
+                        tracing::error!(
+                            target: "mcp-runtime",
+                            "respawn failed ({consecutive_fails}/{MAX_CONSECUTIVE_FAILS}): {e}"
+                        );
+                        if consecutive_fails >= MAX_CONSECUTIVE_FAILS {
+                            tracing::error!(
+                                target: "mcp-runtime",
+                                "giving up on runtime respawn — port {port} appears \
+                                 permanently unavailable. MCP execution will 409 until \
+                                 the service is restarted."
+                            );
+                            let mut guard = handle.lock().await;
+                            *guard = None;
+                            return;
+                        }
                     }
                 }
             }
