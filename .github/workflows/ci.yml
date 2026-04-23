@@ -177,7 +177,10 @@ jobs:
           flags: shard-${{ matrix.partition }}
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: overfolder/overslash
-          fail_ci_if_error: true
+          # Coverage reporting is non-critical — don't block CI on Codecov-side
+          # flakes (e.g. upstream GPG signature verification failures on their
+          # CLI binary). Tests themselves still gate the merge.
+          fail_ci_if_error: false
 
   infra:
     name: Infrastructure
