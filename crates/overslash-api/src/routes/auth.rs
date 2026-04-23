@@ -1198,14 +1198,68 @@ async fn provision_root(
         }
     };
 
-    let new_user = user_repo::create_overslash_backed(
+    // Concurrent-first-login race: another request for the same
+    // (provider, subject) may have already created the users row + personal
+    // org + identity + membership. We detect the race via the partial
+    // UNIQUE on `users.(overslash_idp_provider, overslash_idp_subject)` and
+    // fall through to the winner's state, deleting the personal org we
+    // just created (cascades to identities/memberships — none of our own
+    // writes have happened yet at this point).
+    let new_user = match user_repo::create_overslash_backed(
         &state.db,
         Some(&userinfo.email),
         Some(display_name),
         &userinfo.provider_key,
         &userinfo.external_id,
     )
-    .await?;
+    .await
+    {
+        Ok(u) => u,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            let _ = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                .execute(&state.db)
+                .await;
+            let winner = user_repo::find_by_overslash_idp(
+                &state.db,
+                &userinfo.provider_key,
+                &userinfo.external_id,
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "race: user row vanished between unique-violation and re-read".into(),
+                )
+            })?;
+            let personal_org_id = winner.personal_org_id.ok_or_else(|| {
+                AppError::Internal(
+                    "race: winner's users row has no personal_org_id yet; retry after the other request commits".into(),
+                )
+            })?;
+            let identity = overslash_db::repos::identity::find_by_org_and_user(
+                &state.db,
+                personal_org_id,
+                winner.id,
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal("race: winner has no identity in their personal org yet".into())
+            })?;
+            let _ = user_repo::refresh_profile(
+                &state.db,
+                winner.id,
+                Some(&userinfo.email),
+                Some(display_name),
+            )
+            .await;
+            return Ok((
+                personal_org_id,
+                identity.id,
+                winner.id,
+                userinfo.email.clone(),
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
     user_repo::set_personal_org(&state.db, new_user.id, org.id).await?;
 
     let metadata = userinfo_metadata(userinfo);
