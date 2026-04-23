@@ -68,7 +68,9 @@ resource "google_secret_manager_secret_version" "signing_key" {
   secret_data = random_id.signing_key.hex
 }
 
-# --- OAuth client ID (placeholder - set real value via gcloud) ---
+# --- Google LOGIN OAuth client (Sign-in with Google, openid/email/profile).
+#     Legacy resource name `oauth_client_*` kept to preserve Terraform state and
+#     the prod-populated secret value. Feeds `GOOGLE_AUTH_CLIENT_ID/_SECRET`. ---
 
 resource "google_secret_manager_secret" "oauth_client_id" {
   secret_id = "${var.base_prefix}-oauth-client-id"
@@ -81,9 +83,11 @@ resource "google_secret_manager_secret" "oauth_client_id" {
 resource "google_secret_manager_secret_version" "oauth_client_id" {
   secret      = google_secret_manager_secret.oauth_client_id.id
   secret_data = "REPLACE_ME"
-}
 
-# --- OAuth client secret (placeholder - set real value via gcloud) ---
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
 
 resource "google_secret_manager_secret" "oauth_client_secret" {
   secret_id = "${var.base_prefix}-oauth-client-secret"
@@ -96,6 +100,50 @@ resource "google_secret_manager_secret" "oauth_client_secret" {
 resource "google_secret_manager_secret_version" "oauth_client_secret" {
   secret      = google_secret_manager_secret.oauth_client_secret.id
   secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# --- Google SERVICES OAuth client (Calendar/Drive/Gmail, sensitive scopes).
+#     Overslash-managed default so the cloud instance is turnkey; orgs can
+#     override per-org via POST /v1/org/oauth-credentials/google. Feeds
+#     `OAUTH_GOOGLE_CLIENT_ID/_SECRET` — requires
+#     `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1` on Cloud Run. ---
+
+resource "google_secret_manager_secret" "google_services_client_id" {
+  secret_id = "${var.base_prefix}-google-services-client-id"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "google_services_client_id" {
+  secret      = google_secret_manager_secret.google_services_client_id.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret" "google_services_client_secret" {
+  secret_id = "${var.base_prefix}-google-services-client-secret"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "google_services_client_secret" {
+  secret      = google_secret_manager_secret.google_services_client_secret.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
 }
 
 output "db_password_secret_id" {
@@ -121,4 +169,12 @@ output "oauth_client_id_secret_id" {
 
 output "oauth_client_secret_secret_id" {
   value = google_secret_manager_secret.oauth_client_secret.secret_id
+}
+
+output "google_services_client_id_secret_id" {
+  value = google_secret_manager_secret.google_services_client_id.secret_id
+}
+
+output "google_services_client_secret_secret_id" {
+  value = google_secret_manager_secret.google_services_client_secret.secret_id
 }

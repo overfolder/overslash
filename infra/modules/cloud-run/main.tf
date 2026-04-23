@@ -65,11 +65,23 @@ variable "signing_key_secret_id" {
 }
 
 variable "oauth_client_id_secret_id" {
-  type = string
+  type        = string
+  description = "GSM secret ID for the Google LOGIN OAuth client (Sign-in with Google). Feeds GOOGLE_AUTH_CLIENT_ID."
 }
 
 variable "oauth_client_secret_secret_id" {
-  type = string
+  type        = string
+  description = "GSM secret ID for the Google LOGIN OAuth client secret. Feeds GOOGLE_AUTH_CLIENT_SECRET."
+}
+
+variable "google_services_client_id_secret_id" {
+  type        = string
+  description = "GSM secret ID for the Google SERVICES OAuth client (Calendar/Drive/Gmail). Feeds OAUTH_GOOGLE_CLIENT_ID."
+}
+
+variable "google_services_client_secret_secret_id" {
+  type        = string
+  description = "GSM secret ID for the Google SERVICES OAuth client secret. Feeds OAUTH_GOOGLE_CLIENT_SECRET."
 }
 
 variable "db_user" {
@@ -120,8 +132,13 @@ locals {
       DB_NAME                   = var.db_name
       DB_USER                   = var.db_user
       HOST                      = "0.0.0.0"
-      RUST_LOG                  = "info"
-      SERVICES_DIR              = "/app/services"
+      # Enables tier-4 env-var fallback in the services OAuth cascade so the
+      # overslash-managed default Google services client (OAUTH_GOOGLE_*) is
+      # picked up when an org hasn't set its own credentials. Org-level BYO
+      # via POST /v1/org/oauth-credentials/google still takes precedence.
+      OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS = "1"
+      RUST_LOG                                       = "info"
+      SERVICES_DIR                                   = "/app/services"
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
@@ -129,11 +146,13 @@ locals {
   )
 
   env_secrets = {
-    DB_PASSWORD               = var.db_password_secret_id
-    GOOGLE_AUTH_CLIENT_ID     = var.oauth_client_id_secret_id
-    GOOGLE_AUTH_CLIENT_SECRET = var.oauth_client_secret_secret_id
-    SECRETS_ENCRYPTION_KEY    = var.encryption_key_secret_id
-    SIGNING_KEY               = var.signing_key_secret_id
+    DB_PASSWORD                = var.db_password_secret_id
+    GOOGLE_AUTH_CLIENT_ID      = var.oauth_client_id_secret_id
+    GOOGLE_AUTH_CLIENT_SECRET  = var.oauth_client_secret_secret_id
+    OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id
+    OAUTH_GOOGLE_CLIENT_SECRET = var.google_services_client_secret_secret_id
+    SECRETS_ENCRYPTION_KEY     = var.encryption_key_secret_id
+    SIGNING_KEY                = var.signing_key_secret_id
   }
 }
 
