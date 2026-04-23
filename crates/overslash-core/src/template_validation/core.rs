@@ -7,7 +7,8 @@ use std::collections::HashSet;
 
 use crate::description_grammar::{iter_placeholders, validate_flat_brackets};
 use crate::types::{
-    ActionParam, Risk, ServiceAction, ServiceAuth, ServiceDefinition, TokenInjection,
+    ActionParam, McpAuth, Risk, Runtime, ServiceAction, ServiceAuth, ServiceDefinition,
+    TokenInjection,
 };
 
 use super::{Issues, ValidationReport};
@@ -26,6 +27,7 @@ pub fn validate_service_definition(
 
     check_service_shape(def, &mut issues);
     check_auth(&def.auth, &mut issues);
+    check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
 
     // Iterate actions in a deterministic order so test assertions can match
@@ -175,6 +177,91 @@ fn check_duplicate_action_keys(raw_keys: &[String], issues: &mut Issues) {
                 format!("action key {k:?} is defined more than once"),
                 format!("actions.{k}"),
             );
+        }
+    }
+}
+
+// --- mcp-runtime congruence -------------------------------------------------
+
+fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
+    match def.runtime {
+        Runtime::Http => {
+            if def.mcp.is_some() {
+                issues.err(
+                    "mcp_misplaced",
+                    "`mcp` block is only valid when runtime=`mcp`",
+                    "mcp",
+                );
+            }
+            for (k, a) in &def.actions {
+                if a.mcp_tool.is_some() {
+                    issues.err(
+                        "mcp_misplaced",
+                        "mcp_tool set on an Http-runtime action",
+                        format!("actions.{k}.mcp_tool"),
+                    );
+                }
+            }
+        }
+        Runtime::Mcp => {
+            let Some(mcp) = def.mcp.as_ref() else {
+                issues.err(
+                    "mcp_missing",
+                    "runtime=`mcp` but `mcp` block is absent",
+                    "mcp",
+                );
+                return;
+            };
+            if mcp.url.trim().is_empty() {
+                issues.err("mcp_invalid", "mcp.url must be non-empty", "mcp.url");
+            } else if !mcp.url.starts_with("https://") && !mcp.url.starts_with("http://") {
+                issues.err(
+                    "mcp_invalid",
+                    "mcp.url must begin with http:// or https://",
+                    "mcp.url",
+                );
+            }
+            match &mcp.auth {
+                McpAuth::None => {}
+                McpAuth::Bearer { secret_name } if secret_name.trim().is_empty() => {
+                    issues.err(
+                        "mcp_invalid",
+                        "mcp.auth.secret_name must be non-empty for kind=bearer",
+                        "mcp.auth.secret_name",
+                    );
+                }
+                McpAuth::Bearer { .. } => {}
+            }
+            if !def.hosts.is_empty() {
+                issues.err(
+                    "mcp_misplaced",
+                    "`hosts` must be empty for mcp-runtime templates (MCP uses mcp.url)",
+                    "hosts",
+                );
+            }
+            if !def.auth.is_empty() {
+                issues.err(
+                    "mcp_misplaced",
+                    "HTTP-style `auth` entries are not used for mcp-runtime templates — put auth under mcp.auth",
+                    "auth",
+                );
+            }
+            for (k, a) in &def.actions {
+                if !a.method.is_empty() || !a.path.is_empty() {
+                    issues.err(
+                        "mcp_misplaced",
+                        "mcp-runtime actions must not carry HTTP method/path",
+                        format!("actions.{k}"),
+                    );
+                }
+                if a.mcp_tool.is_none() {
+                    issues.err(
+                        "mcp_missing",
+                        "mcp-runtime action must carry mcp_tool",
+                        format!("actions.{k}.mcp_tool"),
+                    );
+                }
+            }
         }
     }
 }
@@ -809,5 +896,162 @@ mod tests {
         );
         let r = run(&d);
         assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    // ── MCP runtime validation ────────────────────────────────────────
+
+    fn minimal_mcp(auth: McpAuth) -> ServiceDefinition {
+        use crate::types::McpSpec;
+        let mut actions = HashMap::new();
+        actions.insert(
+            "search".into(),
+            ServiceAction {
+                method: String::new(),
+                path: String::new(),
+                description: "Search {team}".into(),
+                risk: Risk::Read,
+                response_type: None,
+                params: {
+                    let mut p = HashMap::new();
+                    p.insert(
+                        "team".into(),
+                        ActionParam {
+                            param_type: "string".into(),
+                            required: true,
+                            description: String::new(),
+                            enum_values: None,
+                            default: None,
+                            resolve: None,
+                        },
+                    );
+                    p
+                },
+                scope_param: Some("team".into()),
+                required_scopes: vec![],
+                mcp_tool: Some("search".into()),
+                output_schema: None,
+                disabled: false,
+            },
+        );
+        ServiceDefinition {
+            key: "linear_mcp".into(),
+            display_name: "Linear".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            auth: vec![],
+            actions,
+            runtime: Runtime::Mcp,
+            mcp: Some(McpSpec {
+                url: "https://mcp.linear.app/mcp".into(),
+                auth,
+                autodiscover: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn mcp_happy_path_valid() {
+        let d = minimal_mcp(McpAuth::Bearer {
+            secret_name: "tok".into(),
+        });
+        let r = run(&d);
+        assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn mcp_requires_spec() {
+        let mut d = minimal_mcp(McpAuth::None);
+        d.mcp = None;
+        let r = run(&d);
+        assert!(r.errors.iter().any(|e| e.code == "mcp_missing"));
+    }
+
+    #[test]
+    fn mcp_rejects_hosts() {
+        let mut d = minimal_mcp(McpAuth::None);
+        d.hosts = vec!["example.com".into()];
+        let r = run(&d);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "mcp_misplaced" && e.path == "hosts")
+        );
+    }
+
+    #[test]
+    fn mcp_rejects_http_auth() {
+        let mut d = minimal_mcp(McpAuth::None);
+        d.auth = vec![ServiceAuth::ApiKey {
+            default_secret_name: "k".into(),
+            injection: TokenInjection {
+                inject_as: "header".into(),
+                header_name: Some("Authorization".into()),
+                query_param: None,
+                prefix: None,
+            },
+        }];
+        let r = run(&d);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "mcp_misplaced" && e.path == "auth")
+        );
+    }
+
+    #[test]
+    fn mcp_rejects_http_action_shape() {
+        let mut d = minimal_mcp(McpAuth::None);
+        let a = d.actions.get_mut("search").unwrap();
+        a.method = "GET".into();
+        a.path = "/x".into();
+        let r = run(&d);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "mcp_misplaced" && e.path.starts_with("actions.search"))
+        );
+    }
+
+    #[test]
+    fn mcp_requires_mcp_tool_on_actions() {
+        let mut d = minimal_mcp(McpAuth::None);
+        d.actions.get_mut("search").unwrap().mcp_tool = None;
+        let r = run(&d);
+        assert!(r.errors.iter().any(|e| e.code == "mcp_missing"));
+    }
+
+    #[test]
+    fn mcp_invalid_url_scheme_rejected() {
+        let mut d = minimal_mcp(McpAuth::None);
+        d.mcp.as_mut().unwrap().url = "mcp.example.com".into();
+        let r = run(&d);
+        assert!(r.errors.iter().any(|e| e.code == "mcp_invalid"));
+    }
+
+    #[test]
+    fn mcp_bearer_empty_secret_rejected() {
+        let d = minimal_mcp(McpAuth::Bearer {
+            secret_name: "   ".into(),
+        });
+        let r = run(&d);
+        assert!(r.errors.iter().any(|e| e.code == "mcp_invalid"));
+    }
+
+    #[test]
+    fn http_runtime_rejects_stray_mcp_block() {
+        use crate::types::McpSpec;
+        let mut d = minimal_valid();
+        d.mcp = Some(McpSpec {
+            url: "https://x".into(),
+            auth: McpAuth::None,
+            autodiscover: true,
+        });
+        let r = run(&d);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "mcp_misplaced" && e.path == "mcp")
+        );
     }
 }
