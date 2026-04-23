@@ -195,15 +195,6 @@ extern "C" fn run_cleanup() {
     });
 }
 
-async fn db_exists(pool: &PgPool, name: &str) -> bool {
-    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
-        .bind(name)
-        .fetch_optional(pool)
-        .await
-        .unwrap()
-        .is_some()
-}
-
 async fn db_exists_conn(conn: &mut sqlx::PgConnection, name: &str) -> bool {
     sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
         .bind(name)
@@ -215,20 +206,21 @@ async fn db_exists_conn(conn: &mut sqlx::PgConnection, name: &str) -> bool {
 
 /// Create+migrate the shared template if it doesn't exist yet.
 /// Uses a Postgres advisory lock to serialize concurrent processes.
+///
+/// No pre-lock fast-path: `CREATE DATABASE` is a separate statement from the
+/// migrations that populate it, so the template row becomes visible in
+/// `pg_database` the moment CREATE returns — well before MIGRATOR finishes.
+/// A fast-path `db_exists` check would let Process B clone a half-migrated
+/// template while Process A is still running migrations. Taking the advisory
+/// lock first, then checking existence inside the lock, serializes this.
 async fn ensure_template(base_url: &str) {
     let admin_pool = PgPool::connect(base_url).await.unwrap();
 
-    // Fast path: template already exists.
-    if db_exists(&admin_pool, TEMPLATE_DB_NAME).await {
-        admin_pool.close().await;
-        return;
-    }
-
-    // Slow path: take a session-scoped advisory lock on a single connection
-    // that we DETACH from the pool. Detaching is the panic-safety mechanism:
-    // if CREATE DATABASE or MIGRATOR.run() panics, the owned PgConnection is
-    // dropped, the underlying socket is closed, the Postgres session ends, and
-    // session-level advisory locks held by that session are released
+    // Take a session-scoped advisory lock on a single connection that we
+    // DETACH from the pool. Detaching is the panic-safety mechanism: if
+    // CREATE DATABASE or MIGRATOR.run() panics, the owned PgConnection is
+    // dropped, the underlying socket is closed, the Postgres session ends,
+    // and session-level advisory locks held by that session are released
     // automatically. If we used a PoolConnection it would be returned to the
     // pool on unwind with the lock still held.
     //
