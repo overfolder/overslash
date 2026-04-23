@@ -408,3 +408,193 @@ async fn single_org_mode_pins_every_request_to_one_org() {
         resp.text().await
     );
 }
+
+#[tokio::test]
+async fn subdomain_middleware_routes_known_slug_and_rejects_noise() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.app_host_suffix = Some("app.test".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let (org_id, _identity_id, _user_id) = seed_user_with_single_org(&pool).await;
+    let slug: String = sqlx::query_scalar("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Known slug → health endpoint still answers 200 (middleware resolves org).
+    let ok = client
+        .get(format!("{base}/health"))
+        .header("host", format!("{slug}.app.test"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    // Unknown subdomain → 404 org_not_found.
+    let bad = client
+        .get(format!("{base}/health"))
+        .header("host", "never-existed.app.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::NOT_FOUND);
+    let body: Value = bad.json().await.unwrap();
+    assert_eq!(body["error"], "org_not_found");
+
+    // Dotted sub-sub-domain → 404 (slugs are single DNS labels).
+    let dotted = client
+        .get(format!("{base}/health"))
+        .header("host", "foo.bar.app.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dotted.status(), StatusCode::NOT_FOUND);
+
+    // Personal org subdomain → 404 personal_org_unreachable. Flip the seeded
+    // org to personal to exercise the branch.
+    sqlx::query("UPDATE orgs SET is_personal = true WHERE id = $1")
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let personal = client
+        .get(format!("{base}/health"))
+        .header("host", format!("{slug}.app.test"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(personal.status(), StatusCode::NOT_FOUND);
+    let personal_body: Value = personal.json().await.unwrap();
+    assert_eq!(personal_body["error"], "personal_org_unreachable");
+}
+
+#[tokio::test]
+async fn list_auth_providers_scope_on_org_subdomain() {
+    // /auth/providers honors RequestOrgContext. On a corp subdomain we
+    // should get `scope: "org"` and only the org's IdPs (none here, so
+    // an empty list — the dashboard renders an explanatory state for this).
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.app_host_suffix = Some("app.test".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    let (org_id, _identity_id, _user_id) = seed_user_with_single_org(&pool).await;
+    let slug: String = sqlx::query_scalar("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let resp: Value = client
+        .get(format!("{base}/auth/providers"))
+        .header("host", format!("{slug}.app.test"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["scope"], "org");
+    assert_eq!(resp["providers"].as_array().unwrap().len(), 0);
+
+    // On root it's scope: "root" (no env creds configured in tests → empty list).
+    let resp_root: Value = client
+        .get(format!("{base}/auth/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp_root["scope"], "root");
+}
+
+#[tokio::test]
+async fn concurrent_drops_do_not_deadlock_and_preserve_last_admin() {
+    // Two admins racing to leave the same org: one must succeed, the other
+    // must fail with the "last admin" guard. Neither may 500 with a
+    // deadlock_detected (40P01) from the prior two-step lock order.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    let (org_id, _, user_a) = seed_user_with_single_org(&pool).await;
+    let identity_a: Uuid = sqlx::query_scalar(
+        "SELECT id FROM identities WHERE user_id = $1 AND org_id = $2 AND kind = 'user'",
+    )
+    .bind(user_a)
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // Add a second admin to the same org.
+    let user_b_row = user_repo::create_org_only(&pool, Some("b@x.test"), Some("Bob"))
+        .await
+        .unwrap();
+    let identity_b = identity::create_with_email(
+        &pool,
+        org_id,
+        "Bob",
+        "user",
+        None,
+        Some("b@x.test"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    identity::set_is_org_admin(&pool, org_id, identity_b.id, true)
+        .await
+        .unwrap();
+    identity::set_user_id(&pool, org_id, identity_b.id, Some(user_b_row.id))
+        .await
+        .unwrap();
+    membership::create(&pool, user_b_row.id, org_id, membership::ROLE_ADMIN)
+        .await
+        .unwrap();
+
+    let cookie_a = mint_session_cookie_with_user(org_id, identity_a, Some(user_a));
+    let cookie_b = mint_session_cookie_with_user(org_id, identity_b.id, Some(user_b_row.id));
+
+    let fut_a = client
+        .delete(format!("{base}/v1/account/memberships/{org_id}"))
+        .header("cookie", format!("oss_session={cookie_a}"))
+        .send();
+    let fut_b = client
+        .delete(format!("{base}/v1/account/memberships/{org_id}"))
+        .header("cookie", format!("oss_session={cookie_b}"))
+        .send();
+
+    let (resp_a, resp_b) = tokio::join!(fut_a, fut_b);
+    let (status_a, status_b) = (resp_a.unwrap().status(), resp_b.unwrap().status());
+
+    let statuses = [status_a, status_b];
+    assert!(
+        statuses.contains(&StatusCode::OK),
+        "one must succeed: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&StatusCode::BAD_REQUEST),
+        "the other must fail with last-admin guard: {statuses:?}"
+    );
+    // Neither path should produce a 500 deadlock_detected error.
+    for s in statuses {
+        assert_ne!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Exactly one admin remains.
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_org_memberships WHERE org_id = $1 AND role = 'admin'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining, 1);
+}
