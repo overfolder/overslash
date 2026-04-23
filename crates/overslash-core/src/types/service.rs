@@ -128,6 +128,29 @@ pub struct ServiceAction {
     /// scope set granted at connect time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_scopes: Vec<String>,
+    /// Labeled jq filters to extract human-readable fields from the resolved
+    /// request (method / url / params / body) at approval-create and audit
+    /// write time. See SPEC §N "Detail disclosure".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disclose: Vec<DisclosureField>,
+    /// Dotted paths into the resolved request to replace with `"[REDACTED]"`
+    /// in the persisted raw payload (`approvals.action_detail` + audit
+    /// `detail.request`). Does not affect the disclose jq input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact: Vec<String>,
+}
+
+/// One entry in `ServiceAction::disclose`. The `filter` is a jq expression
+/// applied to a `{method, url, params, body}` projection of the resolved
+/// request. `max_chars` optionally clamps long string outputs (e.g. email
+/// bodies); results longer than the clamp are still carried but marked
+/// `truncated` for the dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisclosureField {
+    pub label: String,
+    pub filter: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_chars: Option<usize>,
 }
 
 /// Describes how to resolve an opaque ID into a human-readable display name.

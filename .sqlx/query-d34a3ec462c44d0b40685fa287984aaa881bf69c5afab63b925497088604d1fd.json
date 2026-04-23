@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH RECURSIVE descendants AS (\n            SELECT id FROM identities WHERE id = $2\n            UNION ALL\n            SELECT i.id FROM identities i\n            INNER JOIN descendants d ON i.parent_id = d.id\n        )\n        SELECT a.id as \"id!\", a.org_id as \"org_id!\", a.identity_id as \"identity_id!\",\n               a.current_resolver_identity_id as \"current_resolver_identity_id!\",\n               a.resolver_assigned_at as \"resolver_assigned_at!\",\n               a.action_summary as \"action_summary!\", a.action_detail,\n               a.permission_keys as \"permission_keys!\", a.status as \"status!\",\n               a.resolved_at, a.resolved_by, a.remember as \"remember!\",\n               a.token as \"token!\", a.expires_at as \"expires_at!\", a.created_at as \"created_at!\"\n        FROM approvals a\n        WHERE a.org_id = $1\n          AND a.status = 'pending'\n          AND a.identity_id <> $2\n          AND a.current_resolver_identity_id IN (SELECT id FROM descendants)\n        ORDER BY a.created_at DESC",
+  "query": "WITH RECURSIVE descendants AS (\n            SELECT id FROM identities WHERE id = $2\n            UNION ALL\n            SELECT i.id FROM identities i\n            INNER JOIN descendants d ON i.parent_id = d.id\n        )\n        SELECT a.id as \"id!\", a.org_id as \"org_id!\", a.identity_id as \"identity_id!\",\n               a.current_resolver_identity_id as \"current_resolver_identity_id!\",\n               a.resolver_assigned_at as \"resolver_assigned_at!\",\n               a.action_summary as \"action_summary!\", a.action_detail,\n               a.disclosed_fields,\n               a.permission_keys as \"permission_keys!\", a.status as \"status!\",\n               a.resolved_at, a.resolved_by, a.remember as \"remember!\",\n               a.token as \"token!\", a.expires_at as \"expires_at!\", a.created_at as \"created_at!\"\n        FROM approvals a\n        WHERE a.org_id = $1\n          AND a.status = 'pending'\n          AND a.identity_id <> $2\n          AND a.current_resolver_identity_id IN (SELECT id FROM descendants)\n        ORDER BY a.created_at DESC",
   "describe": {
     "columns": [
       {
@@ -40,41 +40,46 @@
       },
       {
         "ordinal": 7,
+        "name": "disclosed_fields",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
         "name": "permission_keys!",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "status!",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "remember!",
         "type_info": "Bool"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "token!",
         "type_info": "Text"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "expires_at!",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "created_at!",
         "type_info": "Timestamptz"
       }
@@ -93,6 +98,7 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       true,
@@ -103,5 +109,5 @@
       false
     ]
   },
-  "hash": "aa005d90d28dbe270cc01f4698829b3c773ee437f5a83fd769153dacffffadbf"
+  "hash": "d34a3ec462c44d0b40685fa287984aaa881bf69c5afab63b925497088604d1fd"
 }

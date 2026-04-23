@@ -1102,6 +1102,74 @@ Every action execution, approval resolution, secret access, and connection chang
 
 ---
 
+## 12a. Configurable Detail Disclosure
+
+For approvals and audit rows to be useful for human review, resolvers need to know *what* an action is about to do — not just that an HTTP request is pending. Templates can declare two opt-in extensions on any HTTP action to control how a resolved request is surfaced:
+
+- **`x-overslash-disclose`** — a labeled list of jq filters. Each filter runs at approval-create time (and again at execute-success audit-write time) against a structured projection of the resolved request. Results land on `approvals.disclosed_fields` and on `audit_log.detail.disclosed`, rendered in the dashboard as a prominent "Summary" block *above* the raw-payload disclosure.
+- **`x-overslash-redact`** — a list of dotted paths into the same projection. Matched values are replaced with the sentinel `"[REDACTED]"` **before** the projection is persisted as `approvals.action_detail`. Redaction defends the raw-payload blob from leaking template-declared sensitive fields; it does *not* affect disclosure extraction (which runs first).
+
+### jq input shape
+
+Each disclose filter runs against this projection of the resolved request:
+
+```json
+{
+  "method": "POST",
+  "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+  "params": { "userId": "me" },
+  "body": { "raw": "VG86IGFsaWNlQGV4YW1wbGUuY29tCg..." }
+}
+```
+
+- `body` is parsed as JSON when the outbound request's `Content-Type` is a JSON media type (`application/json`, `application/*+json`); otherwise it's carried as the raw string.
+- `params` is the post-resolution parameter map — every arg the agent passed, regardless of whether it was bound to the URL path, the query string, or the body.
+
+### Declaration
+
+```yaml
+paths:
+  /gmail/v1/users/{userId}/messages/send:
+    post:
+      operationId: send_message
+      disclose:
+        - label: To
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Subject
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Body
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
+          max_chars: 2000
+      redact:
+        - body.raw
+```
+
+Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.
+
+### Wire shape of a disclosed field
+
+```json
+{ "label": "To", "value": "alice@example.com", "error": null, "truncated": false }
+```
+
+`error` carries a per-filter runtime error (jq type mismatch, missing field, etc.) — one filter's failure never poisons the rest of the summary. `truncated` is set when the value hit the per-field `max_chars` clamp or the 10 KB hard ceiling.
+
+### Sandbox guarantees
+
+All of an action's filters run in one `spawn_blocking` task with these limits:
+
+- **Per-filter timeout** — `filter_timeout_ms` (same setting that gates response filters).
+- **Batch timeout** — `min(5 × filter_timeout, n × filter_timeout)`.
+- **Output values cap** — 10 000 per filter (matches `response_filter`). Disclosure expects exactly one; excess values set `truncated: true` on the field and take the first.
+- **Per-value size cap** — 10 KB, applied on top of `max_chars`.
+- **Projection size cap** — 1 MB (safety ceiling, one order of magnitude above the `action_detail` product limit).
+
+### Trust boundary
+
+Templates are authored by org ops (three-tier registry: global / org / user). A template author who chooses not to redact a sensitive path takes responsibility for that call — redaction is declarative, not heuristic. The `disclose` jq engine can read redacted-target paths (extraction runs on the un-redacted projection); if an author surfaces a token via a filter, they're doing so deliberately.
+
+---
+
 ## 13. Rate Limiting
 
 Overslash enforces per-identity rate limiting to prevent abuse, runaway agents, and resource exhaustion. This is **not** upstream API rate limiting (which remains a non-goal per §2) — it limits requests *to Overslash itself*.

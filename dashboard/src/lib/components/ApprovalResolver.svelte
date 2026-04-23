@@ -195,6 +195,28 @@
 		</details>
 	{/if}
 
+	{#if current.disclosed_fields && current.disclosed_fields.length > 0}
+		<dl class="summary-block">
+			{#each current.disclosed_fields as f}
+				<dt>{f.label}</dt>
+				{#if f.error}
+					<dd class="disclose-error">extract failed: {f.error}</dd>
+				{:else if f.value !== null && f.value !== undefined}
+					{#if f.truncated}
+						<dd class="disclose-value">
+							<span class="disclose-value-text">{f.value}</span>
+							<span class="disclose-truncated">(truncated)</span>
+						</dd>
+					{:else}
+						<dd class="disclose-value">{f.value}</dd>
+					{/if}
+				{:else}
+					<dd class="disclose-empty">—</dd>
+				{/if}
+			{/each}
+		</dl>
+	{/if}
+
 	{#if current.action_detail}
 		<details class="raw-payload">
 			<summary>Show Raw Payload</summary>
@@ -532,5 +554,37 @@
 		color: #d14343;
 		background: rgba(209, 67, 67, 0.06);
 		font-size: 0.8rem;
+	}
+	.summary-block {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: 0.35rem 0.8rem;
+		padding: 0.7rem 0.9rem;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		background: rgba(46, 125, 50, 0.04);
+		font-size: 0.85rem;
+	}
+	.summary-block dt {
+		color: var(--color-text-muted);
+		font-weight: 500;
+	}
+	.summary-block dd {
+		margin: 0;
+		color: var(--color-text);
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.disclose-error {
+		color: #d14343;
+		font-style: italic;
+	}
+	.disclose-empty {
+		color: var(--color-text-muted);
+	}
+	.disclose-truncated {
+		color: var(--color-text-muted);
+		font-size: 0.75rem;
+		margin-left: 0.4rem;
 	}
 </style>

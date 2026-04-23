@@ -196,6 +196,8 @@ mod tests {
             params: HashMap::new(),
             scope_param: None,
             required_scopes: vec![],
+            disclose: vec![],
+            redact: vec![],
         }
     }
 

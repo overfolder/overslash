@@ -27,6 +27,25 @@
 		if (!Number.isFinite(d.getTime())) return iso || '';
 		return `${d.toISOString()}\n${d.toLocaleString()}`;
 	}
+
+	interface DisclosedField {
+		label: string;
+		value: string | null;
+		error: string | null;
+		truncated: boolean;
+	}
+
+	// Extract the labeled disclosure slice from `detail.disclosed` if present.
+	// Runs for both approval.created (where the slice lives alongside summary)
+	// and action.executed / action.streamed (where it's the main add-on).
+	function disclosedFrom(detail: unknown): DisclosedField[] {
+		if (!detail || typeof detail !== 'object') return [];
+		const d = (detail as Record<string, unknown>).disclosed;
+		if (!Array.isArray(d)) return [];
+		return d.filter((e): e is DisclosedField =>
+			!!e && typeof e === 'object' && typeof (e as DisclosedField).label === 'string'
+		);
+	}
 </script>
 
 <tr class="row" class:expanded onclick={ontoggle}>
@@ -78,6 +97,20 @@
 						<dd class="mono">{entry.ip_address}</dd>
 					{/if}
 				</dl>
+				{#if disclosedFrom(entry.detail).length > 0}
+					<dl class="disclosed">
+						{#each disclosedFrom(entry.detail) as f}
+							<dt>{f.label}</dt>
+							{#if f.error}
+								<dd class="err">extract failed: {f.error}</dd>
+							{:else if f.value !== null && f.value !== undefined}
+								<dd>{f.value}{#if f.truncated}<span class="trunc"> (truncated)</span>{/if}</dd>
+							{:else}
+								<dd class="muted">—</dd>
+							{/if}
+						{/each}
+					</dl>
+				{/if}
 				<div class="json-block">
 					<div class="json-label">detail</div>
 					<pre>{JSON.stringify(entry.detail ?? {}, null, 2)}</pre>
@@ -174,5 +207,24 @@
 		border-radius: var(--radius-sm, 4px);
 		overflow-x: auto;
 		font-size: 0.8rem;
+	}
+	.disclosed {
+		padding: var(--space-3);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 4px);
+		background: rgba(46, 125, 50, 0.04);
+		font-size: 0.85rem;
+	}
+	.disclosed dd {
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.disclosed .err {
+		color: #d14343;
+		font-style: italic;
+	}
+	.disclosed .trunc {
+		color: var(--color-text-muted);
+		font-size: 0.75rem;
 	}
 </style>

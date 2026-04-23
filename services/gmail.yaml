@@ -136,6 +136,24 @@ paths:
       summary: "Send email as {userId}"
       risk: write
       scope_param: userId
+      # Surface the decoded RFC 2822 To/Subject/Body in the approval review
+      # UI and audit log. The base64url `raw` field is opaque to a human
+      # resolver; these filters decode it once and pull out the three
+      # fields that determine whether to allow the send.
+      #
+      # Gmail's API expects base64url (`-`/`_`, unpadded). `@base64d` only
+      # accepts standard base64, so each filter first normalizes `-`→`+`,
+      # `_`→`/`, and right-pads to a multiple of 4 with `=`. The shared
+      # prelude is inlined into each filter rather than factored out
+      # because jq/jaq has no way to declare reusable snippets per-action.
+      disclose:
+        - label: To
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Subject
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Body
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
+          max_chars: 2000
       parameters:
         - name: userId
           in: path

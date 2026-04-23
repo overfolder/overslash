@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals\n         WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'\n         ORDER BY created_at DESC",
+  "query": "UPDATE approvals\n            SET current_resolver_identity_id = $2,\n                resolver_assigned_at = now()\n          WHERE id = $1 AND org_id = $4 AND status = 'pending' AND current_resolver_identity_id = $3\n          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
   "describe": {
     "columns": [
       {
@@ -40,47 +40,54 @@
       },
       {
         "ordinal": 7,
+        "name": "disclosed_fields",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
         "name": "permission_keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "remember",
         "type_info": "Bool"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "token",
         "type_info": "Text"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Uuid",
         "Uuid",
         "Uuid"
       ]
@@ -93,6 +100,7 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       true,
@@ -103,5 +111,5 @@
       false
     ]
   },
-  "hash": "7366355bf24bf38163869c95da2ba4aeb8c0e0a3078a1ee033865b128dd4dada"
+  "hash": "d7e1b4b9402c7168e67e00a4d234d994ccbb29b5913882fce7d3eb0e57cec55b"
 }

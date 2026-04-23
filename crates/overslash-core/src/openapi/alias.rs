@@ -43,6 +43,14 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
         alias: "scope_param",
         canonical: "x-overslash-scope_param",
     },
+    Alias {
+        alias: "disclose",
+        canonical: "x-overslash-disclose",
+    },
+    Alias {
+        alias: "redact",
+        canonical: "x-overslash-redact",
+    },
 ];
 
 pub(super) const PARAMETER_ALIASES: &[Alias] = &[Alias {

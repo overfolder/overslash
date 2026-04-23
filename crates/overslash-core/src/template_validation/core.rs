@@ -509,6 +509,8 @@ mod tests {
                         params: HashMap::new(),
                         scope_param: None,
                         required_scopes: Vec::new(),
+                        disclose: Vec::new(),
+                        redact: Vec::new(),
                     },
                 );
                 m
@@ -791,6 +793,8 @@ mod tests {
                 params: HashMap::new(),
                 scope_param: None,
                 required_scopes: Vec::new(),
+                disclose: Vec::new(),
+                redact: Vec::new(),
             },
         );
         let r = run(&d);

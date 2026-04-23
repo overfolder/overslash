@@ -80,7 +80,7 @@ pub struct ValidationIssue {
 }
 
 impl ValidationIssue {
-    pub(crate) fn new(
+    pub fn new(
         code: impl Into<String>,
         message: impl Into<String>,
         path: impl Into<String>,

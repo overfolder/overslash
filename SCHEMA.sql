@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 8GNYHzAjA07MChf6MmigxCh0ylkAHD7WG33FcxuLsKjoKHYKJYrwId8nv6aUxq8
+\restrict 4saDG3krTdtiabXh2ltzpMR9VMFBWhHSZfkfjgWAcGuYFa81ZJSbYIwC2VpmyXA
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,13 +23,6 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
-
-
---
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -76,6 +69,7 @@ CREATE TABLE public.approvals (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     current_resolver_identity_id uuid NOT NULL,
     resolver_assigned_at timestamp with time zone DEFAULT now() NOT NULL,
+    disclosed_fields jsonb,
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -1878,5 +1872,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 8GNYHzAjA07MChf6MmigxCh0ylkAHD7WG33FcxuLsKjoKHYKJYrwId8nv6aUxq8
+\unrestrict 4saDG3krTdtiabXh2ltzpMR9VMFBWhHSZfkfjgWAcGuYFa81ZJSbYIwC2VpmyXA
 
