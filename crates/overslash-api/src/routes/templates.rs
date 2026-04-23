@@ -104,6 +104,7 @@ pub fn router() -> Router<AppState> {
             "/v1/templates/{id}/manage",
             put(update_template).delete(delete_template),
         )
+        .route("/v1/templates/{key}/mcp/resync", post(resync_mcp_tools))
 }
 
 // -- Response types --
@@ -1868,6 +1869,169 @@ pub(crate) async fn resolve_template_definition(
         .get(key)
         .cloned()
         .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
+}
+
+// ── MCP discovery (resync tools) ─────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct McpResyncResponse {
+    key: String,
+    tool_count: usize,
+    discovered_at: String,
+}
+
+/// POST /v1/templates/:key/mcp/resync — refresh discovered_tools on an
+/// MCP-runtime template by calling tools/list on the upstream server.
+///
+/// The template's openapi JSON is updated in place under
+/// `x-overslash-mcp.discovered_tools` and `.discovered_at`; authored
+/// `tools:` overrides are left untouched — the compile step merges them at
+/// read time. Access control: a user-tier template can be resynced by its
+/// owner; an org-tier template requires admin.
+async fn resync_mcp_tools(
+    State(state): State<AppState>,
+    WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
+    Path(key): Path<String>,
+) -> Result<Json<McpResyncResponse>> {
+    use overslash_core::types::{McpAuth, Runtime};
+    use overslash_db::OrgScope;
+
+    // Try user tier first (a resync of another user's private template is
+    // not reachable by key — the lookup filters on owner_identity_id), then
+    // org tier. Globals cannot be resynced; they ship their tool list in-repo.
+    let row = if let Some(identity_id) = acl.identity_id {
+        if let Some(r) =
+            service_template::get_by_key(&state.db, acl.org_id, Some(identity_id), &key).await?
+        {
+            r
+        } else if let Some(r) =
+            service_template::get_by_key(&state.db, acl.org_id, None, &key).await?
+        {
+            if acl.access_level < AccessLevel::Admin {
+                return Err(AppError::Forbidden(
+                    "admin access required for org-level templates".into(),
+                ));
+            }
+            r
+        } else {
+            return Err(AppError::NotFound(format!("template '{key}' not found")));
+        }
+    } else if let Some(r) = service_template::get_by_key(&state.db, acl.org_id, None, &key).await? {
+        if acl.access_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden(
+                "admin access required for org-level templates".into(),
+            ));
+        }
+        r
+    } else {
+        return Err(AppError::NotFound(format!("template '{key}' not found")));
+    };
+
+    let def = compile_row(&row)?;
+    if def.runtime != Runtime::Mcp {
+        return Err(AppError::BadRequest(format!(
+            "template '{key}' is not an MCP-runtime template"
+        )));
+    }
+    let mcp = def
+        .mcp
+        .clone()
+        .ok_or_else(|| AppError::Internal("mcp runtime without mcp block".into()))?;
+    if !mcp.autodiscover {
+        return Err(AppError::BadRequest(
+            "autodiscover=false on this template — resync disabled".into(),
+        ));
+    }
+
+    // Resolve auth and call tools/list against the upstream.
+    let scope = OrgScope::new(acl.org_id, state.db.clone());
+    let headers = match &mcp.auth {
+        McpAuth::None => reqwest::header::HeaderMap::new(),
+        McpAuth::Bearer { .. } => {
+            crate::services::mcp_auth::resolve_headers(&state, &scope, &mcp.auth).await?
+        }
+    };
+
+    let client = crate::services::mcp_client::McpClient::new(state.http_client.clone(), &mcp.url)
+        .map_err(|e| AppError::BadRequest(format!("invalid mcp.url: {e}")))?;
+    let tools = client
+        .tools_list(&headers)
+        .await
+        .map_err(|e| AppError::BadGateway(format!("mcp tools/list failed: {e}")))?;
+
+    // Rewrite x-overslash-mcp.discovered_tools + discovered_at on the row JSON.
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let discovered_json: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), serde_json::Value::String(t.name.clone()));
+            if let Some(d) = &t.description {
+                m.insert("description".into(), serde_json::Value::String(d.clone()));
+            }
+            if let Some(s) = &t.input_schema {
+                m.insert("input_schema".into(), s.clone());
+            }
+            if let Some(s) = &t.output_schema {
+                m.insert("output_schema".into(), s.clone());
+            }
+            serde_json::Value::Object(m)
+        })
+        .collect();
+
+    let mut openapi = row.openapi.clone();
+    let mcp_obj = openapi
+        .get_mut("x-overslash-mcp")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| AppError::Internal("template missing x-overslash-mcp block".into()))?;
+    mcp_obj.insert(
+        "discovered_tools".into(),
+        serde_json::Value::Array(discovered_json),
+    );
+    mcp_obj.insert(
+        "discovered_at".into(),
+        serde_json::Value::String(now.clone()),
+    );
+
+    service_template::update(
+        &state.db,
+        row.id,
+        &UpdateServiceTemplate {
+            display_name: None,
+            description: None,
+            category: None,
+            hosts: None,
+            openapi: Some(openapi),
+            key: None,
+        },
+    )
+    .await?;
+
+    let _ = OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "template.mcp_resync",
+            resource_type: Some("template"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "key": key,
+                "tool_count": tools.len(),
+                "url": mcp.url,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(McpResyncResponse {
+        key,
+        tool_count: tools.len(),
+        discovered_at: now,
+    }))
 }
 
 #[cfg(test)]
