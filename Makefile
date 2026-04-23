@@ -70,10 +70,19 @@ dashboard-static:
 # crate's embed dir so `rust-embed` picks it up when building with the
 # `mcp` Cargo feature. `overslash web --mcp-runtime=local` extracts and
 # spawns this bundle.
+#
+# --banner:js installs a `createRequire` shim at the top of the ESM
+# bundle. Fastify/Avvio fall through esbuild's __require helper for
+# node built-ins (e.g. `require("node:events")`), and without a real
+# `require` in scope the shim throws "Dynamic require of X is not
+# supported" at boot.
+MCP_ESBUILD_BANNER := import { createRequire } from 'module'; const require = createRequire(import.meta.url);
+
 build-mcp-runtime:
 	cd docker/mcp-runtime && NODE_ENV=development npm install --include=dev --no-audit --no-fund
 	cd docker/mcp-runtime && npx esbuild src/index.ts \
 		--bundle --platform=node --target=node22 --format=esm \
+		--banner:js="$(MCP_ESBUILD_BANNER)" \
 		--outfile=dist/mcp-runtime.mjs
 	cp docker/mcp-runtime/dist/mcp-runtime.mjs \
 	   crates/overslash-cli/embed/mcp-runtime/mcp-runtime.mjs
@@ -83,6 +92,7 @@ build-mcp-runtime:
 dev-mcp-runtime:
 	cd docker/mcp-runtime && npx esbuild src/index.ts \
 		--bundle --platform=node --target=node22 --format=esm \
+		--banner:js="$(MCP_ESBUILD_BANNER)" \
 		--outfile=dist/mcp-runtime.mjs --watch
 
 # Build the self-hosted single-binary release with the embedded dashboard
