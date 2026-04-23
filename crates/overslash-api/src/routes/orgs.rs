@@ -7,11 +7,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_db::repos::audit::AuditEntry;
+use overslash_db::repos::{identity, membership, user as user_repo};
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp, SessionAuth},
 };
 
 pub fn router() -> Router<AppState> {
@@ -52,6 +53,12 @@ struct OrgResponse {
     slug: String,
     subagent_idle_timeout_secs: i32,
     subagent_archive_retention_days: i32,
+    is_personal: bool,
+    /// Absolute URL the dashboard should hard-reload to after creation —
+    /// points at the new org's subdomain so the creator lands inside their
+    /// bootstrap-admin session rather than bouncing through the switcher.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redirect_to: Option<String>,
 }
 
 impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
@@ -62,38 +69,112 @@ impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
             slug: o.slug,
             subagent_idle_timeout_secs: o.subagent_idle_timeout_secs,
             subagent_archive_retention_days: o.subagent_archive_retention_days,
+            is_personal: o.is_personal,
+            redirect_to: None,
         }
     }
 }
 
+/// POST /v1/orgs — create a corp org. The caller becomes an Overslash-backed
+/// bootstrap admin (`is_bootstrap=true`), which persists as breakglass even
+/// after the org configures its own IdP. This is the ONLY path by which an
+/// Overslash-level IdP grants membership into a non-personal org. See
+/// `docs/design/multi_org_auth.md` §Corp Org Creation Bootstrap.
 async fn create_org(
     State(state): State<AppState>,
     ip: ClientIp,
+    session: SessionAuth,
     Json(req): Json<CreateOrgRequest>,
 ) -> Result<Json<OrgResponse>> {
+    // Self-hosted lockdown: operators can disable creation after initial
+    // setup. Env flag parsed once at startup; default true.
+    if !state.config.allow_org_creation {
+        return Err(AppError::Forbidden("org_creation_disabled".into()));
+    }
+
+    let user_id = session.user_id.ok_or_else(|| {
+        AppError::Unauthorized("session has no user_id; sign in again after the rewire".into())
+    })?;
+    let user = user_repo::get_by_id(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("session user no longer exists".into()))?;
+
     let org = overslash_db::repos::org::create(&state.db, &req.name, &req.slug).await?;
 
-    // Bootstrap system assets: overslash service, Everyone + Admins groups, grants
-    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, None).await?;
+    // Create an identity in the new org for the creator so permission checks
+    // downstream have something to bind to. is_org_admin=true so bootstrap
+    // grants flow through the existing admin fast-path in OrgAcl.
+    let display_name = user
+        .display_name
+        .clone()
+        .unwrap_or_else(|| user.email.clone().unwrap_or_else(|| "admin".into()));
+    let metadata = serde_json::json!({ "bootstrap": true });
+    let creator_identity = identity::create_with_email(
+        &state.db,
+        org.id,
+        &display_name,
+        "user",
+        None,
+        user.email.as_deref(),
+        metadata,
+    )
+    .await?;
+    // Link the identity back to the human and flag admin.
+    identity::set_is_org_admin(&state.db, org.id, creator_identity.id, true).await?;
+    identity::set_user_id(&state.db, org.id, creator_identity.id, Some(user_id)).await?;
 
-    // No auth context (org creation is the bootstrap entrypoint) — mint an
-    // OrgScope for the freshly created org so the audit row is written under
-    // it, rather than going through the repo directly.
+    // Bootstrap system assets (overslash service, groups, grants) and place
+    // the creator in Everyone + Admins.
+    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, Some(creator_identity.id))
+        .await?;
+
+    // Breakglass membership — `is_bootstrap=true` so the dashboard can label
+    // it in the admins list and the caller can drop it once their IdP-backed
+    // account exists.
+    membership::create(
+        &state.db,
+        user_id,
+        org.id,
+        membership::ROLE_ADMIN,
+        /* is_bootstrap = */ true,
+    )
+    .await?;
+
     let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db.clone());
     let _ = bootstrap_scope
         .log_audit(AuditEntry {
             org_id: org.id,
-            identity_id: None,
+            identity_id: Some(creator_identity.id),
             action: "org.created",
             resource_type: Some("org"),
             resource_id: Some(org.id),
-            detail: serde_json::json!({ "name": &org.name, "slug": &org.slug }),
+            detail: serde_json::json!({
+                "name": &org.name,
+                "slug": &org.slug,
+                "bootstrap_user_id": user_id,
+            }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    Ok(Json(org.into()))
+    let redirect_to = redirect_for_org(&state, &org);
+    let mut resp: OrgResponse = org.into();
+    resp.redirect_to = Some(redirect_to);
+    Ok(Json(resp))
+}
+
+fn redirect_for_org(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {
+    let scheme = if state.config.public_url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    if let Some(apex) = state.config.app_host_suffix.as_deref() {
+        format!("{scheme}://{}.{apex}/", org.slug)
+    } else {
+        state.config.dashboard_url_for("/")
+    }
 }
 
 async fn get_org(

@@ -6,6 +6,9 @@ export interface OrgInfo {
   slug: string;
   subagent_idle_timeout_secs: number;
   subagent_archive_retention_days: number;
+  /** Populated on post-multi-org backends; undefined on older APIs. Personal
+   *  orgs hide the IdP + OAuth credential surfaces entirely. */
+  is_personal?: boolean;
 }
 
 /**

@@ -128,6 +128,18 @@
 - Fail-open on Redis errors; health endpoint exempt from rate limiting
 - Fixed window counter algorithm with configurable window size
 
+### Multi-Org Auth
+
+- Data model (`users`, `user_org_memberships`, `orgs.is_personal`, `identities.user_id`) live (migration 040). Design: [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md). Trust-domain rule codified in DECISIONS.md D12.
+- Session JWT carries `user_id` alongside `sub` (identity) + `org`. Legacy tokens without `user_id` keep working until they expire; extractors resolve the human via `identities.user_id` as a fallback.
+- **Subdomain middleware** parses `Host` → `RequestOrgContext::{Root, Org}` and attaches it to request extensions. `SessionAuth` / `AuthContext` enforce `jwt.org == subdomain.org` and return 401 `org_mismatch` otherwise — the dashboard routes that through `/auth/switch-org`. `SINGLE_ORG_MODE=<slug>` bypasses the middleware for self-hosted single-org operators.
+- **Login flow rewire** — root-login provisions an Overslash-backed user + personal org on first sign-in; org-subdomain login provisions an org-only user, gated by `org_idp_configs.allowed_email_domains` (non-match → 403 `not_permitted_by_org_idp`). No invites, no cross-IdP linking — each IdP is its own trust domain.
+- **Corp-org bootstrap** — `POST /v1/orgs` requires a valid multi-org session, creates the org + an admin identity + an `is_bootstrap=true` membership for the creator. Persists as breakglass after the org enables its IdP. Gated by `ALLOW_ORG_CREATION` (returns 403 `org_creation_disabled` when disabled).
+- **Account surface** — `POST /auth/switch-org`, `GET /v1/account/memberships`, `DELETE /v1/account/memberships/{org_id}` (personal-org + last-admin guards). `/auth/me/identity` now returns `user_id`, `personal_org_id`, `memberships[]`.
+- **Session cookie** honors a configurable `Domain` (`SESSION_COOKIE_DOMAIN`, typically `.app.overslash.com`) so the same `oss_session` is shared across subdomains.
+- **Dashboard** — `OrgSwitcher` in the sidebar footer (grouped Personal / Orgs, breakglass label), `/account` page with leave-membership action, login page renders a corp-org empty state when no IdP is configured, `/org` hides IdP + OAuth-credential cards on personal orgs and shows a "configure an IdP" warning banner on corp orgs without one enabled.
+- Migration 041 drops the pre-040 `identities.email` global UNIQUE, keeping a plain lookup index. Multi-org requires the same human's email to appear on multiple identity rows; the `(org_id, user_id)` partial UNIQUE from 040 continues to prevent double-admission per human per org.
+
 ### Not Yet Built
 
 - Dashboard gaps (tracked in TODO.md §Review Corrections 2026-04-20):

@@ -203,6 +203,7 @@ fn mint_session_cookie(identity_id: Uuid, org_id: Uuid, email: &str) -> String {
         aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 3600,
+        user_id: None,
     };
     let token = jwt::mint(&signing_bytes(), &claims).unwrap();
     format!("oss_session={token}")

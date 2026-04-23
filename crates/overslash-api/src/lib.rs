@@ -231,6 +231,10 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::oauth::router())
         .merge(routes::mcp::router())
         .merge(rate_limited_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::subdomain::subdomain_middleware,
+        ))
         .with_state(state)
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())

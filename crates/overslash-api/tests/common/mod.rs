@@ -522,14 +522,41 @@ async fn run_standard_bootstrap(base: &str, client: &Client) -> BootstrapFixture
     }
 }
 
+/// Variant of `start_api` that lets callers tweak the `Config` before the
+/// server starts — multi-org tests use this to toggle `allow_org_creation`,
+/// `single_org_mode`, `app_host_suffix`, etc.
+pub async fn start_api_with<F>(pool: PgPool, customize: F) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    start_api_internal(pool, customize).await
+}
+
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    start_api_internal(pool, |_| {}).await
+}
+
+async fn start_api_internal<F>(pool: PgPool, customize: F) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    // Surface server-side errors during tests — without this, `tracing::error!`
+    // calls inside AppError are silently dropped and a 500 looks like a bare
+    // "database error" string to the client.
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
+        )
+        .try_init();
     // Bind first so `public_url` matches the real bound address. This lets
     // server-internal loopback calls (e.g. the `/mcp` dispatcher proxying to
     // REST) reach this test's process instead of a non-existent 3000.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let config = overslash_api::config::Config {
+    let mut config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
@@ -550,7 +577,12 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
+    customize(&mut config);
 
     // Build the app with the test pool directly
     let state = overslash_api::AppState {
@@ -599,6 +631,10 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::oauth::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::subdomain::subdomain_middleware,
+        ))
         .with_state(state);
 
     tokio::spawn(async move {
@@ -633,6 +669,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     let state = overslash_api::AppState {
@@ -717,6 +757,10 @@ pub async fn start_api_with_auth_providers(
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     let state = overslash_api::AppState {
@@ -1168,6 +1212,10 @@ pub async fn start_api_with_registry(
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     let state = overslash_api::AppState {
@@ -1262,6 +1310,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     let state = overslash_api::AppState {
@@ -1328,6 +1380,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     let state = overslash_api::AppState {

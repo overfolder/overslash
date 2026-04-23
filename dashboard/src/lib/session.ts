@@ -104,6 +104,18 @@ export const session = {
 	delete: <T>(path: string, signal?: AbortSignal) => request<T>('DELETE', path, undefined, signal)
 };
 
+/** One org the caller belongs to. Mirrors the server's `MembershipSummary`. */
+export interface MembershipSummary {
+	org_id: string;
+	slug: string;
+	name: string;
+	role: 'admin' | 'member' | string;
+	is_personal: boolean;
+	/** True for the membership created by `POST /v1/orgs`. Persists as a
+	 *  breakglass admin after the org configures its IdP. */
+	is_bootstrap: boolean;
+}
+
 /** Response from GET /auth/me/identity — full identity details */
 export interface MeIdentity {
 	identity_id: string;
@@ -116,6 +128,12 @@ export interface MeIdentity {
 	external_id: string | null;
 	picture?: string | null;
 	is_org_admin?: boolean;
+	/** Multi-org additions. `user_id` + `memberships` are present once a
+	 *  post-multi-org-rewire session is minted; legacy tokens leave them
+	 *  empty until re-login. */
+	user_id?: string | null;
+	personal_org_id?: string | null;
+	memberships?: MembershipSummary[];
 }
 
 /** GET /v1/secrets item */

@@ -618,6 +618,7 @@ async fn list_template_actions(
         org_id: auth.org_id,
         identity_id: effective_identity,
         key_id: auth.key_id,
+        user_id: auth.user_id,
     };
     let actions = resolve_template_actions(&state, &effective_auth, &key).await?;
     Ok(Json(actions))

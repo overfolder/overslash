@@ -1026,6 +1026,13 @@ CREATE INDEX idx_identities_email ON public.identities USING btree (email) WHERE
 
 
 --
+-- Name: idx_identities_email_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_email_lookup ON public.identities USING btree (email) WHERE (email IS NOT NULL);
+
+
+--
 -- Name: idx_identities_idle_subagents; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1058,13 +1065,6 @@ CREATE INDEX idx_identities_parent ON public.identities USING btree (parent_id) 
 --
 
 CREATE INDEX idx_identities_user ON public.identities USING btree (user_id);
-
-
---
--- Name: idx_identities_user_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_identities_user_email ON public.identities USING btree (email) WHERE ((kind = 'user'::text) AND (email IS NOT NULL));
 
 
 --

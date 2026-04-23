@@ -12,12 +12,21 @@ pub const AUD_MCP: &str = "mcp";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
+    /// Identity id (the org-scoped actor). `sub` stays the identity so all
+    /// existing extractors that build an `OrgScope` from `(org, sub)` keep
+    /// working unchanged.
     pub sub: Uuid,
     pub org: Uuid,
     pub email: String,
     pub aud: String,
     pub iat: i64,
     pub exp: i64,
+    /// The human behind the identity. Added for multi-org — a user can
+    /// have one identity per org they belong to, so the session switcher
+    /// re-keys on `(user_id, target_org)` to find the right `sub`. Legacy
+    /// tokens minted before this field existed deserialize it as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +98,7 @@ pub fn mint_mcp(
         aud: AUD_MCP.into(),
         iat: now,
         exp: now + ttl_secs,
+        user_id: None,
     };
     mint(secret, &claims)
 }
@@ -149,6 +159,7 @@ mod tests {
             aud: AUD_SESSION.into(),
             iat: now,
             exp: now + 3600,
+            user_id: None,
         }
     }
 
@@ -174,6 +185,7 @@ mod tests {
             aud: AUD_SESSION.into(),
             iat: now - 7200,
             exp: now - 3600,
+            user_id: None,
         };
         let token = mint(&secret, &claims).unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());

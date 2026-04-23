@@ -123,6 +123,44 @@ pub(crate) async fn find_user_by_email_global(
     .await
 }
 
+/// Look up a user-kind identity by its IdP subject within an org. Used by
+/// the org-subdomain login path to detect returning users before deciding
+/// whether to auto-provision.
+pub async fn find_user_by_external_id_in_org(
+    pool: &PgPool,
+    org_id: Uuid,
+    external_id: &str,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+         FROM identities WHERE org_id = $1 AND external_id = $2 AND kind = 'user'",
+        org_id,
+        external_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Find the user-kind `identities` row for a specific `(org_id, user_id)`
+/// pair. At most one row exists (partial UNIQUE from migration 040). Used by
+/// the multi-org switch flow to resolve `sub` for the new JWT.
+pub async fn find_by_org_and_user(
+    pool: &PgPool,
+    org_id: Uuid,
+    user_id: Uuid,
+) -> Result<Option<IdentityRow>, sqlx::Error> {
+    sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+         FROM identities WHERE org_id = $1 AND user_id = $2 AND kind = 'user'",
+        org_id,
+        user_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn get_by_id(
     pool: &PgPool,
     org_id: Uuid,
@@ -243,6 +281,28 @@ pub async fn update_profile(
 /// Toggle the `is_org_admin` flag on a User identity. The DB CHECK constraint
 /// rejects the call if `id` is not a User. Also keeps the `Admins` system group
 /// membership in sync so the group-grant ACL path stays consistent with the
+/// Attach (or detach) this identity's human pointer. Used by the multi-org
+/// provisioning path when an existing identity needs to be promoted from
+/// the legacy NULL-user_id shape. Writes are scoped by `(id, org_id)` to
+/// avoid cross-tenant drift.
+pub async fn set_user_id(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    user_id: Option<Uuid>,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE identities SET user_id = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+        user_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// fast-path flag.
 pub async fn set_is_org_admin(
     pool: &PgPool,
