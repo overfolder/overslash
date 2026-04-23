@@ -7,6 +7,7 @@ pub mod identity_path;
 pub mod jwt;
 pub mod mcp_auth;
 pub mod mcp_client;
+pub mod mcp_executor;
 pub mod oauth;
 pub mod oauth_as;
 pub mod oidc_discovery;
