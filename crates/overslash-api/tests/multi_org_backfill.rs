@@ -18,19 +18,22 @@ mod common;
 use overslash_db::repos::{membership, user};
 use uuid::Uuid;
 
+// Steps 5a–5e of 040_multi_org_users.up.sql, copied verbatim. sqlx tracks
+// migrations as at-most-once, so the production SQL does not need to be
+// idempotent — running any step twice would duplicate rows or hit PK/unique
+// violations. The test reflects that reality: seed pre-040 state once, run
+// this once, assert. No idempotency loop.
 const BACKFILL_SQL: &str = r#"
-    -- Steps 5a–5e from 040_multi_org_users.up.sql, copied verbatim.
     INSERT INTO users (id, email, display_name, created_at, updated_at)
     SELECT gen_random_uuid(), email, name, created_at, updated_at
     FROM identities
-    WHERE kind = 'user' AND email IS NOT NULL AND user_id IS NULL;
+    WHERE kind = 'user' AND email IS NOT NULL;
 
     UPDATE identities i
     SET user_id = u.id
     FROM users u
     WHERE i.kind = 'user'
       AND i.email IS NOT NULL
-      AND i.user_id IS NULL
       AND i.email = u.email;
 
     UPDATE identities
@@ -40,8 +43,7 @@ const BACKFILL_SQL: &str = r#"
     INSERT INTO users (id, email, display_name, created_at, updated_at)
     SELECT user_id, NULL, name, created_at, updated_at
     FROM identities
-    WHERE kind = 'user' AND email IS NULL AND user_id IS NOT NULL
-      AND user_id NOT IN (SELECT id FROM users);
+    WHERE kind = 'user' AND email IS NULL AND user_id IS NOT NULL;
 
     INSERT INTO user_org_memberships (user_id, org_id, role, is_bootstrap, created_at)
     SELECT i.user_id,
@@ -50,11 +52,7 @@ const BACKFILL_SQL: &str = r#"
            false,
            i.created_at
     FROM identities i
-    WHERE i.kind = 'user' AND i.user_id IS NOT NULL
-      AND NOT EXISTS (
-          SELECT 1 FROM user_org_memberships m
-          WHERE m.user_id = i.user_id AND m.org_id = i.org_id
-      );
+    WHERE i.kind = 'user' AND i.user_id IS NOT NULL;
 "#;
 
 #[tokio::test]
@@ -130,30 +128,25 @@ async fn backfill_links_seeded_legacy_identities() {
         .await
         .unwrap();
 
-    // Run the backfill SQL against the seeded state. Every statement in
-    // BACKFILL_SQL is idempotent — repeated runs should converge to the same
-    // state. We execute it twice to prove it.
-    for pass in 0..2 {
-        sqlx::raw_sql(BACKFILL_SQL).execute(&pool).await.unwrap();
+    sqlx::raw_sql(BACKFILL_SQL).execute(&pool).await.unwrap();
 
-        let unlinked: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM identities
-             WHERE org_id = $1 AND kind = 'user' AND user_id IS NULL",
-        )
-        .bind(org_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(unlinked, 0, "pass {pass}: all user-kind identities linked");
+    let unlinked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM identities
+         WHERE org_id = $1 AND kind = 'user' AND user_id IS NULL",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(unlinked, 0, "all user-kind identities linked");
 
-        let membership_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM user_org_memberships WHERE org_id = $1")
-                .bind(org_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(membership_count, 3, "pass {pass}: 3 memberships produced");
-    }
+    let membership_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_org_memberships WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(membership_count, 3, "3 memberships produced");
 
     // Alice had is_org_admin=true; her membership role should reflect that.
     let alice_role: String = sqlx::query_scalar(
