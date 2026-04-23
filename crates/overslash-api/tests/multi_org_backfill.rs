@@ -253,6 +253,133 @@ async fn users_unique_constraint_allows_same_email_different_subjects() {
 }
 
 #[tokio::test]
+async fn user_repo_round_trip() {
+    let pool = common::test_pool().await;
+
+    // create_overslash_backed + find_by_overslash_idp + get_by_id.
+    let created = user::create_overslash_backed(
+        &pool,
+        Some("round-trip@example.test"),
+        Some("Alice"),
+        "google",
+        "subject-R",
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.overslash_idp_provider.as_deref(), Some("google"));
+    assert_eq!(created.overslash_idp_subject.as_deref(), Some("subject-R"));
+
+    let by_idp = user::find_by_overslash_idp(&pool, "google", "subject-R")
+        .await
+        .unwrap()
+        .expect("round-trip lookup by (provider, subject)");
+    assert_eq!(by_idp.id, created.id);
+
+    let by_id = user::get_by_id(&pool, created.id)
+        .await
+        .unwrap()
+        .expect("get_by_id returns the row we just inserted");
+    assert_eq!(by_id.id, created.id);
+
+    // find_by_overslash_idp returns None for unknown pairs.
+    let missing = user::find_by_overslash_idp(&pool, "google", "no-such-subject")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+
+    // refresh_profile overwrites email + display_name when the IdP returns new
+    // values; a None leaves the existing value alone (COALESCE semantics).
+    let refreshed = user::refresh_profile(
+        &pool,
+        created.id,
+        Some("new-email@example.test"),
+        Some("Alice Renamed"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(refreshed.email.as_deref(), Some("new-email@example.test"));
+    assert_eq!(refreshed.display_name.as_deref(), Some("Alice Renamed"));
+
+    let kept = user::refresh_profile(&pool, created.id, None, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.email.as_deref(), Some("new-email@example.test"));
+    assert_eq!(kept.display_name.as_deref(), Some("Alice Renamed"));
+
+    // refresh_profile on a non-existent id returns None (not an error).
+    let ghost = user::refresh_profile(&pool, Uuid::new_v4(), Some("x@x"), None)
+        .await
+        .unwrap();
+    assert!(ghost.is_none());
+
+    // set_personal_org links the user to an org; hits the FK we installed on
+    // users.personal_org_id.
+    let org_id: Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ('Personal', $1) RETURNING id")
+            .bind(format!("personal-{}", Uuid::new_v4().simple()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        user::set_personal_org(&pool, created.id, org_id)
+            .await
+            .unwrap()
+    );
+
+    let with_org = user::get_by_id(&pool, created.id).await.unwrap().unwrap();
+    assert_eq!(with_org.personal_org_id, Some(org_id));
+
+    // set_personal_org returns false for an unknown user_id.
+    assert!(
+        !user::set_personal_org(&pool, Uuid::new_v4(), org_id)
+            .await
+            .unwrap()
+    );
+
+    // create_org_only — the other user shape. No IdP binding, no personal org.
+    let org_only = user::create_org_only(&pool, Some("org@example.test"), Some("OrgUser"))
+        .await
+        .unwrap();
+    assert!(org_only.overslash_idp_provider.is_none());
+    assert!(org_only.overslash_idp_subject.is_none());
+    assert!(org_only.personal_org_id.is_none());
+}
+
+#[tokio::test]
+async fn membership_list_for_org_returns_all_members() {
+    let pool = common::test_pool().await;
+
+    let org_id: Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ('Acme', $1) RETURNING id")
+            .bind(format!("acme-{}", Uuid::new_v4().simple()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let alice = user::create_org_only(&pool, Some("a@example.test"), Some("Alice"))
+        .await
+        .unwrap();
+    let bob = user::create_org_only(&pool, Some("b@example.test"), Some("Bob"))
+        .await
+        .unwrap();
+
+    membership::create(&pool, alice.id, org_id, membership::ROLE_ADMIN, false)
+        .await
+        .unwrap();
+    membership::create(&pool, bob.id, org_id, membership::ROLE_MEMBER, false)
+        .await
+        .unwrap();
+
+    let mut members = membership::list_for_org(&pool, org_id).await.unwrap();
+    members.sort_by_key(|m| m.role.clone());
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].role, "admin");
+    assert_eq!(members[1].role, "member");
+}
+
+#[tokio::test]
 async fn membership_repo_round_trip() {
     let pool = common::test_pool().await;
 
