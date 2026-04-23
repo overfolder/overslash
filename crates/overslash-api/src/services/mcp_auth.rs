@@ -49,3 +49,25 @@ async fn fetch_secret(state: &AppState, scope: &OrgScope, name: &str) -> Result<
     String::from_utf8(decrypted)
         .map_err(|_| AppError::Internal("mcp secret is not valid utf-8".into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use reqwest::header::{AUTHORIZATION, HeaderValue};
+
+    /// Bearer values that contain invalid header chars (control bytes, newlines)
+    /// must be rejected at the HeaderValue boundary — otherwise they'd either
+    /// panic or silently corrupt the outbound request.
+    #[test]
+    fn bearer_with_control_char_is_rejected_by_headervalue() {
+        let bad = "Bearer abc\ndef";
+        assert!(HeaderValue::from_str(bad).is_err());
+    }
+
+    #[test]
+    fn bearer_with_plain_ascii_is_accepted() {
+        let ok = HeaderValue::from_str("Bearer abcdef123").expect("valid header value");
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(AUTHORIZATION, ok);
+        assert_eq!(h.get(AUTHORIZATION).unwrap(), "Bearer abcdef123");
+    }
+}

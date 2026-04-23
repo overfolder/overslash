@@ -83,3 +83,53 @@ fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppErro
         UnexpectedShape(m) => AppError::BadGateway(format!("mcp unexpected response: {m}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::map_client_error;
+    use crate::error::AppError;
+    use crate::services::mcp_client::McpClientError;
+
+    fn is_bad_gateway(e: &AppError) -> bool {
+        matches!(e, AppError::BadGateway(_))
+    }
+    fn is_bad_request(e: &AppError) -> bool {
+        matches!(e, AppError::BadRequest(_))
+    }
+
+    #[test]
+    fn map_invalid_url_is_bad_request() {
+        let e = map_client_error(McpClientError::InvalidUrl("nope".into()));
+        assert!(is_bad_request(&e));
+    }
+
+    #[test]
+    fn map_bad_json_is_bad_gateway() {
+        let e = map_client_error(McpClientError::BadJson("garbage".into()));
+        assert!(is_bad_gateway(&e));
+    }
+
+    #[test]
+    fn map_http_error_is_bad_gateway() {
+        let e = map_client_error(McpClientError::Http {
+            status: 502,
+            body: "upstream down".into(),
+        });
+        assert!(is_bad_gateway(&e));
+    }
+
+    #[test]
+    fn map_rpc_error_is_bad_gateway() {
+        let e = map_client_error(McpClientError::Rpc {
+            code: -32601,
+            message: "Method not found".into(),
+        });
+        assert!(is_bad_gateway(&e));
+    }
+
+    #[test]
+    fn map_unexpected_shape_is_bad_gateway() {
+        let e = map_client_error(McpClientError::UnexpectedShape("no result".into()));
+        assert!(is_bad_gateway(&e));
+    }
+}

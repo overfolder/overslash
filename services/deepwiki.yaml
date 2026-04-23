@@ -21,37 +21,37 @@ x-overslash-mcp:
   tools:
     - name: read_wiki_structure
       risk: read
-      scope_param: repo
-      description: "List the table of contents for {repo}'s wiki"
+      scope_param: repoName
+      description: "List the table of contents for {repoName}'s wiki"
       input_schema:
         type: object
         properties:
-          repo:
+          repoName:
             type: string
             description: "owner/repo slug (e.g. `vercel/next.js`)"
-        required: [repo]
+        required: [repoName]
     - name: read_wiki_contents
       risk: read
-      scope_param: repo
-      description: "Read the full wiki for {repo}"
+      scope_param: repoName
+      description: "Read the full wiki for {repoName}"
       input_schema:
         type: object
         properties:
-          repo:
+          repoName:
             type: string
             description: "owner/repo slug"
-        required: [repo]
+        required: [repoName]
     - name: ask_question
       risk: read
-      scope_param: repo
-      description: "Ask a natural-language {question} about {repo}"
+      scope_param: repoName
+      description: "Ask a natural-language {question} about {repoName}"
       input_schema:
         type: object
         properties:
-          repo:
+          repoName:
             type: string
             description: "owner/repo slug"
           question:
             type: string
             description: "Natural-language question"
-        required: [repo, question]
+        required: [repoName, question]
