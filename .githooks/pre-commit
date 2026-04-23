@@ -93,8 +93,9 @@ fi
 # Dashboard checks (only if dashboard/ files are staged)
 if git diff --cached --name-only --diff-filter=ACMR | grep -q '^dashboard/'; then
     echo "  dashboard/ changes detected, running svelte-check + strict build"
-    if [ ! -d dashboard/node_modules ]; then
-        echo "ERROR: dashboard/node_modules missing. Run 'cd dashboard && npm install' first."
+    if [ ! -x dashboard/node_modules/.bin/svelte-kit ]; then
+        echo "ERROR: dashboard deps not installed (svelte-kit binary missing)."
+        echo "Run: (cd dashboard && npm install)"
         exit 1
     fi
     (cd dashboard && npm run check) || {
