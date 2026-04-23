@@ -7,9 +7,10 @@
 //!
 //! The supervisor watches the child; if it exits non-zero and the main
 //! process is still up, it restarts with exponential backoff (max 30s).
-//! On main-process shutdown (SIGTERM/SIGINT) we drop the `Drop`-owned
-//! handle and the child is signaled via its stdin closing — or SIGTERM via
-//! a `tokio::process::Child::kill()` call.
+//! On main-process shutdown (SIGTERM/SIGINT) the `Supervisor`'s `Drop` impl
+//! aborts the watcher task, which releases its `Arc` clone on the child
+//! handle. The last `Arc` drop then drops the `Child`, and
+//! `kill_on_drop(true)` SIGKILLs the subprocess.
 
 #![cfg(feature = "mcp")]
 
@@ -42,8 +43,20 @@ pub struct SupervisorConfig {
 pub struct Supervisor {
     pub url: String,
     pub shared_secret: String,
-    // When dropped, the child is killed via the tokio watcher.
+    // Shared ownership of the live child. The watcher task holds a clone
+    // and swaps the child on respawn.
     _handle: Arc<Mutex<Option<Child>>>,
+    // Watcher task. Aborted on `Drop` so it releases its `_handle` clone,
+    // letting the child drop + `kill_on_drop(true)` fire.
+    watcher: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        if let Some(h) = self.watcher.take() {
+            h.abort();
+        }
+    }
 }
 
 /// Pick a free loopback port by binding to :0 and letting the OS assign.
@@ -235,7 +248,7 @@ pub async fn spawn(cfg: SupervisorConfig) -> anyhow::Result<Supervisor> {
     // `MCP_RUNTIME_URL` stays valid. If the port stays stuck (EADDRINUSE or
     // child can't bind) for `MAX_CONSECUTIVE_FAILS`, give up and log a
     // clear fatal rather than looping forever — operator must intervene.
-    {
+    let watcher = {
         let handle = handle.clone();
         let shared_secret = shared_secret.clone();
         let bundle_path = bundle_path.clone();
@@ -286,13 +299,14 @@ pub async fn spawn(cfg: SupervisorConfig) -> anyhow::Result<Supervisor> {
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
     Ok(Supervisor {
         url: format!("http://{addr}"),
         shared_secret,
         _handle: handle,
+        watcher: Some(watcher),
     })
 }
 
