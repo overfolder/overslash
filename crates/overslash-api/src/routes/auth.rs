@@ -1463,8 +1463,39 @@ async fn provision_org_subdomain(
 
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
     let metadata = userinfo_metadata(userinfo);
-    let new_user =
-        user_repo::create_org_only(&state.db, Some(&userinfo.email), Some(display_name)).await?;
+
+    // Before creating a brand-new `users` row, check whether this
+    // `(provider, subject)` already corresponds to an Overslash-backed
+    // user (this is the SINGLE_ORG_MODE case: env-var IdP is both the
+    // Overslash IdP and the org IdP, so the same pair shows up on both
+    // paths). Attach the new identity to the existing row instead of
+    // creating a duplicate. In cloud multi-tenant mode the org IdP
+    // uses its own client_id, so subjects don't collide with env ones
+    // and this lookup returns None — same flow as before.
+    let user_id = match user_repo::find_by_overslash_idp(
+        &state.db,
+        &userinfo.provider_key,
+        &userinfo.external_id,
+    )
+    .await?
+    {
+        Some(u) => {
+            let _ = user_repo::refresh_profile(
+                &state.db,
+                u.id,
+                Some(&userinfo.email),
+                Some(display_name),
+            )
+            .await;
+            u.id
+        }
+        None => {
+            user_repo::create_org_only(&state.db, Some(&userinfo.email), Some(display_name))
+                .await?
+                .id
+        }
+    };
+
     let identity_row = scope
         .create_identity_with_email(
             display_name,
@@ -1478,7 +1509,7 @@ async fn provision_org_subdomain(
         &state.db,
         target_org.id,
         identity_row.id,
-        Some(new_user.id),
+        Some(user_id),
     )
     .await?;
     overslash_db::repos::org_bootstrap::add_to_everyone_group(
@@ -1487,18 +1518,21 @@ async fn provision_org_subdomain(
         identity_row.id,
     )
     .await?;
-    membership::create(
-        &state.db,
-        new_user.id,
-        target_org.id,
-        membership::ROLE_MEMBER,
-    )
-    .await?;
+    // `membership::create` is idempotent-friendly-enough via the PK on
+    // (user_id, org_id) — but in the SINGLE_ORG_MODE reuse-user path, an
+    // earlier sign-in could have left the same `(user_id, org_id)` row
+    // already in place (e.g., bootstrap admin from POST /v1/orgs). Swallow
+    // the unique-violation so a repeat login doesn't fail.
+    match membership::create(&state.db, user_id, target_org.id, membership::ROLE_MEMBER).await {
+        Ok(_) => {}
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
+        Err(e) => return Err(e.into()),
+    }
 
     Ok((
         target_org.id,
         identity_row.id,
-        new_user.id,
+        user_id,
         userinfo.email.clone(),
     ))
 }
