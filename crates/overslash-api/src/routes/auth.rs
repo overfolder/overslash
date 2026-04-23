@@ -99,14 +99,40 @@ struct NormalizedUserInfo {
 async fn provider_login(
     State(state): State<AppState>,
     Path(provider_key): Path<String>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, AppError> {
     let provider = oauth_provider::get_by_key(&state.db, &provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
+    // Subdomain context is authoritative for which IdP to use. If the
+    // caller hits `<slug>.app.overslash.com/auth/login/google` we MUST
+    // resolve credentials against that org's `org_idp_configs` — using
+    // env-var Overslash-level creds would let a corp-subdomain login
+    // provision a personal-org account, bypassing the corp org's IdP.
+    // `?org=` is still accepted on the root apex (legacy dashboards pass
+    // it); when set, it must match the subdomain if we're on one.
+    let ctx = ctx
+        .map(|axum::extract::Extension(c)| c)
+        .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
+    let effective_org_slug: Option<String> = match (&ctx, query.org.as_deref()) {
+        (crate::middleware::subdomain::RequestOrgContext::Org { slug, .. }, Some(q_slug))
+            if q_slug != slug =>
+        {
+            return Err(AppError::BadRequest(
+                "org param does not match subdomain".into(),
+            ));
+        }
+        (crate::middleware::subdomain::RequestOrgContext::Org { slug, .. }, _) => {
+            Some(slug.clone())
+        }
+        (crate::middleware::subdomain::RequestOrgContext::Root, Some(q)) => Some(q.to_string()),
+        (crate::middleware::subdomain::RequestOrgContext::Root, None) => None,
+    };
+
     let (client_id, _client_secret) =
-        resolve_auth_credentials(&state, &provider_key, query.org.as_deref()).await?;
+        resolve_auth_credentials(&state, &provider_key, effective_org_slug.as_deref()).await?;
 
     let pkce = if provider.supports_pkce {
         Some(oauth::generate_pkce())
@@ -142,8 +168,7 @@ async fn provider_login(
     // Persist org slug across the OAuth redirect so the callback can resolve
     // DB-stored credentials. Value is "none" when org context isn't needed
     // (env-var social providers). Sanitize to prevent header injection.
-    let org_slug_value = query
-        .org
+    let org_slug_value = effective_org_slug
         .as_deref()
         .filter(|s| {
             !s.is_empty()
@@ -183,6 +208,7 @@ async fn provider_login(
 async fn provider_callback(
     State(state): State<AppState>,
     Path(provider_key): Path<String>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -209,8 +235,18 @@ async fn provider_callback(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
-    // Recover org slug from cookie (set during provider_login)
-    let org_slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
+    // Recover org slug from cookie (set during provider_login). Subdomain
+    // context is authoritative and takes precedence — even if the cookie
+    // says otherwise, a callback hitting `<slug>.app.overslash.com` must
+    // be treated as that org's login path.
+    let cookie_slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
+    let ctx = ctx
+        .map(|axum::extract::Extension(c)| c)
+        .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
+    let org_slug = match ctx {
+        crate::middleware::subdomain::RequestOrgContext::Org { slug, .. } => Some(slug),
+        crate::middleware::subdomain::RequestOrgContext::Root => cookie_slug,
+    };
 
     let (client_id, client_secret) =
         resolve_auth_credentials(&state, &provider_key, org_slug.as_deref()).await?;
@@ -290,13 +326,15 @@ async fn provider_callback(
 
 async fn google_login_compat(
     state: State<AppState>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     query: Query<LoginQuery>,
 ) -> Result<Response, AppError> {
-    provider_login(state, Path("google".to_string()), query).await
+    provider_login(state, Path("google".to_string()), ctx, query).await
 }
 
 async fn google_callback_compat(
     state: State<AppState>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(mut params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -308,7 +346,14 @@ async fn google_callback_compat(
             params.state = format!("login:google:{}", parts[1]);
         }
     }
-    provider_callback(state, Path("google".to_string()), Query(params), headers).await
+    provider_callback(
+        state,
+        Path("google".to_string()),
+        ctx,
+        Query(params),
+        headers,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -317,11 +362,15 @@ async fn google_callback_compat(
 
 async fn list_auth_providers(
     State(state): State<AppState>,
-    axum::extract::Extension(ctx): axum::extract::Extension<
-        crate::middleware::subdomain::RequestOrgContext,
-    >,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(query): Query<ProvidersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Older test harnesses mount the router without the subdomain
+    // middleware; treat the missing extension as Root so those paths still
+    // list providers correctly.
+    let ctx = ctx
+        .map(|axum::extract::Extension(c)| c)
+        .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
     // Trust-domain rule (docs/design/multi_org_auth.md §Flow 2):
     //   - On a corp-org subdomain, list ONLY that org's IdPs — Overslash-
     //     level IdPs cannot grant membership to a corp org, so offering them

@@ -952,15 +952,19 @@ pub async fn start_mock() -> SocketAddr {
     }
 
     // Mock OIDC userinfo endpoint — returns a standard OIDC claims set.
-    // The access token encodes the user identity: "mock_access_<code>".
+    //
+    // `sub` is stable across logins so the multi-org auth flow (keyed on
+    // `(provider, subject)`) treats repeat logins as the same human. The
+    // token we received is ignored for claim purposes — it only proves the
+    // caller obtained a valid access_token from the mock token endpoint.
     async fn oidc_userinfo(headers: HeaderMap) -> Json<Value> {
-        let token = headers
+        let _token = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("unknown");
         Json(json!({
-            "sub": format!("oidc-sub-{token}"),
+            "sub": "oidc-sub-testuser",
             "email": "testuser@example.com",
             "name": "Test User",
             "picture": "https://example.com/avatar.png",
