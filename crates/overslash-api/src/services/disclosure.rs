@@ -63,12 +63,20 @@ pub enum DisclosureError {
 /// is one order of magnitude higher so it only fires on runaway inputs.
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 
+/// Absolute wall-clock ceiling for a whole disclosure batch, regardless of
+/// `n_filters × per_filter_timeout`. Defends against pathological templates
+/// declaring hundreds of filters without capping legitimate templates with
+/// 8–10 fields (which would otherwise trip a low multiplier silently).
+const MAX_BATCH_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Run every filter in `fields` against `input`, returning one
 /// [`DisclosedField`] per entry in declaration order. Empty `fields` →
 /// empty vec (cheap fast-path).
 ///
-/// `per_filter_timeout` matches the per-response-filter timeout; the whole
-/// batch is clamped to `min(5 × per_filter, per_filter × fields.len())`.
+/// The batch wall-clock budget is `per_filter_timeout × fields.len()`,
+/// clamped at `MAX_BATCH_TIMEOUT`. Scaling linearly avoids the silent
+/// degradation where legitimate 6-field templates would lose the summary
+/// because their expected budget was capped below `n × per_filter`.
 pub async fn run_disclosures(
     fields: &[DisclosureField],
     input: &serde_json::Value,
@@ -91,7 +99,8 @@ pub async fn run_disclosures(
             .collect::<Vec<_>>()
     });
 
-    let batch_timeout = per_filter_timeout.saturating_mul(u32::min(fields.len() as u32, 5).max(1));
+    let scaled = per_filter_timeout.saturating_mul(fields.len() as u32);
+    let batch_timeout = scaled.min(MAX_BATCH_TIMEOUT);
     match tokio::time::timeout(batch_timeout, join).await {
         Ok(Ok(results)) => Ok(results),
         Ok(Err(_)) => Err(DisclosureError::Panicked),

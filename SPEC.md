@@ -1159,7 +1159,7 @@ Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` /
 All of an action's filters run in one `spawn_blocking` task with these limits:
 
 - **Per-filter timeout** — `filter_timeout_ms` (same setting that gates response filters).
-- **Batch timeout** — `min(5 × filter_timeout, n × filter_timeout)`.
+- **Batch timeout** — `n × filter_timeout_ms`, capped at an absolute **30 s** wall-clock ceiling. Scales linearly with field count so legitimate multi-field templates aren't silently degraded, while the absolute ceiling defends against pathological templates.
 - **Output values cap** — 10 000 per filter (matches `response_filter`). Disclosure expects exactly one; excess values set `truncated: true` on the field and take the first.
 - **Per-value size cap** — 10 KB, applied on top of `max_chars`.
 - **Projection size cap** — 1 MB (safety ceiling, one order of magnitude above the `action_detail` product limit).
