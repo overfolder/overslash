@@ -1,0 +1,4 @@
+node_modules
+dist
+.tsx-cache
+*.log

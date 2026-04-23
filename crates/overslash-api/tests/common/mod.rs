@@ -550,6 +550,8 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     // Build the app with the test pool directly
@@ -570,6 +572,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -609,6 +612,91 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
     (addr, Client::new())
 }
 
+/// Start the API with a pre-configured `RuntimeClient` pointed at an in-test
+/// mock of the MCP runtime. The mock exposes the same `/invoke` HTTP contract
+/// the real runtime does; see `mcp_execute.rs` for the mock implementation.
+pub async fn start_api_with_mcp_runtime(
+    pool: PgPool,
+    runtime_url: String,
+    shared_secret: String,
+) -> (SocketAddr, Client) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let http_client = reqwest::Client::new();
+    let mcp_runtime = Some(
+        overslash_api::services::mcp_runtime_client::RuntimeClient::new(
+            runtime_url.clone(),
+            Some(shared_secret.clone()),
+            http_client.clone(),
+        ),
+    );
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: format!("http://{addr}"),
+        dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
+        dashboard_url: "/".into(),
+        dashboard_origin: "*localhost*".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
+        mcp_runtime_url: Some(runtime_url),
+        mcp_runtime_shared_secret: Some(shared_secret),
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client,
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
+        mcp_runtime,
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::permissions::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::approvals::router())
+        .merge(overslash_api::routes::audit::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
+        .merge(overslash_api::routes::groups::router())
+        .with_state(state);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    (addr, Client::new())
+}
+
 /// Start API with dev auth enabled. Returns (base_url, client).
 pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -634,6 +722,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     let state = overslash_api::AppState {
@@ -653,6 +743,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -719,6 +810,8 @@ pub async fn start_api_with_auth_providers(
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     let state = overslash_api::AppState {
@@ -741,6 +834,7 @@ pub async fn start_api_with_auth_providers(
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -1171,6 +1265,8 @@ pub async fn start_api_with_registry(
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     let state = overslash_api::AppState {
@@ -1190,6 +1286,7 @@ pub async fn start_api_with_registry(
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -1266,6 +1363,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     let state = overslash_api::AppState {
@@ -1285,6 +1384,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::StubEmbedder),
         embeddings_available: true,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -1332,6 +1432,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     let state = overslash_api::AppState {
@@ -1351,6 +1453,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()

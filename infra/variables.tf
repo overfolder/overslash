@@ -150,3 +150,47 @@ variable "valkey_memory_size_gb" {
   type        = number
   default     = 1
 }
+
+# --- MCP runtime (separate Cloud Run service for third-party MCP servers) ---
+
+variable "enable_mcp_runtime" {
+  description = "Deploy the isolated overslash-mcp-runtime Cloud Run service. Off by default so existing envs stay unchanged."
+  type        = bool
+  default     = false
+}
+
+variable "mcp_runtime_sa_email" {
+  description = "Service account email for the MCP runtime container. Must have no Secret Manager/Cloud SQL roles — isolated by design."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_runtime_shared_secret_id" {
+  description = "Secret Manager secret id holding MCP_RUNTIME_SHARED_SECRET. Used by the api to authenticate against the runtime and mounted into the runtime container at boot."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_runtime_cpu" {
+  description = "Cloud Run CPU allocation for the MCP runtime container."
+  type        = string
+  default     = "2"
+}
+
+variable "mcp_runtime_memory" {
+  description = "Cloud Run memory allocation for the MCP runtime. Budget for ~40 paused + 5 active MCP subprocesses × 80MB plus overhead."
+  type        = string
+  default     = "4Gi"
+}
+
+variable "mcp_runtime_min_instances" {
+  description = "Minimum warm runtime replicas. Set to 1+ to keep long-lived MCP subprocesses alive between requests. 0 = scale-to-zero (pays cold-start)."
+  type        = number
+  default     = 1
+}
+
+variable "mcp_runtime_max_instances" {
+  description = "Maximum runtime replicas. Raise when MCP subprocess density hits memory ceilings."
+  type        = number
+  default     = 3
+}

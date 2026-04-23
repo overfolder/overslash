@@ -358,6 +358,13 @@
 	<a href="/services" class="back">← Back to services</a>
 	<h1>{step === 'pick' ? 'Choose a template' : 'Configure service'}</h1>
 
+	{#if step === 'pick'}
+		<div class="mcp-cta">
+			Registering a <strong>Model Context Protocol</strong> server (npm package) instead?
+			<a href="/services/new/mcp" class="mcp-link">Open the MCP wizard →</a>
+		</div>
+	{/if}
+
 	{#if error}
 		<div class="error">{error}</div>
 	{/if}
@@ -612,6 +619,18 @@
 		padding: 0.6rem 0.9rem;
 		margin-bottom: 1rem;
 		font-size: 0.85rem;
+	}
+	.mcp-cta {
+		margin: 0.75rem 0 0;
+		padding: 0.6rem 0.85rem;
+		border: 1px dashed var(--color-border, #333);
+		border-radius: 6px;
+		font-size: 0.88rem;
+		color: var(--color-fg-muted);
+	}
+	.mcp-link {
+		font-weight: 600;
+		margin-left: 0.4rem;
 	}
 	.filters {
 		margin-bottom: 1rem;

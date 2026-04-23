@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{ServiceAction, ServiceDefinition};
+use crate::types::{Runtime, ServiceAction, ServiceDefinition};
 
 mod alias;
 mod extract;
@@ -32,10 +32,13 @@ pub mod import;
 
 use alias::APIKEY_HTTP_SEC_ALIASES;
 use alias::{
-    HTTP_METHODS, INFO_ALIASES, OAUTH2_SEC_ALIASES, OPERATION_ALIASES, ROOT_ALIASES,
-    normalize_parameters_in, rewrite_aliases,
+    HTTP_METHODS, INFO_ALIASES, MCP_ACTION_ALIASES, OAUTH2_SEC_ALIASES, OPERATION_ALIASES,
+    ROOT_ALIASES, normalize_parameters_in, rewrite_aliases,
 };
-use extract::{extract_auth, extract_hosts, extract_http_action, extract_platform_action};
+use extract::{
+    extract_auth, extract_hosts, extract_http_action, extract_mcp_action, extract_mcp_spec,
+    extract_platform_action,
+};
 
 // ── Public API ───────────────────────────────────────────────────────
 
@@ -146,6 +149,21 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
         }
     }
 
+    // MCP actions live under x-overslash-actions (or its `actions` alias,
+    // already rewritten above). Each entry is an MCP tool binding.
+    if let Some(mcp_actions) = root
+        .get_mut("x-overslash-actions")
+        .and_then(Value::as_object_mut)
+    {
+        for (action_key, action) in mcp_actions.iter_mut() {
+            let Value::Object(obj) = action else {
+                continue;
+            };
+            let base = format!("x-overslash-actions.{action_key}");
+            rewrite_aliases(obj, MCP_ACTION_ALIASES, &base, &mut issues);
+        }
+    }
+
     issues
 }
 
@@ -194,6 +212,22 @@ pub fn compile_service(
         .and_then(|i| i.get("x-overslash-category"))
         .and_then(Value::as_str)
         .map(str::to_string);
+
+    let runtime = match info
+        .and_then(|i| i.get("x-overslash-runtime"))
+        .and_then(Value::as_str)
+    {
+        None | Some("http") => Runtime::Http,
+        Some("mcp") => Runtime::Mcp,
+        Some(other) => {
+            errors.push(ValidationIssue::new(
+                "invalid_runtime",
+                format!("x-overslash-runtime must be one of http/mcp (got {other:?})"),
+                "info.x-overslash-runtime",
+            ));
+            Runtime::Http
+        }
+    };
 
     let hosts = extract_hosts(root.get("servers"));
 
@@ -246,6 +280,82 @@ pub fn compile_service(
         }
     }
 
+    // x-overslash-actions: MCP-runtime action map. Keyed by action name;
+    // each entry describes one MCP tool invocation. Valid under any
+    // runtime (an HTTP service could theoretically carry MCP-only
+    // platform-style actions), but it's required under Runtime::Mcp.
+    if let Some(mcp_actions) = root.get("x-overslash-actions").and_then(Value::as_object) {
+        for (action_key, action) in mcp_actions {
+            let Some(obj) = action.as_object() else {
+                errors.push(ValidationIssue::new(
+                    "openapi_invalid",
+                    "mcp action must be an object",
+                    format!("x-overslash-actions.{action_key}"),
+                ));
+                continue;
+            };
+            match extract_mcp_action(action_key, obj) {
+                Ok(a) => {
+                    actions.insert(action_key.clone(), a);
+                }
+                Err(mut es) => errors.append(&mut es),
+            }
+        }
+    }
+
+    let mcp = match root.get("x-overslash-mcp") {
+        Some(v) => match extract_mcp_spec(v) {
+            Ok(s) => Some(s),
+            Err(mut es) => {
+                errors.append(&mut es);
+                None
+            }
+        },
+        None => None,
+    };
+
+    // Runtime consistency checks.
+    match runtime {
+        Runtime::Mcp => {
+            if mcp.is_none() {
+                errors.push(ValidationIssue::new(
+                    "missing_field",
+                    "x-overslash-runtime is `mcp` but x-overslash-mcp is missing",
+                    "x-overslash-mcp",
+                ));
+            }
+            let has_paths = root
+                .get("paths")
+                .and_then(Value::as_object)
+                .map(|p| !p.is_empty())
+                .unwrap_or(false);
+            if has_paths {
+                errors.push(ValidationIssue::new(
+                    "openapi_invalid",
+                    "mcp-runtime templates must not declare `paths:` — use x-overslash-actions instead",
+                    "paths",
+                ));
+            }
+            let has_mcp_actions = actions.values().any(|a| a.mcp_tool.is_some());
+            if !has_mcp_actions {
+                errors.push(ValidationIssue::new(
+                    "missing_field",
+                    "mcp-runtime templates must declare at least one action under x-overslash-actions",
+                    "x-overslash-actions",
+                ));
+            }
+        }
+        Runtime::Http => {
+            if mcp.is_some() {
+                errors.push(ValidationIssue::new(
+                    "openapi_invalid",
+                    "x-overslash-mcp is only valid when x-overslash-runtime is `mcp`",
+                    "x-overslash-mcp",
+                ));
+            }
+        }
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -259,6 +369,8 @@ pub fn compile_service(
             category,
             auth,
             actions,
+            runtime,
+            mcp,
         },
         warnings,
     ))
@@ -376,6 +488,239 @@ mod tests {
         let m = &svc.actions["manage_members"];
         assert!(m.method.is_empty());
         assert_eq!(m.risk, Risk::Delete);
+    }
+
+    // ── MCP runtime templates ────────────────────────────────────────
+
+    #[test]
+    fn compile_mcp_template_minimal() {
+        // Use unprefixed aliases so we also exercise the normalizer path.
+        let mut v = json!({
+            "info": {
+                "title": "GitHub (MCP)",
+                "key": "mcp_github",
+                "category": "developer",
+                "runtime": "mcp"
+            },
+            "mcp": {
+                "package": "@modelcontextprotocol/server-github",
+                "version": "^1.0.0",
+                "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": {
+                        "from": "secret",
+                        "default_secret_name": "GITHUB_TOKEN"
+                    }
+                }
+            },
+            "actions": {
+                "search_repositories": {
+                    "tool": "search_repositories",
+                    "description": "Search repos for {query}",
+                    "risk": "read",
+                    "params": {
+                        "query": { "type": "string", "required": true },
+                        "per_page": { "type": "integer", "default": 10 }
+                    }
+                },
+                "create_issue": {
+                    "tool": "create_issue",
+                    "description": "Create issue in {owner}/{repo}",
+                    "risk": "write",
+                    "scope_param": "owner",
+                    "params": {
+                        "owner": { "type": "string", "required": true },
+                        "repo": { "type": "string", "required": true },
+                        "title": { "type": "string", "required": true }
+                    }
+                }
+            }
+        });
+        let issues = normalize_aliases(&mut v);
+        assert!(issues.is_empty(), "{issues:?}");
+        let (svc, warnings) = compile_service(&v).expect("compile ok");
+        assert!(warnings.is_empty());
+        assert_eq!(svc.key, "mcp_github");
+        assert_eq!(svc.runtime, crate::types::Runtime::Mcp);
+        let spec = svc.mcp.expect("mcp spec present");
+        assert_eq!(spec.package, "@modelcontextprotocol/server-github");
+        assert_eq!(spec.version, "^1.0.0");
+        match &spec.env["GITHUB_PERSONAL_ACCESS_TOKEN"] {
+            crate::types::McpEnvBinding::Secret {
+                default_secret_name,
+            } => assert_eq!(default_secret_name.as_deref(), Some("GITHUB_TOKEN")),
+            _ => panic!("expected Secret binding"),
+        }
+
+        let search = &svc.actions["search_repositories"];
+        assert_eq!(search.mcp_tool.as_deref(), Some("search_repositories"));
+        assert_eq!(search.risk, Risk::Read);
+        assert!(search.params["query"].required);
+        assert!(!search.params["per_page"].required);
+
+        let create = &svc.actions["create_issue"];
+        assert_eq!(create.mcp_tool.as_deref(), Some("create_issue"));
+        assert_eq!(create.risk, Risk::Write);
+        assert_eq!(create.scope_param.as_deref(), Some("owner"));
+    }
+
+    #[test]
+    fn compile_mcp_oauth_token_env_binding() {
+        let mut v = json!({
+            "info": {"title": "N", "key": "n", "runtime": "mcp"},
+            "mcp": {
+                "package": "@x/y",
+                "version": "1",
+                "env": {
+                    "NOTION_TOKEN": {"from": "oauth_token", "provider": "notion"}
+                }
+            },
+            "actions": {
+                "search": {"tool": "search", "description": "s", "risk": "read"}
+            }
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (svc, _) = compile_service(&v).unwrap();
+        let spec = svc.mcp.unwrap();
+        match &spec.env["NOTION_TOKEN"] {
+            crate::types::McpEnvBinding::OauthToken { provider } => assert_eq!(provider, "notion"),
+            _ => panic!("expected OauthToken binding"),
+        }
+    }
+
+    #[test]
+    fn compile_mcp_command_override() {
+        let mut v = json!({
+            "info": {"title": "C", "key": "c", "runtime": "mcp"},
+            "mcp": {"command": ["my-mcp", "--foo"]},
+            "actions": {"a": {"tool": "a", "description": "x", "risk": "read"}}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (svc, _) = compile_service(&v).unwrap();
+        let spec = svc.mcp.unwrap();
+        assert_eq!(
+            spec.command.as_deref(),
+            Some(["my-mcp".to_string(), "--foo".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn compile_mcp_rejects_paths() {
+        let mut v = json!({
+            "info": {"title": "T", "key": "t", "runtime": "mcp"},
+            "mcp": {"package": "@x/y", "version": "1"},
+            "actions": {"a": {"tool": "a", "description": "x", "risk": "read"}},
+            "paths": {"/legacy": {"get": {"operationId": "legacy"}}}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let errs = compile_service(&v).unwrap_err();
+        assert!(errs.iter().any(|i| i.path == "paths"));
+    }
+
+    #[test]
+    fn compile_mcp_requires_mcp_block() {
+        let mut v = json!({
+            "info": {"title": "T", "key": "t", "runtime": "mcp"},
+            "actions": {"a": {"tool": "a", "description": "x", "risk": "read"}}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let errs = compile_service(&v).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|i| i.code == "missing_field" && i.path == "x-overslash-mcp")
+        );
+    }
+
+    #[test]
+    fn compile_mcp_requires_at_least_one_action() {
+        let mut v = json!({
+            "info": {"title": "T", "key": "t", "runtime": "mcp"},
+            "mcp": {"package": "@x/y", "version": "1"}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let errs = compile_service(&v).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|i| i.code == "missing_field" && i.path == "x-overslash-actions")
+        );
+    }
+
+    #[test]
+    fn compile_http_rejects_mcp_block() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "x-overslash-mcp": {"package": "@x/y", "version": "1"},
+            "paths": {"/x": {"get": {"operationId": "x"}}}
+        });
+        let errs = compile_service(&doc).unwrap_err();
+        assert!(errs.iter().any(|i| i.path == "x-overslash-mcp"));
+    }
+
+    #[test]
+    fn compile_mcp_rejects_invalid_runtime_value() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t", "x-overslash-runtime": "wasm"}
+        });
+        let errs = compile_service(&doc).unwrap_err();
+        assert!(errs.iter().any(|i| i.code == "invalid_runtime"));
+    }
+
+    #[test]
+    fn compile_mcp_env_oauth_requires_provider() {
+        let mut v = json!({
+            "info": {"title": "T", "key": "t", "runtime": "mcp"},
+            "mcp": {
+                "package": "@x/y", "version": "1",
+                "env": {"T": {"from": "oauth_token"}}
+            },
+            "actions": {"a": {"tool": "a", "description": "x", "risk": "read"}}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let errs = compile_service(&v).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|i| i.code == "missing_field" && i.path.ends_with("T.provider"))
+        );
+    }
+
+    #[test]
+    fn compile_mcp_spec_requires_package_or_command() {
+        let mut v = json!({
+            "info": {"title": "T", "key": "t", "runtime": "mcp"},
+            "mcp": {},
+            "actions": {"a": {"tool": "a", "description": "x", "risk": "read"}}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let errs = compile_service(&v).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|i| i.code == "missing_field" && i.path == "x-overslash-mcp")
+        );
+    }
+
+    #[test]
+    fn mcp_action_defaults_tool_to_key() {
+        // If `tool:` is omitted, the action key doubles as the tool name.
+        let mut v = json!({
+            "info": {"title": "T", "key": "t", "runtime": "mcp"},
+            "mcp": {"package": "@x/y", "version": "1"},
+            "actions": {"search": {"description": "s", "risk": "read"}}
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (svc, _) = compile_service(&v).unwrap();
+        assert_eq!(svc.actions["search"].mcp_tool.as_deref(), Some("search"));
+    }
+
+    #[test]
+    fn http_template_default_runtime_and_no_mcp() {
+        // Existing HTTP templates keep compiling with runtime=Http, mcp=None.
+        let doc = json!({
+            "info": {"title": "Slack", "x-overslash-key": "slack"},
+            "paths": {"/x": {"get": {"operationId": "x"}}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(svc.runtime, crate::types::Runtime::Http);
+        assert!(svc.mcp.is_none());
+        assert!(svc.actions["x"].mcp_tool.is_none());
     }
 
     // ── YAML public entry points ─────────────────────────────────────

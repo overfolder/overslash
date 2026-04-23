@@ -445,6 +445,14 @@
 		</nav>
 
 		{#if activeTab === 'overview'}
+			<!-- MCP Runtime panel: only renders when the service is MCP-backed
+			     (McpRuntimePanel self-detects via the first status poll). -->
+			{#if svc}
+				{#await import('$lib/components/services/McpRuntimePanel.svelte') then M}
+					<M.default serviceId={svc.id} />
+				{/await}
+			{/if}
+
 			<div class="card">
 				<label class="field">
 					<span class="label">Name</span>

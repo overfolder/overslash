@@ -1,0 +1,75 @@
+openapi: 3.1.0
+info:
+  title: Hacker News (MCP)
+  description: |
+    Read-only Hacker News tools backed by the `mcp-hn` npm package. Surfaces
+    `get_stories`, `get_story_info`, `search_stories`, and `get_user_info`
+    against news.ycombinator.com's public API — no auth required.
+  key: mcp_hn
+  category: developer
+  runtime: mcp
+mcp:
+  package: mcp-hn
+  version: latest
+  # No env vars — mcp-hn speaks to the public HN API anonymously.
+  env: {}
+  limits:
+    # mcp-hn is tiny (~30MB resident) and doesn't fork. Keep defaults loose
+    # so Node itself has headroom; cpu_seconds=60 is plenty for any single
+    # search / fetch.
+    cpu_seconds: 60
+    open_files: 128
+paths: {}
+actions:
+  get_stories:
+    tool: get_stories
+    description: List top / new / ask / show / job stories (type={story_type}, n={num_stories})
+    risk: read
+    params:
+      story_type:
+        type: string
+        required: false
+        description: "top | new | ask_hn | show_hn | job"
+        default: top
+      num_stories:
+        type: integer
+        required: false
+        default: 10
+  get_story_info:
+    tool: get_story_info
+    description: Fetch story {story_id} with its top-level comments
+    risk: read
+    scope_param: story_id
+    params:
+      story_id:
+        type: integer
+        required: true
+  search_stories:
+    tool: search_stories
+    description: Search HN for "{query}" (n={num_results}, by_date={search_by_date})
+    risk: read
+    params:
+      query:
+        type: string
+        required: true
+      num_results:
+        type: integer
+        required: false
+        default: 10
+      search_by_date:
+        type: boolean
+        required: false
+        default: false
+  get_user_info:
+    tool: get_user_info
+    description: Fetch user {user_name}'s profile and latest submissions
+    risk: read
+    scope_param: user_name
+    params:
+      user_name:
+        type: string
+        required: true
+      num_stories:
+        type: integer
+        required: false
+        default: 10

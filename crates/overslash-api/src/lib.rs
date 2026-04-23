@@ -48,6 +48,10 @@ pub struct AppState {
     /// short-circuits the cosine retrieval and blends only keyword +
     /// fuzzy scores.
     pub embeddings_available: bool,
+    /// Client for the overslash-mcp-runtime sidecar. `None` when the deployment
+    /// has no runtime configured (MCP-runtime services then surface a
+    /// `mcp_runtime_unavailable` error at execute time).
+    pub mcp_runtime: Option<services::mcp_runtime_client::RuntimeClient>,
 }
 
 /// Create the application router with all routes and middleware.
@@ -73,10 +77,19 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
+    let http_client = reqwest::Client::new();
+    let mcp_runtime = config.mcp_runtime_url.as_ref().map(|url| {
+        services::mcp_runtime_client::RuntimeClient::new(
+            url.clone(),
+            config.mcp_runtime_shared_secret.clone(),
+            http_client.clone(),
+        )
+    });
+
     let state = AppState {
         db,
         config,
-        http_client: reqwest::Client::new(),
+        http_client,
         registry: Arc::new(registry),
         rate_limiter,
         rate_limit_cache,
@@ -84,6 +97,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         pending_authorize_store: services::oauth_as::PendingAuthorizeStore::new(),
         embedder,
         embeddings_available,
+        mcp_runtime,
     };
 
     // Spawn background tasks

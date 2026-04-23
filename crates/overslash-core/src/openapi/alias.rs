@@ -18,10 +18,20 @@ pub(super) struct Alias {
     pub canonical: &'static str,
 }
 
-pub(super) const ROOT_ALIASES: &[Alias] = &[Alias {
-    alias: "platform_actions",
-    canonical: "x-overslash-platform_actions",
-}];
+pub(super) const ROOT_ALIASES: &[Alias] = &[
+    Alias {
+        alias: "platform_actions",
+        canonical: "x-overslash-platform_actions",
+    },
+    Alias {
+        alias: "mcp",
+        canonical: "x-overslash-mcp",
+    },
+    Alias {
+        alias: "actions",
+        canonical: "x-overslash-actions",
+    },
+];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
     Alias {
@@ -31,6 +41,10 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
     Alias {
         alias: "category",
         canonical: "x-overslash-category",
+    },
+    Alias {
+        alias: "runtime",
+        canonical: "x-overslash-runtime",
     },
 ];
 
@@ -44,6 +58,13 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
         canonical: "x-overslash-scope_param",
     },
 ];
+
+/// Aliases rewritten on each entry inside `x-overslash-actions` (MCP actions).
+/// Currently identical to [`OPERATION_ALIASES`] — both contexts only accept
+/// `risk` and `scope_param` — but kept as a distinct alias to the same table
+/// so operation-only aliases can be added later without leaking into MCP
+/// action parsing (and vice versa).
+pub(super) const MCP_ACTION_ALIASES: &[Alias] = OPERATION_ALIASES;
 
 pub(super) const PARAMETER_ALIASES: &[Alias] = &[Alias {
     alias: "resolve",

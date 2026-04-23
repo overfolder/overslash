@@ -22,6 +22,12 @@ pub struct Config {
     pub redis_url: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
+    /// Base URL of the overslash-mcp-runtime service. When `None`, MCP-runtime
+    /// services cannot be executed and return `409 mcp_runtime_unavailable`.
+    pub mcp_runtime_url: Option<String>,
+    /// Bearer token shared with the MCP runtime. In production this is
+    /// replaced by GCP ID tokens minted from the api's service account.
+    pub mcp_runtime_shared_secret: Option<String>,
 }
 
 /// Build the default `public_url` from the bind host/port. We map
@@ -92,6 +98,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60),
+            mcp_runtime_url: env::var("MCP_RUNTIME_URL").ok().filter(|s| !s.is_empty()),
+            mcp_runtime_shared_secret: env::var("MCP_RUNTIME_SHARED_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 

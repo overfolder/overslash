@@ -19,7 +19,10 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{ActionParam, ParamResolver, Risk, ServiceAction, ServiceAuth, TokenInjection};
+use crate::types::{
+    ActionParam, McpEnvBinding, McpLimits, McpSpec, ParamResolver, Risk, ServiceAction,
+    ServiceAuth, TokenInjection,
+};
 
 // ── servers → hosts ──────────────────────────────────────────────────
 
@@ -340,6 +343,7 @@ pub(super) fn extract_http_action(
             params,
             scope_param,
             required_scopes,
+            mcp_tool: None,
         },
     );
 
@@ -384,6 +388,7 @@ pub(super) fn extract_platform_action(
             .and_then(Value::as_str)
             .map(str::to_string),
         required_scopes: Vec::new(),
+        mcp_tool: None,
     })
 }
 
@@ -538,6 +543,256 @@ fn parse_resolver(v: &Value) -> Option<ParamResolver> {
     let get = obj.get("get").and_then(Value::as_str)?.to_string();
     let pick = obj.get("pick").and_then(Value::as_str)?.to_string();
     Some(ParamResolver { get, pick })
+}
+
+// ── x-overslash-mcp → McpSpec ────────────────────────────────────────
+
+pub(super) fn extract_mcp_spec(v: &Value) -> Result<McpSpec, Vec<ValidationIssue>> {
+    let Some(obj) = v.as_object() else {
+        return Err(vec![ValidationIssue::new(
+            "openapi_invalid",
+            "x-overslash-mcp must be an object",
+            "x-overslash-mcp",
+        )]);
+    };
+
+    let package = obj
+        .get("package")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let version = obj
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let command = match obj.get("command") {
+        Some(Value::Array(arr)) => {
+            let parts: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            if parts.is_empty() { None } else { Some(parts) }
+        }
+        Some(_) => {
+            return Err(vec![ValidationIssue::new(
+                "openapi_invalid",
+                "x-overslash-mcp.command must be an array of strings",
+                "x-overslash-mcp.command",
+            )]);
+        }
+        None => None,
+    };
+
+    if command.is_none() && package.is_empty() {
+        return Err(vec![ValidationIssue::new(
+            "missing_field",
+            "x-overslash-mcp requires either `package` or `command`",
+            "x-overslash-mcp",
+        )]);
+    }
+
+    let mut env = HashMap::new();
+    let mut errors = Vec::new();
+    if let Some(env_obj) = obj.get("env").and_then(Value::as_object) {
+        for (name, binding_v) in env_obj {
+            let base = format!("x-overslash-mcp.env.{name}");
+            match parse_env_binding(binding_v, &base) {
+                Ok(b) => {
+                    env.insert(name.clone(), b);
+                }
+                Err(mut es) => errors.append(&mut es),
+            }
+        }
+    }
+
+    let limits = match obj.get("limits") {
+        Some(v) => match parse_limits(v) {
+            Ok(l) => l,
+            Err(mut es) => {
+                errors.append(&mut es);
+                McpLimits::default()
+            }
+        },
+        None => McpLimits::default(),
+    };
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    Ok(McpSpec {
+        package,
+        version,
+        command,
+        env,
+        limits,
+    })
+}
+
+fn parse_limits(v: &Value) -> Result<McpLimits, Vec<ValidationIssue>> {
+    let Some(obj) = v.as_object() else {
+        return Err(vec![ValidationIssue::new(
+            "openapi_invalid",
+            "x-overslash-mcp.limits must be an object",
+            "x-overslash-mcp.limits",
+        )]);
+    };
+    fn u32_field(obj: &Map<String, Value>, key: &str) -> Result<Option<u32>, Vec<ValidationIssue>> {
+        match obj.get(key) {
+            None => Ok(None),
+            Some(v) => match v.as_u64() {
+                Some(n) if n <= u64::from(u32::MAX) => Ok(Some(n as u32)),
+                _ => Err(vec![ValidationIssue::new(
+                    "openapi_invalid",
+                    format!("x-overslash-mcp.limits.{key} must be a non-negative integer"),
+                    format!("x-overslash-mcp.limits.{key}"),
+                )]),
+            },
+        }
+    }
+    Ok(McpLimits {
+        memory_mb: u32_field(obj, "memory_mb")?,
+        cpu_seconds: u32_field(obj, "cpu_seconds")?,
+        open_files: u32_field(obj, "open_files")?,
+        processes: u32_field(obj, "processes")?,
+    })
+}
+
+fn parse_env_binding(v: &Value, base: &str) -> Result<McpEnvBinding, Vec<ValidationIssue>> {
+    let Some(obj) = v.as_object() else {
+        return Err(vec![ValidationIssue::new(
+            "openapi_invalid",
+            "env binding must be an object",
+            base,
+        )]);
+    };
+    let from = obj.get("from").and_then(Value::as_str).unwrap_or("");
+    match from {
+        "secret" => Ok(McpEnvBinding::Secret {
+            default_secret_name: obj
+                .get("default_secret_name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
+        "oauth_token" => {
+            let provider = obj
+                .get("provider")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default();
+            if provider.is_empty() {
+                return Err(vec![ValidationIssue::new(
+                    "missing_field",
+                    "env binding `from: oauth_token` requires `provider`",
+                    format!("{base}.provider"),
+                )]);
+            }
+            Ok(McpEnvBinding::OauthToken { provider })
+        }
+        "literal" => {
+            let value = obj
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default();
+            Ok(McpEnvBinding::Literal { value })
+        }
+        "" => Err(vec![ValidationIssue::new(
+            "missing_field",
+            "env binding requires `from: secret|oauth_token|literal`",
+            format!("{base}.from"),
+        )]),
+        other => Err(vec![ValidationIssue::new(
+            "openapi_invalid",
+            format!("env binding `from` must be secret/oauth_token/literal (got {other:?})"),
+            format!("{base}.from"),
+        )]),
+    }
+}
+
+// ── x-overslash-actions.* → ServiceAction (MCP tool) ─────────────────
+
+pub(super) fn extract_mcp_action(
+    action_key: &str,
+    obj: &Map<String, Value>,
+) -> Result<ServiceAction, Vec<ValidationIssue>> {
+    let base = format!("x-overslash-actions.{action_key}");
+
+    let tool = obj
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or(action_key)
+        .to_string();
+
+    let description = obj
+        .get("description")
+        .and_then(Value::as_str)
+        .or_else(|| obj.get("summary").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
+
+    let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
+        Some("read") => Risk::Read,
+        Some("write") => Risk::Write,
+        Some("delete") => Risk::Delete,
+        Some(other) => {
+            return Err(vec![ValidationIssue::new(
+                "invalid_risk",
+                format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
+                format!("{base}.x-overslash-risk"),
+            )]);
+        }
+        None => Risk::Write,
+    };
+
+    let scope_param = obj
+        .get("x-overslash-scope_param")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut params: HashMap<String, ActionParam> = HashMap::new();
+    if let Some(params_obj) = obj.get("params").and_then(Value::as_object) {
+        for (name, param_v) in params_obj {
+            let Some(pobj) = param_v.as_object() else {
+                continue;
+            };
+            let (param_type, enum_values, default) = schema_fields(Some(pobj));
+            let required = pobj
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let description = pobj
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            params.insert(
+                name.clone(),
+                ActionParam {
+                    param_type,
+                    required,
+                    description,
+                    enum_values,
+                    default,
+                    resolve: None,
+                },
+            );
+        }
+    }
+
+    Ok(ServiceAction {
+        method: String::new(),
+        path: String::new(),
+        description,
+        risk,
+        response_type: None,
+        params,
+        scope_param,
+        required_scopes: Vec::new(),
+        mcp_tool: Some(tool),
+    })
 }
 
 #[cfg(test)]

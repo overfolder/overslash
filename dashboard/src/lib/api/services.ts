@@ -74,6 +74,73 @@ export const promoteDraft = (id: string) =>
 export const discardDraft = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/templates/drafts/${encodeURIComponent(id)}`);
 
+// -- MCP runtime control (per-service instance) --
+
+export interface McpStatusResponse {
+	state: 'stopped' | 'starting' | 'ready' | 'paused' | 'error';
+	pid: number | null;
+	last_used: string | null;
+	since: string | null;
+	memory_mb: number | null;
+	env_hash: string | null;
+	package: string | null;
+	version: string | null;
+	last_error: string | null;
+}
+
+export interface McpLogLine {
+	ts: string;
+	level: 'stderr' | 'stdio' | 'event';
+	text: string;
+}
+
+export const getMcpStatus = (serviceId: string) =>
+	session.get<McpStatusResponse>(`/v1/services/${encodeURIComponent(serviceId)}/mcp-status`);
+
+export const getMcpLogs = (serviceId: string, lines = 100, level = 'stderr,stdio,event') =>
+	session.get<{ lines: McpLogLine[] }>(
+		`/v1/services/${encodeURIComponent(serviceId)}/mcp-logs?lines=${lines}&level=${encodeURIComponent(level)}`
+	);
+
+export const wakeMcp = (serviceId: string) =>
+	session.post<{ state: string; pid: number | null; since: string | null }>(
+		`/v1/services/${encodeURIComponent(serviceId)}/mcp/wake`,
+		{}
+	);
+
+export const stopMcp = (serviceId: string) =>
+	session.post<null>(`/v1/services/${encodeURIComponent(serviceId)}/mcp/stop`, {});
+
+export const restartMcp = (serviceId: string) =>
+	session.post<{ state: string; pid: number | null; since: string | null }>(
+		`/v1/services/${encodeURIComponent(serviceId)}/mcp/restart`,
+		{}
+	);
+
+// -- MCP introspection --
+
+export type McpEnvBinding =
+	| { from: 'secret'; default_secret_name?: string | null }
+	| { from: 'oauth_token'; provider: string }
+	| { from: 'literal'; value: string };
+
+export interface IntrospectedMcpTool {
+	name: string;
+	description: string | null;
+	input_schema: unknown;
+	suggested_risk: 'read' | 'write' | 'delete';
+}
+
+export interface IntrospectMcpRequest {
+	package?: string;
+	version?: string;
+	command?: string[];
+	env?: Record<string, string>;
+}
+
+export const introspectMcp = (req: IntrospectMcpRequest) =>
+	session.post<{ tools: IntrospectedMcpTool[] }>('/v1/templates/mcp/introspect', req);
+
 // -- Template validation (pending endpoint, graceful 404) --
 
 export async function validateTemplate(yaml: string): Promise<ValidationResult | null> {

@@ -54,6 +54,102 @@ pub struct ServiceDefinition {
     pub auth: Vec<ServiceAuth>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
+    #[serde(default, skip_serializing_if = "Runtime::is_default")]
+    pub runtime: Runtime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpSpec>,
+}
+
+/// Which runtime backs this service template.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Runtime {
+    /// Tools are served over HTTP (`paths:` in the OpenAPI doc).
+    #[default]
+    Http,
+    /// Tools are served by an MCP server process; see [`McpSpec`].
+    Mcp,
+}
+
+impl Runtime {
+    pub fn is_default(&self) -> bool {
+        matches!(self, Runtime::Http)
+    }
+}
+
+/// Describes how to launch and authenticate an MCP server backing a service template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSpec {
+    /// npm package name, e.g. `@modelcontextprotocol/server-github`.
+    /// Ignored when `command` is set.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
+    /// npm semver range, e.g. `^1.0.0`. Ignored when `command` is set.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// Optional argv override for non-npm MCPs. When set, replaces the
+    /// default `npx -y <package>@<version>` launch line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// Env vars the MCP subprocess expects, keyed by env var name. Each
+    /// binding declares where the value comes from (secret, OAuth token, or
+    /// literal). Resolved at execute time by the api and sent to the
+    /// runtime, never baked into the template.
+    #[serde(default)]
+    pub env: HashMap<String, McpEnvBinding>,
+    /// Per-subprocess resource quotas. When set, the runtime wraps the
+    /// spawn in `prlimit` so the kernel enforces the caps. Unset fields
+    /// fall back to the runtime's global defaults.
+    #[serde(default, skip_serializing_if = "McpLimits::is_empty")]
+    pub limits: McpLimits,
+}
+
+/// Resource quotas applied to a single MCP subprocess. All fields are
+/// optional; the runtime fills in defaults for missing ones.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpLimits {
+    /// Max resident+virtual memory, in megabytes (maps to `prlimit --as`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u32>,
+    /// Max CPU seconds consumed by the subprocess (maps to `prlimit --cpu`).
+    /// Cumulative, not real-time. Useful against runaway loops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_seconds: Option<u32>,
+    /// Max open file descriptors (maps to `prlimit --nofile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_files: Option<u32>,
+    /// Max processes/threads the subprocess can spawn (maps to `prlimit --nproc`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processes: Option<u32>,
+}
+
+impl McpLimits {
+    pub fn is_empty(&self) -> bool {
+        self.memory_mb.is_none()
+            && self.cpu_seconds.is_none()
+            && self.open_files.is_none()
+            && self.processes.is_none()
+    }
+}
+
+/// Where an MCP env var's value comes from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum McpEnvBinding {
+    /// Resolve to the current value of a named org secret. If
+    /// `default_secret_name` is set and the service instance has no explicit
+    /// override, that name is used; otherwise the key in the `env` map
+    /// doubles as the secret name.
+    Secret {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_secret_name: Option<String>,
+    },
+    /// Resolve to an OAuth access token for the given provider, refreshed
+    /// automatically by the existing oauth engine.
+    OauthToken { provider: String },
+    /// A literal value baked into the template. Used for non-sensitive
+    /// config (feature flags, locale, etc.) — never for secrets.
+    Literal { value: String },
 }
 
 /// Alias: a service template is the same as a service definition.
@@ -128,6 +224,11 @@ pub struct ServiceAction {
     /// scope set granted at connect time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_scopes: Vec<String>,
+    /// MCP tool name to invoke (only set when the parent service's
+    /// [`Runtime`] is [`Runtime::Mcp`]). For HTTP runtimes this is `None`
+    /// and `method`/`path` carry the request template instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tool: Option<String>,
 }
 
 /// Describes how to resolve an opaque ID into a human-readable display name.

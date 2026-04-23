@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, patch, put},
+    routing::{get, patch, post, put},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,6 +33,14 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
         .route("/v1/services/{id}/groups", get(list_service_groups))
+        // MCP runtime control — only valid for services whose template has
+        // `runtime: mcp`; other services get a 409. Admin ACL: wake/stop/
+        // restart are observable in logs + billing so we keep them org-admin.
+        .route("/v1/services/{id}/mcp-status", get(mcp_status))
+        .route("/v1/services/{id}/mcp-logs", get(mcp_logs))
+        .route("/v1/services/{id}/mcp/wake", post(mcp_wake))
+        .route("/v1/services/{id}/mcp/stop", post(mcp_stop))
+        .route("/v1/services/{id}/mcp/restart", post(mcp_restart))
 }
 
 // -- Response types --
@@ -780,6 +788,172 @@ async fn resolve_template_source(
     )))
 }
 
+// ── MCP runtime control endpoints ────────────────────────────────────
+//
+// These endpoints power the dashboard's Runtime panel on the service
+// detail page. All five are org-admin gated (wake/stop/restart observable
+// in logs + billing; status/logs reveal subprocess internals). Only valid
+// for services whose resolved template has runtime=mcp — others get 400.
+
+async fn assert_mcp_template(
+    state: &AppState,
+    scope: &OrgScope,
+    service_id: Uuid,
+) -> Result<ServiceInstanceRow> {
+    let inst = scope
+        .get_service_instance(service_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service not found".into()))?;
+    let tpl = super::templates::resolve_template_definition(
+        state,
+        scope.org_id(),
+        inst.owner_identity_id,
+        &inst.template_key,
+    )
+    .await?;
+    if tpl.runtime != overslash_core::types::Runtime::Mcp {
+        return Err(AppError::BadRequest(
+            "service is not backed by an MCP runtime".into(),
+        ));
+    }
+    Ok(inst)
+}
+
+fn runtime_client(state: &AppState) -> Result<&crate::services::mcp_runtime_client::RuntimeClient> {
+    state.mcp_runtime.as_ref().ok_or_else(|| {
+        AppError::Conflict(
+            "mcp_runtime_unavailable: this deployment has no MCP runtime configured".into(),
+        )
+    })
+}
+
+async fn build_runtime_spec(
+    state: &AppState,
+    scope: &OrgScope,
+    caller_id: Uuid,
+    inst: &ServiceInstanceRow,
+) -> Result<(
+    overslash_core::types::McpSpec,
+    std::collections::HashMap<String, String>,
+    String,
+)> {
+    let tpl = super::templates::resolve_template_definition(
+        state,
+        scope.org_id(),
+        Some(caller_id),
+        &inst.template_key,
+    )
+    .await?;
+    let mcp = tpl
+        .mcp
+        .clone()
+        .ok_or_else(|| AppError::Internal("template has runtime=mcp but no mcp spec".into()))?;
+    let (env, hash) =
+        crate::services::mcp_env::resolve_env(state, scope, caller_id, scope.org_id(), &mcp)
+            .await?;
+    Ok((mcp, env, hash))
+}
+
+async fn mcp_status(
+    State(state): State<AppState>,
+    _: AdminAcl,
+    scope: OrgScope,
+    Path(service_id): Path<Uuid>,
+) -> Result<Json<crate::services::mcp_runtime_client::StatusResponse>> {
+    assert_mcp_template(&state, &scope, service_id).await?;
+    Ok(Json(runtime_client(&state)?.status(service_id).await?))
+}
+
+#[derive(Deserialize)]
+struct McpLogsQuery {
+    #[serde(default = "default_log_lines")]
+    lines: u32,
+    #[serde(default = "default_log_levels")]
+    level: String,
+}
+fn default_log_lines() -> u32 {
+    100
+}
+fn default_log_levels() -> String {
+    "stderr,stdio,event".into()
+}
+
+async fn mcp_logs(
+    State(state): State<AppState>,
+    _: AdminAcl,
+    scope: OrgScope,
+    Path(service_id): Path<Uuid>,
+    Query(q): Query<McpLogsQuery>,
+) -> Result<Json<crate::services::mcp_runtime_client::LogsResponse>> {
+    assert_mcp_template(&state, &scope, service_id).await?;
+    let levels: Vec<&str> = q.level.split(',').map(str::trim).collect();
+    let logs = runtime_client(&state)?
+        .logs(service_id, q.lines, &levels)
+        .await?;
+    Ok(Json(logs))
+}
+
+fn ensure_request<'a>(
+    service_id: Uuid,
+    mcp: &'a overslash_core::types::McpSpec,
+    env: &'a std::collections::HashMap<String, String>,
+    env_hash: &'a str,
+) -> crate::services::mcp_runtime_client::EnsureRequest<'a> {
+    crate::services::mcp_runtime_client::EnsureRequest {
+        service_instance_id: service_id,
+        package: (!mcp.package.is_empty()).then_some(mcp.package.as_str()),
+        version: (!mcp.version.is_empty()).then_some(mcp.version.as_str()),
+        command: mcp.command.as_deref(),
+        env,
+        env_hash,
+        limits: (!mcp.limits.is_empty()).then_some(&mcp.limits),
+    }
+}
+
+async fn mcp_wake(
+    State(state): State<AppState>,
+    AdminAcl(auth): AdminAcl,
+    scope: OrgScope,
+    Path(service_id): Path<Uuid>,
+) -> Result<Json<crate::services::mcp_runtime_client::EnsureResponse>> {
+    let inst = assert_mcp_template(&state, &scope, service_id).await?;
+    let caller_id = auth
+        .identity_id
+        .ok_or_else(|| AppError::Unauthorized("api key must be bound to an identity".into()))?;
+    let (mcp, env, env_hash) = build_runtime_spec(&state, &scope, caller_id, &inst).await?;
+    let client = runtime_client(&state)?;
+    let req = ensure_request(service_id, &mcp, &env, &env_hash);
+    Ok(Json(client.ensure(&req).await?))
+}
+
+async fn mcp_stop(
+    State(state): State<AppState>,
+    _: AdminAcl,
+    scope: OrgScope,
+    Path(service_id): Path<Uuid>,
+) -> Result<axum::http::StatusCode> {
+    assert_mcp_template(&state, &scope, service_id).await?;
+    runtime_client(&state)?.shutdown(service_id).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+async fn mcp_restart(
+    State(state): State<AppState>,
+    AdminAcl(auth): AdminAcl,
+    scope: OrgScope,
+    Path(service_id): Path<Uuid>,
+) -> Result<Json<crate::services::mcp_runtime_client::EnsureResponse>> {
+    let inst = assert_mcp_template(&state, &scope, service_id).await?;
+    let caller_id = auth
+        .identity_id
+        .ok_or_else(|| AppError::Unauthorized("api key must be bound to an identity".into()))?;
+    let client = runtime_client(&state)?;
+    client.shutdown(service_id).await?;
+    let (mcp, env, env_hash) = build_runtime_spec(&state, &scope, caller_id, &inst).await?;
+    let req = ensure_request(service_id, &mcp, &env, &env_hash);
+    Ok(Json(client.ensure(&req).await?))
+}
+
 #[cfg(test)]
 mod classify_scopes_tests {
     use super::*;
@@ -802,6 +976,7 @@ mod classify_scopes_tests {
                     params: HashMap::new(),
                     scope_param: None,
                     required_scopes: required.iter().map(|s| s.to_string()).collect(),
+                    mcp_tool: None,
                 },
             );
         }
@@ -822,6 +997,8 @@ mod classify_scopes_tests {
                 },
             }],
             actions: map,
+            runtime: Default::default(),
+            mcp: None,
         }
     }
 
@@ -839,6 +1016,8 @@ mod classify_scopes_tests {
             category: None,
             auth: vec![],
             actions: HashMap::new(),
+            runtime: Default::default(),
+            mcp: None,
         };
         assert!(classify_scopes(&scopes(&["x"]), &tpl).is_none());
     }

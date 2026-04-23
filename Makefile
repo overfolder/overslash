@@ -1,8 +1,19 @@
 .PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
-       dashboard-static web-build web \
+       dashboard-static web-build web web-build-minimal \
+       build-mcp-runtime dev-mcp-runtime \
        logs logs-deploy
+
+# Toggle MCP-runtime support in the single binary. `MCP=0 make web-build`
+# opts out and produces a leaner binary. Default on — matches the plan's
+# "local" mode being the default for overslash web.
+MCP ?= 1
+# Cargo feature set for `web-build`, derived from MCP. Comma-separated
+# feature lists are painful to build with conditionals in make, so we
+# compute the list in one place.
+WEB_FEATURES = $(if $(filter 1,$(MCP)),embed-dashboard$(COMMA)mcp,embed-dashboard)
+COMMA = ,
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -55,10 +66,34 @@ dev-dashboard:
 dashboard-static:
 	cd dashboard && npm install && npm run build:static
 
-# Build the self-hosted single-binary release with the embedded dashboard.
-# Produces target/release/overslash. Run `overslash web` to start it.
-web-build: dashboard-static
-	cargo build --release -p overslash-cli --features embed-dashboard
+# Build the overslash-mcp-runtime JS bundle and stage it under the CLI
+# crate's embed dir so `rust-embed` picks it up when building with the
+# `mcp` Cargo feature. `overslash web --mcp-runtime=local` extracts and
+# spawns this bundle.
+build-mcp-runtime:
+	cd docker/mcp-runtime && NODE_ENV=development npm install --include=dev --no-audit --no-fund
+	cd docker/mcp-runtime && npx esbuild src/index.ts \
+		--bundle --platform=node --target=node22 --format=esm \
+		--outfile=dist/mcp-runtime.mjs
+	cp docker/mcp-runtime/dist/mcp-runtime.mjs \
+	   crates/overslash-cli/embed/mcp-runtime/mcp-runtime.mjs
+	@echo "$(GREEN)Bundled mcp-runtime.mjs ($$(wc -c < docker/mcp-runtime/dist/mcp-runtime.mjs) bytes)$(NC)"
+
+# Watch-rebuild the MCP runtime bundle (for iterating on the TS side).
+dev-mcp-runtime:
+	cd docker/mcp-runtime && npx esbuild src/index.ts \
+		--bundle --platform=node --target=node22 --format=esm \
+		--outfile=dist/mcp-runtime.mjs --watch
+
+# Build the self-hosted single-binary release with the embedded dashboard
+# and (by default) the embedded MCP runtime. MCP=0 opts out to produce a
+# leaner binary without `--mcp-runtime=local` support.
+web-build: dashboard-static $(if $(filter 1,$(MCP)),build-mcp-runtime)
+	cargo build --release -p overslash-cli --features '$(WEB_FEATURES)'
+
+# Opt-out alias for CI / users who don't want the MCP bundle baked in.
+web-build-minimal:
+	$(MAKE) web-build MCP=0
 
 # Build + run the self-hosted binary directly (foreground).
 web: web-build

@@ -27,6 +27,8 @@ services:
       HOST: 0.0.0.0
       RUSTUP_TOOLCHAIN: stable
       SQLX_OFFLINE: "true"
+      MCP_RUNTIME_URL: http://mcp-runtime:8080
+      MCP_RUNTIME_SHARED_SECRET: dev-only-mcp-runtime-secret
     ports:
       - "${API_HOST_PORT:-3000}:3000"
     volumes:
@@ -41,6 +43,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      mcp-runtime:
+        condition: service_started
+
+  mcp-runtime:
+    build:
+      context: ./mcp-runtime
+    environment:
+      PORT: "8080"
+      MCP_RUNTIME_SHARED_SECRET: dev-only-mcp-runtime-secret
+      LOG_LEVEL: info
+    ports:
+      - "${MCP_RUNTIME_HOST_PORT:-8181}:8080"
 
   dashboard:
     build:

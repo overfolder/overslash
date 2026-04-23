@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 mod common;
 mod mcp;
 mod mcp_login;
+#[cfg(feature = "mcp")]
+mod mcp_runtime_supervisor;
 mod serve;
 mod web;
 
@@ -37,6 +39,14 @@ enum Command {
         /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 8080.
         #[arg(long)]
         port: Option<u16>,
+        /// MCP runtime mode (requires the binary to be built with the `mcp`
+        /// Cargo feature, which `make build-web` does by default).
+        ///   `local` — spawn the embedded mcp-runtime.mjs as a `node`
+        ///   child process on a free loopback port. Node 22+ required on PATH.
+        ///   `<url>` — point at an externally-managed runtime.
+        ///   `off`   — disable MCP (default when the feature is off).
+        #[arg(long, default_value = "local", env = "MCP_RUNTIME")]
+        mcp_runtime: String,
     },
     /// MCP server and configuration helper.
     Mcp {
@@ -89,7 +99,11 @@ async fn main() -> anyhow::Result<()> {
             common::bootstrap_server();
             serve::run(host, port).await
         }
-        Command::Web { host, port } => {
+        Command::Web {
+            host,
+            port,
+            mcp_runtime,
+        } => {
             common::bootstrap_server();
             // Precedence (CLI convention: explicit flag wins over env):
             //   1. --port (from the user)
@@ -103,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| env_port("OVERSLASH_WEB_PORT"))
                 .or_else(|| env_port("PORT"))
                 .unwrap_or(8080);
-            web::run(host, effective_port).await
+            web::run(host, effective_port, mcp_runtime).await
         }
         Command::Mcp {
             command,

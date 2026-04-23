@@ -44,6 +44,8 @@ DASH_BASE=$(( (HASH % 9000) + 25000 ))
 # Standalone `overslash web` binary. Separate from API_BASE so the Docker API
 # container (compose) and the bare binary can coexist within one worktree.
 WEB_BASE=$(( (HASH % 9000) + 18000 ))
+# MCP runtime service (node process hosting third-party MCP servers).
+MCP_RUNTIME_BASE=$(( (HASH % 9000) + 21000 ))
 
 # Find a free port starting at $1, scanning up to 20 above. Echoes the chosen
 # port, or exits non-zero on exhaustion.
@@ -64,6 +66,7 @@ PG_PORT=$(find_free_port "$PG_BASE" postgres) || exit 1
 API_PORT=$(find_free_port "$API_BASE" api) || exit 1
 DASH_PORT=$(find_free_port "$DASH_BASE" dashboard) || exit 1
 WEB_PORT=$(find_free_port "$WEB_BASE" web) || exit 1
+MCP_RUNTIME_PORT=$(find_free_port "$MCP_RUNTIME_BASE" mcp-runtime) || exit 1
 
 # Compose project name (lowercase, alphanumeric + hyphens)
 PROJECT_NAME="overslash-wt-${WORKTREE_ID}"
@@ -79,7 +82,8 @@ PG_HOST_PORT=${PG_PORT}
 API_HOST_PORT=${API_PORT}
 DASH_HOST_PORT=${DASH_PORT}
 OVERSLASH_WEB_PORT=${WEB_PORT}
+MCP_RUNTIME_HOST_PORT=${MCP_RUNTIME_PORT}
 DATABASE_URL=postgres://overslash:overslash@localhost:${PG_PORT}/overslash
 EOF
 
-echo "Worktree env: project=${PROJECT_NAME} pg=${PG_PORT} api=${API_PORT} dashboard=${DASH_PORT} web=${WEB_PORT}"
+echo "Worktree env: project=${PROJECT_NAME} pg=${PG_PORT} api=${API_PORT} dashboard=${DASH_PORT} web=${WEB_PORT} mcp-runtime=${MCP_RUNTIME_PORT}"

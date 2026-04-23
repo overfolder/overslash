@@ -41,6 +41,7 @@ pub fn router() -> Router<AppState> {
         // Fixed-path routes MUST come before the `{key}` wildcard.
         .route("/v1/templates/validate", post(validate_template))
         .route("/v1/templates/import", post(import_template))
+        .route("/v1/templates/mcp/introspect", post(introspect_mcp))
         .route("/v1/templates/drafts", get(list_drafts))
         .route(
             "/v1/templates/drafts/{id}",
@@ -1830,6 +1831,145 @@ pub(crate) async fn resolve_template_definition(
         .get(key)
         .cloned()
         .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
+}
+
+// ── POST /v1/templates/mcp/introspect ────────────────────────────────
+
+/// Request body for introspecting an MCP server before registering its
+/// template. The caller supplies a package (or command) + optional env
+/// overrides; we spin the server up on a short-lived service_instance_id
+/// inside the runtime, call `tools/list`, and return the discovered tools.
+///
+/// Risk: introspection runs arbitrary npm code in the sandboxed runtime.
+/// Gated to admin ACL so only org-admins can probe new MCP servers. The
+/// caller picks risk/scope_param per tool on the dashboard before persisting
+/// as a template.
+#[derive(Deserialize)]
+struct IntrospectMcpRequest {
+    #[serde(default)]
+    package: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    command: Option<Vec<String>>,
+    #[serde(default)]
+    env: std::collections::HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct IntrospectedTool {
+    name: String,
+    description: Option<String>,
+    input_schema: serde_json::Value,
+    /// Suggested risk based on the tool name prefix. The caller is expected
+    /// to review before persisting.
+    suggested_risk: Risk,
+}
+
+#[derive(Serialize)]
+struct IntrospectMcpResponse {
+    tools: Vec<IntrospectedTool>,
+}
+
+fn guess_risk(tool_name: &str) -> Risk {
+    let n = tool_name.to_lowercase();
+    for prefix in [
+        "search_",
+        "get_",
+        "list_",
+        "read_",
+        "describe_",
+        "fetch_",
+        "find_",
+    ] {
+        if n.starts_with(prefix) {
+            return Risk::Read;
+        }
+    }
+    for prefix in ["delete_", "remove_", "drop_", "purge_"] {
+        if n.starts_with(prefix) {
+            return Risk::Delete;
+        }
+    }
+    Risk::Write
+}
+
+async fn introspect_mcp(
+    State(state): State<AppState>,
+    _auth: AdminAcl,
+    Json(req): Json<IntrospectMcpRequest>,
+) -> Result<Json<IntrospectMcpResponse>> {
+    let Some(client) = state.mcp_runtime.as_ref() else {
+        return Err(AppError::Conflict(
+            "mcp_runtime_unavailable: this deployment has no MCP runtime configured".into(),
+        ));
+    };
+    if req.package.is_none() && req.command.is_none() {
+        return Err(AppError::BadRequest(
+            "introspect request needs `package` or `command`".into(),
+        ));
+    }
+
+    // Throwaway service_instance_id — the runtime will spawn a fresh
+    // subprocess for this UUID, run tools/list, and idle-evict it shortly
+    // after. Using a per-request UUID keeps introspection isolated from
+    // real service instances even if names collide.
+    let probe_id = Uuid::new_v4();
+    let env_hash = crate::services::mcp_env::hash_env(&req.env);
+    let invoke = crate::services::mcp_runtime_client::InvokeRequest {
+        service_instance_id: probe_id,
+        tool: "tools/list",
+        arguments: &serde_json::json!({}),
+        env: &req.env,
+        env_hash: &env_hash,
+        package: req.package.as_deref(),
+        version: req.version.as_deref(),
+        command: req.command.as_deref(),
+        limits: None,
+        request_id: None,
+    };
+    let resp = client.invoke(&invoke).await?;
+
+    // Evict the probe subprocess so idle time doesn't tie up memory in the
+    // runtime. Best-effort: log the error but don't fail the introspect.
+    let client_for_cleanup = client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client_for_cleanup.shutdown(probe_id).await {
+            tracing::warn!("mcp introspect cleanup failed: {e}");
+        }
+    });
+
+    let tools_v = resp
+        .result
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let tools: Vec<IntrospectedTool> = tools_v
+        .into_iter()
+        .filter_map(|t| {
+            let obj = t.as_object()?;
+            let name = obj.get("name")?.as_str()?.to_string();
+            let description = obj
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let input_schema = obj
+                .get("inputSchema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let suggested_risk = guess_risk(&name);
+            Some(IntrospectedTool {
+                name,
+                description,
+                input_schema,
+                suggested_risk,
+            })
+        })
+        .collect();
+
+    Ok(Json(IntrospectMcpResponse { tools }))
 }
 
 #[cfg(test)]

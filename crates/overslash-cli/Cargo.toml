@@ -15,6 +15,12 @@ default = []
 # can serve it same-origin. Requires `dashboard/build/` to exist (run
 # `make dashboard-static` first).
 embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
+# Enable MCP-runtime support: adds `--mcp-runtime` flag on `overslash web`,
+# embeds `mcp-runtime.mjs` (built by `make build-mcp-runtime`) into the
+# binary via rust-embed, and enables the child-process supervisor. Off by
+# default so cloud `overslash serve` images stay lean. Requires `node >=
+# 22` on PATH when `--mcp-runtime=local` is selected.
+mcp = ["dep:rust-embed"]
 
 [dependencies]
 overslash-api = { path = "../overslash-api" }

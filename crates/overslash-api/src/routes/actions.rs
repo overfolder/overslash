@@ -96,12 +96,25 @@ struct ResolvedMeta {
     risk: Option<Risk>,
     /// Owner identity ID of the resolved service instance (for user-owned service bypass).
     service_instance_owner: Option<Uuid>,
+    /// Present when the resolved template has `Runtime::Mcp`. Carries
+    /// everything the MCP executor needs after the gating layers have run.
+    mcp_target: Option<McpTarget>,
 }
 
 struct ServiceScope {
     service_key: String,
     action_key: String,
     scope_param: Option<String>,
+}
+
+/// What the MCP executor needs to dispatch a resolved tool call. Carries
+/// only the pieces the executor + env resolver actually read — the full
+/// `ServiceDefinition` stays in the registry/template lookup path above.
+struct McpTarget {
+    service_instance_id: Uuid,
+    mcp: overslash_core::types::McpSpec,
+    tool: String,
+    arguments: serde_json::Value,
 }
 
 async fn execute_action(
@@ -142,6 +155,20 @@ async fn execute_action(
     // the identity lookup above so Mode C name resolution doesn't re-fetch it.
     let (action_req, meta) =
         resolve_request(&state, &auth, &scope, identity_id, ceiling_user_id, &req).await?;
+
+    // Fail fast: MCP-targeted calls need a runtime. Check before the gate
+    // so we don't create an approval that can never be executed (and then
+    // fire an `approval.created` webhook for work that's already doomed).
+    if meta.mcp_target.is_some() && state.mcp_runtime.is_none() {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(ExecuteResponse::Denied {
+                reason: "mcp_runtime_unavailable: this deployment has no MCP runtime configured"
+                    .into(),
+            }),
+        )
+            .into_response());
+    }
 
     let perm_keys = if let Some(ref scope) = meta.service_scope {
         PermissionKey::from_service_action(
@@ -205,8 +232,16 @@ async fn execute_action(
     }
 
     // ── Layer 2: Hierarchical permission check (agents/sub-agents only) ──
-    let needs_gate =
-        !action_req.secrets.is_empty() || req.connection.is_some() || meta.auth_injected;
+    //
+    // MCP-runtime actions always gate — they spawn an external node
+    // subprocess and call arbitrary tool code, so granting them implicitly
+    // on "no secret injection needed" would be a backdoor. This mirrors
+    // how Mode A raw HTTP would behave if a user declared zero secrets but
+    // still wanted the host-based permission key checked.
+    let needs_gate = meta.mcp_target.is_some()
+        || !action_req.secrets.is_empty()
+        || req.connection.is_some()
+        || meta.auth_injected;
 
     // Users are gated by groups only — they are their own approvers.
     // Agents walk the ancestor chain; first gap → approval at gap level.
@@ -354,6 +389,79 @@ async fn execute_action(
         let value = String::from_utf8(decrypted)
             .map_err(|_| AppError::Internal("secret is not valid utf-8".into()))?;
         secret_values.insert(secret_ref.name.clone(), value);
+    }
+
+    // ── MCP-runtime executor branch ──────────────────────────────────
+    // When `mcp_target` is set, the resolved template runs on the
+    // mcp-runtime sidecar, not over HTTP. Env bindings are resolved
+    // here — same position in the pipeline as HTTP secret injection.
+    if let Some(mcp_target) = meta.mcp_target.as_ref() {
+        // Fail-fast availability check ran up-front; by this point a runtime
+        // client is guaranteed present.
+        let runtime_client = state
+            .mcp_runtime
+            .as_ref()
+            .expect("mcp_runtime presence checked up-front");
+
+        let (env, env_hash) = crate::services::mcp_env::resolve_env(
+            &state,
+            &scope,
+            identity_id,
+            auth.org_id,
+            &mcp_target.mcp,
+        )
+        .await?;
+
+        let resp = crate::services::mcp_executor::invoke(
+            runtime_client,
+            mcp_target.service_instance_id,
+            &mcp_target.mcp,
+            &mcp_target.tool,
+            &mcp_target.arguments,
+            &env,
+            &env_hash,
+            None,
+        )
+        .await?;
+
+        let body = crate::services::mcp_executor::pack_body(&mcp_target.tool, &resp);
+        let result = ActionResult {
+            status_code: 200,
+            headers: HashMap::new(),
+            body,
+            duration_ms: resp.duration_ms,
+            filtered_body: None,
+        };
+
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                action: "action.executed",
+                resource_type: req.service.as_deref(),
+                resource_id: None,
+                detail: serde_json::json!({
+                    "runtime": "mcp",
+                    "service": req.service,
+                    "action": req.action,
+                    "tool": mcp_target.tool,
+                    "service_instance_id": mcp_target.service_instance_id,
+                    "warm": resp.warm,
+                    "duration_ms": resp.duration_ms,
+                }),
+                description: meta.description.as_deref(),
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+
+        return Ok((
+            StatusCode::OK,
+            Json(ExecuteResponse::Executed {
+                result,
+                action_description: meta.description,
+            }),
+        )
+            .into_response());
     }
 
     let (resolved_url, resolved_headers) = inject_secrets(&action_req, &secret_values)
@@ -561,6 +669,7 @@ async fn resolve_request(
                 service_scope: None,
                 risk: None,
                 service_instance_owner: None,
+                mcp_target: None,
             },
         ));
     }
@@ -607,6 +716,66 @@ async fn resolve_request(
                 "action '{action_key}' not found in service '{service_key}'"
             ))
         })?;
+
+        // ── MCP-runtime branch ───────────────────────────────────────
+        // For MCP-backed services we don't build an HTTP request at all —
+        // we package the tool call into an McpTarget that the executor
+        // picks up after secret resolution + permission gating.
+        if svc.runtime == overslash_core::types::Runtime::Mcp {
+            let mcp_spec = svc.mcp.clone().ok_or_else(|| {
+                AppError::Internal(format!(
+                    "service '{service_key}' is mcp-runtime but has no mcp spec"
+                ))
+            })?;
+            let tool_name = action
+                .mcp_tool
+                .clone()
+                .unwrap_or_else(|| action_key.to_string());
+            let arguments = serde_json::to_value(&req.params).unwrap_or(serde_json::json!({}));
+            let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
+            let service_instance_id = instance.as_ref().map(|i| i.id).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "service '{service_key}' is mcp-runtime; a concrete service instance must exist before execute"
+                ))
+            })?;
+            let interpolated = overslash_core::description::interpolate_description_with_resolved(
+                &action.description,
+                &req.params,
+                &HashMap::new(),
+            );
+            let description = format!("{interpolated} ({})", svc.display_name);
+
+            return Ok((
+                // Dummy ActionRequest — nothing in the gating code touches
+                // method/url when mcp_target is set, but downstream audit
+                // logging falls back to it for HTTP-mode so we keep the
+                // fields populated with identifying strings.
+                ActionRequest {
+                    method: "MCP".into(),
+                    url: format!("mcp://{service_key}/{action_key}"),
+                    headers: HashMap::new(),
+                    body: None,
+                    secrets: vec![],
+                },
+                ResolvedMeta {
+                    description: Some(description),
+                    auth_injected: !mcp_spec.env.is_empty(),
+                    service_scope: Some(ServiceScope {
+                        service_key: service_key.clone(),
+                        action_key: action_key.clone(),
+                        scope_param: action.scope_param.clone(),
+                    }),
+                    risk: Some(action.risk),
+                    service_instance_owner: instance_owner,
+                    mcp_target: Some(McpTarget {
+                        service_instance_id,
+                        mcp: mcp_spec,
+                        tool: tool_name,
+                        arguments,
+                    }),
+                },
+            ));
+        }
 
         let host = svc
             .hosts
@@ -733,6 +902,7 @@ async fn resolve_request(
                 }),
                 risk: Some(action_risk),
                 service_instance_owner: instance_owner,
+                mcp_target: None,
             },
         ));
     }
@@ -768,6 +938,7 @@ async fn resolve_request(
             service_scope: None,
             risk: None,
             service_instance_owner: None,
+            mcp_target: None,
         },
     ))
 }

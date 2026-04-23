@@ -509,10 +509,13 @@ mod tests {
                         params: HashMap::new(),
                         scope_param: None,
                         required_scopes: Vec::new(),
+                        mcp_tool: None,
                     },
                 );
                 m
             },
+            runtime: Default::default(),
+            mcp: None,
         }
     }
 
@@ -779,6 +782,8 @@ mod tests {
             category: Some("platform".into()),
             auth: vec![],
             actions: HashMap::new(),
+            runtime: Default::default(),
+            mcp: None,
         };
         d.actions.insert(
             "manage_secrets".into(),
@@ -791,6 +796,7 @@ mod tests {
                 params: HashMap::new(),
                 scope_param: None,
                 required_scopes: Vec::new(),
+                mcp_tool: None,
             },
         );
         let r = run(&d);

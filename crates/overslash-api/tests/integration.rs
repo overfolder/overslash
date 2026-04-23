@@ -37,6 +37,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     // Build the app with the test pool directly
@@ -57,6 +59,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -846,6 +849,8 @@ async fn test_service_registry_api() {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -875,6 +880,7 @@ async fn test_service_registry_api() {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()
@@ -1796,6 +1802,8 @@ async fn start_api_with_registry(
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        mcp_runtime_url: None,
+        mcp_runtime_shared_secret: None,
     };
 
     let state = overslash_api::AppState {
@@ -1815,6 +1823,7 @@ async fn start_api_with_registry(
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        mcp_runtime: None,
     };
 
     let app = axum::Router::new()

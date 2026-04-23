@@ -124,10 +124,50 @@ module "cloud_run" {
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
+  mcp_runtime_url              = var.enable_mcp_runtime ? module.cloud_run_mcp_runtime[0].service_url : ""
+  mcp_runtime_shared_secret_id = var.enable_mcp_runtime ? var.mcp_runtime_shared_secret_id : ""
+
   depends_on = [
     module.cloud_sql,
     module.secret_manager,
     module.artifact_registry,
+  ]
+}
+
+# --- MCP runtime (optional isolated Cloud Run service) ---
+#
+# Hosts third-party Model Context Protocol servers in a separate container
+# from the api so a malicious npm package can't read the api's env vars,
+# DB creds, or encryption key. Gated by `enable_mcp_runtime` so existing
+# environments can opt in without rebuilding.
+#
+# Requires: `overslash-mcp-runtime-sa@<project>.iam.gserviceaccount.com` SA,
+# a Secret Manager secret `OVERSLASH_MCP_RUNTIME_SHARED_SECRET`, and an
+# Artifact Registry image at `overslash-mcp-runtime:<sha>`. Wire those in
+# your env-specific tfvars before flipping the flag on.
+module "cloud_run_mcp_runtime" {
+  count  = var.enable_mcp_runtime ? 1 : 0
+  source = "./modules/cloud-run-mcp-runtime"
+
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  service_account_email     = var.mcp_runtime_sa_email
+  api_service_account_email = module.iam.cloud_run_sa_email
+
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/overslash-mcp-runtime:latest"
+
+  shared_secret_secret_id = var.mcp_runtime_shared_secret_id
+
+  cpu           = var.mcp_runtime_cpu
+  memory        = var.mcp_runtime_memory
+  min_instances = var.mcp_runtime_min_instances
+  max_instances = var.mcp_runtime_max_instances
+
+  depends_on = [
+    module.artifact_registry,
+    module.iam,
   ]
 }
 
@@ -142,6 +182,9 @@ module "cloud_build" {
 
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run.service_name
+
+  enable_mcp_runtime       = var.enable_mcp_runtime
+  mcp_runtime_service_name = var.enable_mcp_runtime ? module.cloud_run_mcp_runtime[0].service_name : ""
 
   github_owner  = var.github_owner
   github_repo   = var.github_repo

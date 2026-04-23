@@ -22,6 +22,18 @@ variable "cloud_run_service" {
   type = string
 }
 
+variable "enable_mcp_runtime" {
+  description = "When true, the pipeline also builds + pushes + deploys the overslash-mcp-runtime image."
+  type        = bool
+  default     = false
+}
+
+variable "mcp_runtime_service_name" {
+  description = "Cloud Run service name for the runtime. Only used when enable_mcp_runtime is true."
+  type        = string
+  default     = ""
+}
+
 variable "github_owner" {
   type = string
 }
@@ -79,6 +91,48 @@ resource "google_cloudbuild_trigger" "deploy" {
         "--image", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
         "--region", var.region,
       ]
+    }
+
+    # MCP runtime pipeline — gated on enable_mcp_runtime so envs that don't
+    # want it don't pay the extra build time. Each step is conditional via
+    # dynamic blocks so the no-op case produces an empty Cloud Build build.
+    dynamic "step" {
+      for_each = var.enable_mcp_runtime ? [1] : []
+      content {
+        name = "gcr.io/cloud-builders/docker"
+        args = [
+          "build",
+          "-f", "docker/mcp-runtime/Dockerfile",
+          "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-mcp-runtime:$COMMIT_SHA",
+          "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-mcp-runtime:latest",
+          "docker/mcp-runtime",
+        ]
+      }
+    }
+
+    dynamic "step" {
+      for_each = var.enable_mcp_runtime ? [1] : []
+      content {
+        name = "gcr.io/cloud-builders/docker"
+        args = [
+          "push",
+          "--all-tags",
+          "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-mcp-runtime",
+        ]
+      }
+    }
+
+    dynamic "step" {
+      for_each = var.enable_mcp_runtime ? [1] : []
+      content {
+        name       = "gcr.io/google.com/cloudsdktool/cloud-sdk"
+        entrypoint = "gcloud"
+        args = [
+          "run", "deploy", var.mcp_runtime_service_name,
+          "--image", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-mcp-runtime:$COMMIT_SHA",
+          "--region", var.region,
+        ]
+      }
     }
 
     options {
