@@ -35,30 +35,42 @@
 
 - OAuth engine (authorization URL, code exchange, token storage, auto-refresh)
 - BYOC credential resolution with fallback chain (identity → org → system)
+- Three-tier OAuth credential cascade (SPEC §7): user BYOC → org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET`) → system env vars. Org-level tier is managed via Org Settings → OAuth App Credentials (`PUT/GET/DELETE /v1/org-oauth-credentials/{provider}`). IdP configs (`org_idp_configs`) default to the same org secrets (migration 032 makes `encrypted_client_id/secret` nullable; login resolves from the org secrets when NULL), so rotating org credentials propagates to linked IdPs automatically.
 - Connections API (initiate, list, revoke)
-- Global service template registry — YAML loader with search API
-- 7 service templates shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- Template/service instance split — templates (YAML blueprints) + service instances (named, with credentials and lifecycle)
+- Global service template registry — OpenAPI 3.1 loader with `x-overslash-*` alias normalization, search API, and parse-don't-validate pipeline (PR #118)
+- 9 service templates shipped as OpenAPI 3.1: Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X (plus the `overslash` platform namespace)
+- Template/service instance split — templates (OpenAPI 3.1 blueprints with `x-overslash-*` extensions) + service instances (named, with credentials and lifecycle)
+- Three-tier template registry — global (read-only, shipped OpenAPI) + org (CRUD by org admins) + user (CRUD, gated by `allow_user_templates`) (PR #100)
+- Template validation endpoint `POST /v1/templates/validate` (PR #108) — struct-level OpenAPI lint reusable client-side via WASM feature gate
+- User-level services always visible to owner and their agents (PR #130)
+- Per-service OAuth scopes declared end-to-end on templates and propagated through the authorization URL (PR #127)
 - Service+action execution (registry-resolved, auth auto-resolved)
 - `scope_param` on service actions — permission keys use specific args from action params
+- `on_behalf_of` for agent-initiated operations (PR #90) — agents create secrets and connections at the owner-user level so sibling agents share them
 - Description interpolation — `{param}` substitution and `[optional segments]` in action descriptions
 - Human-readable audit descriptions — interpolated descriptions for Mode C, `METHOD host/path` for Mode A, `identity_name` resolved in audit responses
 - Suggested tiers + derived_keys on approval payloads (2-4 broadening levels)
 - Approval resolution API aligned with spec (`resolution` + `remember_keys` + `ttl`)
 - X.com OAuth with PKCE support
 - Eventbrite OAuth provider support
-- E2E tests against real providers: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token), X.com (OAuth+PKCE)
+- E2E tests against real providers: Eventbrite (OAuth), GitHub (PR #113), Google Calendar (PR #111), Google Drive (PR #107), Gmail (PR #115), Resend (token), X.com (OAuth+PKCE, PR #114)
 - sqlx compile-time query checking enforced across all repos
 
 ### Phase 2.5 — Dashboard (in progress)
 
 - SvelteKit dashboard scaffolded (`/dashboard/`) with TypeScript, Tailwind CSS, adapter-static
+- Agents view redesigned per Figma (PR #105) — identity hierarchy tree with user node as immutable root, inline agent management
+- Templates dashboard UI (PR #112) — global / org / user template list with Template Editor entry point and provider dropdown (PR #124)
+- Services view — create from template, connect credentials, browse instances (Create Service surfaces user-level BYOC via `has_user_byoc_credential`, PR #131)
+- Standalone Provide Secret page (PR #89) with User Signed Mode for attributed secret provisioning (PR #109)
 - Developer Connection Tool — interactive API explorer with unified execution flow
   - Service/action selector with method and risk badges
   - Auto-generated parameter forms from action schemas (text, number, enum dropdowns)
   - Supports defined actions, custom HTTP requests, and raw HTTP (`http` pseudo-service)
   - Response panel with JSON syntax highlighting, headers table, request inspector
   - API key management with localStorage persistence
+- 2026-04-10 review corrections applied — doc-level (PR #96) and dashboard-level (PR #99)
+- Build/quality — zero-warning vite builds enforced (PR #125); Inter + Roboto Mono self-hosted via `@fontsource-variable` (PR #129)
 
 ### Phase 3 — Identity Hierarchy + Hierarchical Permissions
 
@@ -68,6 +80,8 @@
 - `inherit_permissions` dynamic resolution: when set, identity inherits parent's permission rules at query time (live pointer, not copy); chain walks upward through continuous `inherit_permissions=true` ancestors
 - Ancestor chain query (recursive CTE) and children listing endpoints
 - Enrollment approval auto-assigns parent to approving user
+- Standalone "Provide Secret" page (`/secrets/provide/req_{id}?token=jwt`): JWT-scoped, single-use, no-login secret submission. `secret_requests` table (migration 027), `POST /v1/secrets/requests` (mint), public `GET`/`POST /public/secrets/provide/{req_id}` (verify + submit), SvelteKit standalone route mirroring the enrollment-consent layout.
+- **User Signed Mode** for the Provide Secret page (migration 031): opportunistic session binding (if the visitor's `oss_session` cookie is present and matches the request's org, their identity is recorded on `secret_versions.provisioned_by_user_id` and the `secret_request.fulfilled` audit row is attributed to them instead of the target identity), plus an org toggle `allow_unsigned_secret_provide` (**on by default** — defaults to true so existing orgs keep current behavior) exposed via new `GET/PATCH /v1/orgs/{id}/secret-request-settings`. When the toggle is flipped off, newly-minted requests carry `secret_requests.require_user_session = true` at mint time and reject anonymous submission with `401 user_session_required`. The toggle is forward-only — outstanding URLs keep the policy they were issued under. Cross-tenant sessions are silently ignored. Dashboard: org settings page exposes the toggle; the provide page switches to `credentials: 'same-origin'` and renders a "Signed in as …" banner or a "Sign in to continue" gate as appropriate.
 - `GET /v1/identities/{id}/children`, `GET /v1/identities/{id}/chain`
 - Sub-agent idle cleanup with two-phase archive — `last_active_at` touched per request, background loop (60s) archives idle sub-agents (revoking API keys with `revoked_reason='identity_archived'` and expiring pending approvals), then purges archived rows past the retention window. Parents wait for live children before archiving or purging. `POST /v1/identities/{id}/restore` un-archives within the window and resurrects auto-revoked API keys; manually-revoked keys are untouched. Archived identities return `403 identity_archived` from the auth middleware. Idle timeout (`subagent_idle_timeout_secs`, 4h–60d) and retention (`subagent_archive_retention_days`, 1d–60d) are configured per-org via `PATCH /v1/orgs/{id}/subagent-cleanup-config`.
 - Hierarchical permission chain walk (SPEC §5): `execute_action` walks the requester→user chain; each non-user level must authorize via own rules or `inherit_permissions`
@@ -115,14 +129,38 @@
 
 ### Not Yet Built
 
-- Dashboard: scaffold auth, user profile, org/agent hierarchy view, connected services, audit log, group management, IdP config management UI
-- Standalone pages: approval resolution, secret request, enrollment consent
-- `on_behalf_of` for agent-initiated connections
-- Three-tier template registry (org + user DB-backed CRUD)
-- Template validation endpoint + OpenAPI import
-- Org-level ACL (role-based access control for who can manage groups, services, etc.)
-- Phase 3: TTL-based sub-identity auto-cleanup, approval visibility scoping
-- Phase 4: Meta tools, semantic search, billing, documentation site
+- Dashboard gaps (tracked in TODO.md §Review Corrections 2026-04-20):
+  - Audit Log view (backend audit trail is complete; UI missing — card `504a7`)
+  - IdP config **edit** UI (create/delete/toggle ship; backend `PUT /v1/org-idp-configs/{id}` already supports full updates — see TECH_DEBT.md §3)
+  - API Explorer accessibility from main nav (card `504a7`)
+  - Notification bell dropdown (card `504a7`)
+  - Approval resolver as modal/dropdown instead of standalone page (card `20ae2`, design pending)
+  - Toggle Switch design-system component adopted everywhere (card `2e268`, in progress)
+  - Inline "Allow Once" on /agents and canonical `OVERSLASH_DASHBOARD_URL` in approval URLs (card `20ae2`)
+- OpenAPI bulk import UX (endpoint in Review, card `7187f`)
+- User-to-org template sharing (propose / approve / deny; in Review, card `7e5ee`)
+- Phase 3: approval visibility scoping (`?scope=actionable` vs `?scope=mine`), webhook `gap_identity` + `can_be_handled_by`
+- Phase 3: archived sub-agent list + restore button + cleanup config form in the Agents view (backend shipped)
+- Phase 4: Meta tools (`overslash_search`/`_execute`/`_auth` in Review, card `30b36`), org billing / usage metering, documentation site
+
+### CLI + MCP — Surface Restructure (OAuth transport)
+
+- Single binary `overslash` replaces the old `overslash-api` bin (crates: `overslash-cli`, `overslash-mcp`).
+- Subcommands: `serve` (REST API only, cloud mode), `web` (REST + embedded SvelteKit dashboard, self-hosted), `mcp` (stdio↔HTTP shim), `mcp login` (OAuth 2.1 onboarding).
+- **MCP over Streamable HTTP + OAuth 2.1** — `POST /mcp` on the API, gated by `Authorization: Bearer`. Two single-credential modes: user JWT (aud=mcp, minted via `/oauth/authorize` → `/oauth/token`) or static `osk_…` agent key. Dual-credential model is gone. Full design in [docs/design/mcp-oauth-transport.md](docs/design/mcp-oauth-transport.md).
+- Authorization Server endpoints live in `overslash-api`:
+  - `GET /.well-known/oauth-authorization-server` (RFC 8414) and `GET /.well-known/oauth-protected-resource` (RFC 9728).
+  - `POST /oauth/register` (RFC 7591 DCR, public clients / PKCE only), `GET /oauth/authorize` (OAuth 2.1 §4.1 + PKCE, bounces through IdP login via `?next=`), `POST /oauth/token` (authorization_code + refresh_token grants with single-use rotation + replay detection), `POST /oauth/revoke` (RFC 7009).
+  - Registered clients are visible + revocable in Org Settings → MCP Clients.
+- `overslash mcp` is a thin stdio↔HTTP pipe: reads `~/.config/overslash/mcp.json` (`{ server_url, token, refresh_token?, client_id? }`), forwards stdin frames to `POST /mcp`, auto-refreshes on 401 once when a refresh_token is present.
+- `overslash mcp login` runs the standard OAuth Authorization Code + PKCE flow against `/oauth/authorize` (browser + 127.0.0.1 one-shot listener), persists the resulting token, prints the editor config snippet.
+- Four tools exposed by `POST /mcp`:
+  - `overslash_search` → `GET /v1/search` — unified service/action discovery (§10) with keyword + Jaro-Winkler fuzzy + optional local pgvector embeddings (`bge-small-en-v1.5`). Hybrid ranker; `auth.instances[]` lists every connected instance with `owner_email`. Env kill-switch `OVERSLASH_EMBEDDINGS=off` + boot-time pgvector preflight — falls back to keyword+fuzzy transparently on vanilla Postgres.
+  - `overslash_execute` → `POST /v1/actions/execute`
+  - `overslash_auth` → dispatched per-action: `whoami`/`list_secrets`/`request_secret`/`create_subagent`/`create_service_from_template`/`service_status`. `rotate_secret` and a few others from SPEC §10 not yet wired (return `invalid_params` with a clear message).
+  - `overslash_approve` → `POST /v1/approvals/{id}/resolve` — no longer "MCP only"; usable from any user-mode surface.
+- `overslash web` + `embed-dashboard` Cargo feature embeds `dashboard/build/` (built with `@sveltejs/adapter-static`) via `rust-embed`. Cloud Vercel build path unchanged.
+- Infra image still tagged `overslash-api:*` to keep Artifact Registry stable; only the in-container entrypoint changed (`overslash serve`).
 
 ## What's Deployed
 

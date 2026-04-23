@@ -5,14 +5,12 @@ use uuid::Uuid;
 
 /// Create an org-level template + service instance. Returns the service instance ID.
 async fn create_org_service(base: &str, client: &reqwest::Client, key: &str, name: &str) -> Uuid {
-    // Create template
+    let openapi = common::minimal_openapi(name);
     client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {key}"))
         .json(&json!({
-            "key": name,
-            "display_name": name,
-            "hosts": [format!("{name}.example.com")],
+            "openapi": openapi,
             "user_level": false,
         }))
         .send()
@@ -332,11 +330,7 @@ async fn grants_require_org_level_service() {
     client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({
-            "key": "user-svc",
-            "display_name": "User Service",
-            "hosts": ["user.example.com"],
-        }))
+        .json(&json!({ "openapi": common::minimal_openapi("user-svc") }))
         .send()
         .await
         .unwrap();
@@ -466,5 +460,295 @@ async fn service_visibility_filtered_by_groups() {
     assert!(
         !names.contains(&"svc-b"),
         "should not see non-granted service"
+    );
+}
+
+/// A user-defined (user-level) service must always be visible to its owner and
+/// to any agent in the owner's identity chain — even when the user belongs to
+/// a group whose grants do not include that service. Group grants gate
+/// *org-level* services; they must not hide the user's own creations.
+#[tokio::test]
+async fn user_level_services_always_visible_despite_restrictive_group() {
+    let (base, org_key, user_id, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // An org-level service the user will *not* be granted via group.
+    create_org_service(&base, &client, &org_key, "org-forbidden").await;
+
+    // Another org-level service the user *will* be granted via group.
+    let org_allowed_id = create_org_service(&base, &client, &org_key, "org-allowed").await;
+
+    // Create an org-level template, then the user creates a user-level
+    // service instance from it.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({ "openapi": common::minimal_openapi("my-calendar") }))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({
+            "template_key": "my-calendar",
+            "name": "my-calendar",
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Put the user in a restrictive group that only grants `org-allowed`.
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Restricted"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": org_allowed_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{group_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_id}))
+        .send()
+        .await
+        .unwrap();
+
+    // User sees their own service, the granted org service, and NOT the
+    // ungranted org service.
+    let resp = client
+        .get(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"my-calendar"),
+        "user must always see their own user-level service (got: {names:?})"
+    );
+    assert!(
+        names.contains(&"org-allowed"),
+        "user should see the group-granted org service (got: {names:?})"
+    );
+    assert!(
+        !names.contains(&"org-forbidden"),
+        "user should not see the ungranted org service (got: {names:?})"
+    );
+
+    // Resolution by name works too.
+    let resp = client
+        .get(format!("{base}/v1/services/my-calendar"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "user must be able to resolve their own service by name"
+    );
+
+    // An agent owned by this user also sees the user-level service.
+    let agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "calendar-agent", "kind": "agent", "parent_id": user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+
+    let agent_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "org_id": agent["org_id"].as_str().unwrap(),
+            "identity_id": agent_id,
+            "name": "agent-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_key = agent_key_resp["key"].as_str().unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"my-calendar"),
+        "agent must inherit visibility of owner's user-level services (got: {names:?})"
+    );
+    assert!(
+        !names.contains(&"org-forbidden"),
+        "agent must not see ungranted org-level services (got: {names:?})"
+    );
+
+    // Agent can resolve the service by name too.
+    let resp = client
+        .get(format!("{base}/v1/services/my-calendar"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "agent must be able to resolve owner's user-level service by name"
+    );
+}
+
+/// The read-visibility expansion must not leak into destructive paths. An
+/// agent that inherits admin privileges from its owner (via the overslash
+/// service group grant) shares the owner user's *read* view of services, but
+/// it must not be able to delete an owner-owned service by name — that would
+/// be an unintended privilege escalation. Deleting via UUID is still allowed
+/// (pre-existing AdminAcl capability, unchanged by this PR).
+#[tokio::test]
+async fn admin_agent_cannot_delete_owner_user_service_by_name() {
+    let (base, org_key, _user_id, _user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // The org_key is bound to the auto-minted bootstrap admin user. Pull its
+    // identity so we can create an agent whose ceiling is that admin user.
+    let whoami: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admin_user_id: Uuid = whoami["identity_id"].as_str().unwrap().parse().unwrap();
+
+    // Admin user creates a user-level service instance.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({ "openapi": common::minimal_openapi("my-svc") }))
+        .send()
+        .await
+        .unwrap();
+    let user_svc: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "template_key": "my-svc",
+            "name": "my-svc",
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_svc_id = user_svc["id"].as_str().unwrap();
+
+    // Agent under the admin user inherits admin ACL via the ceiling.
+    let agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "admin-agent", "kind": "agent", "parent_id": admin_user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    let agent_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "org_id": agent["org_id"].as_str().unwrap(),
+            "identity_id": agent_id,
+            "name": "agent-admin-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_key = agent_key_resp["key"].as_str().unwrap();
+
+    // Sanity: the agent can still *see* the owner's service through the
+    // read-visibility path.
+    let resp = client
+        .get(format!("{base}/v1/services/my-svc"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "agent must still be able to read-resolve owner's user-level service"
+    );
+
+    // Delete by name must NOT resolve through the ceiling user. Agent cannot
+    // delete the owner's user-level service via name even with AdminAcl.
+    let resp = client
+        .delete(format!("{base}/v1/services/my-svc"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "agent must not be able to delete owner's user-level service by name"
+    );
+
+    // Service still exists.
+    let resp = client
+        .get(format!("{base}/v1/services/{user_svc_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "service must still exist after denied delete"
     );
 }

@@ -105,15 +105,21 @@ module "cloud_run" {
   cloud_sql_connection_name = module.cloud_sql.connection_name
 
   # Secret references
-  db_password_secret_id         = module.secret_manager.db_password_secret_id
-  encryption_key_secret_id      = module.secret_manager.encryption_key_secret_id
-  oauth_client_id_secret_id     = module.secret_manager.oauth_client_id_secret_id
-  oauth_client_secret_secret_id = module.secret_manager.oauth_client_secret_secret_id
+  db_password_secret_id                   = module.secret_manager.db_password_secret_id
+  encryption_key_secret_id                = module.secret_manager.encryption_key_secret_id
+  signing_key_secret_id                   = module.secret_manager.signing_key_secret_id
+  oauth_client_id_secret_id               = module.secret_manager.oauth_client_id_secret_id
+  oauth_client_secret_secret_id           = module.secret_manager.oauth_client_secret_secret_id
+  google_services_client_id_secret_id     = module.secret_manager.google_services_client_id_secret_id
+  google_services_client_secret_secret_id = module.secret_manager.google_services_client_secret_secret_id
 
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain = var.domain
+  domain           = var.domain
+  dashboard_origin = var.dashboard_origin
+  dashboard_url    = var.dashboard_url
+  enable_dev_auth  = var.enable_dev_auth
 
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""

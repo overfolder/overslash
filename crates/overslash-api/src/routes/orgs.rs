@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::audit::AuditEntry;
 
 use crate::{
     AppState,
@@ -21,6 +21,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/orgs/{id}/subagent-cleanup-config",
             patch(patch_subagent_cleanup_config),
+        )
+        .route(
+            "/v1/orgs/{id}/template-settings",
+            patch(patch_template_settings),
+        )
+        .route(
+            "/v1/orgs/{id}/secret-request-settings",
+            get(get_secret_request_settings).patch(patch_secret_request_settings),
         )
 }
 
@@ -68,9 +76,12 @@ async fn create_org(
     // Bootstrap system assets: overslash service, Everyone + Admins groups, grants
     overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, None).await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    // No auth context (org creation is the bootstrap entrypoint) — mint an
+    // OrgScope for the freshly created org so the audit row is written under
+    // it, rather than going through the repo directly.
+    let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db.clone());
+    let _ = bootstrap_scope
+        .log_audit(AuditEntry {
             org_id: org.id,
             identity_id: None,
             action: "org.created",
@@ -79,9 +90,8 @@ async fn create_org(
             detail: serde_json::json!({ "name": &org.name, "slug": &org.slug }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(org.into()))
 }
@@ -159,9 +169,8 @@ async fn patch_subagent_cleanup_config(
     .await?
     .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: org.id,
             identity_id: acl.identity_id,
             action: "org.subagent_cleanup_config.updated",
@@ -173,9 +182,143 @@ async fn patch_subagent_cleanup_config(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(org.into()))
+}
+
+#[derive(Deserialize)]
+struct PatchTemplateSettingsRequest {
+    allow_user_templates: Option<bool>,
+    global_templates_enabled: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct TemplateSettingsResponse {
+    allow_user_templates: bool,
+    global_templates_enabled: bool,
+}
+
+async fn patch_template_settings(
+    State(state): State<AppState>,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchTemplateSettingsRequest>,
+) -> Result<Json<TemplateSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    if req.allow_user_templates.is_none() && req.global_templates_enabled.is_none() {
+        return Err(AppError::BadRequest("no fields supplied".into()));
+    }
+
+    let (allow, globals) = overslash_db::repos::org::update_template_settings(
+        &state.db,
+        id,
+        req.allow_user_templates,
+        req.global_templates_enabled,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.template_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "allow_user_templates": allow,
+                "global_templates_enabled": globals,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(TemplateSettingsResponse {
+        allow_user_templates: allow,
+        global_templates_enabled: globals,
+    }))
+}
+
+// ─── Secret-request settings (User Signed Mode) ───────────────────────
+
+#[derive(Serialize)]
+struct SecretRequestSettingsResponse {
+    /// When false, every newly-minted secret-request URL will carry
+    /// `require_user_session = true`, blocking anonymous submission on the
+    /// public provide page. Outstanding URLs minted while this was true
+    /// remain anonymous-capable — the toggle is forward-only.
+    allow_unsigned_secret_provide: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchSecretRequestSettingsRequest {
+    allow_unsigned_secret_provide: bool,
+}
+
+async fn get_secret_request_settings(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SecretRequestSettingsResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let allow = overslash_db::repos::org::get_allow_unsigned_secret_provide(&state.db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(SecretRequestSettingsResponse {
+        allow_unsigned_secret_provide: allow,
+    }))
+}
+
+async fn patch_secret_request_settings(
+    State(state): State<AppState>,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchSecretRequestSettingsRequest>,
+) -> Result<Json<SecretRequestSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let updated = overslash_db::repos::org::set_allow_unsigned_secret_provide(
+        &state.db,
+        id,
+        req.allow_unsigned_secret_provide,
+    )
+    .await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.secret_request_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "allow_unsigned_secret_provide": req.allow_unsigned_secret_provide,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(SecretRequestSettingsResponse {
+        allow_unsigned_secret_provide: req.allow_unsigned_secret_provide,
+    }))
 }

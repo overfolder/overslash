@@ -5,6 +5,7 @@ on:
     branches: [master, dev]
   pull_request:
     branches: [master, dev]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
 
 permissions:
@@ -24,8 +25,8 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -49,8 +50,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -76,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: overslash
           POSTGRES_PASSWORD: overslash
@@ -94,12 +97,12 @@ jobs:
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
       SQLX_OFFLINE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cache sqlx-cli
         id: cache-sqlx
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/sqlx
@@ -117,16 +120,20 @@ jobs:
         run: cargo sqlx prepare --workspace --check -- --tests
 
   coverage:
-    name: Coverage
+    name: Test + Coverage (${{ matrix.partition }}/3)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: coverage-${{ github.workflow }}-${{ github.ref }}
+      group: coverage-${{ github.workflow }}-${{ github.ref }}-${{ matrix.partition }}
       cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: overslash
           POSTGRES_PASSWORD: overslash
@@ -144,7 +151,7 @@ jobs:
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
       SQLX_OFFLINE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -155,18 +162,25 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
-      - name: Tests with coverage
-        run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+      - name: Tests with coverage (shard ${{ matrix.partition }}/3)
+        run: >-
+          cargo llvm-cov nextest --workspace
+          --partition count:${{ matrix.partition }}/3
+          --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: lcov.info
+          flags: shard-${{ matrix.partition }}
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: overfolder/overslash
-          fail_ci_if_error: true
+          # Coverage reporting is non-critical — don't block CI on Codecov-side
+          # flakes (e.g. upstream GPG signature verification failures on their
+          # CLI binary). Tests themselves still gate the merge.
+          fail_ci_if_error: false
 
   infra:
     name: Infrastructure
@@ -178,10 +192,10 @@ jobs:
         working-directory: infra
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install OpenTofu
-        uses: opentofu/setup-opentofu@v1
+        uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: "1.8"
           tofu_wrapper: false
@@ -204,8 +218,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
@@ -214,8 +228,8 @@ jobs:
         run: npm ci
       - name: Type check (svelte-check)
         run: npm run check
-      - name: Build
-        run: npm run build
+      - name: Build (strict — fails on any warning)
+        run: npm run build:strict
 
   ci-ok:
     name: ci-ok

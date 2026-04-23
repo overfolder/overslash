@@ -26,7 +26,13 @@ async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String, String) {
         .json()
         .await
         .unwrap();
-    let user_id = identities.iter().find(|i| i["kind"] == "user").unwrap()["id"]
+    // After migration 028 the unauth bootstrap path mints an "admin" user
+    // automatically; here we want the *test-user* (parent of the test agent),
+    // not the bootstrap admin.
+    let user_id = identities
+        .iter()
+        .find(|i| i["kind"] == "user" && i["name"] == "test-user")
+        .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -100,20 +106,10 @@ async fn test_create_and_get_org_template() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "my-internal-api",
-            "display_name": "My Internal API",
-            "description": "Internal API for testing",
-            "category": "dev-tools",
-            "hosts": ["api.internal.test"],
-            "auth": [{"type": "api_key", "default_secret_name": "internal_key", "injection": {"as": "header", "header_name": "X-API-Key"}}],
-            "actions": {
-                "list_items": {
-                    "method": "GET",
-                    "path": "/items",
-                    "description": "List all items",
-                    "risk": "read"
-                }
-            },
+            "openapi": common::render_openapi(
+                include_str!("fixtures/openapi/minimal.yaml.tmpl"),
+                &[("key", "my-internal-api"), ("display_name", "My Internal API")],
+            ),
             "user_level": false
         }))
         .send()
@@ -158,15 +154,22 @@ async fn test_create_and_get_org_template() {
 #[tokio::test]
 async fn test_create_user_template() {
     let pool = common::test_pool().await;
-    let (base, client, _org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+    let (base, client, org_id, _ident_id, _api_key, admin_key) = setup(pool).await;
+
+    // Enable user-level templates (gated by org setting)
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"allow_user_templates": true}))
+        .send()
+        .await
+        .unwrap();
 
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "my-personal-api",
-            "display_name": "Personal API",
-            "hosts": ["personal.api.test"],
+            "openapi": common::minimal_openapi("my-personal-api"),
             "user_level": true
         }))
         .send()
@@ -188,10 +191,7 @@ async fn test_search_templates() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "searchable-api",
-            "display_name": "Searchable API",
-            "description": "An API that can be found via search",
-            "hosts": ["search.test"],
+            "openapi": common::minimal_openapi("searchable-api"),
             "user_level": false
         }))
         .send()
@@ -221,9 +221,7 @@ async fn test_delete_template() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "deletable-api",
-            "display_name": "Deletable API",
-            "hosts": ["delete.test"],
+            "openapi": common::minimal_openapi("deletable-api"),
             "user_level": false
         }))
         .send()
@@ -264,10 +262,8 @@ async fn test_create_service_instance() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "test-svc",
-            "display_name": "Test Service",
-            "hosts": ["test.example.com"],
-            "user_level": false
+            "openapi": common::minimal_openapi("test-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -302,10 +298,8 @@ async fn test_list_service_instances() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "list-svc",
-            "display_name": "Listable Service",
-            "hosts": ["list.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("list-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -342,10 +336,8 @@ async fn test_service_instance_lifecycle() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "lifecycle-svc",
-            "display_name": "Lifecycle Service",
-            "hosts": ["lifecycle.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("lifecycle-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -430,10 +422,8 @@ async fn test_service_name_defaults_to_template_key() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "auto-name-svc",
-            "display_name": "Auto Named",
-            "hosts": ["autoname.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("auto-name-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -454,6 +444,117 @@ async fn test_service_name_defaults_to_template_key() {
 }
 
 #[tokio::test]
+async fn test_secret_name_rejected_on_oauth_template() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
+
+    // Two org-level templates: one OAuth-only, one api-key-only. The gate
+    // should reject `secret_name` for the OAuth one and accept it for the
+    // other.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": common::render_openapi(
+                include_str!("fixtures/openapi/oauth_google.yaml.tmpl"),
+                &[("key", "oauth-svc"), ("display_name", "OAuth Svc")],
+            ),
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": "openapi: 3.1.0\n\
+                info:\n  title: Apikey Svc\n  key: apikey-svc\n\
+                servers:\n  - url: https://apikey-svc.example.com\n\
+                components:\n  securitySchemes:\n    token:\n      type: http\n      scheme: bearer\n      x-overslash-default_secret_name: apikey_svc_token\n\
+                security:\n  - token: []\n\
+                paths:\n  /items:\n    get:\n      operationId: list_items\n      summary: List items\n      risk: read\n",
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Reject: `secret_name` on a create against an OAuth-only template.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "oauth-svc",
+            "name": "oauth-reject",
+            "secret_name": "leftover-secret",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("does not use api key auth"),
+        "expected api-key-auth error, got: {body}"
+    );
+
+    // Update path: clean OAuth instance, then try to set `secret_name` via PUT.
+    let created: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "oauth-svc",
+            "name": "oauth-clean",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let update = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "secret_name": "foo" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(update.status(), 400);
+
+    // Clearing `secret_name` (null) is always allowed, even on OAuth — callers
+    // need a way to scrub stale values left over from before the gate landed.
+    let clear = client
+        .put(format!("{base}/v1/services/{id}/manage"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "secret_name": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clear.status(), 200);
+
+    // Regression guard: the gate must NOT over-reject — api-key templates
+    // continue to accept `secret_name`.
+    let ok = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "apikey-svc",
+            "name": "apikey-accepted",
+            "secret_name": "apikey_svc_token",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+}
+
+#[tokio::test]
 async fn test_duplicate_instance_name_conflict() {
     let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
@@ -462,10 +563,8 @@ async fn test_duplicate_instance_name_conflict() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "dup-svc",
-            "display_name": "Dup Service",
-            "hosts": ["dup.test"],
-            "user_level": false
+            "openapi": common::minimal_openapi("dup-svc"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -499,24 +598,8 @@ async fn test_template_actions_via_service() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "actions-svc",
-            "display_name": "Actions Service",
-            "hosts": ["actions.test"],
-            "actions": {
-                "get_items": {
-                    "method": "GET",
-                    "path": "/items",
-                    "description": "List items",
-                    "risk": "read"
-                },
-                "create_item": {
-                    "method": "POST",
-                    "path": "/items",
-                    "description": "Create item",
-                    "risk": "write"
-                }
-            },
-            "user_level": false
+            "openapi": include_str!("fixtures/openapi/actions_svc.yaml"),
+            "user_level": false,
         }))
         .send()
         .await
@@ -554,13 +637,8 @@ async fn test_template_actions_listing() {
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
-            "key": "tmpl-actions",
-            "display_name": "Template Actions",
-            "hosts": ["tmpl.test"],
-            "actions": {
-                "list": { "method": "GET", "path": "/", "description": "List all", "risk": "read" }
-            },
-            "user_level": false
+            "openapi": include_str!("fixtures/openapi/tmpl_actions.yaml"),
+            "user_level": false,
         }))
         .send()
         .await

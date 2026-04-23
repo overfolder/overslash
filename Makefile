@@ -1,6 +1,8 @@
-.PHONY: local local-down dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
-       infra-shutdown infra-resume worktree-clean
+       infra-shutdown infra-resume worktree-clean \
+       dashboard-static web-build web \
+       logs logs-deploy
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -18,6 +20,7 @@ export
 # Colors
 GREEN := \033[0;32m
 RED := \033[0;31m
+YELLOW := \033[0;33m
 NC := \033[0m
 
 # Shell snippet: run worktree-env.sh, source .env.local (if created), then
@@ -33,25 +36,37 @@ WT_ENV = bash bin/worktree-env.sh && set -a && { [ -f .env.local ] && . ./.env.l
 local:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
 
-# Stop local infra
-local-down:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down
-
 # Start all dev services (postgres + api with cargo-watch + dashboard)
 dev:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans 2>/dev/null; \
+	$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build
 
 # Start only the API (postgres + api)
 dev-api:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build postgres api
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans 2>/dev/null; \
+	$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build postgres api
 
 # Start only the dashboard dev server (no container)
 dev-dashboard:
 	cd dashboard && npm run dev
 
+# Build the SvelteKit dashboard with adapter-static. Output: dashboard/build/.
+# Required before `make web-build` so rust-embed has assets to embed.
+dashboard-static:
+	cd dashboard && npm install && npm run build:static
+
+# Build the self-hosted single-binary release with the embedded dashboard.
+# Produces target/release/overslash. Run `overslash web` to start it.
+web-build: dashboard-static
+	cargo build --release -p overslash-cli --features embed-dashboard
+
+# Build + run the self-hosted binary directly (foreground).
+web: web-build
+	./target/release/overslash web
+
 # Stop services
 down:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans
 
 # Remove worktree containers and volumes
 worktree-clean:
@@ -173,3 +188,47 @@ infra-resume:
 	@echo -e "$(GREEN)Resuming infra ($(ENV), project: $(GCP_PROJECT))...$(NC)"
 	gcloud sql instances patch $(SQL_INSTANCE) --activation-policy=ALWAYS --project=$(GCP_PROJECT) --quiet
 	@echo -e "$(GREEN)Cloud SQL started.$(NC)"
+
+# ---------------------------------------------------------------------------
+# Cloud Run logs
+#   Usage: make logs                              (tail api)
+#          make logs ENV=prod                     (tail prod api)
+#          make logs SVC=api SINCE=30m            (last 30m of history, then tail)
+#          make logs SVC=api,worker               (multiple services, comma-separated)
+# ---------------------------------------------------------------------------
+
+REGION ?= europe-west1
+SVC ?= api
+
+logs:
+	@SVC_FILTER=$$(echo "$(SVC)" | sed 's/[^,]\+/resource.labels.service_name="overslash-$(ENV)-&"/g; s/,/ OR /g'); \
+	FILTER="resource.type=\"cloud_run_revision\" AND ($$SVC_FILTER) AND logName:\"stdout\""; \
+	if [ -n "$(SINCE)" ]; then \
+		echo -e "$(GREEN)Reading Cloud Run logs: $(SVC) ($(ENV)) — last $(SINCE), then tailing$(NC)"; \
+		( set -x; \
+		  gcloud logging read "$$FILTER" \
+			--project=$(GCP_PROJECT) --freshness=$(SINCE) --limit=10000 \
+			--format='value(jsonPayload.timestamp.date("%Y-%m-%d %H:%M:%S"), jsonPayload.level, jsonPayload.target, jsonPayload.fields)' \
+		) | tac; \
+	fi; \
+	echo -e "$(GREEN)Tailing Cloud Run logs: $(SVC) ($(ENV))$(NC)"; \
+	set -x; \
+	gcloud beta logging tail "$$FILTER" \
+		--project=$(GCP_PROJECT) --buffer-window=3s \
+		--format='value(jsonPayload.timestamp.date("%H:%M:%S"), jsonPayload.level, jsonPayload.target, jsonPayload.fields)'
+
+# View Cloud Build deploy logs (last build per service)
+# Usage: make logs-deploy                          (api only)
+#        make logs-deploy SVC=api,worker           (multiple services)
+logs-deploy:
+	@for svc in $$(echo "$(SVC)" | tr ',' ' '); do \
+		echo -e "$(GREEN)Latest deploy log: overslash-$(ENV)-$$svc$(NC)"; \
+		BUILD_ID=$$(gcloud builds list --project=$(GCP_PROJECT) --region=$(REGION) \
+			--filter="substitutions._SERVICE_NAME=overslash-$(ENV)-$$svc" \
+			--sort-by=~createTime --limit=1 --format="value(id)"); \
+		if [ -n "$$BUILD_ID" ]; then \
+			gcloud builds log "$$BUILD_ID" --project=$(GCP_PROJECT) --region=$(REGION); \
+		else \
+			echo -e "$(YELLOW)No builds found for overslash-$(ENV)-$$svc$(NC)"; \
+		fi; \
+	done

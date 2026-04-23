@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info:
+  title: Template Actions
+  key: tmpl-actions
+servers:
+  - url: https://tmpl.test
+paths:
+  /list:
+    get:
+      operationId: list
+      summary: List all
+      risk: read

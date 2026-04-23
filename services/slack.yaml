@@ -1,39 +1,45 @@
-key: slack
-display_name: Slack
-hosts:
-  - slack.com
-  - api.slack.com
-auth:
-  - type: oauth
-    provider: slack
-    token_injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-  - type: api_key
-    default_secret_name: slack_token
-    injection:
-      as: header
-      header_name: Authorization
-      prefix: "Bearer "
-actions:
-  send_message:
-    method: POST
-    path: /api/chat.postMessage
-    description: "Send a message to Slack channel {channel}"
-    risk: write
-    scope_param: channel
-    params:
-      channel:
-        type: string
+openapi: 3.1.0
+info:
+  title: Slack
+  key: slack
+  category: Communication
+servers:
+  - url: https://slack.com
+  - url: https://api.slack.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: slack
+      flows:
+        authorizationCode:
+          authorizationUrl: https://slack.com/oauth/v2/authorize
+          tokenUrl: https://slack.com/api/oauth.v2.access
+          scopes:
+            chat:write: ""
+            channels:read: ""
+paths:
+  /api/chat.postMessage:
+    post:
+      operationId: send_message
+      summary: Send a message to Slack channel {channel}
+      risk: write
+      scope_param: channel
+      requestBody:
         required: true
-        description: Channel ID
-      text:
-        type: string
-        required: true
-        description: Message text
-  list_channels:
-    method: GET
-    path: /api/conversations.list
-    description: List Slack channels
-    risk: read
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, text]
+              properties:
+                channel:
+                  type: string
+                  description: Channel ID
+                text:
+                  type: string
+                  description: Message text
+  /api/conversations.list:
+    get:
+      operationId: list_channels
+      summary: List Slack channels

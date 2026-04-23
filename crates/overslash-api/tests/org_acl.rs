@@ -296,7 +296,32 @@ async fn test_last_admin_protected() {
         .unwrap()
         .to_string();
 
-    // Try to remove the only admin → should fail
+    // Drop every Admins member except user_ids[0] so the "last admin"
+    // protection has only one row to defend. The unauth bootstrap path now
+    // creates an "admin" user that lands in Admins automatically, so the
+    // Admins group starts with both that user and user_ids[0].
+    let members: Vec<Uuid> = client
+        .get(format!("{base}/v1/groups/{admins_id}/members"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for mid in &members {
+        if *mid == user_ids[0] {
+            continue;
+        }
+        client
+            .delete(format!("{base}/v1/groups/{admins_id}/members/{mid}"))
+            .header(auth(&org_key).0, auth(&org_key).1)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Try to remove the only remaining admin → should fail
     let resp = client
         .delete(format!(
             "{base}/v1/groups/{admins_id}/members/{}",
@@ -379,7 +404,7 @@ async fn test_write_user_permissions() {
     let resp = client
         .post(format!("{base}/v1/templates"))
         .header(auth(&write_key).0, auth(&write_key).1)
-        .json(&json!({"key": "foo", "display_name": "Foo", "hosts": []}))
+        .json(&json!({ "openapi": common::minimal_openapi("foo") }))
         .send()
         .await
         .unwrap();
@@ -391,14 +416,16 @@ async fn test_read_only_user_forbidden_on_writes() {
     let pool = common::test_pool().await;
     let (base, client, _, _, ro_key, _, _) = bootstrap_acl(pool).await;
 
-    // Read-only user can list secrets
+    // GET /v1/secrets is dashboard-only (JWT). API keys — even an
+    // org-admin read-only key — are rejected so the secret namespace
+    // never leaks to an agent token.
     let resp = client
         .get(format!("{base}/v1/secrets"))
         .header(auth(&ro_key).0, auth(&ro_key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 401);
 
     // Read-only user cannot write secrets
     let resp = client

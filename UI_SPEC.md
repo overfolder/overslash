@@ -26,7 +26,7 @@ This login form has:
 + Login in with ......, same, for custom corporate IDP, Okta, ...
 + On dev(and if enabled via envvar) a "Dev Login" is a different orangish color and with a developer/console icon. This is a debug login
 
-UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /dashboard if no such page or a loop would form
+UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /agents if no such page or a loop would form
 
 ## Global UX Conventions
 
@@ -42,7 +42,7 @@ UNauth users go here, and on auth, they go back to the page they were trying to 
 
 **Empty states**: views with no data show greyed-out text: "No agents found", "No services found", etc. For agents, service templates, and services, the empty state includes a button to create the first one (e.g., `[+ Create your first agent]`).
 
-**Confirmation dialogs**: destructive actions get a modal confirmation. The modal follows a consistent pattern: title ("Delete agent?"), consequence description, two buttons — `[Cancel]` and the destructive action in red.
+**Confirmation dialogs**: destructive actions get a modal confirmation. All destructive confirmations MUST use the application's styled modal component — never `window.confirm()` or browser-native dialogs. The modal follows a consistent pattern: title ("Delete agent?"), consequence description, two buttons — `[Cancel]` and the destructive action in red.
 
 Confirmation required:
 - **Delete agent** — "Delete agent:henry? This will also delete 3 sub-agents and revoke all their API keys."
@@ -107,7 +107,7 @@ Visual foundation for all Overslash UI. Modern SaaS minimal aesthetic — clean,
 | Primary/50 (highlights) | rgba(99,90,217,0.15) | Active state backgrounds |
 | Code editor bg | #0d0e10 | Slightly darker than page bg |
 
-Primary and semantic colors (indigo, green, yellow, red, orange) keep their mid-range values — they already have sufficient contrast on dark backgrounds. Badge backgrounds use the same 12% opacity approach, which works naturally on dark surfaces.
+Primary and semantic colors (indigo, green, yellow, red, orange) keep their mid-range values — they already have sufficient contrast on dark backgrounds. Badge/pill backgrounds must use **18-20% opacity** in dark mode (not the 12% used in light mode) to ensure sufficient visibility. This applies to all status badges, access level pills (`read`, `write`, `admin`), source pills (`inherited`, `remembered`), and origin badges. Hover accent states (e.g., Primary/100 on interactive elements) must also be adjusted for dark backgrounds. All badge text in dark mode must meet WCAG AA contrast ratio (4.5:1 for small text, 3:1 for large text).
 
 **Semantic colors**:
 
@@ -324,11 +324,11 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 
 **Stacked navigation with back gesture**: mobile shows one panel at a time.
 
-- **Dashboard**: default view is the agent tree (full width). Tapping an agent pushes the detail panel as a full-screen view with a `[← Back]` header.
+- **Agents**: default view is the agent tree (full width). Tapping an agent pushes the detail panel as a full-screen view with a `[← Back]` header.
 - **Services**: service list → service detail/editor is a full-screen push. API Explorer is full-screen.
 - **Secrets**: secret list → secret detail is a full-screen push. Version reveal modal works as-is.
 - **Audit log**: event list → event detail is a full-screen push.
-- **Template Editor**: only the Visual tab is practical on mobile. YAML tab shows a "best on desktop" hint.
+- **Template Editor**: the OpenAPI YAML editor is desktop-first. On mobile the CodeMirror pane is still usable but reduced (smaller gutter, no validation panel when space is tight).
 - **Approval resolution**: specificity picker renders as a vertical radio list (works well on mobile as-is).
 
 ## Loading States
@@ -356,7 +356,7 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 All the following pages have this structure.
 There is a collapsable navigation menu on the left bar on desktop, when expanded shows labels and icons, when contracted only icons. On mobile this bar can be shown and hidden using swipes.
 
-Nav items: **Dashboard**, **Services**, **Secrets**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
+Nav items: **Agents**, **Services**, **Secrets**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
 
 Under an "ADMIN" label (org-admins only): **Users**, **Groups**.
 
@@ -364,11 +364,11 @@ At the bottom of the sidebar: **Settings** (gear icon) — opens user settings. 
 
 **Profile is NOT a nav item.** The logged-in user's avatar and name appear at the bottom of the sidebar (desktop) or top-right (mobile). Clicking opens the User Profile view.
 
-**Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Dashboard agent tree.
+**Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Agents view tree.
 
 **Live indicator**: a small dot next to the notification bell shows the SSE/WebSocket connection status — green when connected, yellow when reconnecting, hidden when using polling fallback.
 
-## User Dashboard view
+## Agents view
 
 The default view post-login, unless the user was already trying to go to another route.
 
@@ -387,11 +387,11 @@ User
 |- ⚠ Agent 2              [2 pending]
 |- [-] Agent 3
 |   |
-|   |- Subagent 1 [Last active: ..., Created: ....]
-|   \- Subagent 2
+|   |- Agent 3a [Last active: ..., Created: ....]
+|   \- Agent 3b
 \- [-] SwarmAgent (12)
-    |- Subagent 1
-    |- Subagent 10
+    |- Agent sw-1
+    |- Agent sw-10
     \- [see more]
 ```
 
@@ -402,13 +402,15 @@ User
 
 ### Detail panel (right panel)
 
-When a node is selected, the detail panel shows:
+When an agent node is selected, the detail panel shows:
 
 - **Agent name** — click to edit inline
 - **Origin** — badge: "user-created" or "self-enrolled"
 - **Status**: active / idle / errored (badge)
 - **Parent** — displayed with `[Move]` action to reparent (opens tree picker)
 - **`inherit_permissions`** — toggle, configurable at any time
+
+**User (root) node**: when the root User node is selected, the detail panel shows user info in **read-only** mode. Name is not editable inline. The `[Move]`, `[Delete]`, and origin badge are not shown. The `inherit_permissions` toggle is not applicable. The only action available is `[+ Add Agent]` to create a child agent. This is the logged-in user — it cannot be deleted, renamed, or reparented.
 
 #### Recent Activity
 
@@ -448,7 +450,7 @@ ALL permission keys for a request must be covered for auto-approval. A single mi
 
 #### Actions
 
-- **`[+ Add Subagent]`** — opens the same enrollment flow as `[+ New Agent]` but with parent pre-set to this agent
+- **`[+ Add Agent]`** — opens the same enrollment flow as `[+ New Agent]` but with parent pre-set to this agent
 - **`[Delete Agent]`** — solid Danger button. Confirmation dialog warns about child identities and their API keys being deleted.
 
 ### Approval resolution
@@ -507,7 +509,7 @@ The agent tree supports creating, editing, and deleting agents directly.
 
 - **`[+ New Agent]` button** at the top of the tree panel — starts the user-initiated enrollment flow for a root-level agent
 - **Hover actions** on each agent node — two icons appear on the right side of the row on hover:
-  - **`+` icon** — add a sub-agent under this agent (opens enrollment flow with parent pre-set)
+  - **`+` icon** — add an agent under this agent (opens enrollment flow with parent pre-set)
   - **`⋮` kebab menu** — options: Rename, Move (reparent), Delete
 
 #### User-initiated enrollment
@@ -518,12 +520,16 @@ The agent tree supports creating, editing, and deleting agents directly.
 - **Parent** — defaults to the user, dropdown/tree-picker to choose another position in the user's subtree
 - **TTL** — optional, for ephemeral agents
 
-`inherit_permissions` is not offered during enrollment — the user configures this after enrollment in the agent detail panel if desired.
+The creation flow does NOT include a Kind/type selector. All created identities are agents — parentage determines hierarchy position.
+
+`inherit_permissions` defaults to **false** for new agents. The create form includes an opt-in checkbox labeled "Inherits Permissions — inherit parent's current and future rules" (unchecked by default). The user can also toggle this later in the agent detail panel.
+
+For enrollment-created agents, `inherit_permissions` is not offered — it stays false, configurable after enrollment in the detail panel.
 
 On submit, shows a **one-time enrollment snippet** designed to be pasted into the agent's conversation:
 
 ```
-┌─ Enrollment Instructions ───────────────────────┐
+┌─ Enrollment Instructions ────────────────────────┐
 │                                                  │
 │  Agent "henry" created. Paste this into your     │
 │  agent's conversation:                           │
@@ -538,7 +544,7 @@ On submit, shows a **one-time enrollment snippet** designed to be pasted into th
 │  └────────────────────────────────────────────┘  │
 │                                    [Copy] [Done] │
 │                                                  │
-│  ⚠ This token is shown once. The agent          │
+│  ⚠ This token is shown once. The agent           │
 │  exchanges it for a permanent API key.           │
 └──────────────────────────────────────────────────┘
 ```
@@ -568,7 +574,7 @@ After clicking agent-henry:
 ```
 ┌─ Select parent ─────────────┐
 │  ○ alice (you)              │
-│  ● agent-henry   ← selected│
+│  ● agent-henry   ← selected │
 │    ○ sa-researcher          │
 │    ○ sa-emailer             │
 │  ○ agent-builder            │
@@ -598,7 +604,7 @@ Users authenticate to Overslash via OAuth/OIDC only — there are no user API ke
 
 ### Enrollment Tokens
 
-Enrollment tokens are generated via the `[+ New Agent]` flow in the Dashboard agent tree (see **Inline identity management**). This section shows a read-only list of the user's active (unused) tokens with creation date and expiry. Revoke button per token.
+Enrollment tokens are generated via the `[+ New Agent]` flow in the Agents view tree (see **Inline identity management**). This section shows a read-only list of the user's active (unused) tokens with creation date and expiry. Revoke button per token.
 
 ### Settings
 
@@ -638,7 +644,7 @@ Search and filtering via the Search Bar above the table.
 
 ### User detail (click-through)
 
-Clicking a user navigates to their dashboard — this reuses the **User Dashboard view** component, rendered in the context of the selected user. The org-admin sees exactly what that user would see (agent tree, detail panel, live updates), with read access to their agents, approvals, and activity.
+Clicking a user navigates to their agents view — this reuses the **Agents view** component, rendered in the context of the selected user. The org-admin sees exactly what that user would see (agent tree, detail panel, live updates), with read access to their agents, approvals, and activity.
 
 ### Groups
 
@@ -654,9 +660,9 @@ Group: Engineering
 
 Service Grants
 ──────────────────────────────────────────────────────────────────
-github:ANY:*             Full GitHub API access            Auto-approve reads: ✓
-slack:*:*          Slack — any action                 Auto-approve reads: ✓
-stripe:*:*         Stripe — any action                Auto-approve reads: ✗
+github:ANY:*             Full GitHub API access             Auto-approve reads: ✓
+slack:*:*                Slack — any action                 Auto-approve reads: ✓
+stripe:*:*               Stripe — any action                Auto-approve reads: ✗
 google-calendar:ANY:*    Google Calendar API access         Auto-approve reads: ✓
 ```
 
@@ -668,7 +674,9 @@ Grants use the `{service}:{action}:{arg}` format. Org-admins pick from known ser
 
 ### Settings
 
-A section within the Org Dashboard. Single scrollable view with four sections as cards.
+A section within the Org Dashboard. Single scrollable view with sections as cards. Subsections below are documented in intended order; some (notably *Features*) are not yet implemented in the dashboard.
+
+**Dev User access**: Dev Users (logged in via Dev Login) have org-admin privileges in development mode. The Org Settings view must be accessible to Dev Users.
 
 #### Identity Providers
 
@@ -688,7 +696,7 @@ Dev Login         Debug       ● Active    —         env (read-only)
 
 `[+ Add Provider]` flow:
 - **Type**: Google / GitHub / OIDC (custom)
-- **Google/GitHub**: client ID + client secret (endpoints are well-known)
+- **Google/GitHub**: client ID + client secret (endpoints are well-known). If org-level OAuth App Credentials exist for this provider (see below), the fields are pre-populated with those values and a note reads "Using org OAuth credentials". The admin can accept the defaults (credentials stay linked — updating the org OAuth App Credential updates the IdP) or clear and provide dedicated credentials (IdP becomes independent).
 - **Custom OIDC**: issuer URL (auto-discovers via `.well-known/openid-configuration`) + client ID + client secret
 - **Dev Login**: toggle on/off. Warning badge when enabled in production.
 
@@ -700,6 +708,29 @@ Per-provider settings:
 - **Default group**: which group new users join on first login
 
 SAML 2.0: future concern. "SAML" appears greyed out in the type dropdown with a "coming soon" tooltip.
+
+#### OAuth App Credentials
+
+Below the Identity Providers table, an **OAuth App Credentials** section manages org-level OAuth client credentials shared across IdP login and service connections.
+
+```
+OAuth App Credentials
+
+Provider          Client ID               Configured    Actions
+────────────────────────────────────────────────────────────────
+Google            7293...apps.google…      ● Secrets     [Edit] [Remove]
+GitHub            Iv1.a8b2c3...            ● Secrets     [Edit] [Remove]
+
+                                                         [+ Add Provider Credentials]
+```
+
+`[+ Add Provider Credentials]` flow:
+- **Provider**: dropdown of known OAuth providers (Google, GitHub, Slack, etc.)
+- **Client ID**: text input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_ID`
+- **Client Secret**: password input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_SECRET`
+- On save, creates (or updates) two org-level secrets with the well-known names.
+
+Credentials configured via environment variables show an "env" badge and are read-only (same pattern as IdP env overrides).
 
 #### Webhooks
 
@@ -747,13 +778,35 @@ Org-level feature flags.
 ```
 Features
 
-Allow user-created templates        [✓]    Users can create personal service templates
-Allow user-created services         [✓]    Users can create personal service instances
-Show API Explorer                   [✓]    API Explorer visible in nav for all users
+Allow user-created templates        [✓]     Users can create personal service templates
+Allow user-created services         [✓]     Users can create personal service instances
+Show API Explorer                   [✓]     API Explorer visible in nav for all users
 Default approval TTL                [24h ▾] Pre-filled expiry for "Allow & Remember"
 ```
 
 Each with a toggle or dropdown. Settings configured via environment variables are shown as read-only with an "env" badge.
+
+#### Secret requests
+
+Controls how users can fulfill standalone secret-request URLs (`/secrets/provide/req_…`).
+
+```
+Secret requests
+
+Allow unsigned secret provisioning                                  [● On]
+When on, recipients can submit a secret via the signed URL without
+logging in — the capability comes entirely from the URL token. When
+off, every newly-issued URL will require the recipient to be signed
+in to Overslash before submitting. Existing outstanding URLs are
+unaffected — the toggle is forward-only.
+```
+
+- **Pill toggle** (rounded, filled when on, outlined when off) backed by `PATCH /v1/orgs/{id}/secret-request-settings`.
+- **Default: on.** Existing orgs keep their current open behavior across the upgrade.
+- **Forward-only semantics.** Flipping the toggle off stamps `secret_requests.require_user_session = true` on new rows only; URLs minted before the flip keep working as they were issued.
+- Cross-tenant sessions are ignored — a session for org B cannot be used to provision a secret in org A, regardless of token validity.
+
+See SPEC §11 *Standalone Pages → User Signed Mode* for the full policy spec and the flow through the provide page.
 
 #### Org Info
 
@@ -803,7 +856,7 @@ Clicking a secret row opens the detail view:
 ```
 Version   Created              Created By        Status
 ───────────────────────────────────────────────────────────
-v3        2026-04-01 10:30     agent:henry       ● current
+v3        2026-04-01 10:30     agent:henry        ● current
 v2        2026-03-20 14:15     user:alice         ○ previous
 v1        2026-03-10 09:00     user:alice         ○ previous
 ```
@@ -879,18 +932,22 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 - **`[Edit]`** — opens the Template Editor (only for user/org templates)
 - **`[Share]`** — proposes sharing a user template to org level
 
-`[+ New Template]` button — opens the template creation flow. Only visible if the org allows user-created templates.
+Two buttons in the catalog header:
+- `[Import OpenAPI]` — always visible, opens the OpenAPI import wizard (see below). Non-admins can still import, but org-level drafts require admin and user-level drafts require `allow_user_templates`.
+- `[+ New Template]` — opens the blank template editor. Only visible if the org allows user-created templates (admin) or to admins for org-level templates.
+
+If the caller has any open drafts, a **Drafts** card renders above this table; see *Template Catalog — Drafts section* below.
 
 ### Create service flow
 
 1. **Pick a template** — dropdown or pre-selected from catalog
 2. **Name the instance** — defaults to the template key (e.g., `google-calendar`). The user can rename to create multiple instances (e.g., `google-calendar`, `personal-calendar`). This name is used in permission keys and by agents.
 3. **Connect credentials** — depends on the template's auth config:
-   - *OAuth*: shows requested scopes → Connect → OAuth redirect → callback → done
+   - *OAuth*: shows requested scopes and a `[Connect]` button that starts the OAuth redirect. Below the connect button, a collapsible **"Use your own OAuth app"** section (collapsed by default). When expanded, shows two text inputs: **Client ID** and **Client Secret** (password-masked with show/hide toggle). If the user fills these in and clicks `[Connect]`, Overslash creates two secrets in the user's vault — `OAUTH_{PROVIDER}_CLIENT_ID` and `OAUTH_{PROVIDER}_CLIENT_SECRET` — and uses them for the OAuth redirect instead of org/system credentials. A help link explains why a user might want this (e.g., "Use credentials from your own GCP project"). If org-level or system credentials are not configured for this provider, the collapsible section starts **expanded** and the fields are required — there's nothing to fall back to.
+   - *Org service with per-user OAuth*: OAuth redirect using the org's app credentials (resolved from org-level secrets). No BYOC option — the org controls the app.
    - *API key*: form to paste the key → stored as a versioned secret → done
    - *Both available*: user picks which auth method
    - *Org service with shared credential*: one-click, no auth needed
-   - *Org service with per-user OAuth*: OAuth redirect using the org's app
 4. **Status**: starts as Active (or Draft if the user wants to test first)
 
 ### Manage service
@@ -914,11 +971,41 @@ My Scraper API      You             2         Custom            [View] [Edit] [S
 4. Save as Draft or Active
 
 **OpenAPI import:**
-1. **Input**: upload an OpenAPI 3.x spec file (JSON/YAML) or paste a URL. A loading spinner shows while parsing.
-2. **Parse preview**: Overslash parses the spec and shows a structured preview — template identity (key, name, base URL inferred from `servers`), auth config (inferred from `securitySchemes`), and a list of all endpoints grouped by tag.
-3. **Endpoint picker**: each endpoint shows as a row with checkbox, HTTP method badge, path, and inferred description. User picks which endpoints become actions, can edit generated names/descriptions, and skip the rest. "Select all" / "Deselect all" toggles at the top.
-4. **Parameter mapping**: for selected endpoints, parameter schemas are extracted from path params, query params, and request body. User can edit types, mark required/optional, and set `scope_param`.
-5. **Review**: opens the **Template Editor** (Visual tab) with all generated content pre-filled. User makes final edits before saving as Draft or Active.
+
+`[Import OpenAPI]` button (next to `[+ New Template]` at the top of the Template Catalog) opens a two-page flow: a lightweight **source wizard** creates a draft, then the **Draft Editor** handles review, selection, and promotion.
+
+**Source wizard** (`/services/templates/import`):
+
+A single page with three cards:
+
+1. *Source* — tabs for **Fetch URL** and **Paste or upload**.
+   - URL tab: single text field. HTTPS is encouraged; an HTTP URL shows an amber banner (`⚠ Plain HTTP URLs are fetched over an unencrypted connection`). Private and loopback addresses are blocked server-side — the error surfaces inline.
+   - Paste tab: a file picker (`.yaml` / `.yml` / `.json`, 512 KiB cap) plus a monospace textarea. Picking a file populates the textarea; the user can then edit inline before submitting.
+2. *Metadata (optional)* — two inputs: **Template key** (leave blank to derive from `info.title`) and **Display name**. These are the only structured fields at this stage; everything else is edited in the draft editor.
+3. *Tier* — Org-level (admin only) vs User-level (requires the org setting). Mirrors the New-Template flow.
+
+`[Import & Review]` submits `POST /v1/templates/import`. On success the wizard navigates directly to the draft editor. On validation failure (e.g. the source didn't parse as YAML or JSON) the error banner at the top renders the first few `report.errors`.
+
+Because drafts are DB-backed, the agent-led flow is the same endpoint with no UI: `POST /v1/templates/import → POST /v1/templates/drafts/{id}/promote`.
+
+**Draft Editor** (`/services/templates/drafts/{id}`):
+
+Page header: breadcrumb back to Services, the draft's display name (falls back to the key), a tier badge, and a yellow `draft` pill. Layout is a vertical stack of cards:
+
+1. *Import notes* (only when non-empty) — yellow-tinted card listing `ImportWarning`s: `derived_key`, `derived_operation_id`, `openapi_3_0_source`, `unresolved_external_ref`, `circular_ref`, `http_insecure`. Each entry shows `code`, message, and path in monospace.
+2. *Validation errors* (only when `validation.valid === false`) — red-tinted card listing unresolved issues with their `code` + `path`. Editing the YAML below or toggling operations usually clears these; promotion is blocked until the list is empty.
+3. *Operations* — one row per operation returned by the server, grouped by path. Each row has a checkbox, color-coded HTTP method badge, path, operationId (with `(auto-named)` marker for synthesized ids), and summary. Toggling any checkbox re-submits `POST /v1/templates/import` with the same `draft_id` and the new `include_operations` — the backend rewrites the draft's canonical YAML so selection and manual edits stay in sync. While the request is in flight all checkboxes are disabled.
+4. *YAML* — reuses `TemplateEditorYaml` (CodeMirror, live `POST /v1/templates/validate` on keystroke). Drafts share the *same* editor with the New Template flow; the only differences live in the action footer.
+5. *Actions footer* — `[Discard draft]` on the left (danger style, opens a confirmation dialog), `[Save draft]` and `[Save & promote]` on the right. Save-draft is disabled when the YAML matches the last-known server copy. Save-and-promote auto-saves any pending edits first, then calls `POST /v1/templates/drafts/{id}/promote`; on success the user lands on the (now active) template detail page. If promotion fails validation the error banner renders the backend report and the draft stays put.
+
+**Template Catalog — Drafts section** (above the active templates list, rendered only when the user has any):
+
+A light card titled `Drafts (N)` with one row per draft. Each row shows display name + tier badge + key + operation count, plus an `N issues` badge (red) when `validation.valid === false`. Row actions: `[Resume]` (navigates to the draft editor) and `[Discard]` (confirmation dialog). Drafts stay local to their owner (user tier) or to org-admins (org tier); they never show up in the main active-templates table or in agent-facing catalogs.
+
+**Behavioral notes:**
+- Unlike the old multi-step wizard, parameter mapping is done *inline in the YAML editor* rather than via a dedicated screen. The validation card makes unknown-scope-param / missing-resolver errors visible, and the YAML editor is where they're fixed.
+- Promotion is gated on the *strict* validator, not the lenient one used for drafts: a draft that persists with issues cannot be promoted until those issues are gone.
+- Users can iterate freely: import → tweak selection → edit YAML → save draft → come back later → promote. The draft `id` is the durable handle across browser sessions and API callers.
 
 ### Template Editor
 
@@ -931,80 +1018,41 @@ The editing view for user-defined and org-defined templates. Two tabs.
 
 The pill is omitted if the template has no special status. Changing status happens via the kebab menu in the header (`Publish`, `Unpublish`, `Archive`).
 
-Two tabs:
+#### OpenAPI YAML editor
 
-#### Visual tab
-
-A form-based editor for the template definition:
-
-**Template section:**
-- Key, display name, description, base URL
-- **Auth config**: method picker (`API Key` / `OAuth 2.0` / `Bearer Token` / `Basic Auth` / `None`) + relevant fields per method:
-  - **API Key**: header/query name, injection location (`header` / `query`), and a **Secret picker** for the key value (see below).
-  - **OAuth 2.0**: authorize URL, token URL, scopes (multi-input), and **Secret pickers** for `client_id` and `client_secret`.
-  - **Bearer Token**: **Secret picker** for the token.
-  - **Basic Auth**: username field + **Secret picker** for the password.
-  
-  **Secret picker** — a searchable dropdown listing the secrets the current user owns (filtered to user-level secrets, plus org-level secrets if the user is an org admin). The dropdown shows: secret name (mono), owner identity, last-used timestamp. Typing in the dropdown filters the list by name (debounced 200ms). A `[+ New Secret]` action at the bottom of the dropdown opens the New Secret modal inline; on save, the newly-created secret is auto-selected. Selected secrets render as a chip with the secret name and a `✕` to clear. The picker stores a reference to the secret (not its value) — the value is injected at execution time, never embedded in the template.
-
-**Actions section:**
-- List of defined actions with name, method badge, path, mutating badge (read/write)
-- `[+ New Action]` button opens the **New Action modal** (see below)
-- Click any action to open the same modal in **edit mode** prefilled with that action's values
-- Drag to reorder, delete with confirmation
-
-##### New / Edit Action modal
-
-A centered modal (~640px wide, scroll if content exceeds viewport) that captures all fields for an action in one place. Same component used for both create and edit (the title and primary button label switch between *New Action* / *Edit Action* and *Create* / *Save*).
-
-**Modal layout:**
-
-1. **Header** — title (`New Action` or `Edit Action: <name>`), close `✕` button.
-2. **Identity row** — two fields side by side:
-   - **Name** (`text`, required) — snake_case identifier used in permission keys and SDK calls. Validation: lowercase, digits, underscores, starts with letter. Inline error if invalid.
-   - **HTTP Method** (`dropdown`, required) — `GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS`. Each option shows the method's badge color.
-3. **Path template** (`text`, required) — full-width, monospace input. Supports `{param}` placeholder syntax. Typing `{` triggers autocomplete from currently-defined params. Inline placeholder chips render in primary color. Invalid placeholders (param not defined) underlined with a warning. Example: `/repos/{owner}/{repo}/issues`.
-4. **Description template** (`textarea`, required) — full-width, 2 rows tall. Supports `{param}` interpolation and `[conditional segments]`. Typing `{` triggers param autocomplete; typing `[` starts a conditional segment. Placeholders render as highlighted chips inside the textarea preview. Live preview line below shows the rendered example using placeholder values. Example: `Create pull request "{title}" on {owner}/{repo}` → preview: `Create pull request "Fix bug" on overfolder/app`.
-5. **Mutating toggle** — checkbox + label `Mutating (write) action`. Default value is inferred from the HTTP method (GET/HEAD/OPTIONS → unchecked/read, others → checked/write). Manual override allowed; an info icon explains what mutating means (controls approval-by-default behavior).
-6. **Scope param** (`dropdown`) — which defined parameter drives the permission key arg. Options are populated from the params table below. `None` is allowed (key uses `*` wildcard). Helper text: *"The selected param's value becomes the resource arg in the permission key, e.g. for `slack.chat.post_message:#general` the scope param is `channel`."*
-7. **Parameters table** — full-width editable table with columns:
-   - **Name** (text, required) — param identifier
-   - **Type** (dropdown) — `string` / `number` / `boolean` / `enum` / `object`
-   - **Required** (checkbox)
-   - **Description** (text)
-   - **Enum values** (only when type = `enum`) — comma-separated; renders as removable chips
-   - Trailing **`✕`** button to delete the row
-   
-   Below the table: `[+ Add parameter]` ghost button.
-8. **Footer** — full-width row with `[Cancel]` (ghost, left) and `[Create]` / `[Save]` (primary, right). For edit mode also a `[Delete action]` button on the far left in danger style with a confirmation popover.
-
-**Validation:** the primary button is disabled until all required fields are valid. Errors render inline beneath each field. The modal locks scroll on the page behind it (overlay backdrop dimmed at 50% opacity).
-
-#### YAML tab
-
-A code editor showing the full template definition as YAML:
+A single CodeMirror pane showing the full template definition as OpenAPI 3.1 with `x-overslash-*` extensions. There is no separate visual tab — templates are edited as raw YAML, which is the canonical format stored in the database.
 
 ```
 ┌─ Template Editor: My Scraper API ─────────────────────────────┐
-│  [Visual]  [YAML]                                             │
 │                                                               │
 │  ┌──────────────────────────────────────────────────────────┐ │
-│  │ key: my-scraper-api                                      │ │
-│  │ display_name: My Scraper API                             │ │
-│  │ description: "Personal web scraping service"             │ │
-│  │ hosts: [scraper.myserver.com]                            │ │
-│  │ auth:                                                    │ │
-│  │   - type: api_key                                        │ │
-│  │     injection: { as: header, header_name: X-API-Key }    │ │
-│  │ actions:                                                 │ │
-│  │   scrape_page:                                           │ │
-│  │     method: POST                                         │ │
-│  │     path: /scrape                                        │ │
-│  │     description: "Scrape a web page"                     │ │
-│  │     # mutating: true (inferred from POST)                │ │
-│  │     params:                                              │ │
-│  │       url: { type: string, required: true }              │ │
-│  │       format: { type: string, enum: [html, text, md] }   │ │
+│  │ openapi: 3.1.0                                           │ │
+│  │ info:                                                    │ │
+│  │   title: My Scraper API                                  │ │
+│  │   description: "Personal web scraping service"           │ │
+│  │   key: my-scraper-api                                    │ │
+│  │ servers:                                                 │ │
+│  │   - url: https://scraper.myserver.com                    │ │
+│  │ components:                                              │ │
+│  │   securitySchemes:                                       │ │
+│  │     token:                                               │ │
+│  │       type: apiKey                                       │ │
+│  │       in: header                                         │ │
+│  │       name: X-API-Key                                    │ │
+│  │       default_secret_name: scraper_key                   │ │
+│  │ paths:                                                   │ │
+│  │   /scrape:                                               │ │
+│  │     post:                                                │ │
+│  │       operationId: scrape_page                           │ │
+│  │       summary: Scrape a web page                         │ │
+│  │       requestBody:                                       │ │
+│  │         content:                                         │ │
+│  │           application/json:                              │ │
+│  │             schema:                                      │ │
+│  │               properties:                                │ │
+│  │                 url: {type: string}                      │ │
+│  │                 format: {type: string,                   │ │
+│  │                          enum: [html, text, md]}         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  ┌─ Validation ─────────────────────────────────────────────┐ │
@@ -1013,18 +1061,23 @@ A code editor showing the full template definition as YAML:
 │  │   keys will use wildcard arg (*)                         │ │
 │  └──────────────────────────────────────────────────────────┘ │
 │                                                               │
-│                                         [Test] [Save] [Delete] │
+│                                                [Save] [Delete]│
 └───────────────────────────────────────────────────────────────┘
 ```
 
-- YAML is directly editable — changes sync to the Visual tab on switch (and vice versa)
-- **Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/templates/validate`). Validation runs on every edit (debounced). Errors block saving, warnings are informational.
-- **`[Test]`** — opens the API Explorer (see below) pre-loaded with a draft service instance of this template. If no service instance exists yet, creates a temporary draft instance and prompts the user for credentials. This lets template authors verify actions, parameters, and auth config work against the real API before publishing.
-- Future: ship the Rust YAML parser as WASM for instant client-side validation without a round-trip. V1 uses the backend validate endpoint.
+**Aliases**: for ergonomic authoring, the `x-overslash-*` extensions may be written without their prefix — `risk:`, `scope_param:`, `resolve:`, `provider:`, `default_secret_name:`, `category:`, `key:`, and top-level `platform_actions:` all canonicalize to their `x-overslash-*` form on save. Ambiguous documents (both forms on the same object) are rejected inline with `ambiguous_alias` and a line-precise dot-path pointing to the offending key.
+
+**Validation panel** below the editor shows errors and warnings from the backend validate endpoint (`POST /v1/templates/validate`). Validation runs on every edit (debounced ~400ms). Errors block saving, warnings are informational. Stable machine-readable codes (`openapi_parse_error`, `ambiguous_alias`, `duplicate_operation_id`, `unknown_scope_param`, `invalid_risk`, `unknown_path_param`, `missing_field`, …) let the panel render structured messages with path hints.
+
+**Editor behavior**:
+- YAML syntax highlighting via `@codemirror/lang-yaml`. Minimal CodeMirror footprint (line numbers, history, bracket matching, default keymaps — no autocompletion, search, or fold gutter) so the lazy-loaded chunk stays small.
+- Dark mode follows the dashboard theme (`oneDark` when the document has `data-theme="dark"`).
+- Client-side YAML-syntax parse catches malformed YAML immediately; structured semantics go to the backend.
+- Future: ship the Rust OpenAPI parser as WASM for instant client-side validation of `x-overslash-*` semantics without a round-trip.
 
 #### View-only mode
 
-For global (Overslash-shipped) templates, the editor opens in read-only mode. Both Visual and YAML tabs are viewable but not editable. This lets users inspect the template — what actions are available, what parameters they take, how auth is configured.
+For global (Overslash-shipped) templates, the editor opens in read-only mode. The YAML source is still displayed verbatim so users can inspect the template — what operations are available, what parameters they take, how auth is configured.
 
 ### Share template
 
@@ -1036,7 +1089,7 @@ Org-admins see additional capabilities:
 
 **Org services:**
 - Create org-level service instances from any template, assign to groups
-- For OAuth templates: configure the org's OAuth app credentials (client ID/secret). Users in assigned groups complete their own OAuth flow using the org's app.
+- For OAuth templates: the org's OAuth app credentials are resolved from org-level secrets (`OAUTH_{PROVIDER}_CLIENT_ID` / `SECRET`, configured in Org Settings → OAuth App Credentials). If no org credentials exist for the template's provider, the create flow prompts the admin to configure them first (link to Org Settings). Users in assigned groups complete their own OAuth flow using the org's app.
 - For API key templates: optionally provide a shared credential, or let each user provide their own.
 
 **Org templates:**
@@ -1097,8 +1150,8 @@ Timestamp            Identity (SPIFFE)                                    Event 
   The path is grouped into **logical link units**, each navigating to the corresponding detail view:
   - `acme` — org segment (links to Org page)
   - `user/alice` — user link unit (type + name together, links to that User Profile page)
-  - `agent/henry` — agent link unit (type + name together, links to that agent's Dashboard detail panel)
-  - `agent/researcher` — sub-agent link unit at the next nesting level (recursively the same `agent/<name>` pattern, links to that sub-agent's Dashboard detail panel)
+  - `agent/henry` — agent link unit (type + name together, links to that agent's Agents view detail panel)
+  - `agent/researcher` — sub-agent link unit at the next nesting level (recursively the same `agent/<name>` pattern, links to that sub-agent's Agents view detail panel)
   
   The forward-slash separators between link units stay muted (non-clickable). Hover on a link unit underlines the whole `type/name` pair.
 - **Event type** — action executed, approval created/resolved, secret accessed, connection changed, identity created/deleted, permission changed
@@ -1141,49 +1194,39 @@ A **CSV export** button that downloads the currently filtered result set.
 
 ### API Explorer
 
-A sub-view within Services (accessed via a tab or button, not a top-level nav item). An interactive tool for testing and debugging service connections through Overslash. Simpler than Postman — the goal is verifying that auth works and seeing what comes back.
+A sub-view within Services (accessed via the third tab, alongside `Instances` and `Template Catalog`). An interactive tool for testing and debugging service connections through Overslash. Simpler than Postman — the goal is verifying that auth works and seeing what comes back.
 
-Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the tab is not shown.
+Rows in the `Instances` table carry an **"⌘ Try it"** button that deep-links to the explorer tab with that service pre-selected (`/services?tab=api-explorer&service=<name>`).
 
-#### Unified flow
+Can be **hidden from users via an org setting** (e.g., orgs that don't want users making ad-hoc API calls). When hidden, the tab is not shown. *(Toggle not yet wired — tracked as a follow-up.)*
 
-The explorer uses a single flow. The level of abstraction is determined by what the user selects:
+#### Two modes
 
-1. **Pick a service** — dropdown showing the user's service instances (connected ones prioritized). If the user's group grants `http`, "Raw HTTP" appears as an option at the bottom.
+A pill toggle at the top of the tab switches between two execution modes:
 
-2. **Pick an action** — adapts to the selected service and the user's group grants:
-   - **Defined actions** listed first with human-readable descriptions and mutating badges (e.g., `create_pull_request — Create a pull request [write]`)
-   - **"Custom Request"** appears at the bottom if the user's group grants HTTP verb access for this service. Opens method + path + body inputs, with auth auto-injected.
-   - For **"Raw HTTP"** service: shows method + full URL + headers + body + secret selector (pick from user's secrets, specify injection method per secret)
+1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/execute` as Mode C.
 
-3. **Fill parameters** — auto-generated form for defined actions (text, number, enum dropdowns from the registry schema). Method + path + JSON body editor for custom requests. Full URL + secret injection config for raw HTTP.
+2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/execute` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
 
-4. **Execute** → response panel
+   ```
+   Method:  [POST ▾]
+   URL:     https://api.example.com/v1/data
+   Headers: Content-Type: application/json
+            Authorization: Bearer {{MY_TOKEN}}
+   Body:    {"query": "test", "limit": 10}
+   ```
 
-#### Raw HTTP example
-
-When "Raw HTTP" is selected as the service:
-
-```
-Service: Raw HTTP
-Method:  [POST ▾]
-URL:     [https://api.example.com/v1/data               ]
-Headers: [Content-Type: application/json                 ]
-Body:    [{"query": "test", "limit": 10}                 ]
-
-Secrets:
-  [api_key ▾]  inject as [Header ▾]  name [Authorization ▾]  prefix [Bearer ]
-```
-
-This generates permission keys `http:POST:api.example.com` + `secret:api_key:api.example.com`.
+   Each header whose value contains a single `{{NAME}}` token is rewritten on submit into a `SecretRef` (`inject_as: "header"`, prefix = any text before the token) and the backend injects the decrypted secret at execute time. Body template substitution is not supported yet — `{{…}}` in the body is sent literally, with a visible warning.
 
 #### Response panel
 
-- **Status code** (color-coded: 2xx green, 4xx yellow, 5xx red)
-- **Response time**
-- **Headers** (collapsible)
-- **Body** (syntax-highlighted JSON, with raw/pretty toggle)
-- **Permission keys derived**: shows which `{service}:{action}:{arg}` keys were checked
+Renders to the right of (or below, on narrow viewports) the request card:
+
+- **Status code** chip (color-coded: 2xx green, 4xx yellow, 5xx red)
+- **Response time** in milliseconds
+- **Body** (syntax-highlighted JSON)
+- For `pending_approval`: an info card with a link to the approval detail page.
+- For `denied`: an error card with the reason.
 
 #### Identity
 
@@ -1195,7 +1238,7 @@ Standalone pages have a minimal layout: Overslash logo at top, no sidebar, no na
 
 ### Secret Request Page (`/secrets/provide/req_...?token=jwt`)
 
-No login required — the JWT in the URL authenticates the request. Safe because providing a secret doesn't grant the agent any authority (the agent still needs a separate approval to use it).
+No login required *by default* — the JWT in the URL authenticates the request. Safe because providing a secret doesn't grant the agent any authority (the agent still needs a separate approval to use it). Orgs that need a named human on every submission can turn on **User Signed Mode** (see below) via the org settings page.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -1207,6 +1250,11 @@ No login required — the JWT in the URL authenticates the request. Safe because
 │                                                     │
 │  Name: openai_api_key                               │
 │  Description: "OpenAI API key with GPT-4 access"    │
+│                                                     │
+│  ┌─ ✓ Signed in as jane@acme.com ──────────────┐   │ ← viewer banner
+│  │ Your name will be recorded on the audit     │   │ (shown only when
+│  │ trail for this submission.                  │   │ the visitor has a
+│  └─────────────────────────────────────────────┘   │ same-org session)
 │                                                     │
 │  ┌───────────────────────────────────────────────┐  │
 │  │ ••••••••••••••••••••••                        │  │
@@ -1224,6 +1272,14 @@ No login required — the JWT in the URL authenticates the request. Safe because
 - **Deny** — dismisses the request. Shows: "Request denied. The agent has been notified."
 - **Expired** — "This request has expired." No form shown.
 - **Already provided** — "This secret has already been provided."
+- **Viewer banner** (green, above the input) — shown when the visitor's browser already has a valid `oss_session` cookie for the request's org. Identifies the human whose name will be recorded as `provisioned_by_user_id` on the resulting `secret_versions` row. The visitor did not have to log in — they already were.
+- **Sign-in gate** (yellow warning, replaces the input) — shown in the same `ready` page state when the request was minted under the stricter *require user session* mode but the visitor has no session. The page still renders the request metadata (name, requester, reason) so the visitor understands what they're being asked for, but the input is replaced with a "Sign in to continue" link. A POST attempt without a session would be rejected server-side with `401 user_session_required` anyway — the gate is purely a UX optimization to avoid wasting the visitor's time.
+
+#### User Signed Mode (two strictly additive layers)
+
+1. **Opportunistic session binding** — always on. If the visitor is already signed in to the same org as the request (detected via the `oss_session` cookie, sent because the public page uses `credentials: 'same-origin'`), the backend stamps `secret_versions.provisioned_by_user_id` and attributes the `secret_request.fulfilled` audit row to that human instead of the target identity. The URL JWT is still the capability gate; the session is a pure identity attestation layered on top. Cross-tenant sessions are silently ignored.
+
+2. **Required user session** — opt-in via the org settings toggle *Allow unsigned secret provisioning* (default: on). When off, every newly-minted secret-request URL is stamped `require_user_session = true` at mint time; the public page renders the sign-in gate for anyone without a matching session, and the backend rejects anonymous submission with `401 user_session_required`. The toggle is forward-only — outstanding URLs minted before the flip keep the policy they were issued under, so flipping the toggle never breaks in-flight links.
 
 Secret requests also appear in the dashboard: as notification bell items, as badges on the agent tree, and as inline `[Provide]` / `[Deny]` actions in the agent detail panel. The standalone page is for resolving from outside the dashboard (e.g., a link in Telegram or email).
 
@@ -1232,40 +1288,40 @@ Secret requests also appear in the dashboard: as notification bell items, as bad
 Login required. If not logged in → redirect to login → redirect back. If logged in but without authority to resolve → show approval details read-only with: "You don't have permission to resolve this approval."
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Overs/ash                              alice ▾     │
-│                                                     │
-│  Approval Request                                   │
-│                                                     │
-│  agent:henry wants to:                              │
-│  Create pull request "Fix bug" on overfolder/app    │
-│  via: user/github                                   │
-│                                                     │
-│  POST /repos/overfolder/app/pulls                   │
-│  Body: {"title":"Fix bug","head":"fix","base":"main"}│
-│                                                     │
-│  ┌─ Allow & Remember ────────────────────────────┐  │
-│  │  ○ Create pull request on overfolder/app      │  │
-│  │  ○ Create pull request on any repo            │  │
-│  │  ○ Any GitHub action                          │  │
-│  │                                               │  │
-│  │  Expires: [24h ▾]                             │  │
-│  └───────────────────────────────────────────────┘  │
-│                                                     │
-│  [Allow Once]  [Allow & Remember]  [Deny]           │
-│                                                     │
-│  Requested 2m ago · Expires in 14m                  │
-│                                                     │
-│  [← Go to Dashboard]                               │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Overs/ash                              alice ▾       │
+│                                                       │
+│  Approval Request                                     │
+│                                                       │
+│  agent:henry wants to:                                │
+│  Create pull request "Fix bug" on overfolder/app      │
+│  via: user/github                                     │
+│                                                       │
+│  POST /repos/overfolder/app/pulls                     │
+│  Body: {"title":"Fix bug","head":"fix","base":"main"} │
+│                                                       │
+│  ┌─ Allow & Remember ────────────────────────────┐    │
+│  │  ○ Create pull request on overfolder/app      │    │
+│  │  ○ Create pull request on any repo            │    │
+│  │  ○ Any GitHub action                          │    │
+│  │                                               │    │
+│  │  Expires: [24h ▾]                             │    │
+│  └───────────────────────────────────────────────┘    │
+│                                                       │
+│  [Allow Once]  [Allow & Remember]  [Deny]             │
+│                                                       │
+│  Requested 2m ago · Expires in 14m                    │
+│                                                       │
+│  [← Go to Agents]                                     │
+└───────────────────────────────────────────────────────┘
 ```
 
 - Shows human-readable description + raw request details + resolved service instance (qualified: `user/github` or `org/github`)
 - **Agent (identity)** — rendered as a SPIFFE-style hierarchical path (`acme/user/alice/agent/henry/...`), with the same link-unit treatment as the audit log Identity column (see §"Audit Log"). Backed by `identity_path` on the approval API response. The bare `identity_id` UUID is never shown to end users.
-- Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as dashboard)
-- After resolution → confirmation + link to dashboard
+- Full specificity picker for "Allow & Remember" — reads `suggested_tiers` and `description` from the approval API (same as Agents view)
+- After resolution → confirmation + link to Agents view
 - **Already resolved** — "This approval was allowed by alice 3m ago." (or denied)
-- `[← Go to Dashboard]` for navigation to the full UI
+- `[← Go to Agents]` for navigation to the full UI
 - Platforms can link users here as a zero-integration-effort path to resolve approvals
 
 ### Agent Enrollment Consent Page (`/enroll/consent/...`)
@@ -1281,13 +1337,13 @@ Login required. An agent generated a consent URL and sent it to a user. Any auth
 │  An agent is requesting to join your org:           │
 │                                                     │
 │  Proposed name: [research-bot        ]  (editable)  │
-│  Requested by: 203.0.113.42 · 5m ago               │
+│  Requested by: 203.0.113.42 · 5m ago                │
 │                                                     │
 │  Parent placement:                                  │
 │  ┌─ Select parent ─────────────────────┐            │
 │  │  ● alice (you)                      │            │
 │  │  ○ agent-henry              ▸       │            │
-│  │  ○ agent-builder             ▸       │            │
+│  │  ○ agent-builder            ▸       │            │
 │  └─────────────────────────────────────┘            │
 │                                                     │
 │  [Approve & Enroll]  [Deny]                         │
@@ -1305,4 +1361,54 @@ Login required. An agent generated a consent URL and sent it to a user. Any auth
 - **Deny** — rejects enrollment, token invalidated
 - **Token expired** — "This enrollment request has expired."
 - **Already enrolled** — "This agent has already been enrolled."
+
+### MCP OAuth Consent Page (`/oauth/consent?request_id=...`)
+
+Session required. Reached from `GET /oauth/authorize` on first connection from a new MCP client (e.g. Claude Code hitting `POST /mcp` without a token). This is where the user enrolls the agent the MCP client will act as.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Overs/ash                                          │
+│                                                     │
+│  Authorize MCP client                               │
+│  Signed in as alice@acme.com                        │
+│                                                     │
+│  ┌───────────────────────────────────────────────┐  │
+│  │  Claude Code is requesting access on your     │  │
+│  │  behalf.                                      │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  Overslash connects this MCP client through a       │
+│  scoped agent identity owned by your user — not     │
+│  your user directly. The client's actions are       │
+│  auditable separately, approvals route correctly,   │
+│  and you can revoke the agent without touching      │
+│  your own account.                                  │
+│                                                     │
+│  ┌─ Create a new agent ─────────────────────────┐   │
+│  │  ● Create a new agent named                  │   │
+│  │    [Claude Code                         ]    │   │
+│  └──────────────────────────────────────────────┘   │
+│                                                     │
+│  ┌─ Use an existing agent ──────────────────────┐   │
+│  │  ○ Select one you already own                │   │
+│  │    ┌──────────────────────────────────┐      │   │
+│  │    │ research-bot                   ▾ │      │   │
+│  │    └──────────────────────────────────┘      │   │
+│  └──────────────────────────────────────────────┘   │
+│                                                     │
+│  [ Authorize ]                                      │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Signed in as …** — the human user's email from the active dashboard session. If the session expired between `/oauth/authorize` and landing on this page, show a short error page pointing the user back to their MCP client to restart.
+- **Client card** — shows the DCR-registered `client_name` from `oauth_mcp_clients`. Falls back to "(unnamed client)" if the MCP client didn't advertise one.
+- **Explainer paragraph** — load-bearing copy. This is what makes Overslash different from a plain OAuth app: users are not granting the client *their own* rights, they're creating a scoped agent. The sentence stays visible; do not collapse behind a "learn more" link.
+- **Create new agent** — default mode. Suggested name is `client_name` (falling back to "MCP Client"). Editable text input, max 120 chars. No trimming of empty → server replaces blank with a safe default.
+- **Use existing agent** — `<select>` populated from the user's un-archived `kind = agent` identities (children via `owner_id`). When the user has no agents yet, the whole fieldset is disabled and the radio isn't selectable.
+- **Authorize button** — `POST /oauth/consent/finish` with `request_id`, `mode` (`new` | `existing`), and either `name` or `agent_id`. On success, 303 → the MCP client's `redirect_uri?code=…&state=…`.
+- **Errors** — rendered as a minimal server-side error page. Cases: session expired, `request_id` expired or unknown, session user ≠ authorize user, agent ownership mismatch. No dashboard chrome — this is a standalone auth surface.
+- **Repeat visits are automatic** — once the binding is stored, subsequent `/oauth/authorize` calls for the same `(user, client_id)` skip this page entirely. There's no separate "I want to re-pick the agent" UI here (v1); to change the binding, use the dashboard MCP Clients admin (follow-up) or delete the binding row.
+
+This page is intentionally hosted by the API server (not SvelteKit), so the Authorization Server remains self-contained in modes where the dashboard isn't served (`overslash serve` cloud mode). Markup lives in `crates/overslash-api/src/routes/oauth_consent.html` and is rendered via simple `{{placeholder}}` substitution — no template engine.
 

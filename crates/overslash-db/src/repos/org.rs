@@ -67,6 +67,116 @@ pub async fn set_approval_auto_bubble_secs(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `allow_user_templates` setting for an org.
+pub async fn get_allow_user_templates(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!("SELECT allow_user_templates FROM orgs WHERE id = $1", id,)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.allow_user_templates))
+}
+
+/// Update the `allow_user_templates` setting for an org.
+pub async fn set_allow_user_templates(
+    pool: &PgPool,
+    id: Uuid,
+    allow: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET allow_user_templates = $2, updated_at = now() WHERE id = $1",
+        id,
+        allow,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Read the `global_templates_enabled` setting for an org.
+pub async fn get_global_templates_enabled(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT global_templates_enabled FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.global_templates_enabled))
+}
+
+/// Update the `global_templates_enabled` setting for an org.
+pub async fn set_global_templates_enabled(
+    pool: &PgPool,
+    id: Uuid,
+    enabled: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET global_templates_enabled = $2, updated_at = now() WHERE id = $1",
+        id,
+        enabled,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Read the `allow_unsigned_secret_provide` setting for an org.
+pub async fn get_allow_unsigned_secret_provide(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_unsigned_secret_provide FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.allow_unsigned_secret_provide))
+}
+
+/// Update the `allow_unsigned_secret_provide` setting for an org.
+pub async fn set_allow_unsigned_secret_provide(
+    pool: &PgPool,
+    id: Uuid,
+    allow: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET allow_unsigned_secret_provide = $2, updated_at = now() WHERE id = $1",
+        id,
+        allow,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Atomically update template settings and return the new values.
+pub async fn update_template_settings(
+    pool: &PgPool,
+    id: Uuid,
+    allow_user_templates: Option<bool>,
+    global_templates_enabled: Option<bool>,
+) -> Result<Option<(bool, bool)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "UPDATE orgs SET \
+         allow_user_templates = COALESCE($2, allow_user_templates), \
+         global_templates_enabled = COALESCE($3, global_templates_enabled), \
+         updated_at = now() \
+         WHERE id = $1 \
+         RETURNING allow_user_templates, global_templates_enabled",
+        id,
+        allow_user_templates,
+        global_templates_enabled,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.allow_user_templates, r.global_templates_enabled)))
+}
+
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,

@@ -75,6 +75,11 @@ pub enum ServiceAuth {
     #[serde(rename = "oauth")]
     OAuth {
         provider: String,
+        /// Superset of OAuth scopes this service may request. The caller
+        /// (dashboard/API) picks which subset to actually request at connect
+        /// time; the provider's granted scopes land on `connections.scopes`.
+        #[serde(default)]
+        scopes: Vec<String>,
         token_injection: TokenInjection,
     },
     #[serde(rename = "api_key")]
@@ -117,6 +122,12 @@ pub struct ServiceAction {
     /// Without `scope_param`, the arg defaults to `*`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_param: Option<String>,
+    /// OAuth scopes this specific action needs. Checked against the
+    /// connection's granted scopes at execution time (SPEC §9 "Per-action
+    /// scopes"). Empty means no gating — fall back to the service-level
+    /// scope set granted at connect time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
 }
 
 /// Describes how to resolve an opaque ID into a human-readable display name.

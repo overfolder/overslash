@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict IbNmOJBlYgDlw4CARa3JmpBuLQNNWasFNtSCS3Dx9c9AdVR0jxp4hl2HikjJG4K
+\restrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
 
--- Dumped from database version 16.13
+-- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
@@ -43,7 +43,7 @@ SET default_table_access_method = heap;
 CREATE TABLE public.api_keys (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,
-    identity_id uuid,
+    identity_id uuid NOT NULL,
     name text NOT NULL,
     key_hash text NOT NULL,
     key_prefix text NOT NULL,
@@ -105,7 +105,7 @@ CREATE TABLE public.audit_log (
 CREATE TABLE public.byoc_credentials (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,
-    identity_id uuid,
+    identity_id uuid NOT NULL,
     provider_key text NOT NULL,
     encrypted_client_id bytea NOT NULL,
     encrypted_client_secret bytea NOT NULL,
@@ -132,6 +132,18 @@ CREATE TABLE public.connections (
     is_default boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: enabled_global_templates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.enabled_global_templates (
+    org_id uuid NOT NULL,
+    template_key text NOT NULL,
+    enabled_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -204,6 +216,9 @@ CREATE TABLE public.identities (
     last_active_at timestamp with time zone DEFAULT now() NOT NULL,
     archived_at timestamp with time zone,
     archived_reason text,
+    preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
+    is_org_admin boolean DEFAULT false NOT NULL,
+    CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
 
@@ -216,6 +231,57 @@ CREATE TABLE public.identity_groups (
     identity_id uuid NOT NULL,
     group_id uuid NOT NULL,
     assigned_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: mcp_client_agent_bindings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_client_agent_bindings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    user_identity_id uuid NOT NULL,
+    client_id text NOT NULL,
+    agent_identity_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: mcp_refresh_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_refresh_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id text NOT NULL,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    hash bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    replaced_by_id uuid
+);
+
+
+--
+-- Name: oauth_mcp_clients; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_mcp_clients (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id text NOT NULL,
+    client_name text,
+    redirect_uris text[] NOT NULL,
+    software_id text,
+    software_version text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone,
+    created_ip text,
+    created_user_agent text,
+    is_revoked boolean DEFAULT false NOT NULL
 );
 
 
@@ -250,12 +316,13 @@ CREATE TABLE public.org_idp_configs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     org_id uuid NOT NULL,
     provider_key text NOT NULL,
-    encrypted_client_id bytea NOT NULL,
-    encrypted_client_secret bytea NOT NULL,
+    encrypted_client_id bytea,
+    encrypted_client_secret bytea,
     enabled boolean DEFAULT true NOT NULL,
     allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
 );
 
 
@@ -272,6 +339,9 @@ CREATE TABLE public.orgs (
     subagent_idle_timeout_secs integer DEFAULT 14400 NOT NULL,
     subagent_archive_retention_days integer DEFAULT 30 NOT NULL,
     approval_auto_bubble_secs integer DEFAULT 300 NOT NULL,
+    allow_user_templates boolean DEFAULT false NOT NULL,
+    global_templates_enabled boolean DEFAULT true NOT NULL,
+    allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
 );
 
@@ -285,7 +355,6 @@ CREATE TABLE public.pending_enrollments (
     suggested_name text NOT NULL,
     platform text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    requester_ip text,
     status text DEFAULT 'pending'::text NOT NULL,
     approval_token text NOT NULL,
     poll_token_hash text NOT NULL,
@@ -299,6 +368,7 @@ CREATE TABLE public.pending_enrollments (
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     resolved_at timestamp with time zone,
+    requester_ip text,
     CONSTRAINT pending_enrollments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -338,6 +408,25 @@ CREATE TABLE public.rate_limits (
 
 
 --
+-- Name: secret_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.secret_requests (
+    id text NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    secret_name text NOT NULL,
+    requested_by uuid NOT NULL,
+    reason text,
+    token_hash bytea NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    fulfilled_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    require_user_session boolean DEFAULT false NOT NULL
+);
+
+
+--
 -- Name: secret_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -347,7 +436,8 @@ CREATE TABLE public.secret_versions (
     version integer NOT NULL,
     encrypted_value bytea NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_by uuid
+    created_by uuid,
+    provisioned_by_user_id uuid
 );
 
 
@@ -363,6 +453,24 @@ CREATE TABLE public.secrets (
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: service_action_embeddings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_action_embeddings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tier text NOT NULL,
+    org_id uuid,
+    owner_identity_id uuid,
+    template_key text NOT NULL,
+    action_key text NOT NULL,
+    source_text text NOT NULL,
+    embedding public.vector(384) NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT service_action_embeddings_tier_check CHECK ((tier = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
 
 
@@ -402,10 +510,11 @@ CREATE TABLE public.service_templates (
     description text DEFAULT ''::text NOT NULL,
     category text DEFAULT ''::text NOT NULL,
     hosts text[] DEFAULT '{}'::text[] NOT NULL,
-    auth jsonb DEFAULT '[]'::jsonb NOT NULL,
-    actions jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    openapi jsonb NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    CONSTRAINT service_templates_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text])))
 );
 
 
@@ -499,6 +608,14 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: enabled_global_templates enabled_global_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enabled_global_templates
+    ADD CONSTRAINT enabled_global_templates_pkey PRIMARY KEY (org_id, template_key);
+
+
+--
 -- Name: enrollment_tokens enrollment_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -560,6 +677,46 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identity_groups
     ADD CONSTRAINT identity_groups_pkey PRIMARY KEY (identity_id, group_id);
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_identity_id_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_user_identity_id_client_id_key UNIQUE (user_identity_id, client_id);
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_mcp_clients oauth_mcp_clients_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_mcp_clients
+    ADD CONSTRAINT oauth_mcp_clients_client_id_key UNIQUE (client_id);
+
+
+--
+-- Name: oauth_mcp_clients oauth_mcp_clients_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_mcp_clients
+    ADD CONSTRAINT oauth_mcp_clients_pkey PRIMARY KEY (id);
 
 
 --
@@ -635,6 +792,14 @@ ALTER TABLE ONLY public.rate_limits
 
 
 --
+-- Name: secret_requests secret_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: secret_versions secret_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -667,6 +832,14 @@ ALTER TABLE ONLY public.secrets
 
 
 --
+-- Name: service_action_embeddings service_action_embeddings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_action_embeddings
+    ADD CONSTRAINT service_action_embeddings_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: service_instances service_instances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -696,13 +869,6 @@ ALTER TABLE ONLY public.webhook_deliveries
 
 ALTER TABLE ONLY public.webhook_subscriptions
     ADD CONSTRAINT webhook_subscriptions_pkey PRIMARY KEY (id);
-
-
---
--- Name: byoc_credentials_org_provider_null_identity; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX byoc_credentials_org_provider_null_identity ON public.byoc_credentials USING btree (org_id, provider_key) WHERE (identity_id IS NULL);
 
 
 --
@@ -867,6 +1033,48 @@ CREATE INDEX idx_identity_groups_identity ON public.identity_groups USING btree 
 
 
 --
+-- Name: idx_mcp_client_agent_bindings_agent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_client_agent_bindings_agent ON public.mcp_client_agent_bindings USING btree (agent_identity_id);
+
+
+--
+-- Name: idx_mcp_client_agent_bindings_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_client_agent_bindings_user ON public.mcp_client_agent_bindings USING btree (user_identity_id);
+
+
+--
+-- Name: idx_mcp_refresh_tokens_active_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_refresh_tokens_active_identity ON public.mcp_refresh_tokens USING btree (identity_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: idx_mcp_refresh_tokens_client; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_refresh_tokens_client ON public.mcp_refresh_tokens USING btree (client_id);
+
+
+--
+-- Name: idx_mcp_refresh_tokens_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_mcp_refresh_tokens_hash ON public.mcp_refresh_tokens USING btree (hash);
+
+
+--
+-- Name: idx_oauth_mcp_clients_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_mcp_clients_active ON public.oauth_mcp_clients USING btree (created_at DESC) WHERE (is_revoked = false);
+
+
+--
 -- Name: idx_org_idp_configs_domains; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -937,6 +1145,27 @@ CREATE UNIQUE INDEX idx_rate_limits_user ON public.rate_limits USING btree (org_
 
 
 --
+-- Name: idx_secret_requests_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_requests_org ON public.secret_requests USING btree (org_id);
+
+
+--
+-- Name: idx_secret_requests_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_requests_pending ON public.secret_requests USING btree (expires_at) WHERE (fulfilled_at IS NULL);
+
+
+--
+-- Name: idx_secret_versions_provisioned_by; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secret_versions_provisioned_by ON public.secret_versions USING btree (provisioned_by_user_id) WHERE (provisioned_by_user_id IS NOT NULL);
+
+
+--
 -- Name: idx_secret_versions_secret; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -982,14 +1211,21 @@ CREATE INDEX idx_service_templates_org ON public.service_templates USING btree (
 -- Name: idx_service_templates_org_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_service_templates_org_key ON public.service_templates USING btree (org_id, key) WHERE (owner_identity_id IS NULL);
+CREATE UNIQUE INDEX idx_service_templates_org_key ON public.service_templates USING btree (org_id, key) WHERE ((owner_identity_id IS NULL) AND (status = 'active'::text));
+
+
+--
+-- Name: idx_service_templates_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_service_templates_status ON public.service_templates USING btree (status);
 
 
 --
 -- Name: idx_service_templates_user_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates USING btree (org_id, owner_identity_id, key) WHERE (owner_identity_id IS NOT NULL);
+CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates USING btree (org_id, owner_identity_id, key) WHERE ((owner_identity_id IS NOT NULL) AND (status = 'active'::text));
 
 
 --
@@ -1000,11 +1236,39 @@ CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btr
 
 
 --
+-- Name: service_action_embeddings_global_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_action_embeddings_global_unique ON public.service_action_embeddings USING btree (template_key, action_key) WHERE (tier = 'global'::text);
+
+
+--
+-- Name: service_action_embeddings_hnsw; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX service_action_embeddings_hnsw ON public.service_action_embeddings USING hnsw (embedding public.vector_cosine_ops);
+
+
+--
+-- Name: service_action_embeddings_org_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_action_embeddings_org_unique ON public.service_action_embeddings USING btree (org_id, template_key, action_key) WHERE (tier = 'org'::text);
+
+
+--
+-- Name: service_action_embeddings_user_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_action_embeddings USING btree (org_id, owner_identity_id, template_key, action_key) WHERE (tier = 'user'::text);
+
+
+--
 -- Name: api_keys api_keys_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.api_keys
-    ADD CONSTRAINT api_keys_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+    ADD CONSTRAINT api_keys_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --
@@ -1112,6 +1376,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: enabled_global_templates enabled_global_templates_enabled_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enabled_global_templates
+    ADD CONSTRAINT enabled_global_templates_enabled_by_fkey FOREIGN KEY (enabled_by) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: enabled_global_templates enabled_global_templates_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.enabled_global_templates
+    ADD CONSTRAINT enabled_global_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: enrollment_tokens enrollment_tokens_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1200,6 +1480,70 @@ ALTER TABLE ONLY public.identity_groups
 
 
 --
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_agent_identity_id_fkey FOREIGN KEY (agent_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_mcp_clients(client_id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_client_agent_bindings mcp_client_agent_bindings_user_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_client_agent_bindings
+    ADD CONSTRAINT mcp_client_agent_bindings_user_identity_id_fkey FOREIGN KEY (user_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.oauth_mcp_clients(client_id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_refresh_tokens mcp_refresh_tokens_replaced_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_refresh_tokens
+    ADD CONSTRAINT mcp_refresh_tokens_replaced_by_id_fkey FOREIGN KEY (replaced_by_id) REFERENCES public.mcp_refresh_tokens(id);
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1280,11 +1624,43 @@ ALTER TABLE ONLY public.rate_limits
 
 
 --
+-- Name: secret_requests secret_requests_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: secret_requests secret_requests_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: secret_requests secret_requests_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_requests
+    ADD CONSTRAINT secret_requests_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.identities(id);
+
+
+--
 -- Name: secret_versions secret_versions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.secret_versions
     ADD CONSTRAINT secret_versions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: secret_versions secret_versions_provisioned_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secret_versions
+    ADD CONSTRAINT secret_versions_provisioned_by_user_id_fkey FOREIGN KEY (provisioned_by_user_id) REFERENCES public.identities(id) ON DELETE SET NULL;
 
 
 --
@@ -1301,6 +1677,22 @@ ALTER TABLE ONLY public.secret_versions
 
 ALTER TABLE ONLY public.secrets
     ADD CONSTRAINT secrets_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: service_action_embeddings service_action_embeddings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_action_embeddings
+    ADD CONSTRAINT service_action_embeddings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: service_action_embeddings service_action_embeddings_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_action_embeddings
+    ADD CONSTRAINT service_action_embeddings_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --
@@ -1371,5 +1763,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict IbNmOJBlYgDlw4CARa3JmpBuLQNNWasFNtSCS3Dx9c9AdVR0jxp4hl2HikjJG4K
+\unrestrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
 

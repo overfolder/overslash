@@ -42,4 +42,44 @@ pub struct ActionResult {
     pub headers: HashMap<String, String>,
     pub body: String,
     pub duration_ms: u64,
+    /// Output of the optional server-side response filter (e.g. jq) when one
+    /// was attached to the request. `None` means no filter was requested.
+    /// The original `body` is preserved either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filtered_body: Option<FilteredBody>,
+}
+
+/// Result of evaluating a server-side filter against the upstream response body.
+///
+/// `values` is always a `Vec` even for filters that emit a single result, since
+/// jq is a streaming language (`.items[]` may yield N values). For the common
+/// single-output case, callers read `values[0]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FilteredBody {
+    Ok {
+        lang: String,
+        values: Vec<serde_json::Value>,
+        original_bytes: usize,
+        filtered_bytes: usize,
+    },
+    Error {
+        lang: String,
+        kind: FilterErrorKind,
+        message: String,
+        original_bytes: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterErrorKind {
+    /// Upstream body wasn't valid JSON.
+    BodyNotJson,
+    /// Filter evaluated but errored at runtime (type mismatch, etc.).
+    RuntimeError,
+    /// Filter exceeded the wall-clock timeout.
+    Timeout,
+    /// Filter produced more values than the configured cap.
+    OutputOverflow,
 }

@@ -36,7 +36,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 - **Three execution modes**: Raw HTTP (Mode A), Connection-based (Mode B), Service+Action (Mode C).
 - **Approval bubbling**: Gap in permission chain → approval created at gap level → ancestors can resolve.
 - **Versioned secrets**: Every write creates a new version. Latest used for injection. Old versions restorable.
-- **Service registry**: Global YAML (shipped) + org DB (custom). Provides human-readable action descriptions.
+- **Service registry**: Global OpenAPI 3.1 YAML (shipped under `services/`) + org/user DB (custom). Templates carry `x-overslash-*` vendor extensions (or their unprefixed aliases) for risk class, permission scoping, parameter resolution, OAuth provider, and default secret name. Normalization happens on load and before persist.
 - **`on_behalf_of`**: Agents create secrets/connections at owner-user level so all agents share them.
 
 ## Testing

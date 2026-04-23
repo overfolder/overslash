@@ -16,6 +16,7 @@ pub struct Config {
     pub public_url: String,
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
+    pub filter_timeout_ms: u64,
     pub dashboard_url: String,
     pub dashboard_origin: String,
     pub redis_url: Option<String>,
@@ -23,15 +24,37 @@ pub struct Config {
     pub default_rate_window_secs: u32,
 }
 
+/// Build the default `public_url` from the bind host/port. We map
+/// wildcard binds (`0.0.0.0`, `::`) to `localhost` because the public URL
+/// is meant to be reachable from a browser — `http://0.0.0.0:8080` is not
+/// a valid origin to advertise. Raw IPv6 literals (e.g. `::1`,
+/// `2001:db8::1`) are wrapped in brackets per RFC 3986 so the resulting
+/// URL parses cleanly. Set `PUBLIC_URL` explicitly for production
+/// deployments behind a reverse proxy.
+pub fn default_public_url(host: &str, port: u16) -> String {
+    let display: std::borrow::Cow<'_, str> = match host {
+        "0.0.0.0" | "::" | "[::]" => "localhost".into(),
+        h if h.starts_with('[') => h.into(),
+        // An unbracketed colon means an IPv6 literal — bracket it so
+        // `host:port` doesn't collide with the address's own colons.
+        h if h.contains(':') => format!("[{h}]").into(),
+        h => h.into(),
+    };
+    format!("http://{display}:{port}")
+}
+
 impl Config {
     /// Load config from environment variables.
     pub fn from_env() -> Self {
+        let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
+        let port = env::var("PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(3000);
+        let public_url = env::var("PUBLIC_URL").unwrap_or_else(|_| default_public_url(&host, port));
         Self {
-            host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
-            port: env::var("PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(3000),
+            host,
+            port,
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL is required"),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
@@ -45,12 +68,16 @@ impl Config {
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),
             github_auth_client_id: env::var("GITHUB_AUTH_CLIENT_ID").ok(),
             github_auth_client_secret: env::var("GITHUB_AUTH_CLIENT_SECRET").ok(),
-            public_url: env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+            public_url,
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
             max_response_body_bytes: env::var("MAX_RESPONSE_BODY_BYTES")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
+            filter_timeout_ms: env::var("FILTER_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2000),
             dashboard_url: env::var("DASHBOARD_URL").unwrap_or_else(|_| "/".into()),
             // "*localhost*" matches any http://localhost:<port> / http://127.0.0.1:<port>
             // origin so that worktrees with dynamic dashboard ports work out of the box.
@@ -78,6 +105,29 @@ impl Config {
             .collect()
     }
 
+    /// Build a URL for a dashboard deep-link path (e.g., `/approvals/<id>`,
+    /// `/enroll/consent/<token>`, `/secrets/provide/<id>?token=...`).
+    ///
+    /// `dashboard_url` is the canonical dashboard host. When it's already
+    /// absolute (`http://` or `https://`) it's used directly; when relative
+    /// (the default `/` in local/single-process deployments), `public_url`
+    /// is prepended so the resulting URL is reachable from outside the
+    /// host process. The dashboard URL must be suitable to paste into an
+    /// agent's conversation and have the owner click it.
+    pub fn dashboard_url_for(&self, path: &str) -> String {
+        let dash = self.dashboard_url.trim_end_matches('/');
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+        if dash.starts_with("http://") || dash.starts_with("https://") {
+            format!("{dash}{path}")
+        } else {
+            format!("{}{dash}{path}", self.public_url.trim_end_matches('/'))
+        }
+    }
+
     /// Returns env-var-based auth credentials for a given provider key, if configured.
     /// Env vars take precedence over DB-stored IdP configs.
     pub fn env_auth_credentials(&self, provider_key: &str) -> Option<(String, String)> {
@@ -94,5 +144,49 @@ impl Config {
                 .map(|(a, b)| (a.clone(), b.clone())),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_public_url_maps_wildcard_hosts_to_localhost() {
+        assert_eq!(default_public_url("0.0.0.0", 8080), "http://localhost:8080");
+        assert_eq!(default_public_url("::", 3000), "http://localhost:3000");
+        assert_eq!(default_public_url("[::]", 7676), "http://localhost:7676");
+    }
+
+    #[test]
+    fn default_public_url_passes_through_explicit_hosts() {
+        assert_eq!(
+            default_public_url("127.0.0.1", 7676),
+            "http://127.0.0.1:7676"
+        );
+        assert_eq!(
+            default_public_url("api.example.com", 8080),
+            "http://api.example.com:8080"
+        );
+    }
+
+    #[test]
+    fn default_public_url_brackets_raw_ipv6_literals() {
+        // RFC 3986 requires IPv6 in URLs to be bracketed so the host's
+        // colons can be told apart from the host:port colon.
+        assert_eq!(default_public_url("::1", 8080), "http://[::1]:8080");
+        assert_eq!(
+            default_public_url("2001:db8::1", 8080),
+            "http://[2001:db8::1]:8080"
+        );
+    }
+
+    #[test]
+    fn default_public_url_does_not_double_bracket_already_bracketed_ipv6() {
+        assert_eq!(default_public_url("[::1]", 8080), "http://[::1]:8080");
+        assert_eq!(
+            default_public_url("[2001:db8::1]", 8080),
+            "http://[2001:db8::1]:8080"
+        );
     }
 }

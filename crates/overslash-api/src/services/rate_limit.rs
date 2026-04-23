@@ -287,7 +287,9 @@ impl RateLimitConfigCache {
         }
 
         // Resolve from DB
-        let resolved = overslash_db::repos::rate_limit::get_org_default(pool, org_id)
+        let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+        let resolved = scope
+            .get_org_default_rate_limit()
             .await
             .ok()
             .flatten()
@@ -322,19 +324,16 @@ impl RateLimitConfigCache {
         }
 
         // Resolve from DB
-        let resolved = overslash_db::repos::rate_limit::get_for_identity(
-            pool,
-            org_id,
-            identity_id,
-            "identity_cap",
-        )
-        .await
-        .ok()
-        .flatten()
-        .map(|row| RateLimitConfig {
-            max_requests: row.max_requests as u32,
-            window_seconds: row.window_seconds as u32,
-        });
+        let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+        let resolved = scope
+            .get_rate_limit_for_identity(identity_id, "identity_cap")
+            .await
+            .ok()
+            .flatten()
+            .map(|row| RateLimitConfig {
+                max_requests: row.max_requests as u32,
+                window_seconds: row.window_seconds as u32,
+            });
 
         self.identity_cap.insert(
             (org_id, identity_id),
@@ -354,10 +353,10 @@ async fn resolve_user_budget_from_db(
     org_id: Uuid,
     user_id: Uuid,
 ) -> Option<RateLimitConfig> {
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+
     // 1. Per-user override
-    if let Ok(Some(row)) =
-        overslash_db::repos::rate_limit::get_for_identity(pool, org_id, user_id, "user").await
-    {
+    if let Ok(Some(row)) = scope.get_rate_limit_for_identity(user_id, "user").await {
         return Some(RateLimitConfig {
             max_requests: row.max_requests as u32,
             window_seconds: row.window_seconds as u32,
@@ -365,14 +364,10 @@ async fn resolve_user_budget_from_db(
     }
 
     // 2. Group default (most permissive)
-    if let Ok(groups) = overslash_db::repos::group::list_groups_for_identity(pool, user_id).await {
+    if let Ok(groups) = scope.list_groups_for_identity(user_id).await {
         if !groups.is_empty() {
             let group_ids: Vec<Uuid> = groups.iter().map(|g| g.id).collect();
-            if let Ok(Some(row)) = overslash_db::repos::rate_limit::get_most_permissive_for_groups(
-                pool, org_id, &group_ids,
-            )
-            .await
-            {
+            if let Ok(Some(row)) = scope.most_permissive_group_rate_limit(&group_ids).await {
                 return Some(RateLimitConfig {
                     max_requests: row.max_requests as u32,
                     window_seconds: row.window_seconds as u32,
@@ -382,7 +377,7 @@ async fn resolve_user_budget_from_db(
     }
 
     // 3. Org default
-    if let Ok(Some(row)) = overslash_db::repos::rate_limit::get_org_default(pool, org_id).await {
+    if let Ok(Some(row)) = scope.get_org_default_rate_limit().await {
         return Some(RateLimitConfig {
             max_requests: row.max_requests as u32,
             window_seconds: row.window_seconds as u32,

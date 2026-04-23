@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE oauth_mcp_clients SET is_revoked = true WHERE client_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87499ec732270f91038b20e78bbfe3cf53fafedb3a4c8ef5368c70028ca3b869"
+}

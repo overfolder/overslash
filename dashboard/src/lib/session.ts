@@ -1,7 +1,8 @@
 /**
  * Cookie-based API client for authenticated dashboard pages.
  *
- * In dev, requests are proxied by Vite to the Rust backend on :3000.
+ * In dev, Vite proxies /v1 and /auth to the Rust backend on :3000.
+ * On Vercel, vercel.json rewrites proxy API paths to the backend.
  * Auth relies on the `oss_session` HttpOnly cookie set by the backend.
  */
 
@@ -57,12 +58,49 @@ async function request<T>(
 	return res.json();
 }
 
+/** POST with a raw text body (Content-Type: text/plain). */
+async function requestText<T>(path: string, text: string, signal?: AbortSignal): Promise<T> {
+	const res = await fetch(path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'text/plain' },
+		credentials: 'include',
+		body: text,
+		signal
+	});
+
+	if (!res.ok) {
+		let errorBody: unknown;
+		try {
+			errorBody = await res.json();
+		} catch {
+			errorBody = await res.text();
+		}
+		if (res.status === 401 && typeof window !== 'undefined') {
+			const here = window.location.pathname + window.location.search;
+			if (window.location.pathname !== '/login') {
+				window.location.href = `/login?reason=expired&return_to=${encodeURIComponent(here)}`;
+			}
+		}
+		throw new ApiError(res.status, errorBody);
+	}
+
+	if (res.status === 204) {
+		return undefined as T;
+	}
+
+	return res.json();
+}
+
 export const session = {
 	get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
 	post: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
 		request<T>('POST', path, body, signal),
+	postText: <T>(path: string, text: string, signal?: AbortSignal) =>
+		requestText<T>(path, text, signal),
 	put: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
 		request<T>('PUT', path, body, signal),
+	patch: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
+		request<T>('PATCH', path, body, signal),
 	delete: <T>(path: string, signal?: AbortSignal) => request<T>('DELETE', path, undefined, signal)
 };
 
@@ -70,11 +108,45 @@ export const session = {
 export interface MeIdentity {
 	identity_id: string;
 	org_id: string;
+	org_name?: string | null;
+	org_slug?: string | null;
 	email: string;
 	name: string;
 	kind: string;
 	external_id: string | null;
+	picture?: string | null;
 	is_org_admin?: boolean;
+}
+
+/** GET /v1/secrets item */
+export interface SecretMetadata {
+	name: string;
+	current_version: number;
+}
+
+/** GET /v1/permissions item — remembered approval rule */
+export interface PermissionRule {
+	id: string;
+	identity_id: string;
+	action_pattern: string;
+	effect: string;
+	expires_at: string | null;
+	created_at: string;
+}
+
+/** GET /v1/enrollment-tokens item */
+export interface EnrollmentTokenItem {
+	id: string;
+	identity_id: string;
+	token_prefix: string;
+	expires_at: string;
+	created_at: string;
+}
+
+/** GET/PUT /auth/me/preferences */
+export interface UserPreferences {
+	time_display?: 'relative' | 'absolute';
+	theme?: 'light' | 'dark' | 'system';
 }
 
 /** Mirrors overslash_core::permissions::DerivedKey */
@@ -107,6 +179,14 @@ export interface ApprovalResponse {
 	permission_keys: string[];
 	derived_keys: DerivedKey[];
 	suggested_tiers: SuggestedTier[];
+	/** Pretty-printed serialization of the stored action_detail JSONB.
+	 *  Truncated server-side at MAX_ACTION_DETAIL_BYTES (100 KB) on a
+	 *  UTF-8 char boundary. Null when no detail was stored. */
+	action_detail: string | null;
+	action_detail_truncated: boolean;
+	/** Byte length of the full pretty-printed action_detail prior to
+	 *  truncation. 0 when no detail was stored. */
+	action_detail_size_bytes: number;
 	status: string;
 	token: string;
 	expires_at: string;

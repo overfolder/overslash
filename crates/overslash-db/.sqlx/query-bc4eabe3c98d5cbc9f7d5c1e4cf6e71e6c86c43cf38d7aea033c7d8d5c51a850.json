@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, suggested_name, platform, metadata, status, approval_token, poll_token_hash, poll_token_prefix,\n                org_id, identity_id, api_key_hash, api_key_prefix, approved_by, final_name,\n                expires_at, created_at, resolved_at, requester_ip\n         FROM pending_enrollments WHERE approval_token = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "suggested_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "platform",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "approval_token",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "poll_token_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "poll_token_prefix",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "api_key_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "api_key_prefix",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "approved_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "final_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "resolved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "requester_ip",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "bc4eabe3c98d5cbc9f7d5c1e4cf6e71e6c86c43cf38d7aea033c7d8d5c51a850"
+}

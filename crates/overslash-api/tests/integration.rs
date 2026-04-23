@@ -31,6 +31,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -52,6 +53,10 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -282,6 +287,54 @@ async fn test_health() {
 }
 
 #[tokio::test]
+async fn test_whoami_returns_caller_identity_for_bearer_key() {
+    // /v1/whoami is the Bearer-friendly self-introspection endpoint that
+    // `mcp setup` uses to discover its own identity_id (so it can supply
+    // parent_id when creating an agent). The dashboard's /auth/me* paths
+    // are session-cookie-only and unusable from a CLI.
+    let pool = common::test_pool().await;
+    let (base, agent_key, org_id, ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    // Calling with the agent-bound key should report that agent identity.
+    let resp: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["org_id"].as_str().unwrap(), org_id.to_string());
+    assert_eq!(resp["identity_id"].as_str().unwrap(), ident_id.to_string());
+    assert_eq!(resp["kind"], "agent");
+    // The agent was created under a user, so parent_id is present and not null.
+    assert!(resp["parent_id"].is_string(), "parent_id={:?}", resp);
+
+    // The org bootstrap key is identity-bound to the freshly-minted admin user.
+    let admin_resp: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(admin_resp["org_id"].as_str().unwrap(), org_id.to_string());
+    assert_eq!(admin_resp["kind"], "user");
+
+    // Unauthenticated request is rejected.
+    let unauth = client
+        .get(format!("{base}/v1/whoami"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), 401);
+}
+
+#[tokio::test]
 async fn test_happy_path_execute_with_permission() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
@@ -367,6 +420,32 @@ async fn test_approval_flow() {
     assert_eq!(body["status"], "pending_approval");
     let approval_id = body["approval_id"].as_str().unwrap();
 
+    // Regression: `approval_url` must point at the dashboard deep-link page
+    // (`/approvals/{id}`), not the old placeholder `/approve/{token}` that
+    // agents were suggesting to users and 404'd.
+    let approval_url = body["approval_url"].as_str().unwrap();
+    assert!(
+        approval_url.ends_with(&format!("/approvals/{approval_id}")),
+        "approval_url {approval_url:?} should end with /approvals/{approval_id}"
+    );
+    assert!(
+        !approval_url.contains("/approve/"),
+        "approval_url {approval_url:?} should not use the legacy /approve/{{token}} path"
+    );
+
+    // Regression: `expires_at` on pending_approval must be RFC 3339.
+    // The `time` crate's default Display ("2026-04-19 08:16:35 +00:00:00")
+    // is not parseable by JavaScript's `new Date(...)` and previously
+    // broke the dashboard approvals view.
+    let pending_expires = body["expires_at"].as_str().unwrap();
+    time::OffsetDateTime::parse(
+        pending_expires,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap_or_else(|e| {
+        panic!("pending_approval.expires_at {pending_expires:?} not RFC 3339: {e}")
+    });
+
     // Resolve with allow (admin key, not the agent's own)
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
@@ -378,6 +457,13 @@ async fn test_approval_flow() {
     assert_eq!(resp.status(), 200);
     let resolved: Value = resp.json().await.unwrap();
     assert_eq!(resolved["status"], "allowed");
+
+    // Regression: ApprovalResponse.{expires_at, created_at} must be RFC 3339.
+    for field in ["expires_at", "created_at"] {
+        let s = resolved[field].as_str().unwrap();
+        time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|e| panic!("ApprovalResponse.{field} {s:?} not RFC 3339: {e}"));
+    }
 }
 
 #[tokio::test]
@@ -562,17 +648,24 @@ async fn test_secret_versioning() {
         .unwrap();
     assert_eq!(r["version"], 2);
 
-    // Get metadata
-    let r = client
+    // GET /v1/secrets/{name} is dashboard-only (JWT session). API keys
+    // must be rejected so a compromised agent token can't enumerate the
+    // secret namespace.
+    let resp = client
         .get(format!("{base}/v1/secrets/s1"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
-        .unwrap()
-        .json::<Value>()
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    let resp = client
+        .get(format!("{base}/v1/secrets"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
         .await
         .unwrap();
-    assert_eq!(r["current_version"], 2);
+    assert_eq!(resp.status(), 401);
 }
 
 #[tokio::test]
@@ -703,15 +796,6 @@ async fn test_mode_c_service_action() {
     let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
     let client = Client::new();
 
-    // Store a secret matching the service's default_secret_name
-    client
-        .put(format!("{base}/v1/secrets/github_token"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"value": "ghp_test123"}))
-        .send()
-        .await
-        .unwrap();
-
     // Create a broad permission rule
     client
         .post(format!("{base}/v1/permissions"))
@@ -756,6 +840,7 @@ async fn test_service_registry_api() {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -786,6 +871,10 @@ async fn test_service_registry_api() {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -866,7 +955,13 @@ async fn test_service_registry_api() {
         .await
         .unwrap();
     assert_eq!(resp["key"], "github");
-    assert!(resp["actions"]["create_pull_request"].is_object());
+    assert!(
+        resp["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["key"] == "create_pull_request")
+    );
 
     // List template actions
     let actions: Vec<Value> = client
@@ -970,6 +1065,53 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         sig_header.starts_with("sha256="),
         "signature should start with sha256="
     );
+}
+
+#[tokio::test]
+async fn test_list_webhook_deliveries_empty_for_new_subscription() {
+    let pool = common::test_pool().await;
+    let (base, _key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let wh: Value = client
+        .post(format!("{base}/v1/webhooks"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "url": "http://example.invalid/hook",
+            "events": ["approval.resolved"]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        wh["secret"].is_string(),
+        "create response must include the signing secret"
+    );
+    let id = wh["id"].as_str().unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/webhooks/{id}/deliveries"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.is_array());
+    assert_eq!(body.as_array().unwrap().len(), 0);
+
+    // Cross-org / unknown id → 404
+    let bogus = uuid::Uuid::new_v4();
+    let resp = client
+        .get(format!("{base}/v1/webhooks/{bogus}/deliveries"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }
 
 // ============================================================================
@@ -1119,9 +1261,9 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
     let refresh_tok = overslash_core::crypto::encrypt(&enc_key, b"valid_refresh_token").unwrap();
     let expired_time = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id: org.id,
             identity_id: ident.id,
             provider_key: "github",
@@ -1131,15 +1273,14 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // resolve_access_token should detect expiry and refresh
     let http_client = reqwest::Client::new();
     let new_token = overslash_api::services::oauth::resolve_access_token(
-        &pool,
+        &scope,
         &http_client,
         &enc_key,
         &conn,
@@ -1152,10 +1293,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
     assert_eq!(new_token, "mock_refreshed_access_token");
 
     // Verify the DB was updated with new tokens
-    let updated_conn = overslash_db::repos::connection::get_by_id(&pool, conn.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated_conn = scope.get_connection(conn.id).await.unwrap().unwrap();
     let decrypted_new =
         overslash_core::crypto::decrypt(&enc_key, &updated_conn.encrypted_access_token).unwrap();
     assert_eq!(
@@ -1183,9 +1321,9 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     let valid_access = overslash_core::crypto::encrypt(&enc_key, b"still_valid_token").unwrap();
     let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id: org.id,
             identity_id: ident.id,
             provider_key: "github",
@@ -1195,15 +1333,14 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Should return the existing token without refreshing
     let http_client = reqwest::Client::new();
     let token = overslash_api::services::oauth::resolve_access_token(
-        &pool,
+        &scope,
         &http_client,
         &enc_key,
         &conn,
@@ -1214,6 +1351,82 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     .unwrap();
 
     assert_eq!(token, "still_valid_token");
+}
+
+// Regression: Google (and most OAuth2 providers) do not return a new
+// refresh_token on routine refresh responses. The refresh path must preserve
+// the existing refresh_token when `None` is passed, otherwise the first
+// refresh wipes it and every subsequent access-token expiry is terminal.
+#[tokio::test]
+async fn test_update_tokens_preserves_refresh_token_when_none() {
+    let pool = common::test_pool().await;
+    let enc_key_hex = "ab".repeat(32);
+    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+
+    let org = overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test")
+        .await
+        .unwrap();
+    let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
+        .await
+        .unwrap();
+
+    let initial_access = overslash_core::crypto::encrypt(&enc_key, b"access_v1").unwrap();
+    let initial_refresh = overslash_core::crypto::encrypt(&enc_key, b"refresh_v1").unwrap();
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
+            org_id: org.id,
+            identity_id: ident.id,
+            provider_key: "google",
+            encrypted_access_token: &initial_access,
+            encrypted_refresh_token: Some(&initial_refresh),
+            token_expires_at: Some(time::OffsetDateTime::now_utc() - time::Duration::hours(1)),
+            scopes: &[],
+            account_email: None,
+            byoc_credential_id: None,
+        })
+        .await
+        .unwrap();
+
+    // Simulate a refresh response that includes a new access_token but no
+    // new refresh_token — the common Google case.
+    let rotated_access = overslash_core::crypto::encrypt(&enc_key, b"access_v2").unwrap();
+    scope
+        .update_connection_tokens(
+            conn.id,
+            &rotated_access,
+            None,
+            Some(time::OffsetDateTime::now_utc() + time::Duration::hours(1)),
+        )
+        .await
+        .unwrap();
+
+    let reloaded = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let refresh_still_there = reloaded
+        .encrypted_refresh_token
+        .expect("refresh_token must be preserved when update passes None");
+    let decrypted_refresh =
+        overslash_core::crypto::decrypt(&enc_key, &refresh_still_there).unwrap();
+    assert_eq!(String::from_utf8(decrypted_refresh).unwrap(), "refresh_v1");
+
+    // Also verify a subsequent update with Some(new) does rotate it.
+    let rotated_refresh = overslash_core::crypto::encrypt(&enc_key, b"refresh_v2").unwrap();
+    scope
+        .update_connection_tokens(
+            conn.id,
+            &rotated_access,
+            Some(&rotated_refresh),
+            Some(time::OffsetDateTime::now_utc() + time::Duration::hours(1)),
+        )
+        .await
+        .unwrap();
+    let reloaded = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let decrypted_refresh = overslash_core::crypto::decrypt(
+        &enc_key,
+        reloaded.encrypted_refresh_token.as_ref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(decrypted_refresh).unwrap(), "refresh_v2");
 }
 
 // ============================================================================
@@ -1231,32 +1444,8 @@ async fn test_byoc_credential_crud() {
     let base = format!("http://{api_addr}");
     let (_org_id, ident_id, api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC credential
+    // Create identity-bound BYOC credential
     let created: Value = client
-        .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "provider": "github",
-            "client_id": "org_gh_client",
-            "client_secret": "org_gh_secret",
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    assert!(created["id"].is_string());
-    assert_eq!(created["provider_key"], "github");
-    assert!(created["identity_id"].is_null());
-    // Secrets must never be returned
-    assert!(created.get("client_id").is_none());
-    assert!(created.get("client_secret").is_none());
-    assert!(created.get("encrypted_client_id").is_none());
-
-    // Create identity-level BYOC credential
-    let created_ident: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .json(&json!({
@@ -1271,9 +1460,16 @@ async fn test_byoc_credential_crud() {
         .json()
         .await
         .unwrap();
-    assert_eq!(created_ident["identity_id"], ident_id.to_string());
 
-    // List — should return both
+    assert!(created["id"].is_string());
+    assert_eq!(created["provider_key"], "github");
+    assert_eq!(created["identity_id"], ident_id.to_string());
+    // Secrets must never be returned
+    assert!(created.get("client_id").is_none());
+    assert!(created.get("client_secret").is_none());
+    assert!(created.get("encrypted_client_id").is_none());
+
+    // List — should return one
     let list: Vec<Value> = client
         .get(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {api_key}"))
@@ -1283,9 +1479,9 @@ async fn test_byoc_credential_crud() {
         .json()
         .await
         .unwrap();
-    assert_eq!(list.len(), 2);
+    assert_eq!(list.len(), 1);
 
-    // Duplicate org-level should fail with 409
+    // Duplicate (same org+identity+provider) should fail with 409
     let dup_resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -1293,13 +1489,14 @@ async fn test_byoc_credential_crud() {
             "provider": "github",
             "client_id": "dup",
             "client_secret": "dup",
+            "identity_id": ident_id,
         }))
         .send()
         .await
         .unwrap();
     assert_eq!(dup_resp.status(), 409);
 
-    // Delete org-level credential
+    // Delete the credential
     let del_id = created["id"].as_str().unwrap();
     let del: Value = client
         .delete(format!("{base}/v1/byoc-credentials/{del_id}"))
@@ -1322,12 +1519,16 @@ async fn test_byoc_credential_crud() {
         .json()
         .await
         .unwrap();
-    assert_eq!(list2.len(), 1);
+    assert_eq!(list2.len(), 0);
 }
 
-// --- Test 2: Org-level BYOC credential used in OAuth callback ---
+// (Removed) test_oauth_callback_with_org_byoc_credential
+// Org-level BYOC (identity_id IS NULL) was removed in migration 028.
+// Identity-bound BYOC + OAuth callback is exercised by
+// test_oauth_callback_identity_byoc_takes_priority below.
 
 #[tokio::test]
+#[ignore = "removed: org-level BYOC concept no longer exists"]
 async fn test_oauth_callback_with_org_byoc_credential() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
@@ -1381,7 +1582,8 @@ async fn test_oauth_callback_with_org_byoc_credential() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -1405,20 +1607,7 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
     let base = format!("http://{api_addr}");
     let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC
-    client
-        .post(format!("{base}/v1/byoc-credentials"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({
-            "provider": "github",
-            "client_id": "org_client",
-            "client_secret": "org_secret",
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    // Create identity-level BYOC — should win
+    // Create identity-level BYOC
     let ident_byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -1457,7 +1646,8 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -1481,7 +1671,7 @@ async fn test_oauth_callback_pinned_byoc_credential() {
     let base = format!("http://{api_addr}");
     let (org_id, ident_id, _api_key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC for github
+    // Create identity-bound BYOC for github
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -1489,6 +1679,7 @@ async fn test_oauth_callback_pinned_byoc_credential() {
             "provider": "github",
             "client_id": "pinned_client",
             "client_secret": "pinned_secret",
+            "identity_id": ident_id,
         }))
         .send()
         .await
@@ -1518,7 +1709,8 @@ async fn test_oauth_callback_pinned_byoc_credential() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -1598,6 +1790,7 @@ async fn start_api_with_registry(
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -1618,6 +1811,10 @@ async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -1642,542 +1839,6 @@ async fn start_api_with_registry(
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())
-}
-
-#[tokio::test]
-async fn test_google_calendar_three_modes() {
-    let pool = common::test_pool().await;
-    let mock_addr = start_mock().await;
-    let mock_host = format!("http://{mock_addr}");
-
-    // Point google provider's token_endpoint at mock
-    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
-        .bind(format!("http://{mock_addr}/oauth/token"))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    // Start API with registry, override google_calendar host to mock
-    let (base, client) =
-        start_api_with_registry(pool.clone(), Some(("google_calendar", mock_host.clone()))).await;
-
-    // Bootstrap org + identity + API key
-    let (org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
-
-    // Create broad permission rules: http:** for Mode A/B, google_calendar:*:* for Mode C
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
-        .send()
-        .await
-        .unwrap();
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
-        .send()
-        .await
-        .unwrap();
-
-    // ===== MODE A: Raw HTTP with secret injection =====
-    client
-        .put(format!("{base}/v1/secrets/gcal_token"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"value": "manual-token-xyz"}))
-        .send()
-        .await
-        .unwrap();
-
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "method": "GET",
-            "url": format!("http://{mock_addr}/echo"),
-            "secrets": [{
-                "name": "gcal_token",
-                "inject_as": "header",
-                "header_name": "Authorization",
-                "prefix": "Bearer "
-            }]
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        echo["headers"]["authorization"], "Bearer manual-token-xyz",
-        "Mode A: secret should be injected as Authorization header"
-    );
-
-    // ===== MODE B: Connection-based OAuth =====
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
-    let encrypted_token =
-        overslash_core::crypto::encrypt(&enc_key, b"google-oauth-token-123").unwrap();
-    let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-
-    // Create a BYOC credential so client_credentials::resolve succeeds
-    let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
-    let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
-    let byoc = overslash_db::repos::byoc_credential::create(
-        &pool,
-        &overslash_db::repos::byoc_credential::CreateByocCredential {
-            org_id,
-            identity_id: None,
-            provider_key: "google",
-            encrypted_client_id: &encrypted_cid,
-            encrypted_client_secret: &encrypted_csec,
-        },
-    )
-    .await
-    .unwrap();
-
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
-            org_id,
-            identity_id: ident_id,
-            provider_key: "google",
-            encrypted_access_token: &encrypted_token,
-            encrypted_refresh_token: None,
-            token_expires_at: Some(future_time),
-            scopes: &[],
-            account_email: None,
-            byoc_credential_id: Some(byoc.id),
-        },
-    )
-    .await
-    .unwrap();
-
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "connection": conn.id.to_string(),
-            "method": "GET",
-            "url": format!("http://{mock_addr}/echo")
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        echo["headers"]["authorization"], "Bearer google-oauth-token-123",
-        "Mode B: OAuth token should be injected from connection"
-    );
-
-    // ===== MODE C (POST): create_event — path template + JSON body + OAuth auto-resolve =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "create_event",
-            "params": {
-                "calendarId": "primary",
-                "summary": "Team Meeting",
-                "start": {"dateTime": "2026-03-27T10:00:00Z"},
-                "end": {"dateTime": "2026-03-27T11:00:00Z"},
-                "description": "Weekly sync"
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    let uri = echo["uri"].as_str().unwrap();
-    assert!(
-        uri.contains("/calendar/v3/calendars/primary/events"),
-        "Mode C POST: URL should contain resolved path, got: {uri}"
-    );
-
-    // Verify body contains non-path params as JSON
-    let req_body: Value = serde_json::from_str(echo["body"].as_str().unwrap()).unwrap();
-    assert_eq!(req_body["summary"], "Team Meeting");
-    assert_eq!(req_body["description"], "Weekly sync");
-
-    // Verify auth was auto-resolved from the connection
-    assert_eq!(
-        echo["headers"]["authorization"], "Bearer google-oauth-token-123",
-        "Mode C: OAuth token should be auto-resolved from connection"
-    );
-
-    // ===== MODE C (GET): list_events — query param construction =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "list_events",
-            "params": {
-                "calendarId": "primary",
-                "timeMin": "2026-03-27T00:00:00Z",
-                "maxResults": 10
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    let uri = echo["uri"].as_str().unwrap();
-    assert!(
-        uri.contains("/calendar/v3/calendars/primary/events"),
-        "Mode C GET: URL should contain resolved path, got: {uri}"
-    );
-    assert!(
-        uri.contains("timeMin="),
-        "Mode C GET: query params should be appended, got: {uri}"
-    );
-    assert!(
-        uri.contains("maxResults="),
-        "Mode C GET: query params should be appended, got: {uri}"
-    );
-
-    // ===== MODE C (GET): list_calendars — no path params =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "list_calendars",
-            "params": {}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    let uri = echo["uri"].as_str().unwrap();
-    assert!(
-        uri.contains("/calendar/v3/users/me/calendarList"),
-        "Mode C GET: list_calendars path should be correct, got: {uri}"
-    );
-}
-
-// ============================================================================
-// Google Calendar — real test (requires GOOGLE_TEST_REFRESH_TOKEN, uses BYOC)
-// ============================================================================
-
-#[ignore] // Write test: creates/deletes real calendar events. Run with --ignored.
-#[tokio::test]
-async fn test_google_calendar_real_byoc() {
-    let pool = common::test_pool().await;
-    // Skip if required env vars are not set
-    let refresh_token = match std::env::var("GOOGLE_TEST_REFRESH_TOKEN") {
-        Ok(t) if !t.is_empty() => t,
-        _ => {
-            eprintln!("SKIP: GOOGLE_TEST_REFRESH_TOKEN not set");
-            return;
-        }
-    };
-    let client_id = std::env::var("OAUTH_GOOGLE_CLIENT_ID")
-        .expect("OAUTH_GOOGLE_CLIENT_ID required for real test");
-    let client_secret = std::env::var("OAUTH_GOOGLE_CLIENT_SECRET")
-        .expect("OAUTH_GOOGLE_CLIENT_SECRET required for real test");
-
-    // Start API with real service registry (no host override — hits real Google)
-    let (base, client) = start_api_with_registry(pool.clone(), None).await;
-
-    // Bootstrap org + identity + API key
-    let (org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
-
-    // Store BYOC credential via API (production path)
-    let byoc_resp: Value = client
-        .post(format!("{base}/v1/byoc-credentials"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({
-            "provider": "google",
-            "client_id": client_id,
-            "client_secret": client_secret
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let byoc_id: Uuid = byoc_resp["id"].as_str().unwrap().parse().unwrap();
-
-    // Exchange refresh token for access token via real Google token endpoint
-    let token_resp: Value = reqwest::Client::new()
-        .post("https://oauth2.googleapis.com/token")
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", &refresh_token),
-            ("client_id", &client_id),
-            ("client_secret", &client_secret),
-        ])
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    let access_token = token_resp["access_token"]
-        .as_str()
-        .expect("failed to get access_token from Google token endpoint");
-    let expires_in = token_resp["expires_in"].as_i64().unwrap_or(3600);
-
-    // Encrypt tokens and insert connection in DB
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
-    let encrypted_access =
-        overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
-    let encrypted_refresh =
-        overslash_core::crypto::encrypt(&enc_key, refresh_token.as_bytes()).unwrap();
-    let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in);
-
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
-            org_id,
-            identity_id: ident_id,
-            provider_key: "google",
-            encrypted_access_token: &encrypted_access,
-            encrypted_refresh_token: Some(&encrypted_refresh),
-            token_expires_at: Some(expires_at),
-            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
-            account_email: Some("angel.overspiral@gmail.com"),
-            byoc_credential_id: Some(byoc_id),
-        },
-    )
-    .await
-    .unwrap();
-
-    // Create broad permission rules: http:** for raw HTTP, google_calendar:*:* for Mode C
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": "http:**"}))
-        .send()
-        .await
-        .unwrap();
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
-        .send()
-        .await
-        .unwrap();
-
-    // ===== TEST 1: list_calendars (Mode C) =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "list_calendars",
-            "params": {}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let gcal_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert!(
-        gcal_body["items"].is_array(),
-        "list_calendars should return items array, got: {gcal_body}"
-    );
-    eprintln!(
-        "  list_calendars: found {} calendars",
-        gcal_body["items"].as_array().unwrap().len()
-    );
-
-    // ===== TEST 2: create_event (Mode C) =====
-    let now = time::OffsetDateTime::now_utc();
-    let start = now + time::Duration::hours(1);
-    let end = now + time::Duration::hours(2);
-    let event_summary = format!("Overslash Test - {}", now.unix_timestamp());
-
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "create_event",
-            "params": {
-                "calendarId": "primary",
-                "summary": event_summary,
-                "start": {"dateTime": start.format(&time::format_description::well_known::Rfc3339).unwrap()},
-                "end": {"dateTime": end.format(&time::format_description::well_known::Rfc3339).unwrap()},
-                "description": "Integration test event — will be deleted"
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let created: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    let event_id = created["id"]
-        .as_str()
-        .expect("created event should have an id");
-    eprintln!("  create_event: created {event_id}");
-
-    // ===== TEST 3: list_events with query params (Mode C, GET) =====
-    let time_min = now
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap();
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "list_events",
-            "params": {
-                "calendarId": "primary",
-                "timeMin": time_min,
-                "maxResults": 10,
-                "singleEvents": true,
-                "orderBy": "startTime"
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let events: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert!(
-        events["items"].is_array(),
-        "list_events should return items array"
-    );
-    let found = events["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|e| e["summary"].as_str() == Some(&event_summary));
-    assert!(found, "created event should appear in list_events");
-    eprintln!("  list_events: found test event in listing");
-
-    // ===== TEST 4: get_event (Mode C) =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "get_event",
-            "params": {
-                "calendarId": "primary",
-                "eventId": event_id
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let fetched: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(fetched["id"].as_str().unwrap(), event_id);
-    assert_eq!(fetched["summary"].as_str().unwrap(), event_summary);
-    eprintln!("  get_event: verified event {event_id}");
-
-    // ===== TEST 5: Mode A — raw HTTP with secret =====
-    // Store the access token as a secret for raw HTTP mode
-    client
-        .put(format!("{base}/v1/secrets/gcal_raw_token"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"value": access_token}))
-        .send()
-        .await
-        .unwrap();
-
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "method": "GET",
-            "url": format!(
-                "https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
-            ),
-            "secrets": [{
-                "name": "gcal_raw_token",
-                "inject_as": "header",
-                "header_name": "Authorization",
-                "prefix": "Bearer "
-            }]
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let raw_fetched: Value =
-        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(raw_fetched["id"].as_str().unwrap(), event_id);
-    eprintln!("  Mode A raw HTTP: verified event via direct URL");
-
-    // ===== TEST 6: Mode B — connection-based =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "connection": conn.id.to_string(),
-            "method": "GET",
-            "url": format!(
-                "https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
-            )
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    let conn_fetched: Value =
-        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(conn_fetched["id"].as_str().unwrap(), event_id);
-    eprintln!("  Mode B connection: verified event via OAuth connection");
-
-    // ===== CLEANUP: delete_event (Mode C) =====
-    let resp = client
-        .post(format!("{base}/v1/actions/execute"))
-        .header(auth(&key).0, auth(&key).1)
-        .json(&json!({
-            "service": "google_calendar",
-            "action": "delete_event",
-            "params": {
-                "calendarId": "primary",
-                "eventId": event_id
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
-    // Google returns 204 No Content for successful delete
-    let status_code = body["result"]["status_code"].as_u64().unwrap();
-    assert!(
-        status_code == 204 || status_code == 200,
-        "delete should return 204 or 200, got: {status_code}"
-    );
-    eprintln!("  delete_event: cleaned up test event");
-    eprintln!("  All Google Calendar real tests passed!");
 }
 
 // ============================================================================

@@ -8,7 +8,8 @@
 		sidebarCollapsed,
 		theme,
 		startNotificationPolling,
-		stopNotificationPolling
+		stopNotificationPolling,
+		hydrateUserPreferences
 	} from '$lib/stores/shell';
 	import Sidebar from '$lib/components/shell/Sidebar.svelte';
 	import TopBar from '$lib/components/shell/TopBar.svelte';
@@ -19,7 +20,9 @@
 	const standalone = $derived(
 		$page.url.pathname === '/login' ||
 			$page.url.pathname.startsWith('/approvals/') ||
-			$page.url.pathname.startsWith('/enroll/consent/')
+			$page.url.pathname.startsWith('/enroll/consent/') ||
+			$page.url.pathname.startsWith('/secrets/provide/') ||
+			$page.url.pathname.startsWith('/oauth/consent')
 	);
 	const isAdmin = $derived(data?.user?.is_org_admin === true);
 	const collapsed = $derived($sidebarCollapsed);
@@ -27,6 +30,12 @@
 	$effect(() => {
 		if (typeof document !== 'undefined') {
 			document.documentElement.dataset.theme = $theme;
+		}
+	});
+
+	$effect(() => {
+		if (data?.user) {
+			void hydrateUserPreferences();
 		}
 	});
 

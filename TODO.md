@@ -6,16 +6,7 @@ Phased roadmap. Each phase is usable independently.
 
 ## Spec–Code Misalignments
 
-Things already implemented that diverge from SPEC.md. Resolve each by updating the spec or the code.
-
-- [x] **Approval resolve field name**: resolved — `decision` renamed to `resolution`, `remember_keys` + `ttl` added to resolve endpoint (PR #30)
-- [x] **No suggested_tiers in approvals**: resolved — `derived_keys` + `suggested_tiers` with broadening levels implemented (PR #40)
-- [x] **risk vs mutating**: resolved — spec updated to use `risk: read|write|delete` enum matching code; `Risk` is now a proper Rust enum (PR #29)
-- [x] **No scope_param**: resolved — `scope_param` implemented on service actions, permission keys now use specific args (PR #34)
-- [x] **No category on templates**: resolved — removed from spec; not needed (PR #33)
-- [x] **No description interpolation**: resolved — `{param}` substitution and `[optional segments]` implemented (PR #35)
-- [x] **Template/instance split**: resolved — templates (YAML blueprints) + service instances (named, with credentials) implemented (PR #31)
-- [x] **Identity depth**: resolved — parent/child hierarchy with depth tracking, `sub_agent` kind, enrollment assigns parent (PR #32)
+All resolved via PRs #29–#40 — see Done section for detail.
 
 ### Dashboard (dashboard/ vs UI_SPEC.md)
 
@@ -28,11 +19,11 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] Types: add permission key types (`{service}:{action}:{arg}`)
 - [ ] Types: remove `approval_url` from `ExecuteResponse` (no self-auth approval URLs)
 - [ ] Login: extract from profile page to standalone `/login` page with logo, multi-IdP buttons (uses `GET /auth/providers`), redirect-back-after-auth
-- [ ] IdP config: admin settings page for managing org IdP configs (uses `/v1/org-idp-configs` CRUD API)
+- [ ] IdP config: **edit** UI for existing configs — create/delete/toggle shipped; dashboard lacks a form to update client_id/secret or flip `use_org_credentials` (backend `PUT /v1/org-idp-configs/{id}` already supports it — see TECH_DEBT.md §3)
 - [ ] Stores: remove `executionMode` (A/B/C), `connections` store; update to unified model
 
 **Medium priority:**
-- [ ] Layout: add nav items (Dashboard, Services, API Explorer, Audit Log, Org Dashboard)
+- [ ] Layout: add nav items (Agents, Services, Secrets, Audit Log; ADMIN: Users, Groups)
 - [ ] Layout: collapsible sidebar (labels+icons expanded, icons-only collapsed)
 - [ ] Layout: notification bell in top bar with badge count
 - [ ] Layout: profile avatar at bottom of sidebar (not a nav item)
@@ -43,6 +34,31 @@ Existing dashboard code predates the unified permission model and template/servi
 **Low priority:**
 - [ ] Profile: expand with API keys, secrets, remembered approvals, enrollment tokens, settings sections
 - [ ] CSS: add light mode + theme toggle (currently dark-only)
+
+### Review Corrections (2026-04-10)
+
+- [ ] Rename: "Dashboard" nav item and view to "Agents" — make it the default landing view
+- [ ] Rename: all UI references from "Identities" to "Agents"
+- [ ] Agents view: User node is tree root, immutable (no delete/rename/move). No adding User identities.
+- [ ] Create agent: remove Kind dropdown. Only agent creation allowed; parent determines hierarchy position.
+- [ ] Dark mode: increase contrast for accent hover states and badge/pill backgrounds (e.g., "inherit" pill). Target WCAG AA (4.5:1) for all badge text in dark mode.
+- [ ] Delete confirmation: replace all `window.confirm()` / browser-native dialogs with styled modal component per UI_SPEC.
+- [ ] Org Settings: fix "Cannot load org settings. Admin access required" for Dev Users. Dev Login users must have org-admin access in development mode.
+- [x] Docker: cache Rust toolchain layer in dev Dockerfile to avoid re-downloading rustup components on every `make dev` run. (PRs #97, #98)
+- [ ] (Backlog) Template Editor: build and make accessible from Services view
+- [ ] (Backlog) API Explorer: ensure accessible and functional for testing the overslash meta-service
+
+### Review Corrections (2026-04-20)
+
+Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-20.md). Each card groups related review items and has a corresponding entry on the Kanban board.
+
+- [ ] **Approval System UX Overhaul** (card `20ae2`) — canonical `OVERSLASH_DASHBOARD_URL` envvar threaded through approval URLs (currently points at `overslash.example`), inline "Allow Once" on /agents, modal/dropdown resolver with expiry and granularity pickers, hide "Bubble Up" when the current user is already the resolver
+- [ ] **Missing Dashboard Views: Audit Log + API Explorer + Notification Dropdown** (card `504a7`) — Audit Log view, API Explorer accessibility from main nav, Notification bell dropdown of notifications
+- [ ] **Services View & Data Display Fixes** (card `73d90`) — show username/email not UUID for service owners, fix `/users/{name}` 404, correct the `overslash` meta-service "Needs Setup" copy, group pills as a column on service list, add `category` field to all templates, services connectable to groups from the detail view
+- [ ] **OAuth Connections & Provider UX Fixes** (card `c2575`) — stop creating phantom Identity Provider + UUID connection when admin adds a Google OAuth Client ID, reuse connections across services sharing the same provider, show provider email / identity instead of UUIDs, support incremental scopes auth
+- [ ] **MCP Login Flow Fixes** (card `877cb`) — assignment/consent page served from dashboard (not api), default `inherit_permissions = true` for new MCP agents, reuse the existing agent on reauthentication, hide revoked MCP clients from the UI after 3s
+- [~] **UI Component Polish: Toggle Switches + Date Formatting** (card `2e268`, in progress) — design-system Toggle Switch component adopted everywhere (starting with "Inherits Permissions"), fix "Requested Invalid Date" rendering on Pending Approvals
+- [ ] Multi-org login design for Cloud Overslash (deferred — future design work)
 
 ---
 
@@ -57,9 +73,9 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] `POST /v1/actions/execute` — raw HTTP with secret injection (`http` pseudo-service)
 - [x] Permission rules (flat per-identity, no chain yet)
 - [x] Approval workflow — create, resolve (allow/deny/allow_remember), expire
-- [ ] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority)
+- [x] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority). Follow-ups: backend `deny` endpoint + audit event; wire `overslash_auth.request_secret` and `create_service_from_template` to mint requests.
 - [x] Audit trail (log every action, approval, secret access)
-- [ ] Dashboard: minimal — identity list, inline approval resolution, secret request
+- [x] Agents view: minimal — superseded by Phase 2.5 Agents redesign per Figma (PR #105)
 - [x] Webhook delivery (approval.created, approval.resolved)
 
 ## Phase 2: OAuth + Service Registry (in progress)
@@ -67,14 +83,15 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] OAuth engine (authorization URL, code exchange, token storage, auto-refresh)
 - [x] BYOC credential support (identity, org, system fallback chain)
 - [x] Connections API (initiate, list, revoke) — to be refactored into service instances
-- [ ] `on_behalf_of` for agent-initiated service creation at user level
-- [x] Global service template registry — YAML loader for shipped definitions
-- [ ] Ship top 20 service templates — 7 shipped: Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X
-- [x] Template/service split — templates (YAML blueprints) + services (named instances with credentials) (PR #31)
-- [ ] Three-tier template registry — global (YAML, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting)
+- [x] `on_behalf_of` for agent-initiated service creation at user level (PR #90)
+- [x] Global service template registry — OpenAPI 3.1 loader for shipped definitions
+- [ ] Ship top 20 service templates — 9 shipped: Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X (plus the `overslash` platform namespace)
+- [x] Template/service split — templates (OpenAPI blueprints) + services (named instances with credentials) (PR #31)
+- [x] Three-tier template registry — global (OpenAPI, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting) (PR #100)
 - [x] Service instances — create from template, bind credentials, assign to groups (PR #31)
-- [ ] Template validation endpoint (`POST /v1/templates/validate`)
-- [ ] OpenAPI import (`POST /v1/templates/import`) — parse OpenAPI 3.x, generate template + actions
+- [x] Template validation endpoint (`POST /v1/templates/validate`) — OpenAPI 3.1 parse + alias normalization + struct-level lint in `overslash-core::template_validation`. WASM feature gate in place for client-side reuse.
+- [x] OpenAPI-native template format — OpenAPI 3.1 with `x-overslash-*` vendor extensions (risk, scope_param, resolve, provider, default_secret_name, category, key, platform_actions) and unprefixed aliases that canonicalize on save.
+- [ ] Bulk OpenAPI import UX — upload/paste a vendor's public spec and auto-generate a template with sensible `x-overslash-*` overlay defaults.
 - [ ] User-to-org template sharing (propose, approve/deny)
 - [x] Service + action execution (registry-resolved, auth auto-resolve)
 - [x] Human-readable action descriptions from registry metadata (description interpolation, PR #35)
@@ -83,8 +100,8 @@ Existing dashboard code predates the unified permission model and template/servi
 
 ### Dashboard (SvelteKit + TypeScript)
 
-- [ ] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
-- [ ] Org/User/Agent hierarchy view — tree visualization with inline identity management
+- [x] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
+- [ ] Agents view (default landing) — tree visualization with inline identity management
 - [ ] Services view — template catalog, service instances, create/manage/connect
 - [x] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
 - [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
@@ -100,22 +117,23 @@ Existing dashboard code predates the unified permission model and template/servi
 - [x] `inherit_permissions` — dynamic resolution (live pointer, not copy)
 - [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
 - [x] Sub-agent idle cleanup with two-phase archive (backend) — idle archive, retention purge, restore endpoint, per-org config
-- [ ] Dashboard: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
+- [ ] Agents view: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
 - [x] Permission chain walk (ancestor chain, gap detection)
 - [x] Approval bubbling (current_resolver tracking, explicit bubble_up, auto-bubble timer, rule placement on closest non-inherit ancestor)
 - [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
 - [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
-- [ ] Org-level ACL — role-based access control for who can manage resources within an org
-- [ ] Dashboard: identity hierarchy tree view, agent permission management
+- [x] Org-level ACL — role-based access control via group membership on the `overslash` meta service, plus an `is_org_admin` fast-path on User identities. Naked org-level identities/API keys removed (migration 028).
+- [x] Agents view: identity hierarchy tree view (PR #105)
+- [ ] Agents view: per-agent permission management UI (rules, scopes, "Allow & Remember" review/edit)
 
 ## Phase 4: Polish + Meta Tools
 
 - [ ] Meta tool definitions (overslash_search, overslash_execute, overslash_auth)
-- [ ] Semantic search for service/action discovery
+- [x] Semantic search for service/action discovery — `GET /v1/search` with keyword + fuzzy + local pgvector embeddings (PR pending)
 - [x] Rate limiting per identity — two-tier model (User bucket + identity caps), Redis/Valkey or in-memory
 - [ ] Org billing / usage metering
 - [x] Human-readable audit descriptions — interpolated descriptions for Mode C, method+URL for Mode A, identity name resolution in audit responses
-- [ ] Dashboard: org settings, webhook management, bulk permission operations
+- [ ] Org settings view: org settings, webhook management, bulk permission operations
 - [ ] Global service registry contribution workflow (community PRs)
 - [ ] Documentation site
 
@@ -134,10 +152,23 @@ Existing dashboard code predates the unified permission model and template/servi
 - Phase 1 core backend (all API routes, permissions, approvals, audit, webhooks, expiry loop)
 - Phase 2 OAuth engine with BYOC credential resolution (identity → org → system fallback)
 - Service+action execution (registry-resolved with automatic auth)
-- Service registry with 7 YAML definitions (Eventbrite, GitHub, Google Calendar, Resend, Slack, Stripe, X)
-- E2E integration tests: Eventbrite (OAuth), Google Calendar (OAuth), Resend (token-based), X.com (OAuth+PKCE)
-- CI pipeline with coverage reporting and real OAuth provider tests
+- Service registry: 9 OpenAPI 3.1 templates shipped — Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X — plus the `overslash` platform namespace. Original YAML format migrated to OpenAPI 3.1 with `x-overslash-*` vendor extensions (PR #128) and refactored with parse-don't-validate (PR #118).
+- E2E integration tests: Eventbrite, GitHub (PR #113), Google Calendar (PRs #111, #98), Google Drive (PR #107), Gmail (PR #115), Resend, X.com (OAuth+PKCE, PR #114)
+- CI pipeline with coverage reporting, sharded tests (PRs #116, #119), skip-coverage on draft PRs
 - All spec–code misalignments resolved (PRs #29–#40): risk enum, identity hierarchy, template/instance split, approval resolve fields, scope_param, description interpolation, suggested tiers, category removed from spec
 - sqlx compile-time query checking enforced across all repos (PR #39)
 - Multi-provider OIDC authentication: generic provider routes, OIDC Discovery, GitHub social login, per-org IdP config, env var precedence, email domain matching, profile sync
+- `on_behalf_of` for agent-initiated operations (PR #90) — agents create secrets/connections at owner-user level so siblings share them
+- Three-tier OAuth credential cascade (SPEC §7): user BYOC + org-level OAuth App Credentials + system env (PRs #117, #122, #124, #131), with shared resolution for IdP configs
+- Per-service OAuth scopes declared end-to-end (PR #127)
+- User-level services visible to owner and their agents (PR #130)
+- Three-tier template registry — global / org / user with `allow_user_templates` gate (PR #100)
+- Template validation endpoint `POST /v1/templates/validate` (PR #108)
+- Sub-agent idle cleanup with two-phase archive + restore endpoint + per-org config
+- Phase 3: Groups (Layer 1 ceiling, `auto_approve_reads`, `allow_raw_http`), org-level ACL via groups on the `overslash` meta-service + `is_org_admin` fast-path
+- Phase 4: Two-tier rate limiting (User bucket + identity caps), Redis/Valkey or in-memory, standard headers + 429
+- CLI + MCP surface restructure: single `overslash` binary with `serve` / `web` / `mcp` / `mcp login` subcommands (PR #121); MCP over Streamable HTTP + OAuth 2.1 AS endpoints (PR #123); user-BYOC in Create Service + Template Editor provider dropdown (PR #124)
+- Standalone Provide Secret page (PR #89) + User Signed Mode (PR #109, migration 031)
+- Templates dashboard UI (PR #112), Agents view redesign per Figma (PR #105), self-hosted Inter/Roboto Mono (PR #129), zero-warning vite builds enforced (PR #125)
+- 2026-04-10 review corrections applied (doc: PR #96, dashboard: PR #99, Docker Rust toolchain cache: PRs #97, #98)
 - Code quality: CTE cycle protection (PR #38), identity_response From impl (PR #37), org ownership check helper

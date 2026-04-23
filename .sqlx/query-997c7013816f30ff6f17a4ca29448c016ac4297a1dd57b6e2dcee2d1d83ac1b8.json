@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE identities SET name = $3, updated_at = now()\n             WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "997c7013816f30ff6f17a4ca29448c016ac4297a1dd57b6e2dcee2d1d83ac1b8"
+}

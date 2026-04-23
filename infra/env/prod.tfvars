@@ -2,7 +2,9 @@ project_id = "overslash"
 region     = "europe-west1"
 env        = "prod"
 
-domain = "api.overslash.com"
+domain           = "api.overslash.com"
+dashboard_origin = "https://app.overslash.com"
+dashboard_url    = "https://app.overslash.com"
 
 # Cloud SQL — minimum viable for pre-GA
 cloud_sql_tier         = "db-f1-micro"
@@ -23,10 +25,10 @@ github_owner  = "overfolder"
 github_repo   = "overslash"
 github_branch = "^master$"
 
-# Cost saving — shut down DB on Spanish nights
-enable_infra_scheduler     = true
+# Prod runs 24/7 — scheduler disabled.
+enable_infra_scheduler     = false
 infra_scheduler_stop_cron  = "0 23 * * *"
-infra_scheduler_start_cron = "0 7 * * 1-5"
+infra_scheduler_start_cron = "0 7 * * *"
 
 # Optional
 enable_valkey = false

@@ -1,5 +1,26 @@
-//! X.com (Twitter) OAuth integration tests — callback, BYOC, token refresh, PKCE.
-//! Includes a real API test (env-gated) that posts a tweet and deletes it.
+//! X.com (Twitter) OAuth integration tests + real-API E2E.
+//!
+//! **Non-ignored tests** (run in default CI):
+//!   OAuth callback, BYOC credential binding, token refresh, PKCE validation.
+//!
+//! **Real-API E2E** (`#[ignore]`): exercises all 4 actions in `services/x.yaml` via
+//! Mode C (service+action) against the live X API v2. Run with:
+//!   cargo test --test oauth_x -- --ignored --nocapture
+//!
+//! Required env vars for the real-API test:
+//!   X_TEST_REFRESH_TOKEN       — OAuth 2.0 refresh token for a test X account
+//!   OAUTH_X_CLIENT_ID          — OAuth 2.0 Client ID from your X app
+//!   OAUTH_X_CLIENT_SECRET      — Client Secret
+//!
+//! How to obtain credentials:
+//!   1. Register an OAuth 2.0 app at https://developer.x.com/ (type "Web App",
+//!      confidential client) with a callback URL.
+//!   2. Authorize with scopes: tweet.read tweet.write users.read offline.access
+//!   3. Capture the refresh token from the dashboard OAuth flow or X's auth URL.
+//!   4. Use a dedicated test account — the test posts a real (short-lived) tweet.
+//!
+//! Note: X rotates refresh tokens on every exchange. The test prints the new token
+//! to stderr — update your env for the next run.
 // Test setup requires dynamic SQL for provider endpoint overrides and DB seeding.
 #![allow(clippy::disallowed_methods)]
 
@@ -80,7 +101,7 @@ async fn test_oauth_x_callback_with_byoc() {
     let (org_id, ident_id, _api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // Create org-level BYOC credential for X
+    // Create identity-bound BYOC credential for X
     let byoc: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header("Authorization", format!("Bearer {admin_key}"))
@@ -88,6 +109,7 @@ async fn test_oauth_x_callback_with_byoc() {
             "provider": "x",
             "client_id": "x_byoc_client_id",
             "client_secret": "x_byoc_client_secret",
+            "identity_id": ident_id,
         }))
         .send()
         .await
@@ -118,7 +140,8 @@ async fn test_oauth_x_callback_with_byoc() {
         .unwrap()
         .parse()
         .unwrap();
-    let conn = overslash_db::repos::connection::get_by_id(&pool, conn_id)
+    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .get_connection(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -154,9 +177,9 @@ async fn test_oauth_x_token_refresh() {
     let enc_access = overslash_core::crypto::encrypt(&enc_key, b"old_x_access_token").unwrap();
     let enc_refresh = overslash_core::crypto::encrypt(&enc_key, b"old_x_refresh_token").unwrap();
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let scope = overslash_db::scopes::OrgScope::new(org.id, pool.clone());
+    let conn = scope
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id: org.id,
             identity_id: ident.id,
             provider_key: "x",
@@ -166,15 +189,14 @@ async fn test_oauth_x_token_refresh() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
     // Resolve should trigger a refresh
     let http_client = reqwest::Client::new();
     let new_token = overslash_api::services::oauth::resolve_access_token(
-        &pool,
+        &scope,
         &http_client,
         &enc_key,
         &conn,
@@ -187,10 +209,7 @@ async fn test_oauth_x_token_refresh() {
     assert_eq!(new_token, "mock_refreshed_access_token");
 
     // Verify DB was updated
-    let updated = overslash_db::repos::connection::get_by_id(&pool, conn.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = scope.get_connection(conn.id).await.unwrap().unwrap();
     assert!(updated.token_expires_at.unwrap() > time::OffsetDateTime::now_utc());
 }
 
@@ -248,11 +267,11 @@ async fn test_oauth_x_pkce_in_auth_url() {
 // Real X.com API test (requires X_TEST_REFRESH_TOKEN + OAUTH_X_* env vars)
 // ============================================================================
 
-#[ignore] // Write test: posts/deletes real tweet on X.com. Run with --ignored.
+#[ignore] // E2E test: hits real X API (all 4 actions via Mode C). Run with --ignored.
 #[tokio::test]
-async fn test_x_real_post_and_delete() {
+async fn test_x_real_e2e() {
     let pool = common::test_pool().await;
-    // Skip if required env vars are not set
+    // --- Guard: skip if credentials not set ---
     let refresh_token = match std::env::var("X_TEST_REFRESH_TOKEN") {
         Ok(t) if !t.is_empty() => t,
         _ => {
@@ -265,11 +284,18 @@ async fn test_x_real_post_and_delete() {
     let client_secret = std::env::var("OAUTH_X_CLIENT_SECRET")
         .expect("OAUTH_X_CLIENT_SECRET required for real test");
 
-    // Start API with real service registry
+    // Enable reading OAuth secrets from env vars
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", &client_id);
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", &client_secret);
+    }
+
+    // Start API with real service registry (no host override — hits real X)
     let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
-    // Store BYOC credential
+    // Store BYOC credential via API
     let byoc_resp: Value = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
@@ -322,9 +348,8 @@ async fn test_x_real_post_and_delete() {
         new_refresh.map(|rt| overslash_core::crypto::encrypt(&enc_key, rt.as_bytes()).unwrap());
     let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(expires_in);
 
-    let conn = overslash_db::repos::connection::create(
-        &pool,
-        &overslash_db::repos::connection::CreateConnection {
+    let _conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id: ident_id,
             provider_key: "x",
@@ -334,12 +359,11 @@ async fn test_x_real_post_and_delete() {
             scopes: &[],
             account_email: None,
             byoc_credential_id: Some(byoc_id),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
-    // Create broad permission rule
+    // Create permission rules: http:** for raw HTTP, x:*:* for Mode C
     client
         .post(format!("{base}/v1/permissions"))
         .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
@@ -347,15 +371,23 @@ async fn test_x_real_post_and_delete() {
         .send()
         .await
         .unwrap();
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "x:*:*"}))
+        .send()
+        .await
+        .unwrap();
 
-    // ===== TEST 1: get_me (Mode B) =====
+    // ===== TEST 1: get_me (Mode C) =====
+    eprintln!("  [1/4] get_me ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
-            "connection": conn.id.to_string(),
-            "method": "GET",
-            "url": "https://api.x.com/2/users/me"
+            "service": "x",
+            "action": "get_me",
+            "params": {}
         }))
         .send()
         .await
@@ -366,24 +398,29 @@ async fn test_x_real_post_and_delete() {
     let me: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(
         me["data"]["username"].is_string(),
-        "get_me should return username"
+        "get_me should return username, got: {me}"
     );
     let username = me["data"]["username"].as_str().unwrap();
-    eprintln!("  get_me: @{username}");
+    let user_id = me["data"]["id"]
+        .as_str()
+        .expect("get_me should return user id");
+    eprintln!("  get_me: @{username} (id={user_id})");
 
-    // ===== TEST 2: post_tweet (Mode B) — reply to @grok =====
+    // ===== TEST 2: post_tweet (Mode C) =====
+    eprintln!("  [2/4] post_tweet ...");
     let tweet_text = format!(
-        "@grok overslash integration test {} — will be deleted",
+        "@grok overslash e2e {} — will be deleted",
         time::OffsetDateTime::now_utc().unix_timestamp()
     );
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
-            "connection": conn.id.to_string(),
-            "method": "POST",
-            "url": "https://api.x.com/2/tweets",
-            "body": serde_json::to_string(&json!({"text": tweet_text})).unwrap()
+            "service": "x",
+            "action": "post_tweet",
+            "params": {
+                "text": tweet_text
+            }
         }))
         .send()
         .await
@@ -397,14 +434,17 @@ async fn test_x_real_post_and_delete() {
         .expect("post_tweet should return tweet id");
     eprintln!("  post_tweet: created {tweet_id}");
 
-    // ===== TEST 3: delete_tweet (Mode B) =====
+    // ===== TEST 3: delete_tweet (Mode C) — path param substitution =====
+    eprintln!("  [3/4] delete_tweet ...");
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
-            "connection": conn.id.to_string(),
-            "method": "DELETE",
-            "url": format!("https://api.x.com/2/tweets/{tweet_id}")
+            "service": "x",
+            "action": "delete_tweet",
+            "params": {
+                "tweet_id": tweet_id
+            }
         }))
         .send()
         .await
@@ -415,7 +455,34 @@ async fn test_x_real_post_and_delete() {
     let del_resp: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(del_resp["data"]["deleted"], true, "tweet should be deleted");
     eprintln!("  delete_tweet: deleted {tweet_id}");
-    eprintln!("  All X.com real tests passed!");
+
+    // ===== TEST 4: get_user_tweets (Mode C) — path param + query string =====
+    eprintln!("  [4/4] get_user_tweets ...");
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "x",
+            "action": "get_user_tweets",
+            "params": {
+                "user_id": user_id,
+                "max_results": 5
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "executed");
+    let tweets_resp: Value =
+        serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    // data may be absent if the test account has no tweets — that's fine,
+    // the point is that the request succeeded and the URL was built correctly.
+    let tweet_count = tweets_resp["data"].as_array().map(|a| a.len()).unwrap_or(0);
+    eprintln!("  get_user_tweets: {tweet_count} tweets for user {user_id}");
+
+    eprintln!("  All X.com E2E tests passed!");
 }
 
 // --- Test 5: Non-PKCE provider (github) auth URL has no PKCE params ---
@@ -457,8 +524,8 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
     );
 
     // State verifier segment should be "_"
-    let segments: Vec<&str> = state.splitn(5, ':').collect();
-    assert_eq!(segments.len(), 5);
+    let segments: Vec<&str> = state.splitn(6, ':').collect();
+    assert_eq!(segments.len(), 6);
     assert_eq!(
         segments[4], "_",
         "github should have '_' as verifier segment"

@@ -22,7 +22,7 @@ export const load: PageLoad = async ({ url, fetch }) => {
 	} catch {}
 	return {
 		providers,
-		returnTo: url.searchParams.get('return_to') ?? '/',
+		returnTo: url.searchParams.get('return_to') ?? '/agents',
 		reason: url.searchParams.get('reason')
 	};
 };

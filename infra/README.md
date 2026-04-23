@@ -59,10 +59,33 @@ docker push $IMAGE_URL
 
 ### 4. Set OAuth Secrets
 
+Overslash uses **two separate Google OAuth clients** — one for user sign-in,
+one for connecting Google services on behalf of users. Register them in two
+separate GCP projects so the sensitive-scope verification applies only to the
+services client, leaving sign-in unaffected by verification delays.
+
+**Login client** (Sign-in with Google, `openid email profile` — no verification needed):
+
+Authorized redirect URI: `https://<your-host>/auth/callback/google`
+
 ```bash
-echo -n "your-client-id" | gcloud secrets versions add overslash-prod-oauth-client-id --data-file=-
-echo -n "your-client-secret" | gcloud secrets versions add overslash-prod-oauth-client-secret --data-file=-
+echo -n "your-login-client-id"     | gcloud secrets versions add overslash-prod-oauth-client-id     --data-file=-
+echo -n "your-login-client-secret" | gcloud secrets versions add overslash-prod-oauth-client-secret --data-file=-
 ```
+
+**Services client** (Calendar/Drive/Gmail, sensitive scopes — requires Google verification):
+
+Authorized redirect URI: `https://<your-host>/v1/oauth/callback`
+
+```bash
+echo -n "your-services-client-id"     | gcloud secrets versions add overslash-prod-google-services-client-id     --data-file=-
+echo -n "your-services-client-secret" | gcloud secrets versions add overslash-prod-google-services-client-secret --data-file=-
+```
+
+Cloud Run reads the services client as `OAUTH_GOOGLE_CLIENT_ID/_SECRET` via
+the env-var tier of the OAuth cascade (`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`
+is set by Terraform). Any org can override with its own client by calling
+`POST /v1/org/oauth-credentials/google` from the dashboard.
 
 ## Makefile Targets
 
@@ -84,7 +107,7 @@ echo -n "your-client-secret" | gcloud secrets versions add overslash-prod-oauth-
 | `networking` | VPC + private service access (only when `use_private_vpc = true`) |
 | `iam` | Least-privilege SAs for Cloud Run, Cloud Build, Cloud Scheduler |
 | `artifact-registry` | Docker image repository with cleanup policy |
-| `secret-manager` | DB password, encryption key, OAuth secrets |
+| `secret-manager` | DB password, encryption key, login + services OAuth secrets |
 | `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode) |
 | `cloud-run` | Overslash API with health checks and secret injection |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
@@ -103,7 +126,7 @@ echo -n "your-client-secret" | gcloud secrets versions add overslash-prod-oauth-
 |----------|---------|
 | Cloud SQL db-f1-micro + 10GB | ~$9 |
 | Cloud Run (scale to zero) | ~$0 |
-| Secret Manager (4 secrets) | ~$0.06 |
+| Secret Manager (6 secrets) | ~$0.09 |
 | Artifact Registry | ~$0.10/GB |
 | Cloud Scheduler (2 jobs) | ~$0 |
 | **Total** | **~$9-10/month** |

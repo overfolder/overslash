@@ -1,17 +1,25 @@
+use std::collections::HashMap;
+
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, patch, put},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::service_instance::{self, CreateServiceInstance, UpdateServiceInstance};
+use overslash_db::repos::group::ServiceGroupRow;
+use overslash_db::repos::service_instance::{
+    CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
+};
+use overslash_db::scopes::OrgScope;
 
+use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, WriteAcl},
+    services::group_ceiling,
 };
 
 pub fn router() -> Router<AppState> {
@@ -24,6 +32,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/services/{name}/actions", get(list_service_actions))
         .route("/v1/services/{id}/manage", put(update_service))
         .route("/v1/services/{id}/status", patch(update_service_status))
+        .route("/v1/services/{id}/groups", get(list_service_groups))
 }
 
 // -- Response types --
@@ -35,12 +44,42 @@ struct ServiceInstanceSummary {
     template_source: String,
     template_key: String,
     status: String,
+    is_system: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_identity_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_name: Option<String>,
+    /// Groups that grant access to this service instance. Empty when the
+    /// service is not assigned to any group.
+    #[serde(default)]
+    groups: Vec<ServiceGroupRef>,
+    /// Derived from the bound connection's granted scopes vs. the template's
+    /// per-action `required_scopes`. See [`CredentialsStatus`] for the values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credentials_status: Option<CredentialsStatus>,
+}
+
+#[derive(Serialize, Clone)]
+struct ServiceGroupRef {
+    grant_id: Uuid,
+    group_id: Uuid,
+    group_name: String,
+    access_level: String,
+    auto_approve_reads: bool,
+}
+
+impl From<ServiceGroupRow> for ServiceGroupRef {
+    fn from(r: ServiceGroupRow) -> Self {
+        Self {
+            grant_id: r.grant_id,
+            group_id: r.group_id,
+            group_name: r.group_name,
+            access_level: r.access_level,
+            auto_approve_reads: r.auto_approve_reads,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -62,6 +101,30 @@ struct ServiceInstanceDetail {
     is_system: bool,
     created_at: String,
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credentials_status: Option<CredentialsStatus>,
+}
+
+/// Derived credential-health state for an OAuth-backed service instance.
+///
+/// Computed by walking the template's actions and comparing each action's
+/// `required_scopes` against the bound connection's granted scopes:
+///
+/// - `Ok` — at least one action is fully covered by the connection's scopes
+///   (or the template declares no `required_scopes`).
+/// - `PartiallyDegraded` — some actions fully covered, some not. Individual
+///   calls will 403 with `missing_scopes` but the service itself is still
+///   usable for the actions it covers.
+/// - `NeedsReconnect` — every action declares `required_scopes` that the
+///   connection does not satisfy. No call will succeed without a scope
+///   upgrade — this is the "new state" surfaced in the dashboard so the
+///   user isn't left guessing why everything 403s.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CredentialsStatus {
+    Ok,
+    PartiallyDegraded,
+    NeedsReconnect,
 }
 
 // -- Request types --
@@ -78,6 +141,11 @@ struct CreateServiceRequest {
     status: String,
     /// If true, create as user-level (requires identity-bound key). Default: true when key is identity-bound.
     user_level: Option<bool>,
+    /// Create the service instance owned by this user identity instead of the
+    /// calling agent. Caller must be the user itself or an agent whose owner
+    /// is this user. Overrides `user_level` when both are set.
+    #[serde(default)]
+    on_behalf_of: Option<Uuid>,
 }
 
 fn default_status() -> String {
@@ -102,78 +170,205 @@ struct UpdateStatusRequest {
 async fn list_services(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
 ) -> Result<Json<Vec<ServiceInstanceSummary>>> {
     // Org-level API keys (no identity) bypass group filtering — they see everything.
     // Otherwise resolve the ceiling user (self for users, owner for agents) and apply
     // group-based visibility.
-    let visible_ids = if let Some(identity_id) = auth.identity_id {
-        let ceiling_user_id =
-            crate::services::group_ceiling::resolve_ceiling_user_id(&state.db, identity_id).await?;
+    let (ceiling_user_id, visible_ids) = if let Some(identity_id) = auth.identity_id {
+        let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
 
         // System groups (Everyone, Admins) don't count for visibility filtering.
         // Only user-created groups trigger filtering, matching group_ceiling::load_ceiling.
-        let groups =
-            overslash_db::repos::group::list_groups_for_identity(&state.db, ceiling_user_id)
-                .await?;
+        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
         let has_user_groups = groups.iter().any(|g| !g.is_system);
-        if !has_user_groups {
+        let visible_ids = if !has_user_groups {
             None // no user groups = permissive (backward compat)
         } else {
-            Some(
-                overslash_db::repos::group::get_visible_service_ids(&state.db, ceiling_user_id)
-                    .await?,
-            )
-        }
+            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
+        };
+        (Some(ceiling_user_id), visible_ids)
     } else {
-        None // org-level key — permissive
+        (None, None) // org-level key — permissive
     };
 
-    let rows = service_instance::list_available_with_groups(
-        &state.db,
-        auth.org_id,
-        auth.identity_id,
-        visible_ids.as_deref(),
-    )
-    .await?;
+    let rows = scope
+        .list_available_service_instances_with_groups(
+            auth.identity_id,
+            ceiling_user_id,
+            visible_ids.as_deref(),
+        )
+        .await?;
 
-    let services = rows.into_iter().map(row_to_summary).collect();
+    // Batch-load the group assignments for the returned service ids so the UI
+    // can render a Groups column without an N+1 follow-up.
+    let service_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let grants = scope.list_groups_for_services(&service_ids).await?;
+    let mut groups_by_service: HashMap<Uuid, Vec<ServiceGroupRef>> = HashMap::new();
+    for g in grants {
+        groups_by_service
+            .entry(g.service_instance_id)
+            .or_default()
+            .push(g.into());
+    }
+
+    // Pre-load connections and templates in bulk so we don't issue an
+    // N-per-row burst of lookups while computing credentials_status. The
+    // dashboard's services list page calls this on every visit.
+    let connection_ids: Vec<Uuid> = rows.iter().filter_map(|r| r.connection_id).collect();
+    let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
+
+    // Template lookup must use the *service's owner* identity, not the
+    // caller's — user-tier templates are scoped to the creator, so using
+    // `auth.identity_id` would miss templates owned by another user whose
+    // service the caller can see via group membership. Cache by
+    // (owner_identity_id, template_key) so we still fold duplicates.
+    let mut templates: std::collections::HashMap<
+        (Option<Uuid>, String),
+        overslash_core::types::ServiceDefinition,
+    > = std::collections::HashMap::new();
+    for row in &rows {
+        let key = (row.owner_identity_id, row.template_key.clone());
+        if templates.contains_key(&key) {
+            continue;
+        }
+        if let Ok(tpl) = crate::routes::templates::resolve_template_definition(
+            &state,
+            row.org_id,
+            row.owner_identity_id,
+            &row.template_key,
+        )
+        .await
+        {
+            templates.insert(key, tpl);
+        }
+    }
+
+    let services = rows
+        .into_iter()
+        .map(|row| {
+            let tpl_key = (row.owner_identity_id, row.template_key.clone());
+            let credentials_status = row
+                .connection_id
+                .and_then(|cid| connections_by_id.get(&cid))
+                .zip(templates.get(&tpl_key))
+                .and_then(|(conn, tpl)| classify_scopes(&conn.scopes, tpl));
+            let groups = groups_by_service.remove(&row.id).unwrap_or_default();
+            let mut summary = row_to_summary(row, groups);
+            summary.credentials_status = credentials_status;
+            summary
+        })
+        .collect();
     Ok(Json(services))
 }
 
+/// List the groups that grant access to a single service instance.
+///
+/// Read access matches the sibling `GET /v1/groups/{id}/grants` endpoint,
+/// which the project already treats as org-readable — any authenticated
+/// caller can enumerate which groups grant what. Mutations (`add_grant`,
+/// `remove_grant`) remain admin-only.
+async fn list_service_groups(
+    _: AuthContext,
+    scope: OrgScope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ServiceGroupRef>>> {
+    // Confirm the service exists in this org before returning the grant list.
+    // An id from another tenant returns None here and we surface 404.
+    let instance = scope
+        .get_service_instance(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    let grants = scope.list_groups_for_service(instance.id).await?;
+    Ok(Json(grants.into_iter().map(Into::into).collect()))
+}
+
+#[derive(Deserialize, Default)]
+struct GetServiceQuery {
+    /// When true, also resolve draft and archived instances. Used by the
+    /// dashboard's detail view; execution callers leave this off so the
+    /// active-only contract is preserved.
+    #[serde(default)]
+    include_inactive: bool,
+}
+
 /// Get a service instance by name using user-shadows-org resolution.
+///
+/// By default only resolves active instances (execution semantics). Pass
+/// `?include_inactive=true` to also resolve draft and archived rows.
 async fn get_service(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     Path(name): Path<String>,
+    Query(q): Query<GetServiceQuery>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    let row = service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
-    Ok(Json(row_to_detail(row)))
+    // Accept either a UUID or a name. Callers that already have the id should
+    // pass it to avoid the user-shadows-org name resolution semantics.
+    let row = if let Ok(uuid) = name.parse::<Uuid>() {
+        scope.get_service_instance(uuid).await?
+    } else {
+        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(&scope, auth.identity_id).await?;
+        if q.include_inactive {
+            scope
+                .resolve_service_instance_by_name_any_status(auth.identity_id, ceiling, &name)
+                .await?
+        } else {
+            scope
+                .resolve_service_instance_by_name(auth.identity_id, ceiling, &name)
+                .await?
+        }
+    }
+    .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    // Template resolution uses the service's owner — not the caller — so
+    // user-tier templates owned by another user (reachable via groups) still
+    // resolve from their correct tier.
+    let credentials_status =
+        compute_credentials_status(&state, &scope, &row, row.owner_identity_id).await;
+    let mut detail = row_to_detail(row);
+    detail.credentials_status = credentials_status;
+    Ok(Json(detail))
 }
 
 /// Create a new service instance from a template.
 async fn create_service(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     Json(req): Json<CreateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
     let auth = acl;
     let name = req.name.as_deref().unwrap_or(&req.template_key);
 
-    // Determine if user-level or org-level
-    let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
-    let owner_identity_id = if user_level {
-        Some(auth.identity_id.ok_or_else(|| {
-            AppError::BadRequest("user-level services require an identity-bound API key".into())
-        })?)
+    // Determine the owning identity:
+    //   - on_behalf_of: validate against the caller's owner chain, use the user
+    //   - else: fall back to the legacy `user_level` flag (defaults true when
+    //     the key is identity-bound)
+    let owner_identity_id = if req.on_behalf_of.is_some() {
+        group_ceiling::resolve_owner_identity(&scope, auth.identity_id, req.on_behalf_of).await?
     } else {
-        None
+        let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
+        if user_level {
+            Some(auth.identity_id.ok_or_else(|| {
+                AppError::BadRequest("user-level services require an identity-bound API key".into())
+            })?)
+        } else {
+            None
+        }
     };
 
-    // Resolve the template to determine its source tier
-    let (template_source, template_id) =
-        resolve_template_source(&state, auth.org_id, auth.identity_id, &req.template_key).await?;
+    // Resolve the template to determine its source tier. User-tier templates
+    // are scoped to the creator, so when `on_behalf_of` redirects ownership
+    // to a user the caller is acting for, the lookup must use the owner's
+    // identity — not the caller agent's.
+    let template_lookup_identity = owner_identity_id.or(auth.identity_id);
+    let (template_source, template_id) = resolve_template_source(
+        &state,
+        auth.org_id,
+        template_lookup_identity,
+        &req.template_key,
+    )
+    .await?;
 
     // Validate status
     if !["draft", "active", "archived"].contains(&req.status.as_str()) {
@@ -181,6 +376,87 @@ async fn create_service(
             "invalid status '{}'; must be draft, active, or archived",
             req.status
         )));
+    }
+
+    // If the caller pinned a specific connection, assert it actually belongs
+    // to this service's owner and targets the same OAuth provider the
+    // template is built for. Without this check, a stale/wrong id silently
+    // passes through to `service_instances.connection_id` and then surfaces
+    // much later as an opaque execution failure ("action didn't auth").
+    if let Some(connection_id) = req.connection_id {
+        // Connections are always identity-owned (schema: `identity_id NOT
+        // NULL`). An org-level service has no identity to compare against,
+        // so we reject a pinned `connection_id` up front — otherwise a user
+        // setting `user_level: false` could attach their personal connection
+        // to a shared org service, creating a lifecycle + security mismatch.
+        let expected_owner = owner_identity_id.ok_or_else(|| {
+            AppError::BadRequest(
+                "org-level services cannot pin a connection_id (connections are identity-owned)"
+                    .into(),
+            )
+        })?;
+
+        let connection = scope
+            .get_connection(connection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("connection '{connection_id}' not found")))?;
+
+        if connection.identity_id != expected_owner {
+            return Err(AppError::Forbidden(
+                "connection belongs to another identity".into(),
+            ));
+        }
+
+        let template_def = crate::routes::templates::resolve_template_definition(
+            &state,
+            auth.org_id,
+            template_lookup_identity,
+            &req.template_key,
+        )
+        .await?;
+        let expected_provider = template_def.auth.iter().find_map(|a| match a {
+            overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
+            _ => None,
+        });
+        match expected_provider {
+            Some(tpl_provider) if tpl_provider != connection.provider_key => {
+                return Err(AppError::BadRequest(format!(
+                    "connection_provider_mismatch: template '{}' uses '{}' but connection is for '{}'",
+                    req.template_key, tpl_provider, connection.provider_key
+                )));
+            }
+            None => {
+                return Err(AppError::BadRequest(format!(
+                    "connection_provider_mismatch: template '{}' does not use OAuth",
+                    req.template_key
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    // `secret_name` is only meaningful when the template declares ApiKey auth.
+    // OAuth-only templates must not carry one — accepting it would create a
+    // dead value the resolver ignores, yet the dashboard would surface the
+    // instance as "connected" based on `secret_name` alone.
+    if req.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
+        let template_def = crate::routes::templates::resolve_template_definition(
+            &state,
+            auth.org_id,
+            template_lookup_identity,
+            &req.template_key,
+        )
+        .await?;
+        let has_api_key = template_def
+            .auth
+            .iter()
+            .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
+        if !has_api_key {
+            return Err(AppError::BadRequest(format!(
+                "template '{}' does not use api key auth",
+                req.template_key
+            )));
+        }
     }
 
     let input = CreateServiceInstance {
@@ -195,34 +471,65 @@ async fn create_service(
         status: &req.status,
     };
 
-    let row = service_instance::create(&state.db, &input)
-        .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint().is_some() {
-                    return AppError::Conflict(format!("service '{name}' already exists"));
-                }
+    let row = scope.create_service_instance(input).await.map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e {
+            if db_err.constraint().is_some() {
+                return AppError::Conflict(format!("service '{name}' already exists"));
             }
-            AppError::Database(e)
-        })?;
+        }
+        AppError::Database(e)
+    })?;
 
-    Ok(Json(row_to_detail(row)))
+    // Match get/list semantics: newly-created services also carry the
+    // derived `credentials_status` so clients don't need a second round-trip
+    // to discover a bound connection is missing required scopes.
+    let credentials_status =
+        compute_credentials_status(&state, &scope, &row, row.owner_identity_id).await;
+    let mut detail = row_to_detail(row);
+    detail.credentials_status = credentials_status;
+    Ok(Json(detail))
 }
 
 /// Update a service instance by id.
 async fn update_service(
     State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    AdminAcl(auth): AdminAcl,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    // Multi-tenancy guard — refuse to mutate rows belonging to other orgs.
-    let existing = service_instance::get_by_id(&state.db, id)
+    // Org-scoped lookup — a foreign id returns None at the SQL boundary.
+    let existing = scope
+        .get_service_instance(id)
         .await?
-        .filter(|r| r.org_id == acl.org_id)
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
+    }
+
+    // Block setting a non-empty `secret_name` on templates without ApiKey auth
+    // (clearing it via Some(None) or Some("") is always allowed).
+    if let Some(Some(ref new_secret)) = req.secret_name {
+        if !new_secret.is_empty() {
+            let template_lookup_identity = existing.owner_identity_id.or(auth.identity_id);
+            let template_def = crate::routes::templates::resolve_template_definition(
+                &state,
+                auth.org_id,
+                template_lookup_identity,
+                &existing.template_key,
+            )
+            .await?;
+            let has_api_key = template_def
+                .auth
+                .iter()
+                .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
+            if !has_api_key {
+                return Err(AppError::BadRequest(format!(
+                    "template '{}' does not use api key auth",
+                    existing.template_key
+                )));
+            }
+        }
     }
 
     let input = UpdateServiceInstance {
@@ -231,7 +538,8 @@ async fn update_service(
         secret_name: req.secret_name.as_ref().map(|o| o.as_deref()),
     };
 
-    let row = service_instance::update(&state.db, id, &input)
+    let row = scope
+        .update_service_instance(id, &input)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     Ok(Json(row_to_detail(row)))
@@ -239,15 +547,14 @@ async fn update_service(
 
 /// Update service instance lifecycle status.
 async fn update_service_status(
-    State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    _: AdminAcl,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateStatusRequest>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    // Multi-tenancy guard.
-    let existing = service_instance::get_by_id(&state.db, id)
+    let existing = scope
+        .get_service_instance(id)
         .await?
-        .filter(|r| r.org_id == acl.org_id)
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     if existing.is_system {
         return Err(AppError::BadRequest("cannot modify system service".into()));
@@ -260,7 +567,8 @@ async fn update_service_status(
         )));
     }
 
-    let row = service_instance::update_status(&state.db, id, &req.status)
+    let row = scope
+        .update_service_instance_status(id, &req.status)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
     Ok(Json(row_to_detail(row)))
@@ -268,21 +576,25 @@ async fn update_service_status(
 
 /// Delete a service instance.
 async fn delete_service(
-    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    // Resolve by name to get the id, then delete.
-    // Parse as UUID first (for /v1/services/{id} style), otherwise resolve by name.
+    // Resolve by name (or id) to get the row; both lookups are org-scoped
+    // at the SQL boundary, so a foreign id returns None → 404.
+    // Destructive op: intentionally do NOT reach up to the ceiling user for
+    // name resolution. An agent with AdminAcl must not be able to target its
+    // owner user's services via the shadowing lookup; callers that really
+    // mean to delete a parent-owned service can address it by UUID.
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
-        // Multi-tenancy guard: scope UUID lookup to caller's org
-        service_instance::get_by_id(&state.db, uuid)
+        scope
+            .get_service_instance(uuid)
             .await?
-            .filter(|r| r.org_id == auth.org_id)
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     } else {
-        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+        scope
+            .resolve_service_instance_by_name_any_status(auth.identity_id, None, &name)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?
     };
@@ -292,7 +604,7 @@ async fn delete_service(
         return Err(AppError::BadRequest("cannot delete system service".into()));
     }
 
-    let deleted = service_instance::delete(&state.db, instance.id).await?;
+    let deleted = scope.delete_service_instance(instance.id).await?;
     if !deleted {
         return Err(AppError::NotFound("service instance not found".into()));
     }
@@ -303,13 +615,20 @@ async fn delete_service(
 async fn list_service_actions(
     State(state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
-    // Resolve the instance to get the template key
-    let instance =
-        service_instance::resolve_by_name(&state.db, auth.org_id, auth.identity_id, &name)
+    // Accept either a UUID or a name (any status — dashboard inspection of
+    // draft/archived must also work).
+    let instance = if let Ok(uuid) = name.parse::<Uuid>() {
+        scope.get_service_instance(uuid).await?
+    } else {
+        let ceiling = group_ceiling::resolve_ceiling_user_id_opt(&scope, auth.identity_id).await?;
+        scope
+            .resolve_service_instance_by_name_any_status(auth.identity_id, ceiling, &name)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
+    }
+    .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
     super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
         .await
@@ -318,20 +637,23 @@ async fn list_service_actions(
 
 // -- Helpers --
 
-fn row_to_summary(row: service_instance::ServiceInstanceRow) -> ServiceInstanceSummary {
+fn row_to_summary(row: ServiceInstanceRow, groups: Vec<ServiceGroupRef>) -> ServiceInstanceSummary {
     ServiceInstanceSummary {
         id: row.id,
         name: row.name,
         template_source: row.template_source,
         template_key: row.template_key,
         status: row.status,
+        is_system: row.is_system,
         owner_identity_id: row.owner_identity_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        groups,
+        credentials_status: None,
     }
 }
 
-fn row_to_detail(row: service_instance::ServiceInstanceRow) -> ServiceInstanceDetail {
+fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
     ServiceInstanceDetail {
         id: row.id,
         org_id: row.org_id,
@@ -344,15 +666,85 @@ fn row_to_detail(row: service_instance::ServiceInstanceRow) -> ServiceInstanceDe
         secret_name: row.secret_name,
         status: row.status,
         is_system: row.is_system,
-        created_at: row
-            .created_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
-        updated_at: row
-            .updated_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
+        created_at: fmt_time(row.created_at),
+        updated_at: fmt_time(row.updated_at),
+        credentials_status: None,
     }
+}
+
+/// Compute the credential-health state for a service instance by comparing
+/// each action's `required_scopes` against the bound connection's granted
+/// scopes. Returns `None` when the service has no connection to evaluate —
+/// the existing "needs setup" badge covers that case. See
+/// [`CredentialsStatus`] for the meaning of each variant.
+/// `template_owner` is the identity whose template tier is consulted — for
+/// user-tier templates this MUST be the service's `owner_identity_id`, not
+/// the caller, so a caller reaching another user's service via groups can
+/// still resolve a user-tier template owned by someone else.
+async fn compute_credentials_status(
+    state: &AppState,
+    scope: &OrgScope,
+    row: &ServiceInstanceRow,
+    template_owner: Option<Uuid>,
+) -> Option<CredentialsStatus> {
+    let conn_id = row.connection_id?;
+    let connection = scope.get_connection(conn_id).await.ok().flatten()?;
+    let template = crate::routes::templates::resolve_template_definition(
+        state,
+        row.org_id,
+        template_owner,
+        &row.template_key,
+    )
+    .await
+    .ok()?;
+    classify_scopes(&connection.scopes, &template)
+}
+
+/// Pure classifier — no DB, no state. Compares a connection's granted scopes
+/// against a template's per-action `required_scopes` and returns `None` when
+/// the template has no OAuth auth scheme (nothing to classify), otherwise the
+/// health variant. Extracted out of [`compute_credentials_status`] so the
+/// bulk path in [`list_services`] can reuse it against cached lookups and so
+/// it can be unit-tested without spinning up an API.
+fn classify_scopes(
+    granted_scopes: &[String],
+    template: &overslash_core::types::ServiceDefinition,
+) -> Option<CredentialsStatus> {
+    if !template
+        .auth
+        .iter()
+        .any(|a| matches!(a, overslash_core::types::ServiceAuth::OAuth { .. }))
+    {
+        return None;
+    }
+    let granted: std::collections::HashSet<&str> =
+        granted_scopes.iter().map(String::as_str).collect();
+
+    let mut any_ok = false;
+    let mut any_gap = false;
+    for action in template.actions.values() {
+        if action.required_scopes.is_empty() {
+            // Actions without declared required_scopes inherit the service-
+            // level superset — they always "work" from the gate's standpoint.
+            any_ok = true;
+            continue;
+        }
+        let covered = action
+            .required_scopes
+            .iter()
+            .all(|s| granted.contains(s.as_str()));
+        if covered {
+            any_ok = true;
+        } else {
+            any_gap = true;
+        }
+    }
+
+    Some(match (any_ok, any_gap) {
+        (false, true) => CredentialsStatus::NeedsReconnect,
+        (true, true) => CredentialsStatus::PartiallyDegraded,
+        _ => CredentialsStatus::Ok,
+    })
 }
 
 /// Determine the template source tier and optional DB template id for a given key.
@@ -386,4 +778,106 @@ async fn resolve_template_source(
     Err(AppError::NotFound(format!(
         "template '{key}' not found in any tier"
     )))
+}
+
+#[cfg(test)]
+mod classify_scopes_tests {
+    use super::*;
+    use overslash_core::types::{
+        Risk, ServiceAction, ServiceAuth, ServiceDefinition, TokenInjection,
+    };
+    use std::collections::HashMap;
+
+    fn oauth_template(actions: Vec<(&str, Vec<&str>)>) -> ServiceDefinition {
+        let mut map = HashMap::new();
+        for (key, required) in actions {
+            map.insert(
+                key.to_string(),
+                ServiceAction {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    description: String::new(),
+                    risk: Risk::Read,
+                    response_type: None,
+                    params: HashMap::new(),
+                    scope_param: None,
+                    required_scopes: required.iter().map(|s| s.to_string()).collect(),
+                },
+            );
+        }
+        ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            auth: vec![ServiceAuth::OAuth {
+                provider: "google".into(),
+                scopes: vec![],
+                token_injection: TokenInjection {
+                    inject_as: "header".into(),
+                    header_name: Some("Authorization".into()),
+                    query_param: None,
+                    prefix: Some("Bearer ".into()),
+                },
+            }],
+            actions: map,
+        }
+    }
+
+    fn scopes(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn none_when_template_has_no_oauth() {
+        let tpl = ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            auth: vec![],
+            actions: HashMap::new(),
+        };
+        assert!(classify_scopes(&scopes(&["x"]), &tpl).is_none());
+    }
+
+    #[test]
+    fn ok_when_connection_covers_every_action() {
+        let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
+        assert!(matches!(
+            classify_scopes(&scopes(&["s1", "s2"]), &tpl),
+            Some(CredentialsStatus::Ok)
+        ));
+    }
+
+    #[test]
+    fn ok_when_template_declares_no_required_scopes() {
+        // Matches the pre-PR behavior for templates that haven't adopted
+        // `required_scopes` yet — their actions count as "ok" by default.
+        let tpl = oauth_template(vec![("a", vec![]), ("b", vec![])]);
+        assert!(matches!(
+            classify_scopes(&scopes(&[]), &tpl),
+            Some(CredentialsStatus::Ok)
+        ));
+    }
+
+    #[test]
+    fn partially_degraded_when_some_actions_covered() {
+        let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
+        assert!(matches!(
+            classify_scopes(&scopes(&["s1"]), &tpl),
+            Some(CredentialsStatus::PartiallyDegraded)
+        ));
+    }
+
+    #[test]
+    fn needs_reconnect_when_no_action_covered() {
+        let tpl = oauth_template(vec![("a", vec!["s1"]), ("b", vec!["s2"])]);
+        assert!(matches!(
+            classify_scopes(&scopes(&["other"]), &tpl),
+            Some(CredentialsStatus::NeedsReconnect)
+        ));
+    }
 }

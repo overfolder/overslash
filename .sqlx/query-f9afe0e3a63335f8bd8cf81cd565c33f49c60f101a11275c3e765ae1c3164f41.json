@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE connections SET encrypted_access_token = $3,\n         encrypted_refresh_token = COALESCE($4, encrypted_refresh_token),\n         token_expires_at = $5, scopes = $6,\n         account_email = COALESCE($7, account_email), updated_at = now()\n         WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Bytea",
+        "Timestamptz",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9afe0e3a63335f8bd8cf81cd565c33f49c60f101a11275c3e765ae1c3164f41"
+}

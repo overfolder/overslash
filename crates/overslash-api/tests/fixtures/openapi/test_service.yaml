@@ -1,0 +1,20 @@
+openapi: 3.1.0
+info:
+  title: Test Service
+  key: test-svc
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: svc_token
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read

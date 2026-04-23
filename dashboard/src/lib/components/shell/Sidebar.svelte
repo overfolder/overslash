@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { sidebarCollapsed } from '$lib/stores/shell';
-	import { NAV_ITEMS, ADMIN_NAV_ITEMS } from './nav-items';
+	import { NAV_ITEMS, ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM } from './nav-items';
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
 	import ProfileAvatar from './ProfileAvatar.svelte';
@@ -36,12 +36,20 @@
 	</nav>
 
 	<div class="footer">
-		{#if user}
-			<ProfileAvatar name={user.name ?? ''} email={user.email ?? ''} showName={!collapsed} />
+		{#if isAdmin}
+			<NavItem
+				href={SETTINGS_NAV_ITEM.href}
+				label={SETTINGS_NAV_ITEM.label}
+				icon={SETTINGS_NAV_ITEM.icon}
+				{collapsed}
+			/>
 		{/if}
 		<button class="collapse-btn" type="button" onclick={toggle} aria-label="Toggle sidebar">
 			{collapsed ? '»' : '«'}
 		</button>
+		{#if user}
+			<ProfileAvatar name={user.name ?? ''} email={user.email ?? ''} showName={!collapsed} />
+		{/if}
 	</div>
 </aside>
 

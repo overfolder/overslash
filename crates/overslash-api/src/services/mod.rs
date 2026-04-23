@@ -1,11 +1,15 @@
 pub mod client_credentials;
+pub mod embedding_backfill;
 pub mod group_ceiling;
 pub mod http_executor;
 pub mod identity_path;
 pub mod jwt;
 pub mod oauth;
+pub mod oauth_as;
 pub mod oidc_discovery;
 pub mod param_resolver;
 pub mod permission_chain;
 pub mod rate_limit;
+pub mod response_filter;
+pub mod session;
 pub mod webhook_dispatcher;

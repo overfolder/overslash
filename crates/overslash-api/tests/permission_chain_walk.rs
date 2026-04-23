@@ -162,6 +162,102 @@ async fn agent_no_rules_gap_resolver_is_user() {
     assert_eq!(appr["identity_id"], json!(agent_id));
     assert_eq!(appr["requesting_identity_id"], json!(agent_id));
     assert_eq!(appr["current_resolver_identity_id"], json!(user_id));
+
+    // Regression: `created_at` and `expires_at` must be RFC3339 so the
+    // dashboard's Date.parse() can format them. Previously the approvals
+    // route used OffsetDateTime::to_string() which produced a space-separated
+    // layout that JS renders as "Invalid Date".
+    for field in ["created_at", "expires_at"] {
+        let s = appr[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} missing"));
+        time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|e| panic!("{field} not RFC3339: {s:?} ({e})"));
+    }
+
+    // Small payloads are surfaced whole: `action_detail` is a pretty-printed
+    // JSON string containing the original request, not truncated, and the
+    // reported size matches the string length.
+    let detail = appr["action_detail"]
+        .as_str()
+        .expect("action_detail should be a string for stored payloads");
+    assert!(
+        detail.contains("\"method\""),
+        "action_detail missing method"
+    );
+    assert!(detail.contains("\"url\""), "action_detail missing url");
+    assert!(detail.contains("\"body\""), "action_detail missing body");
+    assert_eq!(appr["action_detail_truncated"], json!(false));
+    assert_eq!(
+        appr["action_detail_size_bytes"].as_u64().unwrap() as usize,
+        detail.len(),
+        "action_detail_size_bytes should equal the serialized string length when not truncated"
+    );
+}
+
+// ── action_detail is truncated on a UTF-8 boundary at 100 KB ─────────
+
+#[tokio::test]
+async fn action_detail_truncated_at_100kb_on_char_boundary() {
+    let pool = common::test_pool().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool).await;
+
+    let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
+    let agent_id = create_identity(&base, &org_key, "bot", "agent", Some(user_id)).await;
+    let agent_key = create_api_key(&base, &org_key, org_id, agent_id, "agent-key").await;
+
+    // Build a body well above 100 KB but below the ~2 MB Axum inbound cap.
+    // Use a 4-byte multibyte glyph repeated so truncation that sliced
+    // mid-character would corrupt the output; we verify via UTF-8 validity.
+    let large_body: String = "🌵".repeat(40_000); // 40_000 × 4 bytes = 160_000 bytes
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/actions/execute"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo"),
+            "headers": {"Content-Type": "text/plain"},
+            "body": large_body,
+            "secrets": [{"name": "test_token", "inject_as": "header", "header_name": "X-Token"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    let approval_id = body["approval_id"].as_str().unwrap().to_string();
+
+    let appr: Value = reqwest::Client::new()
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(appr["action_detail_truncated"], json!(true));
+    let full_size = appr["action_detail_size_bytes"].as_u64().unwrap() as usize;
+    assert!(
+        full_size > 100 * 1024,
+        "expected full payload > 100 KB, got {full_size}"
+    );
+
+    let detail = appr["action_detail"].as_str().expect("action_detail");
+    assert!(
+        detail.len() <= 100 * 1024,
+        "truncated payload exceeds cap: {} bytes",
+        detail.len()
+    );
+    // UTF-8 safety: serde deserialization into `String` already fails if the
+    // truncated bytes aren't valid UTF-8, but assert the char boundary
+    // explicitly to make the intent of this regression clear.
+    assert!(
+        std::str::from_utf8(detail.as_bytes()).is_ok(),
+        "truncation split a multibyte character"
+    );
 }
 
 // ── Test 2: spec example -- service-b request goes to Chief ─────────
@@ -185,7 +281,7 @@ async fn spec_example_service_b_routes_to_chief() {
     )
     .await;
     let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, researcher_id, true)
         .await
         .unwrap();
 
@@ -247,7 +343,7 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
     )
     .await;
     let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, researcher_id, true)
         .await
         .unwrap();
 
@@ -281,15 +377,16 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
 
     // The new rule should be on Marketing (Researcher's closest non-inherit
     // ancestor), not on Researcher.
-    let marketing_rules =
-        overslash_db::repos::permission_rule::list_by_identity(&pool, marketing_id)
-            .await
-            .unwrap();
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+    let marketing_rules = scope
+        .list_permission_rules_for_identity(marketing_id)
+        .await
+        .unwrap();
     assert!(!marketing_rules.is_empty(), "expected rule on marketing");
-    let researcher_rules =
-        overslash_db::repos::permission_rule::list_by_identity(&pool, researcher_id)
-            .await
-            .unwrap();
+    let researcher_rules = scope
+        .list_permission_rules_for_identity(researcher_id)
+        .await
+        .unwrap();
     assert!(
         researcher_rules.is_empty(),
         "no rule should be placed on researcher"
@@ -320,7 +417,7 @@ async fn explicit_bubble_up_advances_resolver() {
     )
     .await;
     let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, researcher_id, true)
         .await
         .unwrap();
 
@@ -375,21 +472,19 @@ async fn auto_bubble_advances_resolver() {
     // Force-create a pending approval at chief and push its resolver_assigned_at
     // into the past so process_auto_bubble picks it up.
     let token = format!("tok_{}", Uuid::new_v4());
-    let approval = overslash_db::repos::approval::create(
-        &pool,
-        &overslash_db::repos::approval::CreateApproval {
-            org_id,
-            identity_id: researcher_id,
-            current_resolver_identity_id: chief_id,
-            action_summary: "test",
-            action_detail: None,
-            permission_keys: &["http:GET:example.com/x".to_string()],
-            token: &token,
-            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-        },
-    )
-    .await
-    .unwrap();
+    let test_scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
+    let approval = test_scope
+        .create_approval(
+            researcher_id,
+            chief_id,
+            "test",
+            None,
+            &["http:GET:example.com/x".to_string()],
+            &token,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .await
+        .unwrap();
 
     sqlx::query!(
         "UPDATE approvals SET resolver_assigned_at = now() - interval '10 seconds' WHERE id = $1",
@@ -399,15 +494,13 @@ async fn auto_bubble_advances_resolver() {
     .await
     .unwrap();
 
-    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(&pool)
+    let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
+    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(&system)
         .await
         .unwrap();
     assert!(bubbled >= 1);
 
-    let updated = overslash_db::repos::approval::get_by_id(&pool, approval.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = test_scope.get_approval(approval.id).await.unwrap().unwrap();
     assert_eq!(updated.current_resolver_identity_id, user_id);
 }
 
@@ -422,7 +515,7 @@ async fn deny_rule_in_chain_short_circuits() {
     let agent_id = create_identity(&base, &org_key, "agent", "agent", Some(user_id)).await;
     let sub_id = create_identity(&base, &org_key, "sub", "sub_agent", Some(agent_id)).await;
     let sub_key = create_api_key(&base, &org_key, org_id, sub_id, "sk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, sub_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, sub_id, true)
         .await
         .unwrap();
 
@@ -490,7 +583,7 @@ async fn deny_rule_above_gap_short_circuits() {
     )
     .await;
     let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, researcher_id, true)
         .await
         .unwrap();
 
@@ -569,7 +662,7 @@ async fn force_user_resolver_when_auto_bubble_zero() {
     )
     .await;
     let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, researcher_id, true)
         .await
         .unwrap();
 
@@ -632,7 +725,7 @@ async fn current_resolver_identity_key_can_resolve() {
     )
     .await;
     let researcher_key = create_api_key(&base, &org_key, org_id, researcher_id, "rk").await;
-    overslash_db::repos::identity::set_inherit_permissions(&pool, researcher_id, true)
+    overslash_db::repos::identity::set_inherit_permissions(&pool, org_id, researcher_id, true)
         .await
         .unwrap();
 
@@ -764,25 +857,24 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
 
     // Insert a pending approval owned by researcher with chief as resolver.
     let token = format!("tok_{}", Uuid::new_v4());
-    let approval = overslash_db::repos::approval::create(
-        &pool,
-        &overslash_db::repos::approval::CreateApproval {
-            org_id,
-            identity_id: researcher_id,
-            current_resolver_identity_id: chief_id,
-            action_summary: "test",
-            action_detail: None,
-            permission_keys: &["http:GET:example.com/x".to_string()],
-            token: &token,
-            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-        },
-    )
-    .await
-    .unwrap();
+    let test_scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
+    let approval = test_scope
+        .create_approval(
+            researcher_id,
+            chief_id,
+            "test",
+            None,
+            &["http:GET:example.com/x".to_string()],
+            &token,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .await
+        .unwrap();
 
     // 1) Stale resolver passed to update_resolver → no row updated.
     let stale_id = Uuid::new_v4();
-    let res = overslash_db::repos::approval::update_resolver(&pool, approval.id, user_id, stale_id)
+    let res = test_scope
+        .update_approval_resolver(approval.id, user_id, stale_id)
         .await
         .unwrap();
     assert!(
@@ -791,7 +883,8 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
     );
 
     // Sanity: matching expected_resolver works.
-    let ok = overslash_db::repos::approval::update_resolver(&pool, approval.id, user_id, chief_id)
+    let ok = test_scope
+        .update_approval_resolver(approval.id, user_id, chief_id)
         .await
         .unwrap();
     assert!(
@@ -800,32 +893,20 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
     );
 
     // 2) Resolver is now `user`. Caller with stale `chief` → resolve refused.
-    let res = overslash_db::repos::approval::resolve(
-        &pool,
-        approval.id,
-        "allowed",
-        "test",
-        false,
-        chief_id,
-    )
-    .await
-    .unwrap();
+    let res = test_scope
+        .resolve_approval(approval.id, "allowed", "test", false, chief_id)
+        .await
+        .unwrap();
     assert!(
         res.is_none(),
         "resolve should reject stale expected_resolver"
     );
 
     // Matching resolver works.
-    let row = overslash_db::repos::approval::resolve(
-        &pool,
-        approval.id,
-        "allowed",
-        "test",
-        false,
-        user_id,
-    )
-    .await
-    .unwrap();
+    let row = test_scope
+        .resolve_approval(approval.id, "allowed", "test", false, user_id)
+        .await
+        .unwrap();
     assert!(
         row.is_some(),
         "resolve should accept matching expected_resolver"
@@ -858,21 +939,18 @@ async fn requester_cannot_resolve_own_approval_orphan() {
 
     // Manually create an approval where requester == current_resolver.
     let token = format!("tok_{}", Uuid::new_v4());
-    let approval = overslash_db::repos::approval::create(
-        &pool,
-        &overslash_db::repos::approval::CreateApproval {
-            org_id,
-            identity_id: orphan_id,
-            current_resolver_identity_id: orphan_id,
-            action_summary: "self-resolve attempt",
-            action_detail: None,
-            permission_keys: &["http:GET:example.com/x".to_string()],
-            token: &token,
-            expires_at: time::OffsetDateTime::now_utc() + time::Duration::hours(1),
-        },
-    )
-    .await
-    .unwrap();
+    let approval = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+        .create_approval(
+            orphan_id,
+            orphan_id,
+            "self-resolve attempt",
+            None,
+            &["http:GET:example.com/x".to_string()],
+            &token,
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        )
+        .await
+        .unwrap();
 
     // Orphan's own identity-bound key tries to allow it → 403, even though
     // is_self_or_ancestor(orphan, orphan) is technically true.
@@ -894,4 +972,89 @@ async fn requester_cannot_resolve_own_approval_orphan() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 403);
+}
+
+// ── Test: cross-tenant isolation of the permission-rules SQL boundary ─
+//
+// Two orgs each have a user+agent and a permissive rule on their agent.
+// An `OrgScope` bound to org A must not see org B's rules, even if it is
+// asked about org B's identity id — the SQL `WHERE org_id = $1` clause is
+// the load-bearing invariant here.
+#[tokio::test]
+async fn cross_tenant_walk_cannot_see_other_org_rules() {
+    let pool = common::test_pool().await;
+    let (base, org_key_a, org_id_a, mock_addr) = bootstrap(pool.clone()).await;
+
+    // Bootstrap a second org on the same API instance.
+    let client = reqwest::Client::new();
+    let org_b: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "OrgB", "slug": format!("chain-b-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id_b: Uuid = org_b["id"].as_str().unwrap().parse().unwrap();
+    let org_key_b: String = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id_b, "name": "b-admin"}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Agents in both orgs (each under its own user).
+    let user_a = create_identity(&base, &org_key_a, "ua", "user", None).await;
+    let agent_a = create_identity(&base, &org_key_a, "aa", "agent", Some(user_a)).await;
+    let user_b = create_identity(&base, &org_key_b, "ub", "user", None).await;
+    let agent_b = create_identity(&base, &org_key_b, "ab", "agent", Some(user_b)).await;
+
+    // Org B's agent has a permissive rule covering the mock host.
+    add_rule(
+        &base,
+        &org_key_b,
+        agent_b,
+        &format!("http:**:{mock_addr}/**"),
+        "allow",
+    )
+    .await;
+
+    // Org A's scope must not see org B's rules, even when passed org B's
+    // identity id directly.
+    let scope_a = overslash_db::OrgScope::new(org_id_a, pool.clone());
+    let leaked = scope_a
+        .list_permission_rules_for_identity(agent_b)
+        .await
+        .unwrap();
+    assert!(
+        leaked.is_empty(),
+        "OrgScope(org_a) must not return rules owned by org_b (got {} rows)",
+        leaked.len()
+    );
+
+    // Sanity: org B's scope does see its own rule.
+    let scope_b = overslash_db::OrgScope::new(org_id_b, pool.clone());
+    let own = scope_b
+        .list_permission_rules_for_identity(agent_b)
+        .await
+        .unwrap();
+    assert_eq!(own.len(), 1, "org_b should still see its own rule");
+
+    // Same for the batch variant — org A cannot hydrate a rule by passing
+    // org B's identity id in a list.
+    let batch = scope_a
+        .list_permission_rules_for_identities(&[agent_a, agent_b])
+        .await
+        .unwrap();
+    assert!(
+        batch.iter().all(|r| r.org_id == org_id_a),
+        "batch lookup leaked rows from another org"
+    );
 }

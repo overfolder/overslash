@@ -3,6 +3,7 @@
 
 mod common;
 
+use rand::RngExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -326,7 +327,8 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         .unwrap();
 
     // Set an org-wide default
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 250, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 250, 60)
         .await
         .unwrap();
 
@@ -347,6 +349,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -418,17 +421,10 @@ async fn test_resolve_identity_cap_returns_some_when_set() {
         .await
         .unwrap();
 
-    overslash_db::repos::rate_limit::upsert(
-        &pool,
-        org_id,
-        "identity_cap",
-        Some(identity_id),
-        None,
-        7,
-        60,
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("identity_cap", Some(identity_id), None, 7, 60)
+        .await
+        .unwrap();
 
     let cache = RateLimitConfigCache::new(Duration::from_secs(30));
     let resolved = cache
@@ -504,18 +500,20 @@ async fn test_get_most_permissive_for_groups_picks_highest_throughput() {
 
     // g1: 200 / 3600s = 0.055/s
     // g2: 100 / 60s   = 1.667/s   ← higher throughput, should win
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "group", None, Some(g1), 200, 3600)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("group", None, Some(g1), 200, 3600)
         .await
         .unwrap();
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "group", None, Some(g2), 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("group", None, Some(g2), 100, 60)
         .await
         .unwrap();
 
-    let row =
-        overslash_db::repos::rate_limit::get_most_permissive_for_groups(&pool, org_id, &[g1, g2])
-            .await
-            .unwrap()
-            .expect("should find a group limit");
+    let row = overslash_db::OrgScope::new(org_id, pool.clone())
+        .most_permissive_group_rate_limit(&[g1, g2])
+        .await
+        .unwrap()
+        .expect("should find a group limit");
 
     assert_eq!(row.group_id, Some(g2));
     assert_eq!(row.max_requests, 100);
@@ -549,10 +547,12 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         .unwrap();
 
     // Org default + user override
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 100, 60)
         .await
         .unwrap();
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 500, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 500, 60)
         .await
         .unwrap();
 
@@ -572,6 +572,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -612,6 +613,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -627,6 +629,10 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         rate_limit_cache: Arc::new(
             overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     }
 }
 
@@ -654,8 +660,6 @@ async fn spawn_middleware_app(state: overslash_api::AppState) -> SocketAddr {
 /// Create an org + user identity + user-bound API key directly in the DB.
 /// Returns (org_id, user_id, raw_api_key).
 async fn make_org_user_key(pool: &PgPool) -> (Uuid, Uuid, String) {
-    use rand::Rng;
-
     let org_id = Uuid::new_v4();
     sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
         .bind(org_id)
@@ -787,7 +791,8 @@ async fn test_middleware_returns_429_when_user_bucket_exhausted() {
     let (org_id, user_id, raw_key) = make_org_user_key(&pool).await;
 
     // Set a tiny user budget: 2 requests per minute
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 2, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 2, 60)
         .await
         .unwrap();
 
@@ -843,17 +848,10 @@ async fn test_middleware_identity_cap_kicks_in_before_user_bucket() {
     let (org_id, user_id, raw_key) = make_org_user_key(&pool).await;
 
     // User bucket: 1000/min (generous), identity cap: 1/min (tight)
-    overslash_db::repos::rate_limit::upsert(
-        &pool,
-        org_id,
-        "identity_cap",
-        Some(user_id),
-        None,
-        1,
-        60,
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("identity_cap", Some(user_id), None, 1, 60)
+        .await
+        .unwrap();
 
     let state = make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
@@ -999,7 +997,8 @@ async fn test_cache_invalidation_user_budget() {
         .await
         .unwrap();
 
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 100, 60)
         .await
         .unwrap();
 
@@ -1019,6 +1018,7 @@ async fn test_cache_invalidation_user_budget() {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -1033,7 +1033,8 @@ async fn test_cache_invalidation_user_budget() {
     assert_eq!(r1.max_requests, 100);
 
     // Update the limit in DB
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "user", Some(user_id), None, 555, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("user", Some(user_id), None, 555, 60)
         .await
         .unwrap();
 
@@ -1087,7 +1088,8 @@ async fn test_cache_invalidation_identity_cap() {
     );
 
     // Set a cap
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "identity_cap", Some(id), None, 7, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("identity_cap", Some(id), None, 7, 60)
         .await
         .unwrap();
 
@@ -1133,7 +1135,8 @@ async fn test_cache_invalidation_org_flushes_all() {
         .await
         .unwrap();
 
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 100, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 100, 60)
         .await
         .unwrap();
 
@@ -1153,6 +1156,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -1166,7 +1170,8 @@ async fn test_cache_invalidation_org_flushes_all() {
     assert_eq!(r1.max_requests, 100);
 
     // Update the org default
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 999, 60)
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .upsert_rate_limit("org", None, None, 999, 60)
         .await
         .unwrap();
 
@@ -1184,92 +1189,7 @@ async fn test_cache_invalidation_org_flushes_all() {
     assert_eq!(r3.max_requests, 999);
 }
 
-/// Create an org + an org-level (unbound) API key. Returns (org_id, raw_api_key).
-async fn make_org_unbound_key(pool: &PgPool) -> (Uuid, String) {
-    use rand::Rng;
-
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("test-org")
-        .bind(format!("test-{}", Uuid::new_v4()))
-        .execute(pool)
-        .await
-        .unwrap();
-
-    let suffix: String = (0..32)
-        .map(|_| {
-            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            chars[rand::rng().random_range(0..chars.len())] as char
-        })
-        .collect();
-    let raw_key = format!("osk_{suffix}");
-    let prefix = raw_key[..12].to_string();
-
-    use argon2::{
-        Argon2,
-        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default()
-        .hash_password(raw_key.as_bytes(), &salt)
-        .unwrap()
-        .to_string();
-
-    sqlx::query(
-        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
-         VALUES ($1, NULL, $2, $3, $4, ARRAY[]::text[])",
-    )
-    .bind(org_id)
-    .bind("org-admin")
-    .bind(&hash)
-    .bind(&prefix)
-    .execute(pool)
-    .await
-    .unwrap();
-
-    (org_id, raw_key)
-}
-
-#[tokio::test]
-async fn test_middleware_org_unbound_key_uses_org_bucket() {
-    let pool = common::test_pool().await;
-    let (org_id, raw_key) = make_org_unbound_key(&pool).await;
-
-    // Tight org default: 2 req / 60s
-    overslash_db::repos::rate_limit::upsert(&pool, org_id, "org", None, None, 2, 60)
-        .await
-        .unwrap();
-
-    let state = make_app_state(pool).await;
-    let addr = spawn_middleware_app(state).await;
-    let client = reqwest::Client::new();
-
-    // First two should pass, third should be rate-limited.
-    // This proves org-level keys do NOT bypass rate limiting.
-    for i in 0..2 {
-        let resp = client
-            .get(format!("http://{addr}/echo"))
-            .header("authorization", format!("Bearer {raw_key}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200, "request {i} should succeed");
-        assert_eq!(
-            resp.headers()
-                .get("x-ratelimit-limit")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "2"
-        );
-    }
-
-    let resp = client
-        .get(format!("http://{addr}/echo"))
-        .header("authorization", format!("Bearer {raw_key}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 429, "org-level key should be rate-limited");
-}
+// (Removed) make_org_unbound_key + test_middleware_org_unbound_key_uses_org_bucket
+// Migration 028 enforces api_keys.identity_id NOT NULL: a "naked org key" can
+// no longer exist, so the scenario this test guarded against (an org-unbound
+// key being charged to the org-default rate-limit bucket) is unreachable.

@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oauth_providers (key, display_name, authorization_endpoint, token_endpoint,\n                revocation_endpoint, userinfo_endpoint, issuer_url, jwks_uri,\n                supports_pkce, supports_refresh, token_auth_method, is_builtin, extra_auth_params)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, '{}'::jsonb)\n         ON CONFLICT (key) DO UPDATE SET\n            display_name = EXCLUDED.display_name,\n            authorization_endpoint = EXCLUDED.authorization_endpoint,\n            token_endpoint = EXCLUDED.token_endpoint,\n            revocation_endpoint = EXCLUDED.revocation_endpoint,\n            userinfo_endpoint = EXCLUDED.userinfo_endpoint,\n            issuer_url = EXCLUDED.issuer_url,\n            jwks_uri = EXCLUDED.jwks_uri,\n            supports_pkce = EXCLUDED.supports_pkce,\n            supports_refresh = EXCLUDED.supports_refresh,\n            token_auth_method = EXCLUDED.token_auth_method\n         RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                   userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "token_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "revocation_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "userinfo_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "client_id_pattern",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "supports_pkce",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "supports_refresh",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "extra_auth_params",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "token_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "is_builtin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "issuer_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "jwks_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "5569851c1eb9c059c88aff7ae5aa8c2f1d80738fe34251e06e7a624d33a03c3e"
+}

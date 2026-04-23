@@ -1,0 +1,106 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at\n         FROM oauth_providers WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "token_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "revocation_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "userinfo_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "client_id_pattern",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "supports_pkce",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "supports_refresh",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "extra_auth_params",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "token_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "is_builtin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "issuer_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "jwks_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "1806fc254add2bd07767ef389204ff4d514cf59bc364b188eda6d358f12b826c"
+}

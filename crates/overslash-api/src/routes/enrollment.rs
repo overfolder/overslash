@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
@@ -9,17 +9,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use overslash_db::repos::{
-    api_key,
-    audit::{self, AuditEntry},
-    enrollment_token, identity, pending_enrollment,
-};
+use overslash_db::repos::{audit::AuditEntry, pending_enrollment};
+use overslash_db::{OrgScope, SystemScope};
+
+use super::util::fmt_time;
 
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, ClientIp},
-    services::jwt,
+    services::session::extract_session,
 };
 
 pub fn router() -> Router<AppState> {
@@ -69,13 +68,16 @@ struct EnrollmentTokenResponse {
 async fn create_enrollment_token(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateEnrollmentTokenRequest>,
 ) -> Result<Json<EnrollmentTokenResponse>> {
     let auth = acl;
     // Verify identity exists and belongs to this org
-    let ident = identity::get_by_id(&state.db, req.identity_id).await?;
-    let ident = crate::ownership::require_org_owned(ident, auth.org_id, "identity")?;
+    let ident = scope
+        .get_identity(req.identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     if ident.kind != "agent" && ident.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "enrollment tokens can only be created for agent or sub_agent identities".into(),
@@ -87,20 +89,18 @@ async fn create_enrollment_token(
     let expires_at =
         time::OffsetDateTime::now_utc() + time::Duration::seconds(req.expires_in_secs as i64);
 
-    let row = enrollment_token::create(
-        &state.db,
-        auth.org_id,
-        req.identity_id,
-        &hash,
-        &prefix,
-        expires_at,
-        auth.identity_id,
-    )
-    .await?;
+    let row = scope
+        .create_enrollment_token(
+            req.identity_id,
+            &hash,
+            &prefix,
+            expires_at,
+            auth.identity_id,
+        )
+        .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "enrollment_token.created",
@@ -109,25 +109,23 @@ async fn create_enrollment_token(
             detail: json!({ "identity_id": req.identity_id, "token_prefix": &prefix }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(EnrollmentTokenResponse {
         id: row.id,
         token: raw_token,
         token_prefix: prefix,
         identity_id: req.identity_id,
-        expires_at: row.expires_at.to_string(),
+        expires_at: fmt_time(row.expires_at),
     }))
 }
 
 async fn list_enrollment_tokens(
-    State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    _: AdminAcl,
+    scope: OrgScope,
 ) -> Result<Json<Vec<serde_json::Value>>> {
-    let auth = acl;
-    let rows = enrollment_token::list_by_org(&state.db, auth.org_id).await?;
+    let rows = scope.list_enrollment_tokens().await?;
     let items: Vec<_> = rows
         .into_iter()
         .map(|r| {
@@ -135,8 +133,8 @@ async fn list_enrollment_tokens(
                 "id": r.id,
                 "identity_id": r.identity_id,
                 "token_prefix": r.token_prefix,
-                "expires_at": r.expires_at.to_string(),
-                "created_at": r.created_at.to_string(),
+                "expires_at": fmt_time(r.expires_at),
+                "created_at": fmt_time(r.created_at),
             })
         })
         .collect();
@@ -146,18 +144,18 @@ async fn list_enrollment_tokens(
 async fn revoke_enrollment_token(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
     let auth = acl;
-    let revoked = enrollment_token::revoke(&state.db, id, auth.org_id).await?;
+    let revoked = scope.revoke_enrollment_token(id).await?;
     if !revoked {
         return Err(AppError::NotFound("token not found or already used".into()));
     }
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "enrollment_token.revoked",
@@ -166,9 +164,8 @@ async fn revoke_enrollment_token(
             detail: json!({}),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -189,8 +186,14 @@ async fn enroll_with_token(
         return Err(AppError::Unauthorized("invalid token format".into()));
     }
 
+    // Cross-org by design: the enrolling agent has no org context yet —
+    // the token row IS what tells us which org to mint into. Lookup runs
+    // through SystemScope, after which we IMMEDIATELY downgrade to an
+    // OrgScope bound to the token's org for every subsequent operation.
+    let system = SystemScope::new_internal(state.db.clone());
     let prefix = &req.token[..12];
-    let token_row = enrollment_token::find_by_prefix(&state.db, prefix)
+    let token_row = system
+        .find_enrollment_token_by_prefix(prefix)
         .await?
         .ok_or_else(|| AppError::Unauthorized("invalid or consumed enrollment token".into()))?;
 
@@ -202,30 +205,34 @@ async fn enroll_with_token(
     // Verify hash
     verify_argon2_hash(&req.token, &token_row.token_hash)?;
 
-    // Mark as used (atomic — if another request races, one will fail)
-    let used = enrollment_token::mark_used(&state.db, token_row.id).await?;
+    // Mark as used (atomic — if another request races, one will fail).
+    // Still on SystemScope: at this exact step we have only just verified
+    // the hash and the org-bound scope is minted on the next line.
+    let used = system.mark_enrollment_token_used(token_row.id).await?;
     if !used {
         return Err(AppError::Conflict(
             "enrollment token already consumed".into(),
         ));
     }
 
+    // From this point on, every write goes through an OrgScope bound to
+    // the token's org.
+    let scope = OrgScope::new(token_row.org_id, state.db.clone());
+
     // Generate API key for the identity
     let (raw_key, key_hash, key_prefix) = generate_prefixed_token("osk_")?;
-    let _key_row = api_key::create(
-        &state.db,
-        token_row.org_id,
-        Some(token_row.identity_id),
-        "enrollment",
-        &key_hash,
-        &key_prefix,
-        &[],
-    )
-    .await?;
+    let _key_row = scope
+        .create_api_key(
+            token_row.identity_id,
+            "enrollment",
+            &key_hash,
+            &key_prefix,
+            &[],
+        )
+        .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = scope
+        .log_audit(AuditEntry {
             org_id: token_row.org_id,
             identity_id: Some(token_row.identity_id),
             action: "enrollment.completed",
@@ -234,9 +241,8 @@ async fn enroll_with_token(
             detail: json!({ "method": "token", "token_prefix": prefix }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(json!({
         "api_key": raw_key,
@@ -281,21 +287,14 @@ async fn initiate_enrollment(
     )
     .await?;
 
-    // Approval URL points to the dashboard consent page, not the backend API.
-    // dashboard_url defaults to "/" so prefer public_url when it's relative.
-    let dash = state.config.dashboard_url.trim_end_matches('/');
-    let approval_url = if dash.starts_with("http://") || dash.starts_with("https://") {
-        format!("{dash}/enroll/consent/{approval_token}")
-    } else {
-        format!(
-            "{}{dash}/enroll/consent/{approval_token}",
-            state.config.public_url.trim_end_matches('/')
-        )
-    };
+    let approval_url = state
+        .config
+        .dashboard_url_for(&format!("/enroll/consent/{approval_token}"));
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    // Pending enrollment is not yet bound to an org — `Uuid::nil()` is
+    // the sentinel org_id for these audit rows.
+    let _ = OrgScope::new(Uuid::nil(), state.db.clone())
+        .log_audit(AuditEntry {
             org_id: Uuid::nil(),
             identity_id: None,
             action: "enrollment.initiated",
@@ -304,15 +303,14 @@ async fn initiate_enrollment(
             detail: json!({ "name": &req.name, "platform": &req.platform }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(json!({
         "enrollment_id": row.id,
         "approval_url": approval_url,
         "poll_token": raw_poll_token,
-        "expires_at": row.expires_at.to_string(),
+        "expires_at": fmt_time(row.expires_at),
     })))
 }
 
@@ -445,14 +443,8 @@ async fn get_enrollment_approval(
             "platform": row.platform,
             "metadata": row.metadata,
             "status": row.status,
-            "expires_at": row
-                .expires_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| row.expires_at.to_string()),
-            "created_at": row
-                .created_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| row.created_at.to_string()),
+            "expires_at": fmt_time(row.expires_at),
+            "created_at": fmt_time(row.created_at),
             "requester_ip": row.requester_ip,
         })),
     )
@@ -513,14 +505,20 @@ async fn resolve_enrollment(
         }
     };
 
+    // Mint a session-bound OrgScope for the verified caller's org so all
+    // identity reads/writes during enrollment resolution are tenant-bounded.
+    let scope = OrgScope::new(session.org, state.db.clone());
+
     match req.decision.as_str() {
         "approve" => {
             let agent_name = req.agent_name.as_deref().unwrap_or(&row.suggested_name);
 
             // Resolve parent: caller-supplied parent_id (must belong to org) or default to approver
             let parent = if let Some(pid) = req.parent_id {
-                let p = identity::get_by_id(&state.db, pid).await?;
-                let p = crate::ownership::require_org_owned(p, session.org, "identity")?;
+                let p = scope
+                    .get_identity(pid)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
                 if p.kind != "user" && p.kind != "agent" && p.kind != "sub_agent" {
                     return Err(AppError::BadRequest(
                         "parent must be a user, agent, or sub_agent".into(),
@@ -528,11 +526,9 @@ async fn resolve_enrollment(
                 }
                 p
             } else {
-                identity::get_by_id(&state.db, session.sub)
-                    .await?
-                    .ok_or_else(|| {
-                        AppError::BadRequest("approving user identity no longer exists".into())
-                    })?
+                scope.get_identity(session.sub).await?.ok_or_else(|| {
+                    AppError::BadRequest("approving user identity no longer exists".into())
+                })?
             };
 
             // Refuse to graft a new agent onto an archived parent — it would
@@ -572,30 +568,23 @@ async fn resolve_enrollment(
             };
 
             // Create agent identity under the chosen parent
-            let new_identity = identity::create_with_parent(
-                &state.db,
-                session.org,
-                agent_name,
-                "agent",
-                None,
-                parent.id,
-                parent.depth + 1,
-                owner_id,
-            )
-            .await?;
+            let new_identity = scope
+                .create_identity_with_parent(
+                    agent_name,
+                    "agent",
+                    None,
+                    parent.id,
+                    parent.depth + 1,
+                    owner_id,
+                    false,
+                )
+                .await?;
 
             // Generate API key for the new identity
             let (raw_key, key_hash, key_prefix) = generate_prefixed_token("osk_")?;
-            let _key_row = api_key::create(
-                &state.db,
-                session.org,
-                Some(new_identity.id),
-                "enrollment",
-                &key_hash,
-                &key_prefix,
-                &[],
-            )
-            .await?;
+            let _key_row = scope
+                .create_api_key(new_identity.id, "enrollment", &key_hash, &key_prefix, &[])
+                .await?;
 
             // Update pending enrollment with approval details
             // Store the raw key temporarily so the agent can retrieve it via poll
@@ -618,15 +607,14 @@ async fn resolve_enrollment(
             if approved.is_none() {
                 // Race condition: another request already approved/denied this enrollment.
                 // Clean up the orphaned identity and key we just created.
-                let _ = identity::delete(&state.db, new_identity.id).await;
+                let _ = scope.delete_identity(new_identity.id).await;
                 return Err(AppError::Conflict(
                     "enrollment already resolved by another request".into(),
                 ));
             }
 
-            let _ = audit::log(
-                &state.db,
-                &AuditEntry {
+            let _ = scope
+                .log_audit(AuditEntry {
                     org_id: session.org,
                     identity_id: Some(session.sub),
                     action: "enrollment.approved",
@@ -638,9 +626,8 @@ async fn resolve_enrollment(
                     }),
                     description: None,
                     ip_address: ip.0.as_deref(),
-                },
-            )
-            .await;
+                })
+                .await;
 
             Ok(Json(json!({
                 "status": "approved",
@@ -651,9 +638,8 @@ async fn resolve_enrollment(
         "deny" => {
             let _ = pending_enrollment::deny(&state.db, row.id).await?;
 
-            let _ = audit::log(
-                &state.db,
-                &AuditEntry {
+            let _ = scope
+                .log_audit(AuditEntry {
                     org_id: session.org,
                     identity_id: Some(session.sub),
                     action: "enrollment.denied",
@@ -662,9 +648,8 @@ async fn resolve_enrollment(
                     detail: json!({ "suggested_name": &row.suggested_name }),
                     description: None,
                     ip_address: ip.0.as_deref(),
-                },
-            )
-            .await;
+                })
+                .await;
 
             Ok(Json(json!({ "status": "denied" })))
         }
@@ -677,10 +662,10 @@ async fn resolve_enrollment(
 fn generate_prefixed_token(
     prefix: &str,
 ) -> std::result::Result<(String, String, String), AppError> {
-    use rand::RngCore;
+    use rand::RngExt;
 
     let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     let encoded = hex::encode(bytes);
     let raw = format!("{prefix}{encoded}");
     let key_prefix = raw[..12].to_string();
@@ -704,7 +689,7 @@ fn verify_argon2_hash(raw: &str, stored_hash: &str) -> std::result::Result<(), A
 }
 
 fn generate_approval_token(signing_key: &str) -> std::result::Result<String, AppError> {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, Mac, digest::KeyInit};
     use sha2::Sha256;
 
     let id = Uuid::new_v4();
@@ -714,16 +699,6 @@ fn generate_approval_token(signing_key: &str) -> std::result::Result<String, App
     mac.update(id.as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
     Ok(format!("{}-{}", id, &sig[..16]))
-}
-
-fn extract_session(state: &AppState, headers: &HeaderMap) -> Option<jwt::Claims> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    let token = cookie_header
-        .split(';')
-        .find_map(|pair| pair.trim().strip_prefix("oss_session="))?;
-    let signing_key = hex::decode(&state.config.signing_key)
-        .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
-    jwt::verify(&signing_key, token).ok()
 }
 
 /// Encrypt the raw API key so it can be stored in the pending_enrollments row

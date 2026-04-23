@@ -7,16 +7,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use overslash_db::repos::{
-    audit::{self, AuditEntry},
-    oauth_provider, org_idp_config,
-};
+use overslash_db::OrgScope;
+use overslash_db::repos::{audit::AuditEntry, oauth_provider};
+use overslash_db::scopes::OrgIdpConfigCredentialsUpdate;
+
+use super::util::fmt_time;
 
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{ClientIp, UserOrKeyAuth},
-    services::oidc_discovery,
+    services::{client_credentials, oidc_discovery},
 };
 use overslash_core::crypto;
 
@@ -46,8 +47,14 @@ struct CreateIdpConfigRequest {
     issuer_url: Option<String>,
     /// Human-readable name for custom OIDC providers.
     display_name: Option<String>,
-    client_id: String,
-    client_secret: String,
+    /// Required unless `use_org_credentials` is true.
+    client_id: Option<String>,
+    /// Required unless `use_org_credentials` is true.
+    client_secret: Option<String>,
+    /// When true, defer to the org's OAuth App Credentials for this provider
+    /// (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`). SPEC §3.
+    #[serde(default)]
+    use_org_credentials: bool,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default)]
@@ -62,6 +69,11 @@ fn default_true() -> bool {
 struct UpdateIdpConfigRequest {
     client_id: Option<String>,
     client_secret: Option<String>,
+    /// When `Some(true)`, clear dedicated creds and defer to org OAuth
+    /// credentials. When `Some(false)`, `client_id` and `client_secret` are
+    /// required and become the IdP's dedicated credentials. `None` leaves
+    /// credentials unchanged.
+    use_org_credentials: Option<bool>,
     enabled: Option<bool>,
     allowed_email_domains: Option<Vec<String>>,
 }
@@ -75,6 +87,8 @@ struct IdpConfigResponse {
     enabled: bool,
     allowed_email_domains: Vec<String>,
     source: &'static str,
+    /// True when this IdP defers to the org's OAuth App Credentials.
+    uses_org_credentials: bool,
     created_at: String,
     updated_at: String,
 }
@@ -91,6 +105,7 @@ struct DiscoverRequest {
 async fn create_idp_config(
     State(state): State<AppState>,
     auth: UserOrKeyAuth,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateIdpConfigRequest>,
 ) -> Result<Json<IdpConfigResponse>> {
@@ -169,29 +184,62 @@ async fn create_idp_config(
     }
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
-    let encrypted_client_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;
-    let encrypted_client_secret = crypto::encrypt(&enc_key, req.client_secret.as_bytes())?;
 
-    let row = org_idp_config::create(
-        &state.db,
-        auth.org_id,
-        &provider_key,
-        &encrypted_client_id,
-        &encrypted_client_secret,
-        req.enabled,
-        &req.allowed_email_domains,
-    )
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.is_unique_violation() {
-                return AppError::Conflict(format!(
-                    "IdP config already exists for provider '{provider_key}'"
-                ));
-            }
+    // Validate request: either dedicated creds OR use_org_credentials, not both.
+    let (encrypted_client_id, encrypted_client_secret): (Option<Vec<u8>>, Option<Vec<u8>>) = if req
+        .use_org_credentials
+    {
+        if req.client_id.is_some() || req.client_secret.is_some() {
+            return Err(AppError::BadRequest(
+                "cannot set client_id/client_secret when use_org_credentials is true".into(),
+            ));
         }
-        AppError::Database(e)
-    })?;
+        // Require the org secrets to already exist — otherwise the IdP
+        // would be half-configured and the first login would fail.
+        client_credentials::resolve_org_oauth_secrets(&scope, &enc_key, &provider_key)
+            .await?
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "no org OAuth App Credentials configured for provider \
+                         '{provider_key}'. Add them first in Org Settings, \
+                         or provide dedicated client_id/client_secret."
+                ))
+            })?;
+        (None, None)
+    } else {
+        let client_id = req.client_id.as_deref().ok_or_else(|| {
+            AppError::BadRequest("client_id is required unless use_org_credentials is true".into())
+        })?;
+        let client_secret = req.client_secret.as_deref().ok_or_else(|| {
+            AppError::BadRequest(
+                "client_secret is required unless use_org_credentials is true".into(),
+            )
+        })?;
+        (
+            Some(crypto::encrypt(&enc_key, client_id.as_bytes())?),
+            Some(crypto::encrypt(&enc_key, client_secret.as_bytes())?),
+        )
+    };
+
+    let row = scope
+        .create_org_idp_config(
+            &provider_key,
+            encrypted_client_id.as_deref(),
+            encrypted_client_secret.as_deref(),
+            req.enabled,
+            &req.allowed_email_domains,
+        )
+        .await
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() {
+                    return AppError::Conflict(format!(
+                        "IdP config already exists for provider '{provider_key}'"
+                    ));
+                }
+            }
+            AppError::Database(e)
+        })?;
 
     let display_name = oauth_provider::get_by_key(&state.db, &provider_key)
         .await?
@@ -199,10 +247,9 @@ async fn create_idp_config(
         .unwrap_or_else(|| provider_key.clone());
 
     let desc = format!("Configured {display_name} as login identity provider");
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "org_idp_config.created",
             resource_type: Some("org_idp_config"),
@@ -210,9 +257,10 @@ async fn create_idp_config(
             detail: json!({ "provider_key": provider_key }),
             description: Some(&desc),
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
+
+    let uses_org_credentials = row.encrypted_client_id.is_none();
 
     Ok(Json(IdpConfigResponse {
         id: row.id,
@@ -222,14 +270,15 @@ async fn create_idp_config(
         enabled: row.enabled,
         allowed_email_domains: row.allowed_email_domains,
         source: "db",
-        created_at: row.created_at.to_string(),
-        updated_at: row.updated_at.to_string(),
+        uses_org_credentials,
+        created_at: fmt_time(row.created_at),
+        updated_at: fmt_time(row.updated_at),
     }))
 }
 
 async fn list_idp_configs(
     State(state): State<AppState>,
-    auth: UserOrKeyAuth,
+    scope: OrgScope,
 ) -> Result<Json<Vec<serde_json::Value>>> {
     let mut results: Vec<serde_json::Value> = Vec::new();
 
@@ -246,7 +295,7 @@ async fn list_idp_configs(
     }
 
     // DB-configured IdPs for this org
-    let db_configs = org_idp_config::list_by_org(&state.db, auth.org_id).await?;
+    let db_configs = scope.list_org_idp_configs().await?;
     for config in db_configs {
         // Skip if already shown from env vars
         if results
@@ -268,8 +317,9 @@ async fn list_idp_configs(
             "source": "db",
             "enabled": config.enabled,
             "allowed_email_domains": config.allowed_email_domains,
-            "created_at": config.created_at.to_string(),
-            "updated_at": config.updated_at.to_string(),
+            "uses_org_credentials": config.encrypted_client_id.is_none(),
+            "created_at": fmt_time(config.created_at),
+            "updated_at": fmt_time(config.updated_at),
         }));
     }
 
@@ -279,12 +329,14 @@ async fn list_idp_configs(
 async fn update_idp_config(
     State(state): State<AppState>,
     auth: UserOrKeyAuth,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateIdpConfigRequest>,
 ) -> Result<Json<IdpConfigResponse>> {
     // Verify config exists and belongs to this org
-    let existing = org_idp_config::get_by_id(&state.db, id, auth.org_id)
+    let existing = scope
+        .get_org_idp_config(id)
         .await?
         .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
 
@@ -301,6 +353,7 @@ async fn update_idp_config(
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
 
+    // Build the credentials update from the tri-state request shape.
     let encrypted_client_id = req
         .client_id
         .as_ref()
@@ -312,17 +365,54 @@ async fn update_idp_config(
         .map(|s| crypto::encrypt(&enc_key, s.as_bytes()))
         .transpose()?;
 
-    let updated = org_idp_config::update(
-        &state.db,
-        id,
-        auth.org_id,
+    let creds = match (
+        req.use_org_credentials,
         encrypted_client_id.as_deref(),
         encrypted_client_secret.as_deref(),
-        req.enabled,
-        req.allowed_email_domains.as_deref(),
-    )
-    .await?
-    .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
+    ) {
+        (Some(true), None, None) => {
+            client_credentials::resolve_org_oauth_secrets(&scope, &enc_key, &existing.provider_key)
+                .await?
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "no org OAuth App Credentials configured for provider \
+                     '{}'. Add them first in Org Settings, or provide \
+                     dedicated client_id/client_secret.",
+                        existing.provider_key
+                    ))
+                })?;
+            OrgIdpConfigCredentialsUpdate::UseOrgCredentials
+        }
+        (Some(true), _, _) => {
+            return Err(AppError::BadRequest(
+                "cannot set client_id/client_secret when use_org_credentials is true".into(),
+            ));
+        }
+        (Some(false), Some(id), Some(secret)) | (None, Some(id), Some(secret)) => {
+            OrgIdpConfigCredentialsUpdate::SetDedicated {
+                encrypted_client_id: id,
+                encrypted_client_secret: secret,
+            }
+        }
+        (Some(false), _, _) => {
+            return Err(AppError::BadRequest(
+                "client_id and client_secret are both required when \
+                 use_org_credentials is false"
+                    .into(),
+            ));
+        }
+        (None, None, None) => OrgIdpConfigCredentialsUpdate::Unchanged,
+        (None, _, _) => {
+            return Err(AppError::BadRequest(
+                "client_id and client_secret must be sent together".into(),
+            ));
+        }
+    };
+
+    let updated = scope
+        .update_org_idp_config(id, creds, req.enabled, req.allowed_email_domains.as_deref())
+        .await?
+        .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
 
     let display_name = oauth_provider::get_by_key(&state.db, &updated.provider_key)
         .await?
@@ -330,10 +420,9 @@ async fn update_idp_config(
         .unwrap_or_else(|| updated.provider_key.clone());
 
     let desc = format!("Updated {display_name} identity provider configuration");
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
-            org_id: auth.org_id,
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
             identity_id: auth.identity_id,
             action: "org_idp_config.updated",
             resource_type: Some("org_idp_config"),
@@ -341,9 +430,10 @@ async fn update_idp_config(
             detail: json!({ "provider_key": updated.provider_key }),
             description: Some(&desc),
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
+
+    let uses_org_credentials = updated.encrypted_client_id.is_none();
 
     Ok(Json(IdpConfigResponse {
         id: updated.id,
@@ -353,24 +443,24 @@ async fn update_idp_config(
         enabled: updated.enabled,
         allowed_email_domains: updated.allowed_email_domains,
         source: "db",
-        created_at: updated.created_at.to_string(),
-        updated_at: updated.updated_at.to_string(),
+        uses_org_credentials,
+        created_at: fmt_time(updated.created_at),
+        updated_at: fmt_time(updated.updated_at),
     }))
 }
 
 async fn delete_idp_config(
-    State(state): State<AppState>,
     auth: UserOrKeyAuth,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let deleted = org_idp_config::delete(&state.db, id, auth.org_id).await?;
+    let deleted = scope.delete_org_idp_config(id).await?;
 
     if deleted {
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
-                org_id: auth.org_id,
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
                 identity_id: auth.identity_id,
                 action: "org_idp_config.deleted",
                 resource_type: Some("org_idp_config"),
@@ -378,9 +468,8 @@ async fn delete_idp_config(
                 detail: json!({}),
                 description: Some("Removed identity provider configuration"),
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
     }
 
     Ok(Json(json!({ "deleted": deleted })))

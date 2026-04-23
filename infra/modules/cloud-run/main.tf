@@ -60,12 +60,28 @@ variable "encryption_key_secret_id" {
   type = string
 }
 
-variable "oauth_client_id_secret_id" {
+variable "signing_key_secret_id" {
   type = string
 }
 
+variable "oauth_client_id_secret_id" {
+  type        = string
+  description = "GSM secret ID for the Google LOGIN OAuth client (Sign-in with Google). Feeds GOOGLE_AUTH_CLIENT_ID."
+}
+
 variable "oauth_client_secret_secret_id" {
-  type = string
+  type        = string
+  description = "GSM secret ID for the Google LOGIN OAuth client secret. Feeds GOOGLE_AUTH_CLIENT_SECRET."
+}
+
+variable "google_services_client_id_secret_id" {
+  type        = string
+  description = "GSM secret ID for the Google SERVICES OAuth client (Calendar/Drive/Gmail). Feeds OAUTH_GOOGLE_CLIENT_ID."
+}
+
+variable "google_services_client_secret_secret_id" {
+  type        = string
+  description = "GSM secret ID for the Google SERVICES OAuth client secret. Feeds OAUTH_GOOGLE_CLIENT_SECRET."
 }
 
 variable "db_user" {
@@ -81,6 +97,21 @@ variable "domain" {
   default = ""
 }
 
+variable "dashboard_origin" {
+  type    = string
+  default = "*localhost*"
+}
+
+variable "dashboard_url" {
+  type    = string
+  default = "/"
+}
+
+variable "enable_dev_auth" {
+  type    = bool
+  default = false
+}
+
 variable "redis_host" {
   type    = string
   default = ""
@@ -89,6 +120,40 @@ variable "redis_host" {
 variable "redis_port" {
   type    = string
   default = ""
+}
+
+locals {
+  env_vars = merge(
+    {
+      APPROVAL_EXPIRY_SECS      = "1800"
+      CLOUD_SQL_CONNECTION_NAME = var.cloud_sql_connection_name
+      DASHBOARD_ORIGIN          = var.dashboard_origin
+      DASHBOARD_URL             = var.dashboard_url
+      DB_NAME                   = var.db_name
+      DB_USER                   = var.db_user
+      HOST                      = "0.0.0.0"
+      # Enables tier-4 env-var fallback in the services OAuth cascade so the
+      # overslash-managed default Google services client (OAUTH_GOOGLE_*) is
+      # picked up when an org hasn't set its own credentials. Org-level BYO
+      # via POST /v1/org/oauth-credentials/google still takes precedence.
+      OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS = "1"
+      RUST_LOG                                       = "info"
+      SERVICES_DIR                                   = "/app/services"
+    },
+    var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
+    var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
+    var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
+  )
+
+  env_secrets = {
+    DB_PASSWORD                = var.db_password_secret_id
+    GOOGLE_AUTH_CLIENT_ID      = var.oauth_client_id_secret_id
+    GOOGLE_AUTH_CLIENT_SECRET  = var.oauth_client_secret_secret_id
+    OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id
+    OAUTH_GOOGLE_CLIENT_SECRET = var.google_services_client_secret_secret_id
+    SECRETS_ENCRYPTION_KEY     = var.encryption_key_secret_id
+    SIGNING_KEY                = var.signing_key_secret_id
+  }
 }
 
 resource "google_cloud_run_v2_service" "api" {
@@ -137,84 +202,24 @@ resource "google_cloud_run_v2_service" "api" {
         startup_cpu_boost = true
       }
 
-      env {
-        name  = "HOST"
-        value = "0.0.0.0"
-      }
-      env {
-        name  = "RUST_LOG"
-        value = "info"
-      }
-      env {
-        name  = "APPROVAL_EXPIRY_SECS"
-        value = "1800"
-      }
       dynamic "env" {
-        for_each = var.domain != "" ? [1] : []
+        for_each = local.env_vars
         content {
-          name  = "PUBLIC_URL"
-          value = "https://${var.domain}"
-        }
-      }
-      env {
-        name  = "SERVICES_DIR"
-        value = "/app/services"
-      }
-      env {
-        name  = "DB_USER"
-        value = var.db_user
-      }
-      env {
-        name  = "DB_NAME"
-        value = var.db_name
-      }
-      env {
-        name  = "CLOUD_SQL_CONNECTION_NAME"
-        value = var.cloud_sql_connection_name
-      }
-
-      env {
-        name = "DB_PASSWORD"
-        value_source {
-          secret_key_ref {
-            secret  = var.db_password_secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name = "SECRETS_ENCRYPTION_KEY"
-        value_source {
-          secret_key_ref {
-            secret  = var.encryption_key_secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name = "GOOGLE_AUTH_CLIENT_ID"
-        value_source {
-          secret_key_ref {
-            secret  = var.oauth_client_id_secret_id
-            version = "latest"
-          }
-        }
-      }
-      env {
-        name = "GOOGLE_AUTH_CLIENT_SECRET"
-        value_source {
-          secret_key_ref {
-            secret  = var.oauth_client_secret_secret_id
-            version = "latest"
-          }
+          name  = env.key
+          value = env.value
         }
       }
 
       dynamic "env" {
-        for_each = var.redis_host != "" ? [1] : []
+        for_each = local.env_secrets
         content {
-          name  = "REDIS_URL"
-          value = "redis://${var.redis_host}:${var.redis_port}"
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
         }
       }
 

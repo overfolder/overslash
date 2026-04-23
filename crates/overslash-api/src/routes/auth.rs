@@ -15,7 +15,8 @@ use crate::{
     services::{jwt, oauth},
 };
 use overslash_core::crypto;
-use overslash_db::repos::{identity, oauth_provider, org, org_idp_config};
+use overslash_db::repos::{oauth_provider, org};
+use overslash_db::{OrgScope, SystemScope};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -49,6 +50,10 @@ async fn logout() -> impl IntoResponse {
 struct LoginQuery {
     /// Org slug — required for enterprise SSO, optional for social providers.
     org: Option<String>,
+    /// Where to send the user after login succeeds. Must be same-origin
+    /// (path-only redirect). Used by `/oauth/authorize` to resume after the
+    /// IdP bounce.
+    next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +148,18 @@ async fn provider_login(
     headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
     headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
 
+    // Persist `next` across the IdP round-trip so the callback can resume
+    // wherever the caller wanted (used by `/oauth/authorize` to bounce
+    // through login). Only accept path-only targets to keep this from
+    // turning into an open redirect.
+    if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
+        let next_cookie = format!(
+            "oss_auth_next={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
+            next
+        );
+        headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+    }
+
     Ok((headers, Redirect::to(&auth_url)).into_response())
 }
 
@@ -222,6 +239,7 @@ async fn provider_callback(
         sub: identity_id,
         org: org_id,
         email: email.clone(),
+        aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
     };
@@ -236,14 +254,19 @@ async fn provider_callback(
     let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
     let clear_org = "oss_auth_org=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
+    let clear_next = "oss_auth_next=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
+    resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
 
-    Ok((resp_headers, Redirect::to(&state.config.dashboard_url)).into_response())
+    let redirect_target = extract_cookie(&headers, "oss_auth_next")
+        .and_then(|v| sanitize_next(&v))
+        .unwrap_or_else(|| state.config.dashboard_url.clone());
+    Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +329,11 @@ async fn list_auth_providers(
     // If org slug provided, also include DB-configured IdPs for that org
     if let Some(slug) = &query.org {
         if let Some(org_row) = org::get_by_slug(&state.db, slug).await? {
-            let configs = org_idp_config::list_enabled_by_org(&state.db, org_row.id).await?;
+            // Login bootstrap: the user has not authenticated yet, but the
+            // org has been resolved from a public slug. Mint an OrgScope to
+            // use the scope-bound enabled-IdP listing helper.
+            let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
+            let configs = bootstrap_scope.list_enabled_org_idp_configs().await?;
             for config in configs {
                 // Skip if already added from env vars
                 if providers.iter().any(|p| p["key"] == config.provider_key) {
@@ -349,11 +376,14 @@ async fn me(
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let claims = jwt::verify(&jwt_secret, &token)
+    let claims = jwt::verify(&jwt_secret, &token, jwt::AUD_SESSION)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
-    // Resolve the user's ACL level from group grants
-    let ceiling = overslash_db::repos::group::get_ceiling_for_user(&state.db, claims.sub).await?;
+    // Resolve the user's ACL level from group grants. Construct an OrgScope
+    // inline from the verified JWT claims so the ceiling lookup is bounded
+    // by the caller's org at the SQL boundary.
+    let scope = overslash_db::OrgScope::new(claims.org, state.db.clone());
+    let ceiling = scope.get_ceiling_for_user(claims.sub).await?;
     let acl_level = ceiling
         .grants
         .iter()
@@ -378,20 +408,34 @@ async fn me_identity(
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let claims = jwt::verify(&jwt_secret, &token)
+    let claims = jwt::verify(&jwt_secret, &token, jwt::AUD_SESSION)
         .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
 
-    let ident = identity::get_by_id(&state.db, claims.sub)
+    let scope = OrgScope::new(claims.org, state.db.clone());
+    let ident = scope
+        .get_identity(claims.sub)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
+
+    let org_row = org::get_by_id(&state.db, ident.org_id).await?;
+    let picture = ident
+        .metadata
+        .get("picture")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
+        "org_name": org_row.as_ref().map(|o| o.name.clone()),
+        "org_slug": org_row.as_ref().map(|o| o.slug.clone()),
         "email": claims.email,
         "name": ident.name,
         "kind": ident.kind,
         "external_id": ident.external_id,
+        "is_org_admin": is_org_admin,
+        "picture": picture,
     })))
 }
 
@@ -399,28 +443,46 @@ async fn me_identity(
 // Dev token (unchanged)
 // ---------------------------------------------------------------------------
 
-async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+#[derive(Deserialize, Default)]
+struct DevTokenQuery {
+    next: Option<String>,
+}
+
+async fn dev_token(
+    State(state): State<AppState>,
+    Query(query): Query<DevTokenQuery>,
+) -> Result<Response, AppError> {
     if !state.config.dev_auth_enabled {
         return Err(AppError::NotFound("not found".into()));
     }
 
     let dev_email = "dev@overslash.local";
+    let system = SystemScope::new_internal(state.db.clone());
     let (org_id, identity_id) =
-        if let Some(existing) = identity::find_by_email(&state.db, dev_email).await? {
+        if let Some(existing) = system.find_user_identity_by_email(dev_email).await? {
+            // Re-run bootstrap so the dev user is always an org admin, even if it
+            // pre-existed the bootstrap logic or was created before joining Admins.
+            // bootstrap_org is idempotent.
+            overslash_db::repos::org_bootstrap::bootstrap_org(
+                &state.db,
+                existing.org_id,
+                Some(existing.id),
+            )
+            .await?;
             (existing.org_id, existing.id)
         } else {
             match org::create(&state.db, "Dev Org", "dev-org").await {
                 Ok(new_org) => {
-                    let new_identity = identity::create_with_email(
-                        &state.db,
-                        new_org.id,
-                        "Dev User",
-                        "user",
-                        Some("dev-local"),
-                        Some(dev_email),
-                        json!({"dev": true}),
-                    )
-                    .await?;
+                    let new_scope = OrgScope::new(new_org.id, state.db.clone());
+                    let new_identity = new_scope
+                        .create_identity_with_email(
+                            "Dev User",
+                            "user",
+                            Some("dev-local"),
+                            Some(dev_email),
+                            json!({"dev": true}),
+                        )
+                        .await?;
                     // Bootstrap system assets and add dev user as admin
                     overslash_db::repos::org_bootstrap::bootstrap_org(
                         &state.db,
@@ -431,9 +493,16 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
                     (new_org.id, new_identity.id)
                 }
                 Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                    let existing = identity::find_by_email(&state.db, dev_email)
+                    let existing = system
+                        .find_user_identity_by_email(dev_email)
                         .await?
                         .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
+                    overslash_db::repos::org_bootstrap::bootstrap_org(
+                        &state.db,
+                        existing.org_id,
+                        Some(existing.id),
+                    )
+                    .await?;
                     (existing.org_id, existing.id)
                 }
                 Err(e) => return Err(e.into()),
@@ -446,6 +515,7 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
         sub: identity_id,
         org: org_id,
         email: dev_email.into(),
+        aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
     };
@@ -460,6 +530,12 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
 
+    // When `?next=` is set (e.g. by /oauth/authorize bouncing through dev
+    // login), redirect instead of returning JSON so the OAuth flow resumes.
+    if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
+        return Ok((headers, Redirect::to(&next)).into_response());
+    }
+
     Ok((
         headers,
         axum::Json(json!({
@@ -469,7 +545,8 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
             "email": dev_email,
             "token": token,
         })),
-    ))
+    )
+        .into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +555,9 @@ async fn dev_token(State(state): State<AppState>) -> Result<impl IntoResponse, A
 
 /// Resolve auth credentials for a provider. Precedence:
 /// 1. Environment variables (e.g. GOOGLE_AUTH_CLIENT_ID)
-/// 2. DB-stored org_idp_config (requires org context via slug)
+/// 2. DB-stored org_idp_config (requires org context via slug). When the
+///    config has NULL `encrypted_client_*` fields, it defers to the org's
+///    OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
 async fn resolve_auth_credentials(
     state: &AppState,
     provider_key: &str,
@@ -495,7 +574,10 @@ async fn resolve_auth_credentials(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("org not found: {slug}")))?;
 
-        let config = org_idp_config::get_by_org_and_provider(&state.db, org_row.id, provider_key)
+        // Login bootstrap: org resolved from a public slug, no scope yet.
+        let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
+        let config = bootstrap_scope
+            .get_org_idp_config_by_provider(provider_key)
             .await?
             .ok_or_else(|| {
                 AppError::NotFound(format!(
@@ -511,18 +593,41 @@ async fn resolve_auth_credentials(
 
         let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
             .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
-        let client_id = String::from_utf8(
-            crypto::decrypt(&enc_key, &config.encrypted_client_id)
-                .map_err(|e| AppError::Internal(format!("decrypt client_id: {e}")))?,
-        )
-        .map_err(|_| AppError::Internal("invalid client_id utf-8".into()))?;
-        let client_secret = String::from_utf8(
-            crypto::decrypt(&enc_key, &config.encrypted_client_secret)
-                .map_err(|e| AppError::Internal(format!("decrypt client_secret: {e}")))?,
-        )
-        .map_err(|_| AppError::Internal("invalid client_secret utf-8".into()))?;
 
-        return Ok((client_id, client_secret));
+        // IdP uses its own dedicated credentials — decrypt them directly.
+        if let (Some(enc_id), Some(enc_secret)) = (
+            config.encrypted_client_id.as_deref(),
+            config.encrypted_client_secret.as_deref(),
+        ) {
+            let client_id = String::from_utf8(
+                crypto::decrypt(&enc_key, enc_id)
+                    .map_err(|e| AppError::Internal(format!("decrypt client_id: {e}")))?,
+            )
+            .map_err(|_| AppError::Internal("invalid client_id utf-8".into()))?;
+            let client_secret = String::from_utf8(
+                crypto::decrypt(&enc_key, enc_secret)
+                    .map_err(|e| AppError::Internal(format!("decrypt client_secret: {e}")))?,
+            )
+            .map_err(|_| AppError::Internal("invalid client_secret utf-8".into()))?;
+            return Ok((client_id, client_secret));
+        }
+
+        // IdP defers to org-level OAuth App Credentials (SPEC §3).
+        let creds = crate::services::client_credentials::resolve_org_oauth_secrets(
+            &bootstrap_scope,
+            &enc_key,
+            provider_key,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "IdP for provider '{provider_key}' is configured to use org OAuth App \
+                 Credentials, but no org-level credentials are set. \
+                 Add them in Org Settings → OAuth App Credentials, or reconfigure \
+                 the IdP with dedicated credentials."
+            ))
+        })?;
+        return Ok((creds.client_id, creds.client_secret));
     }
 
     Err(AppError::NotFound(format!(
@@ -648,8 +753,9 @@ async fn find_or_provision_user(
     state: &AppState,
     userinfo: &NormalizedUserInfo,
 ) -> Result<(Uuid, Uuid, String), AppError> {
+    let system = SystemScope::new_internal(state.db.clone());
     // Check if identity already exists by email
-    if let Some(existing) = identity::find_by_email(&state.db, &userinfo.email).await? {
+    if let Some(existing) = system.find_user_identity_by_email(&userinfo.email).await? {
         // Update profile on subsequent login
         let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
         let metadata = json!({
@@ -658,8 +764,10 @@ async fn find_or_provision_user(
             "name": userinfo.name,
             "picture": userinfo.picture,
         });
-        if let Err(e) =
-            identity::update_profile(&state.db, existing.id, display_name, metadata).await
+        let existing_scope = OrgScope::new(existing.org_id, state.db.clone());
+        if let Err(e) = existing_scope
+            .update_identity_profile(existing.id, display_name, metadata)
+            .await
         {
             tracing::warn!(identity_id = %existing.id, error = %e, "failed to update profile on login");
         }
@@ -682,23 +790,28 @@ async fn find_or_provision_user(
         "picture": userinfo.picture,
     });
 
-    // Check if any org has this email domain configured for the same provider
-    let domain_matches = org_idp_config::find_by_email_domain(&state.db, &email_domain).await?;
+    // Check if any org has this email domain configured for the same provider.
+    // This is a true cross-org lookup (no scope yet — we don't know which
+    // org the user belongs to), so it goes through SystemScope.
+    let system = overslash_db::SystemScope::new_internal(state.db.clone());
+    let domain_matches = system
+        .find_idp_configs_by_email_domain(&email_domain)
+        .await?;
     let matched_config = domain_matches
         .iter()
         .find(|c| c.provider_key == userinfo.provider_key);
     if let Some(matched_config) = matched_config {
         // Provision user in the matched org
-        match identity::create_with_email(
-            &state.db,
-            matched_config.org_id,
-            display_name,
-            "user",
-            Some(&userinfo.external_id),
-            Some(&userinfo.email),
-            metadata,
-        )
-        .await
+        let matched_scope = OrgScope::new(matched_config.org_id, state.db.clone());
+        match matched_scope
+            .create_identity_with_email(
+                display_name,
+                "user",
+                Some(&userinfo.external_id),
+                Some(&userinfo.email),
+                metadata,
+            )
+            .await
         {
             Ok(new_identity) => {
                 // Auto-join the Everyone group
@@ -716,7 +829,8 @@ async fn find_or_provision_user(
             }
             Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
                 // Race — another request created this identity
-                let existing = identity::find_by_email(&state.db, &userinfo.email)
+                let existing = system
+                    .find_user_identity_by_email(&userinfo.email)
                     .await?
                     .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
                 return Ok((existing.org_id, existing.id, userinfo.email.clone()));
@@ -741,16 +855,16 @@ async fn find_or_provision_user(
         }
     };
 
-    match identity::create_with_email(
-        &state.db,
-        new_org.id,
-        display_name,
-        "user",
-        Some(&userinfo.external_id),
-        Some(&userinfo.email),
-        metadata,
-    )
-    .await
+    let new_org_scope = OrgScope::new(new_org.id, state.db.clone());
+    match new_org_scope
+        .create_identity_with_email(
+            display_name,
+            "user",
+            Some(&userinfo.external_id),
+            Some(&userinfo.email),
+            metadata,
+        )
+        .await
     {
         Ok(new_identity) => {
             // Bootstrap system assets and add creator as admin
@@ -763,12 +877,24 @@ async fn find_or_provision_user(
             Ok((new_org.id, new_identity.id, userinfo.email.clone()))
         }
         Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-            let existing = identity::find_by_email(&state.db, &userinfo.email)
+            let existing = system
+                .find_user_identity_by_email(&userinfo.email)
                 .await?
                 .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
             Ok((existing.org_id, existing.id, userinfo.email.clone()))
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Only allow same-origin path redirects to prevent open-redirect abuse
+/// via the `?next=` parameter on IdP login.
+fn sanitize_next(raw: &str) -> Option<String> {
+    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\r') && !raw.contains('\n')
+    {
+        Some(raw.to_string())
+    } else {
+        None
     }
 }
 

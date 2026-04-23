@@ -131,21 +131,20 @@ async fn test_audit_log_insert_and_query() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
             org_id,
             None,
             "test.action",
             Some("widget"),
             None,
             json!({"key": "value"}),
-        ),
-    )
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
 
@@ -166,21 +165,20 @@ async fn test_audit_log_with_identity_and_resource() {
     let identity_id = insert_identity(&pool, org_id).await;
     let resource_id = Uuid::new_v4();
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
             org_id,
             Some(identity_id),
             "secret.created",
             Some("secret"),
             Some(resource_id),
             json!({"name": "my_token"}),
-        ),
-    )
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
 
@@ -195,9 +193,8 @@ async fn test_audit_log_with_ip_address() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &AuditEntry {
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(AuditEntry {
             org_id,
             identity_id: None,
             action: "test.with_ip",
@@ -206,12 +203,12 @@ async fn test_audit_log_with_ip_address() {
             detail: json!({}),
             description: None,
             ip_address: Some("192.168.1.42"),
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
     assert_eq!(rows[0].ip_address.as_deref(), Some("192.168.1.42"));
@@ -223,12 +220,14 @@ async fn test_audit_log_ordering_desc() {
     let org_id = insert_org(&pool).await;
 
     for action in &["first", "second", "third"] {
-        overslash_db::repos::audit::log(&pool, &entry(org_id, None, action, None, None, json!({})))
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .log_audit(entry(org_id, None, action, None, None, json!({})))
             .await
             .unwrap();
     }
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
 
@@ -244,25 +243,32 @@ async fn test_audit_log_pagination() {
     let org_id = insert_org(&pool).await;
 
     for i in 0..5 {
-        overslash_db::repos::audit::log(
-            &pool,
-            &entry(org_id, None, &format!("action_{i}"), None, None, json!({})),
-        )
-        .await
-        .unwrap();
+        overslash_db::OrgScope::new(org_id, pool.clone())
+            .log_audit(entry(
+                org_id,
+                None,
+                &format!("action_{i}"),
+                None,
+                None,
+                json!({}),
+            ))
+            .await
+            .unwrap();
     }
 
     let mut f = filter(org_id);
 
     f.limit = 2;
     f.offset = 0;
-    let page1 = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let page1 = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f.clone())
         .await
         .unwrap();
     assert_eq!(page1.len(), 2);
 
     f.offset = 2;
-    let page2 = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let page2 = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f.clone())
         .await
         .unwrap();
     assert_eq!(page2.len(), 2);
@@ -272,7 +278,8 @@ async fn test_audit_log_pagination() {
 
     f.offset = 100;
     f.limit = 10;
-    let empty = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let empty = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
         .await
         .unwrap();
     assert!(empty.is_empty());
@@ -284,23 +291,21 @@ async fn test_audit_log_org_isolation() {
     let org_a = insert_org(&pool).await;
     let org_b = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_a, None, "a.action", None, None, json!({})),
-    )
-    .await
-    .unwrap();
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_b, None, "b.action", None, None, json!({})),
-    )
-    .await
-    .unwrap();
-
-    let rows_a = overslash_db::repos::audit::query_filtered(&pool, &filter(org_a))
+    overslash_db::OrgScope::new(org_a, pool.clone())
+        .log_audit(entry(org_a, None, "a.action", None, None, json!({})))
         .await
         .unwrap();
-    let rows_b = overslash_db::repos::audit::query_filtered(&pool, &filter(org_b))
+    overslash_db::OrgScope::new(org_b, pool.clone())
+        .log_audit(entry(org_b, None, "b.action", None, None, json!({})))
+        .await
+        .unwrap();
+
+    let rows_a = overslash_db::OrgScope::new(org_a, pool.clone())
+        .query_audit_log(filter(org_a))
+        .await
+        .unwrap();
+    let rows_b = overslash_db::OrgScope::new(org_b, pool.clone())
+        .query_audit_log(filter(org_b))
         .await
         .unwrap();
 
@@ -314,7 +319,8 @@ async fn test_audit_log_org_isolation() {
 async fn test_audit_log_empty_org() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
     assert!(rows.is_empty());
@@ -326,19 +332,17 @@ async fn test_audit_log_identity_set_null_on_delete() {
     let org_id = insert_org(&pool).await;
     let identity_id = insert_identity(&pool, org_id).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
             org_id,
             Some(identity_id),
             "test.action",
             None,
             None,
             json!({}),
-        ),
-    )
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
     sqlx::query("DELETE FROM identities WHERE id = $1")
         .bind(identity_id)
@@ -346,7 +350,8 @@ async fn test_audit_log_identity_set_null_on_delete() {
         .await
         .unwrap();
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -361,12 +366,10 @@ async fn test_audit_log_cascade_on_org_delete() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, None, "before.delete", None, None, json!({})),
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(org_id, None, "before.delete", None, None, json!({})))
+        .await
+        .unwrap();
 
     sqlx::query("DELETE FROM orgs WHERE id = $1")
         .bind(org_id)
@@ -374,7 +377,8 @@ async fn test_audit_log_cascade_on_org_delete() {
         .await
         .unwrap();
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
     assert!(
@@ -396,21 +400,20 @@ async fn test_audit_detail_json_structure() {
         "null_val": null
     });
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
             org_id,
             None,
             "complex.detail",
             None,
             None,
             complex_detail.clone(),
-        ),
-    )
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &filter(org_id))
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(filter(org_id))
         .await
         .unwrap();
     assert_eq!(rows[0].detail, complex_detail);
@@ -425,22 +428,26 @@ async fn test_query_filtered_by_action() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, None, "action.executed", None, None, json!({})),
-    )
-    .await
-    .unwrap();
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, None, "secret.put", None, None, json!({})),
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "action.executed",
+            None,
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(org_id, None, "secret.put", None, None, json!({})))
+        .await
+        .unwrap();
 
     let mut f = filter(org_id);
     f.action = Some("secret.put".to_string());
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
         .await
         .unwrap();
 
@@ -453,22 +460,33 @@ async fn test_query_filtered_by_resource_type() {
     let pool = common::test_pool().await;
     let org_id = insert_org(&pool).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, None, "a.created", Some("secret"), None, json!({})),
-    )
-    .await
-    .unwrap();
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, None, "b.created", Some("webhook"), None, json!({})),
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "a.created",
+            Some("secret"),
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "b.created",
+            Some("webhook"),
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
 
     let mut f = filter(org_id);
     f.resource_type = Some("webhook".to_string());
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
         .await
         .unwrap();
 
@@ -483,22 +501,19 @@ async fn test_query_filtered_by_identity_id() {
     let id_a = insert_identity(&pool, org_id).await;
     let id_b = insert_identity(&pool, org_id).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, Some(id_a), "from_a", None, None, json!({})),
-    )
-    .await
-    .unwrap();
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, Some(id_b), "from_b", None, None, json!({})),
-    )
-    .await
-    .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(org_id, Some(id_a), "from_a", None, None, json!({})))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(org_id, Some(id_b), "from_b", None, None, json!({})))
+        .await
+        .unwrap();
 
     let mut f = filter(org_id);
     f.identity_id = Some(id_a);
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
         .await
         .unwrap();
 
@@ -541,7 +556,8 @@ async fn test_query_filtered_by_time_range() {
     // since filter: only "late"
     let mut f = filter(org_id);
     f.since = Some(boundary);
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -550,7 +566,8 @@ async fn test_query_filtered_by_time_range() {
     // until filter: only "early"
     let mut f2 = filter(org_id);
     f2.until = Some(boundary);
-    let rows2 = overslash_db::repos::audit::query_filtered(&pool, &f2)
+    let rows2 = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f2)
         .await
         .unwrap();
     assert_eq!(rows2.len(), 1);
@@ -563,43 +580,45 @@ async fn test_query_filtered_combined_filters() {
     let org_id = insert_org(&pool).await;
     let id_a = insert_identity(&pool, org_id).await;
 
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
             org_id,
             Some(id_a),
             "secret.put",
             Some("secret"),
             None,
             json!({}),
-        ),
-    )
-    .await
-    .unwrap();
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
             org_id,
             Some(id_a),
             "webhook.created",
             Some("webhook"),
             None,
             json!({}),
-        ),
-    )
-    .await
-    .unwrap();
-    overslash_db::repos::audit::log(
-        &pool,
-        &entry(org_id, None, "secret.put", Some("secret"), None, json!({})),
-    )
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "secret.put",
+            Some("secret"),
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
 
     let mut f = filter(org_id);
     f.action = Some("secret.put".to_string());
     f.identity_id = Some(id_a);
-    let rows = overslash_db::repos::audit::query_filtered(&pool, &f)
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
         .await
         .unwrap();
 
@@ -654,6 +673,12 @@ async fn test_audit_api_response_shape() {
     assert!(entry.get("resource_type").is_some());
     assert!(entry.get("resource_id").is_some());
     assert!(entry.get("ip_address").is_some());
+
+    // Regression: `created_at` must be RFC 3339 so `new Date(...)` can parse
+    // it in the dashboard. The `time` crate's Display impl is NOT RFC 3339.
+    let created_at = entry["created_at"].as_str().expect("created_at is string");
+    time::OffsetDateTime::parse(created_at, &time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|e| panic!("created_at {created_at:?} not RFC 3339: {e}"));
 }
 
 #[tokio::test]
@@ -1109,12 +1134,12 @@ async fn test_audit_byoc_credential_created() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"provider": "google", "client_id": "cid", "client_secret": "cs"}))
+        .json(&json!({"provider": "google", "client_id": "cid", "client_secret": "cs", "identity_id": ident_id}))
         .send()
         .await
         .unwrap();
@@ -1135,12 +1160,12 @@ async fn test_audit_byoc_credential_deleted() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"provider": "github", "client_id": "c", "client_secret": "s"}))
+        .json(&json!({"provider": "github", "client_id": "c", "client_secret": "s", "identity_id": ident_id}))
         .send()
         .await
         .unwrap();
@@ -1245,7 +1270,7 @@ async fn test_audit_mixed_events() {
     client
         .post(format!("{base}/v1/byoc-credentials"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"provider": "spotify", "client_id": "c", "client_secret": "s"}))
+        .json(&json!({"provider": "spotify", "client_id": "c", "client_secret": "s", "identity_id": ident_id}))
         .send()
         .await
         .unwrap();
@@ -1294,4 +1319,66 @@ async fn test_audit_mixed_events() {
         .position(|a| a == "byoc_credential.created")
         .unwrap();
     assert!(exec_pos < byoc_pos, "DESC ordering: newest first");
+}
+
+#[tokio::test]
+async fn test_log_audit_overwrites_entry_org_id() {
+    // log_audit must overwrite entry.org_id with self.org_id() so a caller
+    // cannot smuggle a row into a different tenant's audit log.
+    let pool = common::test_pool().await;
+    let org_a = insert_org(&pool).await;
+    let org_b = insert_org(&pool).await;
+
+    overslash_db::OrgScope::new(org_a, pool.clone())
+        .log_audit(entry(
+            org_b, // attacker tries to write under org_b
+            None,
+            "smuggle.attempt",
+            None,
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    let rows_a = overslash_db::OrgScope::new(org_a, pool.clone())
+        .query_audit_log(filter(org_a))
+        .await
+        .unwrap();
+    assert_eq!(rows_a.len(), 1, "row landed in scope's org");
+    assert_eq!(rows_a[0].org_id, org_a);
+    assert_eq!(rows_a[0].action, "smuggle.attempt");
+
+    let rows_b = overslash_db::OrgScope::new(org_b, pool.clone())
+        .query_audit_log(filter(org_b))
+        .await
+        .unwrap();
+    assert!(rows_b.is_empty(), "row did NOT land in spoofed org");
+}
+
+#[tokio::test]
+async fn test_query_audit_log_overwrites_filter_org_id() {
+    // query_audit_log must overwrite filter.org_id with self.org_id() so a
+    // caller cannot read another tenant's rows by spoofing the filter.
+    let pool = common::test_pool().await;
+    let org_a = insert_org(&pool).await;
+    let org_b = insert_org(&pool).await;
+
+    overslash_db::OrgScope::new(org_a, pool.clone())
+        .log_audit(entry(org_a, None, "a.event", None, None, json!({})))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_b, pool.clone())
+        .log_audit(entry(org_b, None, "b.event", None, None, json!({})))
+        .await
+        .unwrap();
+
+    // Query as org_a but pass org_b in the filter — must be ignored.
+    let rows = overslash_db::OrgScope::new(org_a, pool.clone())
+        .query_audit_log(filter(org_b))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].org_id, org_a);
+    assert_eq!(rows[0].action, "a.event");
 }

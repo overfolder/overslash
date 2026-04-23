@@ -1,0 +1,87 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE service_templates SET display_name = COALESCE($2, display_name), description = COALESCE($3, description), category = COALESCE($4, category), hosts = COALESCE($5, hosts), openapi = COALESCE($6, openapi), updated_at = now() WHERE id = $1 RETURNING id, org_id, owner_identity_id, key, display_name, description, category, hosts, openapi, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "category",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "hosts",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "openapi",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "eae2fa0fe188884ea07eef7a78c4e28a3c965905c9a43b17b4a8c5aa727ef479"
+}

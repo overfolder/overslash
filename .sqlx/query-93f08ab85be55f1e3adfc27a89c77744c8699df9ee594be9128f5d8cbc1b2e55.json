@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM enabled_global_templates WHERE org_id = $1 AND template_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93f08ab85be55f1e3adfc27a89c77744c8699df9ee594be9128f5d8cbc1b2e55"
+}

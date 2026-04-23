@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info:
+  title: {{ display_name }}
+  key: {{ key }}
+servers:
+  - url: https://{{ key }}.example.com
+paths:
+  /items:
+    get:
+      operationId: list_items
+      summary: List items
+      risk: read

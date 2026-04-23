@@ -1,4 +1,3 @@
-use sqlx::PgPool;
 use uuid::Uuid;
 
 use overslash_core::permissions::{
@@ -6,6 +5,7 @@ use overslash_core::permissions::{
 };
 use overslash_core::types::service::Risk;
 
+use overslash_db::OrgScope;
 use overslash_db::repos::identity::IdentityRow;
 
 /// Resolved ceiling data ready for checking.
@@ -28,29 +28,114 @@ pub fn ceiling_user_id_from_identity(
     }
 }
 
-/// Resolve the ceiling user ID by fetching the identity from the database.
+/// Resolve the ceiling user ID by fetching the identity from the database,
+/// bounded to the caller's org via `scope`.
 pub async fn resolve_ceiling_user_id(
-    pool: &PgPool,
+    scope: &OrgScope,
     identity_id: Uuid,
 ) -> Result<Uuid, crate::error::AppError> {
-    let identity = overslash_db::repos::identity::get_by_id(pool, identity_id)
+    let identity = scope
+        .get_identity(identity_id)
         .await?
         .ok_or_else(|| crate::error::AppError::NotFound("identity not found".into()))?;
     ceiling_user_id_from_identity(&identity)
+}
+
+/// Convenience wrapper: resolve the ceiling user for an optional identity.
+/// Returns `None` for org-level API keys (no identity), `Some(user_id)`
+/// otherwise.
+pub async fn resolve_ceiling_user_id_opt(
+    scope: &OrgScope,
+    identity_id: Option<Uuid>,
+) -> Result<Option<Uuid>, crate::error::AppError> {
+    match identity_id {
+        Some(id) => Ok(Some(resolve_ceiling_user_id(scope, id).await?)),
+        None => Ok(None),
+    }
+}
+
+/// Validate that `caller_identity_id` is allowed to act `on_behalf_of`
+/// `target_user_id`.
+///
+/// Rules:
+/// - caller must exist in `scope`'s org and not be archived (defense in depth:
+///   the request extractor already rejects archived callers, but we re-check
+///   so this validator is safe to call from any future context)
+/// - target must exist in `scope`'s org, be `kind = 'user'`, and not be archived
+/// - if caller is a User: `caller.id == target_user_id` (self only)
+/// - if caller is an Agent/SubAgent: `caller.owner_id == target_user_id`
+pub async fn validate_on_behalf_of(
+    scope: &OrgScope,
+    caller_identity_id: Uuid,
+    target_user_id: Uuid,
+) -> Result<Uuid, crate::error::AppError> {
+    let caller = scope
+        .get_identity(caller_identity_id)
+        .await?
+        .ok_or_else(|| crate::error::AppError::NotFound("caller identity not found".into()))?;
+    if caller.archived_at.is_some() {
+        return Err(crate::error::AppError::Forbidden(
+            "caller identity is archived".into(),
+        ));
+    }
+
+    let target = scope
+        .get_identity(target_user_id)
+        .await?
+        .ok_or_else(|| crate::error::AppError::NotFound("on_behalf_of target not found".into()))?;
+    if target.kind != "user" {
+        return Err(crate::error::AppError::Forbidden(
+            "on_behalf_of target must be a user identity".into(),
+        ));
+    }
+    if target.archived_at.is_some() {
+        return Err(crate::error::AppError::Forbidden(
+            "on_behalf_of target is archived".into(),
+        ));
+    }
+
+    let allowed_owner = ceiling_user_id_from_identity(&caller)?;
+    if allowed_owner != target.id {
+        return Err(crate::error::AppError::Forbidden(
+            "caller may only act on_behalf_of its owner user".into(),
+        ));
+    }
+    Ok(target.id)
+}
+
+/// Resolve the effective owner identity for a create operation.
+///
+/// - If `on_behalf_of` is `Some`, validate it via [`validate_on_behalf_of`].
+/// - If `None`, return `caller_identity_id` (today's behavior).
+/// - Org-level keys (no caller identity) cannot use `on_behalf_of`.
+pub async fn resolve_owner_identity(
+    scope: &OrgScope,
+    caller_identity_id: Option<Uuid>,
+    on_behalf_of: Option<Uuid>,
+) -> Result<Option<Uuid>, crate::error::AppError> {
+    match (caller_identity_id, on_behalf_of) {
+        (_, None) => Ok(caller_identity_id),
+        (None, Some(_)) => Err(crate::error::AppError::BadRequest(
+            "on_behalf_of requires an identity-bound API key".into(),
+        )),
+        (Some(caller), Some(target)) => {
+            let resolved = validate_on_behalf_of(scope, caller, target).await?;
+            Ok(Some(resolved))
+        }
+    }
 }
 
 /// Load and transform the group ceiling for a user identity.
 /// `has_groups` reflects user-created group membership only — system groups
 /// (Everyone, Admins) don't count for ceiling enforcement.
 pub async fn load_ceiling(
-    pool: &PgPool,
+    scope: &OrgScope,
     user_identity_id: Uuid,
 ) -> Result<ResolvedCeiling, crate::error::AppError> {
-    let groups =
-        overslash_db::repos::group::list_groups_for_identity(pool, user_identity_id).await?;
+    let groups = scope.list_groups_for_identity(user_identity_id).await?;
     let has_groups = groups.iter().any(|g| !g.is_system);
 
-    let ceiling = overslash_db::repos::group::get_ceiling_for_user(pool, user_identity_id).await?;
+    let ceiling = scope.get_ceiling_for_user(user_identity_id).await?;
 
     let grants = ceiling
         .grants

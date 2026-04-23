@@ -1,0 +1,9 @@
+{
+  "rewrites": [
+    { "source": "/v1/:path*", "destination": "https://api.dev.overslash.com/v1/:path*" },
+    { "source": "/auth/:path*", "destination": "https://api.dev.overslash.com/auth/:path*" },
+    { "source": "/health", "destination": "https://api.dev.overslash.com/health" },
+    { "source": "/enroll/approve/:path*", "destination": "https://api.dev.overslash.com/enroll/approve/:path*" },
+    { "source": "/public/secrets/:path*", "destination": "https://api.dev.overslash.com/public/secrets/:path*" }
+  ]
+}

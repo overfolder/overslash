@@ -56,11 +56,19 @@ pub enum AppError {
         limit_bytes: usize,
     },
 
+    #[error("filter syntax error: {0}")]
+    FilterSyntax(String),
+
     #[error("identity archived: {reason}")]
     IdentityArchived {
         identity_id: uuid::Uuid,
         reason: String,
         restorable_until: time::OffsetDateTime,
+    },
+
+    #[error("template validation failed")]
+    TemplateValidationFailed {
+        report: overslash_core::template_validation::ValidationReport,
     },
 }
 
@@ -71,6 +79,16 @@ impl IntoResponse for AppError {
             Self::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Self::FilterSyntax(msg) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "filter_syntax_error",
+                        "detail": msg,
+                    })),
+                )
+                    .into_response();
+            }
             Self::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             Self::Gone(msg) => (StatusCode::GONE, msg.clone()),
             Self::Internal(msg) => {
@@ -153,6 +171,16 @@ impl IntoResponse for AppError {
                         "hint": format!(
                             "POST /v1/identities/{identity_id}/restore to recover within the retention window"
                         ),
+                    })),
+                )
+                    .into_response();
+            }
+            Self::TemplateValidationFailed { report } => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "validation_failed",
+                        "report": report,
                     })),
                 )
                     .into_response();

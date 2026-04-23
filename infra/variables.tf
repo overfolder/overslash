@@ -21,6 +21,24 @@ variable "domain" {
   default     = ""
 }
 
+variable "dashboard_origin" {
+  description = "Comma-separated allowed CORS origins for the dashboard (e.g. https://app.overslash.com)"
+  type        = string
+  default     = "*localhost*"
+}
+
+variable "dashboard_url" {
+  description = "URL to redirect to after OAuth login (e.g. https://app.overslash.com)"
+  type        = string
+  default     = "/"
+}
+
+variable "enable_dev_auth" {
+  description = "Enable DEV_AUTH bypass login on Cloud Run (dev only)"
+  type        = bool
+  default     = false
+}
+
 # --- Feature flags ---
 
 variable "use_private_vpc" {

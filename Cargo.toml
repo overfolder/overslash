@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "tests/mock-target"]
+members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "tests/mock-target"]
 
 [workspace.package]
 edition = "2024"
@@ -19,13 +19,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "uuid", "time", "json", "migrate"] }
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "trace"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form"] }
 anyhow = "1"
 dotenvy = "0.15"
-rand = "0.9"
-jsonwebtoken = "9"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+rand = "0.10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+redis = { version = "1.2", features = ["tokio-comp", "connection-manager"] }
 dashmap = "6"
+clap = { version = "4", features = ["derive", "env"] }
+rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path", "debug-embed"] }
+mime_guess = "2"
+url = "2"
 
 # Fast dev builds: minimal debug info
 [profile.dev]

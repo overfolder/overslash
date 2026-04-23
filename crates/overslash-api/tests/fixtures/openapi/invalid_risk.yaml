@@ -1,0 +1,12 @@
+openapi: 3.1.0
+info:
+  title: Edit API
+  key: edit-api
+servers:
+  - url: https://api.example.com
+paths:
+  /x:
+    get:
+      operationId: borked
+      summary: nope
+      x-overslash-risk: catastrophic

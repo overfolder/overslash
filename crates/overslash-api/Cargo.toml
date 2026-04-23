@@ -5,8 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["embeddings"]
+# Propagates to overslash-core; when off, `init_embeddings` short-circuits
+# to `DisabledEmbedder` and the search endpoint runs keyword+fuzzy only.
+embeddings = ["overslash-core/embeddings"]
+
 [dependencies]
-overslash-core = { path = "../overslash-core" }
+overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }
 overslash-db = { path = "../overslash-db" }
 axum = { workspace = true }
 tower-http = { workspace = true }
@@ -24,15 +30,19 @@ anyhow = { workspace = true }
 dotenvy = { workspace = true }
 rand = { workspace = true }
 argon2 = "0.5"
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 hex = "0.4"
+url = { workspace = true }
 urlencoding = "2"
 base64 = "0.22"
 jsonwebtoken = { workspace = true }
 futures-util = "0.3"
 redis = { workspace = true }
 dashmap = { workspace = true }
+jaq-core = "=3.0.0"
+jaq-std = "=3.0.0"
+jaq-json = { version = "=2.0.0", features = ["serde"] }
 
 [dev-dependencies]
 sqlx = { workspace = true }
@@ -40,3 +50,5 @@ reqwest = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
+libc = "0.2"
+minijinja = { version = "2", default-features = false, features = ["serde"] }

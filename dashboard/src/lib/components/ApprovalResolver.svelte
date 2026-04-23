@@ -5,19 +5,40 @@
 		type ApprovalResponse,
 		type ResolveApprovalRequest
 	} from '$lib/session';
+	import { page } from '$app/stores';
 	import IdentityPath from './IdentityPath.svelte';
+	import { relativeTime } from '$lib/utils/time';
+	import { highlightJson } from '$lib/api';
 
-	let { approval, onResolved }: {
+	let { approval, onResolved, compact = false }: {
 		approval: ApprovalResponse;
 		onResolved?: (a: ApprovalResponse) => void;
+		compact?: boolean;
 	} = $props();
 
 	let override = $state<ApprovalResponse | null>(null);
 	const current = $derived(override ?? approval);
 	let selectedTier = $state(0);
+	let useCustomKey = $state(false);
+	let customKey = $state('');
 	let ttl = $state('forever');
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
+
+	const hasBubbled = $derived(
+		!!current.current_resolver_identity_id &&
+			current.current_resolver_identity_id !== current.requesting_identity_id
+	);
+
+	// Hide "Bubble up" when the signed-in viewer is already the assigned
+	// resolver — it's a no-op (the chain can't bubble further) and only
+	// confuses users.
+	const viewerIdentityId = $derived(
+		($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null
+	);
+	const isCurrentResolver = $derived(
+		!!viewerIdentityId && viewerIdentityId === current.current_resolver_identity_id
+	);
 
 	const ttlOptions = [
 		{ value: 'forever', label: 'Never' },
@@ -35,6 +56,37 @@
 	const serviceLabel = $derived(primary ? humanize(primary.service) : '—');
 	const actionLabel = $derived(primary ? primary.action : '—');
 
+	function escapeHtml(s: string): string {
+		return s
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;');
+	}
+
+	// Parse+highlight when possible; fall back to escaped plain text. Truncated
+	// payloads are no longer valid JSON, so the fallback path handles them.
+	function renderPayload(raw: string): string {
+		try {
+			return highlightJson(JSON.parse(raw));
+		} catch {
+			return escapeHtml(raw);
+		}
+	}
+
+	function formatBytes(n: number): string {
+		if (n < 1024) return `${n} B`;
+		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+		return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+	}
+
+	// String.length counts UTF-16 code units, not bytes. The server reports
+	// size_bytes in UTF-8 (Rust String::len), so match the unit here — otherwise
+	// non-ASCII payloads (emoji, CJK) show mismatched "X of Y" figures.
+	const utf8Encoder = new TextEncoder();
+	function utf8ByteLength(s: string): number {
+		return utf8Encoder.encode(s).byteLength;
+	}
+
 	function humanize(slug: string): string {
 		// "github" -> "GitHub", "google_calendar" -> "Google Calendar"
 		const known: Record<string, string> = {
@@ -50,35 +102,29 @@
 			.join(' ');
 	}
 
-	function relativeTime(iso: string): string {
-		const t = Date.parse(iso);
-		if (Number.isNaN(t)) return iso;
-		const diff = (t - Date.now()) / 1000;
-		const abs = Math.abs(diff);
-		const unit =
-			abs < 60
-				? `${Math.round(abs)}s`
-				: abs < 3600
-					? `${Math.round(abs / 60)}m`
-					: abs < 86400
-						? `${Math.round(abs / 3600)}h`
-						: `${Math.round(abs / 86400)}d`;
-		return diff < 0 ? `${unit} ago` : `in ${unit}`;
-	}
-
 	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {
 		submitting = true;
 		error = null;
 		try {
 			const body: ResolveApprovalRequest = { resolution };
 			if (resolution === 'allow_remember') {
-				const tier = current.suggested_tiers[selectedTier];
-				if (!tier) {
-					error = 'Select a permission scope to remember.';
-					submitting = false;
-					return;
+				if (useCustomKey) {
+					const k = customKey.trim();
+					if (!k) {
+						error = 'Enter a permission key to remember.';
+						submitting = false;
+						return;
+					}
+					body.remember_keys = [k];
+				} else {
+					const tier = current.suggested_tiers[selectedTier];
+					if (!tier) {
+						error = 'Select a permission scope to remember.';
+						submitting = false;
+						return;
+					}
+					body.remember_keys = tier.keys;
 				}
-				body.remember_keys = tier.keys;
 				if (ttl !== 'forever') body.ttl = ttl;
 			}
 			const updated = await session.post<ApprovalResponse>(
@@ -104,9 +150,11 @@
 	}
 </script>
 
-<div class="card">
-	<h1>Approval Request</h1>
-	<p class="summary">{current.action_summary}</p>
+<div class="root" class:card={!compact}>
+	{#if !compact}
+		<h1>Approval Request</h1>
+		<p class="summary">{current.action_summary}</p>
+	{/if}
 
 	<dl class="meta">
 		<dt>Agent</dt>
@@ -117,6 +165,11 @@
 				<code class="mono mute">{current.identity_id}</code>
 			{/if}
 		</dd>
+
+		{#if hasBubbled}
+			<dt>Resolver</dt>
+			<dd><code class="mono mute">{current.current_resolver_identity_id}</code></dd>
+		{/if}
 
 		<dt>Service</dt>
 		<dd>{serviceLabel}</dd>
@@ -131,6 +184,31 @@
 		<dd>{relativeTime(current.expires_at)}</dd>
 	</dl>
 
+	{#if current.derived_keys.length > 0}
+		<details class="derived">
+			<summary>Derived keys ({current.derived_keys.length})</summary>
+			<ul>
+				{#each current.derived_keys as dk}
+					<li><code class="mono">{dk.service} · {dk.action} · {dk.arg}</code></li>
+				{/each}
+			</ul>
+		</details>
+	{/if}
+
+	{#if current.action_detail}
+		<details class="raw-payload">
+			<summary>Show Raw Payload</summary>
+			<pre class="code">{@html renderPayload(current.action_detail)}</pre>
+			{#if current.action_detail_truncated}
+				<p class="truncated-note">
+					Showing first {formatBytes(utf8ByteLength(current.action_detail))} of {formatBytes(
+						current.action_detail_size_bytes
+					)} — truncated.
+				</p>
+			{/if}
+		</details>
+	{/if}
+
 	{#if !isPending}
 		<div class="banner banner-{current.status}">
 			This approval is <strong>{current.status}</strong>.
@@ -140,13 +218,16 @@
 			<div class="scope-label">Scope</div>
 			<div class="tiers">
 				{#each current.suggested_tiers as tier, i}
-					<label class="tier" class:selected={selectedTier === i}>
+					<label class="tier" class:selected={!useCustomKey && selectedTier === i}>
 						<input
 							type="radio"
 							name="tier"
 							value={i}
-							checked={selectedTier === i}
-							onchange={() => (selectedTier = i)}
+							checked={!useCustomKey && selectedTier === i}
+							onchange={() => {
+								selectedTier = i;
+								useCustomKey = false;
+							}}
 						/>
 						<div class="tier-body">
 							<code class="mono tier-key">{tier.keys[0]}{tier.keys.length > 1
@@ -156,6 +237,25 @@
 						</div>
 					</label>
 				{/each}
+				<label class="tier" class:selected={useCustomKey}>
+					<input
+						type="radio"
+						name="tier"
+						checked={useCustomKey}
+						onchange={() => (useCustomKey = true)}
+					/>
+					<div class="tier-body">
+						<div class="tier-desc">Custom… (advanced)</div>
+						{#if useCustomKey}
+							<input
+								class="custom-key"
+								type="text"
+								placeholder="service:action:arg"
+								bind:value={customKey}
+							/>
+						{/if}
+					</div>
+				</label>
 			</div>
 
 			<div class="expiry-row">
@@ -174,20 +274,29 @@
 
 		<div class="actions">
 			<button
-				class="btn btn-primary"
+				class="btn btn-allow-once"
 				disabled={submitting}
+				onclick={() => resolve('allow')}
+			>
+				Allow once
+			</button>
+			<button
+				class="btn btn-primary"
+				disabled={submitting || (useCustomKey && !customKey.trim())}
 				onclick={() => resolve('allow_remember')}
 			>
 				Allow &amp; Remember
 			</button>
-			<button
-				class="btn btn-bubble"
-				disabled={submitting}
-				title="Hand this approval off to the next ancestor in the chain"
-				onclick={() => resolve('bubble_up')}
-			>
-				Bubble up
-			</button>
+			{#if !isCurrentResolver}
+				<button
+					class="btn btn-bubble"
+					disabled={submitting}
+					title="Hand this approval off to the next ancestor in the chain"
+					onclick={() => resolve('bubble_up')}
+				>
+					Bubble up
+				</button>
+			{/if}
 			<button class="btn btn-deny" disabled={submitting} onclick={() => resolve('deny')}>
 				Deny
 			</button>
@@ -196,17 +305,71 @@
 </div>
 
 <style>
-	.card {
+	.root {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
 		width: 100%;
+	}
+	.card {
 		max-width: 520px;
 		background: #fff;
 		border: 1px solid var(--color-border);
 		border-radius: 12px;
 		padding: 1.75rem 2rem;
 		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+	}
+	.derived summary,
+	.raw-payload summary {
+		cursor: pointer;
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
+	}
+	.derived ul {
+		margin: 0.4rem 0 0 0;
+		padding: 0;
+		list-style: none;
 		display: flex;
 		flex-direction: column;
-		gap: 1rem;
+		gap: 0.2rem;
+	}
+	.raw-payload .code {
+		margin: 0.4rem 0 0 0;
+		padding: 0.75rem 0.9rem;
+		background: var(--color-bg);
+		border: 1px solid var(--color-border-subtle);
+		border-radius: var(--radius-md);
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+		color: var(--color-text);
+		overflow: auto;
+		max-height: 420px;
+		white-space: pre;
+	}
+	.raw-payload .truncated-note {
+		margin: 0.45rem 0 0 0;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+	}
+	:global(.raw-payload .json-key) { color: var(--primary-600); }
+	:global(.raw-payload .json-string) { color: var(--success-500); }
+	:global(.raw-payload .json-number) { color: var(--orange-500); }
+	:global(.raw-payload .json-bool) { color: var(--primary-600); }
+	:global(.raw-payload .json-null) { color: var(--color-text-muted); }
+	:global(.raw-payload .json-bracket) { color: var(--color-text-muted); }
+	.custom-key {
+		margin-top: 0.4rem;
+		width: 100%;
+		padding: 0.35rem 0.5rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		font-family: var(--font-mono);
+		font-size: 0.78rem;
+	}
+	.btn-allow-once {
+		background: #fff;
+		color: var(--color-primary);
+		border-color: var(--color-primary);
 	}
 	h1 {
 		margin: 0;

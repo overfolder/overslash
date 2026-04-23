@@ -1,0 +1,26 @@
+openapi: 3.1.0
+info:
+  title: {{ display_name }}
+  key: {{ key }}
+servers:
+  - url: https://{{ key }}.example.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: google
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/calendar: ""
+paths:
+  /events:
+    get:
+      operationId: list_events
+      summary: List events
+      risk: read
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/calendar

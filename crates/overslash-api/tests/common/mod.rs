@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -20,6 +20,25 @@ use uuid::Uuid;
 const TEMPLATE_DB_NAME: &str = "overslash_test_template";
 /// Arbitrary key for the advisory lock used to serialize template creation.
 const TEMPLATE_LOCK_KEY: i64 = 0x0_5_0_E_5_7_5_7;
+
+/// Second-tier template: migration template + standard org/user/key/group
+/// bootstrap already applied. Tests clone from this to skip the 11 HTTP
+/// requests that `run_standard_bootstrap` performs.
+const BOOTSTRAPPED_DB_NAME: &str = "overslash_test_bootstrapped";
+const BOOTSTRAPPED_LOCK_KEY: i64 = 0x0_5_B_0_0_7;
+
+/// Fixtures baked into the bootstrapped template.
+#[derive(Clone, Debug)]
+pub struct BootstrapFixtures {
+    pub org_id: Uuid,
+    pub org_key: String,
+    pub admin_key: String,
+    pub write_key: String,
+    pub read_key: String,
+    pub user_ids: [Uuid; 3],
+}
+
+static BOOTSTRAP_FIXTURES: OnceLock<BootstrapFixtures> = OnceLock::new();
 
 /// Returns a fresh `PgPool` backed by a clone of the migrated template database.
 /// nextest-safe: each test runs in its own process, all sharing one template.
@@ -39,8 +58,159 @@ pub async fn test_pool() -> PgPool {
     .unwrap();
     admin_pool.close().await;
 
+    register_for_cleanup(base_url.clone(), test_db.clone());
+
     let test_url = replace_db_name(&base_url, &test_db);
     PgPool::connect(&test_url).await.unwrap()
+}
+
+/// Returns a pool cloned from the bootstrapped template + cached fixtures.
+/// Each clone has an org, 3 users (admin/write/read-only), keys, and groups
+/// already set up — no HTTP bootstrap needed.
+pub async fn test_pool_bootstrapped() -> (PgPool, BootstrapFixtures) {
+    let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    ensure_template(&base_url).await;
+    ensure_bootstrapped(&base_url).await;
+
+    let test_db = format!("test_{}", Uuid::new_v4().simple());
+    let admin_pool = PgPool::connect(&base_url).await.unwrap();
+    // pg_terminate_backend is async — the template may briefly have lingering
+    // sessions right after ensure_bootstrapped returns.  Retry a few times.
+    let mut retries = 0u32;
+    loop {
+        match sqlx::query(&format!(
+            "CREATE DATABASE \"{test_db}\" TEMPLATE \"{BOOTSTRAPPED_DB_NAME}\""
+        ))
+        .execute(&admin_pool)
+        .await
+        {
+            Ok(_) => break,
+            Err(e) if retries < 20 && format!("{e}").contains("being accessed") => {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("clone bootstrapped template: {e}"),
+        }
+    }
+    admin_pool.close().await;
+
+    register_for_cleanup(base_url.clone(), test_db.clone());
+
+    let test_url = replace_db_name(&base_url, &test_db);
+    let pool = PgPool::connect(&test_url).await.unwrap();
+
+    let fixtures = if let Some(f) = BOOTSTRAP_FIXTURES.get() {
+        f.clone()
+    } else {
+        let f = read_fixtures(&pool).await;
+        let _ = BOOTSTRAP_FIXTURES.set(f.clone());
+        f
+    };
+
+    (pool, fixtures)
+}
+
+async fn read_fixtures(pool: &PgPool) -> BootstrapFixtures {
+    let rows = sqlx::query("SELECT key, value FROM _test_fixtures")
+        .fetch_all(pool)
+        .await
+        .unwrap();
+    let map: HashMap<String, String> = rows
+        .iter()
+        .map(|r| (r.get::<String, _>("key"), r.get::<String, _>("value")))
+        .collect();
+    BootstrapFixtures {
+        org_id: map["org_id"].parse().unwrap(),
+        org_key: map["org_key"].clone(),
+        admin_key: map["admin_key"].clone(),
+        write_key: map["write_key"].clone(),
+        read_key: map["read_key"].clone(),
+        user_ids: [
+            map["user_id_0"].parse().unwrap(),
+            map["user_id_1"].parse().unwrap(),
+            map["user_id_2"].parse().unwrap(),
+        ],
+    }
+}
+
+/// Per-process registry of test DBs to drop at exit.
+///
+/// Nextest runs each test in a fresh process, so this list typically holds one
+/// entry. We register an `atexit(3)` hook on first use that builds a small
+/// tokio runtime and issues `DROP DATABASE … WITH (FORCE)` for each entry.
+/// Without this, every test leaks ~9 MB into the Postgres data dir, which
+/// blows up disk/tmpfs across a full coverage run.
+static CLEANUP: OnceLock<Mutex<Vec<(String, String)>>> = OnceLock::new();
+
+fn register_for_cleanup(base_url: String, db_name: String) {
+    let m = CLEANUP.get_or_init(|| {
+        // SAFETY: atexit is async-signal-safe to register and we only ever
+        // install one handler per process.
+        unsafe {
+            libc::atexit(run_cleanup);
+        }
+        Mutex::new(Vec::new())
+    });
+    m.lock().unwrap().push((base_url, db_name));
+}
+
+extern "C" fn run_cleanup() {
+    let Some(m) = CLEANUP.get() else {
+        return;
+    };
+    // Recover from a poisoned lock: under `cargo test` (multi-thread), a
+    // panic in one test could poison the mutex. We must not panic from this
+    // extern "C" function — that would cross an FFI boundary and abort the
+    // process — so unwrap_or_else into the inner data instead.
+    let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+    let dbs = std::mem::take(&mut *guard);
+    drop(guard);
+    if dbs.is_empty() {
+        return;
+    }
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    rt.block_on(async {
+        // Group by base_url so we open one admin connection per Postgres.
+        let mut by_url: HashMap<String, Vec<String>> = HashMap::new();
+        for (url, db) in dbs {
+            by_url.entry(url).or_default().push(db);
+        }
+        for (url, names) in by_url {
+            let Ok(pool) = PgPool::connect(&url).await else {
+                continue;
+            };
+            for db in names {
+                let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))
+                    .execute(&pool)
+                    .await;
+            }
+            pool.close().await;
+        }
+    });
+}
+
+async fn db_exists(pool: &PgPool, name: &str) -> bool {
+    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+async fn db_exists_conn(conn: &mut sqlx::PgConnection, name: &str) -> bool {
+    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+        .bind(name)
+        .fetch_optional(&mut *conn)
+        .await
+        .unwrap()
+        .is_some()
 }
 
 /// Create+migrate the shared template if it doesn't exist yet.
@@ -49,7 +219,7 @@ async fn ensure_template(base_url: &str) {
     let admin_pool = PgPool::connect(base_url).await.unwrap();
 
     // Fast path: template already exists.
-    if template_exists(&admin_pool).await {
+    if db_exists(&admin_pool, TEMPLATE_DB_NAME).await {
         admin_pool.close().await;
         return;
     }
@@ -71,14 +241,7 @@ async fn ensure_template(base_url: &str) {
         .await
         .unwrap();
 
-    let exists: Option<sqlx::postgres::PgRow> =
-        sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
-            .bind(TEMPLATE_DB_NAME)
-            .fetch_optional(&mut conn)
-            .await
-            .unwrap();
-
-    if exists.is_none() {
+    if !db_exists_conn(&mut conn, TEMPLATE_DB_NAME).await {
         sqlx::query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
             .execute(&mut conn)
             .await
@@ -98,16 +261,6 @@ async fn ensure_template(base_url: &str) {
     admin_pool.close().await;
 }
 
-async fn template_exists(admin_pool: &PgPool) -> bool {
-    sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
-        .bind(TEMPLATE_DB_NAME)
-        .fetch_optional(admin_pool)
-        .await
-        .unwrap()
-        .map(|r| r.try_get::<i32, _>(0).unwrap_or(0) == 1)
-        .unwrap_or(false)
-}
-
 /// Replace the database name in a Postgres URL.
 /// Handles both `postgres://user:pass@host:port/dbname` and with query params.
 fn replace_db_name(url: &str, new_db: &str) -> String {
@@ -122,8 +275,260 @@ fn replace_db_name(url: &str, new_db: &str) -> String {
     result
 }
 
+/// Create the bootstrapped template if it doesn't exist yet.
+/// Clones from the migration template, starts a temp API server, runs the
+/// standard org/user/key/group bootstrap, stores fixtures, then terminates
+/// all connections so the DB can serve as a template.
+async fn ensure_bootstrapped(base_url: &str) {
+    let admin_pool = PgPool::connect(base_url).await.unwrap();
+
+    // No fast path here — unlike the migration template, the bootstrapped
+    // template has a window where the DB row exists but connections are still
+    // being torn down.  The advisory lock guarantees callers don't try to
+    // clone until the creating process is fully done.
+    let mut conn = admin_pool.acquire().await.unwrap().detach();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(BOOTSTRAPPED_LOCK_KEY)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    if !db_exists_conn(&mut conn, BOOTSTRAPPED_DB_NAME).await {
+        // Clone from migration template
+        sqlx::query(&format!(
+            "CREATE DATABASE \"{BOOTSTRAPPED_DB_NAME}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        let bs_url = replace_db_name(base_url, BOOTSTRAPPED_DB_NAME);
+        let bs_pool = PgPool::connect(&bs_url).await.unwrap();
+
+        // Create fixtures table (test-only, not a migration)
+        sqlx::query("CREATE TABLE _test_fixtures (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&bs_pool)
+            .await
+            .unwrap();
+
+        // Start temp server and run the standard bootstrap via HTTP
+        let (addr, client) = start_api(bs_pool.clone()).await;
+        let base = format!("http://{addr}");
+        let fixtures = run_standard_bootstrap(&base, &client).await;
+
+        // Persist fixtures into the template DB
+        for (k, v) in [
+            ("org_id", fixtures.org_id.to_string()),
+            ("org_key", fixtures.org_key.clone()),
+            ("admin_key", fixtures.admin_key.clone()),
+            ("write_key", fixtures.write_key.clone()),
+            ("read_key", fixtures.read_key.clone()),
+            ("user_id_0", fixtures.user_ids[0].to_string()),
+            ("user_id_1", fixtures.user_ids[1].to_string()),
+            ("user_id_2", fixtures.user_ids[2].to_string()),
+        ] {
+            sqlx::query("INSERT INTO _test_fixtures (key, value) VALUES ($1, $2)")
+                .bind(k)
+                .bind(&v)
+                .execute(&bs_pool)
+                .await
+                .unwrap();
+        }
+
+        // Close our pool, then terminate the server's lingering connections
+        // so Postgres allows using this DB as a template.
+        bs_pool.close().await;
+        sqlx::query(&format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = '{BOOTSTRAPPED_DB_NAME}' AND pid <> pg_backend_pid()"
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        // pg_terminate_backend is asynchronous — wait until the backends
+        // are actually gone before releasing the advisory lock.
+        for _ in 0..50 {
+            let row = sqlx::query("SELECT count(*) AS n FROM pg_stat_activity WHERE datname = $1")
+                .bind(BOOTSTRAPPED_DB_NAME)
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+            let n: i64 = row.get("n");
+            if n == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(BOOTSTRAPPED_LOCK_KEY)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let _ = conn.close().await;
+    admin_pool.close().await;
+}
+
+/// Run the standard 3-user org bootstrap via HTTP.
+/// Creates: org, org-level key, admin/write/read-only users with keys,
+/// admin→Admins group, read-only→Viewers group with read access.
+async fn run_standard_bootstrap(base: &str, client: &Client) -> BootstrapFixtures {
+    // Create org
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name": "Tpl Test Org", "slug": format!("tpl-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+
+    // Org-level key
+    let org_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id": org_id, "name": "org-admin"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
+
+    // Find system groups
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups.iter().find(|g| g["name"] == "Admins").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let everyone_id = groups.iter().find(|g| g["name"] == "Everyone").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Create 3 users: admin, write, read-only
+    let mut user_ids = [Uuid::nil(); 3];
+    let mut keys = vec![];
+    for (i, name) in ["admin-user", "write-user", "readonly-user"]
+        .iter()
+        .enumerate()
+    {
+        let user: Value = client
+            .post(format!("{base}/v1/identities"))
+            .header("Authorization", format!("Bearer {org_key}"))
+            .json(&json!({"name": name, "kind": "user"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let uid: Uuid = user["id"].as_str().unwrap().parse().unwrap();
+        user_ids[i] = uid;
+
+        let key_resp: Value = client
+            .post(format!("{base}/v1/api-keys"))
+            .header("Authorization", format!("Bearer {org_key}"))
+            .json(&json!({"org_id": org_id, "identity_id": uid, "name": format!("{name}-key")}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        keys.push(key_resp["key"].as_str().unwrap().to_string());
+    }
+
+    // Admin user -> Admins group
+    client
+        .post(format!("{base}/v1/groups/{admins_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_ids[0]}))
+        .send()
+        .await
+        .unwrap();
+
+    // Fetch overslash service instance
+    let overslash_svc: Value = client
+        .get(format!("{base}/v1/services/overslash"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_svc_id = overslash_svc["id"].as_str().unwrap().to_string();
+
+    // Remove read-only user from Everyone
+    client
+        .delete(format!(
+            "{base}/v1/groups/{everyone_id}/members/{}",
+            user_ids[2]
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+
+    // Create Viewers group with read access
+    let viewers: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Viewers"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let viewers_id = viewers["id"].as_str().unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{viewers_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"service_instance_id": overslash_svc_id, "access_level": "read"}))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{viewers_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_ids[2]}))
+        .send()
+        .await
+        .unwrap();
+
+    BootstrapFixtures {
+        org_id,
+        org_key,
+        admin_key: keys[0].clone(),
+        write_key: keys[1].clone(),
+        read_key: keys[2].clone(),
+        user_ids,
+    }
+}
+
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    // Bind first so `public_url` matches the real bound address. This lets
+    // server-internal loopback calls (e.g. the `/mcp` dispatcher proxying to
+    // REST) reach this test's process instead of a non-existent 3000.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -136,9 +541,10 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -160,6 +566,10 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -168,6 +578,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -177,15 +588,19 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -196,6 +611,8 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
 
 /// Start API with dev auth enabled. Returns (base_url, client).
 pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -208,9 +625,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -231,6 +649,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -239,6 +661,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -248,15 +671,20 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())
@@ -285,6 +713,7 @@ pub async fn start_api_with_auth_providers(
         public_url: public_url.to_string(),
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -308,6 +737,10 @@ pub async fn start_api_with_auth_providers(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -316,6 +749,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -325,8 +759,10 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::enrollment::router())
         .with_state(state);
 
@@ -362,12 +798,16 @@ pub async fn start_mock() -> SocketAddr {
 
     type S = Arc<Mutex<MockState>>;
 
-    async fn echo(headers: HeaderMap, body: Bytes) -> Json<Value> {
+    async fn echo(uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
         let h: serde_json::Map<String, Value> = headers
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
             .collect();
-        Json(json!({ "headers": h, "body": String::from_utf8_lossy(&body).to_string() }))
+        Json(json!({
+            "headers": h,
+            "body": String::from_utf8_lossy(&body).to_string(),
+            "uri": uri.to_string(),
+        }))
     }
 
     async fn receive_webhook(
@@ -536,7 +976,10 @@ pub async fn start_mock() -> SocketAddr {
 
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
-        .route("/echo", post(echo))
+        .route(
+            "/echo",
+            get(echo).post(echo).put(echo).delete(echo).patch(echo),
+        )
         .route("/large-file", get(large_file))
         .route("/drive/files/download", get(drive_download))
         .route("/drive/files/content", get(drive_content))
@@ -551,6 +994,7 @@ pub async fn start_mock() -> SocketAddr {
             "/github/user/emails-none-verified",
             get(github_user_emails_none_verified),
         )
+        .fallback(echo)
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -573,8 +1017,9 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    // Org-level key (needed to create identity)
-    let org_key: Value = client
+    // Bootstrap: first API-key call on a fresh org auto-creates an admin
+    // user identity and returns its key (no auth required).
+    let bootstrap_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .json(&json!({"org_id": org_id, "name": "org-admin"}))
         .send()
@@ -583,9 +1028,10 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .json()
         .await
         .unwrap();
-    let org_api_key = org_key["key"].as_str().unwrap().to_string();
+    let org_api_key = bootstrap_resp["key"].as_str().unwrap().to_string();
 
-    // Create a user identity first (agents require a parent)
+    // Create a "test-user" under the admin, then an agent under test-user.
+    // This matches the original flow so tests can find identities by name.
     let user_ident: Value = client
         .post(format!("{base}/v1/identities"))
         .header("Authorization", format!("Bearer {org_api_key}"))
@@ -610,7 +1056,7 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
-    // Identity-bound key (requires admin auth now that org has keys)
+    // Identity-bound key for the agent
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .header("Authorization", format!("Bearer {org_api_key}"))
@@ -628,6 +1074,56 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
 
 pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
+}
+
+/// Submit the MCP OAuth consent JSON endpoint with mode=new to enroll a
+/// fresh agent. Returns the `redirect_uri` (the MCP client's `redirect_uri`
+/// with `?code=…`) that the dashboard would forward the browser to.
+pub async fn finish_oauth_consent_new(
+    base: &str,
+    consent_redirect_location: &str,
+    session_cookie: &str,
+    agent_name: &str,
+) -> String {
+    // The authorize redirect now points at the dashboard
+    // (`<dashboard>/oauth/consent?request_id=…`), but we only care about
+    // the `request_id` parameter.
+    let request_id = consent_redirect_location
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .expect("consent redirect missing request_id");
+    let request_id = urlencoding::decode(request_id).unwrap().into_owned();
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", session_cookie)
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "mode": "new",
+                "agent_name": agent_name,
+                "inherit_permissions": false,
+                "group_names": [],
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::OK,
+        "consent finish must return 200 with redirect_uri"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    body["redirect_uri"]
+        .as_str()
+        .expect("redirect_uri missing")
+        .to_string()
 }
 
 /// Start API with real service registry loaded from `services/` directory.
@@ -669,6 +1165,7 @@ pub async fn start_api_with_registry(
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -689,6 +1186,10 @@ pub async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -697,6 +1198,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -706,11 +1208,98 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::search::router())
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    (format!("http://{addr}"), Client::new())
+}
+
+/// Start API wired for semantic-search integration tests. Loads the real
+/// `services/` registry (so gmail/google_calendar/resend/etc. are present),
+/// injects the deterministic [`StubEmbedder`] so the cosine path runs
+/// without downloading model weights, and flips `embeddings_available` to
+/// true so the endpoint actually issues pgvector queries.
+pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
+    let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let registry =
+        overslash_core::registry::ServiceRegistry::load_from_dir(&ws_root.join("services"))
+            .unwrap_or_default();
+
+    let config = overslash_api::config::Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        database_url: String::new(),
+        secrets_encryption_key: "ab".repeat(32),
+        signing_key: "cd".repeat(32),
+        approval_expiry_secs: 1800,
+        services_dir: "services".into(),
+        google_auth_client_id: None,
+        google_auth_client_secret: None,
+        github_auth_client_id: None,
+        github_auth_client_secret: None,
+        public_url: "http://localhost:3000".into(),
+        dev_auth_enabled: false,
+        max_response_body_bytes: 5_242_880,
+        filter_timeout_ms: 2000,
+        dashboard_url: "/".into(),
+        dashboard_origin: "*localhost*".into(),
+        redis_url: None,
+        default_rate_limit: 10000,
+        default_rate_window_secs: 60,
+    };
+
+    let state = overslash_api::AppState {
+        db: pool,
+        config,
+        http_client: reqwest::Client::new(),
+        registry: Arc::new(registry),
+        rate_limiter: std::sync::Arc::new(
+            overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
+        ),
+        rate_limit_cache: std::sync::Arc::new(
+            overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::StubEmbedder),
+        embeddings_available: true,
+    };
+
+    let app = axum::Router::new()
+        .merge(overslash_api::routes::health::router())
+        .merge(overslash_api::routes::orgs::router())
+        .merge(overslash_api::routes::identities::router())
+        .merge(overslash_api::routes::api_keys::router())
+        .merge(overslash_api::routes::groups::router())
+        .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::templates::router())
+        .merge(overslash_api::routes::connections::router())
+        .merge(overslash_api::routes::oauth_providers::router())
+        .merge(overslash_api::routes::search::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::auth::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -737,6 +1326,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: max_bytes,
+        filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
         redis_url: None,
@@ -757,6 +1347,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
                 std::time::Duration::from_secs(30),
             ),
         ),
+        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
+        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
+        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
+        embeddings_available: false,
     };
 
     let app = axum::Router::new()
@@ -765,6 +1359,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::identities::router())
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::secrets::router())
+        .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::approvals::router())
@@ -774,11 +1369,18 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
+        .merge(overslash_api::routes::preferences::router())
+        .merge(overslash_api::routes::oauth_as::router())
+        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::mcp::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -786,4 +1388,35 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (addr, Client::new())
+}
+
+// ─── openapi fixtures ──────────────────────────────────────────────────────
+
+/// Render an OpenAPI Jinja template loaded via `include_str!` with the given
+/// context values. Templates live under `tests/fixtures/openapi/`. We use
+/// minijinja rather than hand-rolled string substitution so fixtures can grow
+/// into conditionals/loops later without churn on the helper.
+pub fn render_openapi(template: &str, ctx: &[(&str, &str)]) -> String {
+    use minijinja::{Environment, Value};
+    use std::collections::BTreeMap;
+    let mut env = Environment::new();
+    env.add_template("t", template).expect("template parses");
+    let bag: BTreeMap<String, Value> = ctx
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), Value::from(*v)))
+        .collect();
+    env.get_template("t")
+        .unwrap()
+        .render(Value::from(bag))
+        .expect("template renders")
+}
+
+/// Render the shared minimal OpenAPI fixture for the given template key.
+/// Display name defaults to the key — pass both separately via `render_openapi`
+/// when you need a different display name.
+pub fn minimal_openapi(key: &str) -> String {
+    render_openapi(
+        include_str!("../fixtures/openapi/minimal.yaml.tmpl"),
+        &[("key", key), ("display_name", key)],
+    )
 }

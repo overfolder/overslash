@@ -1,0 +1,183 @@
+openapi: 3.1.0
+info:
+  title: Gmail
+  description: Gmail API — send, read, search, and manage email messages and labels.
+  key: gmail
+  category: Communication
+servers:
+  - url: https://gmail.googleapis.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: google
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/gmail.readonly: ""
+            https://www.googleapis.com/auth/gmail.send: ""
+            https://www.googleapis.com/auth/gmail.modify: ""
+paths:
+  /gmail/v1/users/{userId}/profile:
+    get:
+      operationId: get_profile
+      summary: "Get Gmail profile for {userId}"
+      risk: read
+      scope_param: userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+  /gmail/v1/users/{userId}/labels:
+    get:
+      operationId: list_labels
+      summary: "List Gmail labels for {userId}"
+      risk: read
+      scope_param: userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+  /gmail/v1/users/{userId}/messages:
+    get:
+      operationId: list_messages
+      summary: "Search messages for {userId}"
+      risk: read
+      scope_param: userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: q
+          in: query
+          description: "Search query (Gmail search syntax, e.g. 'from:user@example.com subject:hello')"
+          schema:
+            type: string
+        - name: labelIds
+          in: query
+          description: "Filter by label ID (e.g. 'INBOX', 'UNREAD', 'STARRED')"
+          schema:
+            type: string
+        - name: maxResults
+          in: query
+          description: Maximum number of messages to return (default 100, max 500)
+          schema:
+            type: integer
+        - name: pageToken
+          in: query
+          description: Page token from a previous list request
+          schema:
+            type: string
+        - name: includeSpamTrash
+          in: query
+          description: Include messages from SPAM and TRASH in results
+          schema:
+            type: boolean
+  /gmail/v1/users/{userId}/messages/{id}:
+    get:
+      operationId: get_message
+      summary: "Get message {id} for {userId}"
+      risk: read
+      scope_param: userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the message to retrieve
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: The format to return the message in
+          schema:
+            type: string
+            enum: [full, metadata, minimal, raw]
+        - name: metadataHeaders
+          in: query
+          description: "When format is 'metadata', a header name to include (e.g. 'Subject', 'From')"
+          schema:
+            type: string
+  /gmail/v1/users/{userId}/messages/send:
+    post:
+      operationId: send_message
+      summary: "Send email as {userId}"
+      risk: write
+      scope_param: userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw]
+              properties:
+                raw:
+                  type: string
+                  description: "Base64url-encoded RFC 2822 email message (headers + body)"
+  /gmail/v1/users/{userId}/messages/{id}/trash:
+    post:
+      operationId: trash_message
+      summary: "Move message {id} to trash for {userId}"
+      risk: delete
+      scope_param: userId
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the message to move to trash
+          schema:
+            type: string

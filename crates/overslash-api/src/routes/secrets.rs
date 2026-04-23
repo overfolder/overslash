@@ -5,12 +5,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use overslash_db::repos::audit::AuditEntry;
+use overslash_db::scopes::OrgScope;
 
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
+    extractors::{AdminAcl, ClientIp, SessionAuth, WriteAcl},
 };
 use overslash_core::crypto;
 
@@ -24,6 +25,12 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct PutSecretRequest {
     value: String,
+    /// If set, attribute the new secret version to this user identity instead
+    /// of the calling agent. Caller must be the user itself or an agent whose
+    /// owner is this user. Secrets are org-scoped, so this only changes
+    /// `created_by` attribution.
+    #[serde(default)]
+    on_behalf_of: Option<uuid::Uuid>,
 }
 
 #[derive(Serialize)]
@@ -41,6 +48,7 @@ struct PutSecretResponse {
 async fn put_secret(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(name): Path<String>,
     Json(req): Json<PutSecretRequest>,
@@ -49,18 +57,22 @@ async fn put_secret(
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
 
-    let (secret, _version) = overslash_db::repos::secret::put(
-        &state.db,
-        auth.org_id,
-        &name,
-        &encrypted,
+    let created_by = crate::services::group_ceiling::resolve_owner_identity(
+        &scope,
         auth.identity_id,
+        req.on_behalf_of,
     )
     .await?;
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    // API-driven writes: `created_by` already names the caller, so there is
+    // no distinct "provisioning user" to record. That column is reserved for
+    // the standalone secret-provide page flow.
+    let (secret, _version) = scope
+        .put_secret(&name, &encrypted, created_by, None)
+        .await?;
+
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "secret.put",
@@ -69,9 +81,8 @@ async fn put_secret(
             detail: serde_json::json!({ "name": &secret.name, "version": secret.current_version }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     Ok(Json(PutSecretResponse {
         name: secret.name,
@@ -80,11 +91,16 @@ async fn put_secret(
 }
 
 async fn get_secret(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    // Dashboard-only: secret metadata is never exposed to API keys.
+    // `SessionAuth` rejects bearer tokens; `OrgScope` enforces org_id at
+    // the SQL boundary.
+    session: SessionAuth,
+    scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<SecretMetadata>> {
-    let secret = overslash_db::repos::secret::get_by_name(&state.db, auth.org_id, &name)
+    debug_assert_eq!(session.org_id, scope.org_id());
+    let secret = scope
+        .get_secret_by_name(&name)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("secret '{name}' not found")))?;
 
@@ -95,10 +111,12 @@ async fn get_secret(
 }
 
 async fn list_secrets(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    // Dashboard-only — see `get_secret`.
+    session: SessionAuth,
+    scope: OrgScope,
 ) -> Result<Json<Vec<SecretMetadata>>> {
-    let rows = overslash_db::repos::secret::list_by_org(&state.db, auth.org_id).await?;
+    debug_assert_eq!(session.org_id, scope.org_id());
+    let rows = scope.list_secrets().await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| SecretMetadata {
@@ -112,15 +130,15 @@ async fn list_secrets(
 async fn delete_secret(
     State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    let deleted = overslash_db::repos::secret::soft_delete(&state.db, auth.org_id, &name).await?;
+    let deleted = scope.soft_delete_secret(&name).await?;
     if deleted {
-        let _ = overslash_db::repos::audit::log(
-            &state.db,
-            &overslash_db::repos::audit::AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "secret.deleted",
@@ -129,9 +147,8 @@ async fn delete_secret(
                 detail: serde_json::json!({ "name": &name }),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
         Ok(Json(serde_json::json!({ "deleted": true })))
     } else {
         Err(AppError::NotFound(format!("secret '{name}' not found")))

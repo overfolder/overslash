@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 AS one\n           FROM mcp_client_agent_bindings b\n           JOIN oauth_mcp_clients c ON c.client_id = b.client_id\n          WHERE b.user_identity_id = $1\n            AND b.agent_identity_id = $2\n            AND c.is_revoked = false\n          LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "one",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "22b3eabb280e8be4745b51083afd432944ef142e7d9230b4126df300bcdb540f"
+}

@@ -32,7 +32,10 @@ pub struct CreateApproval<'a> {
     pub expires_at: OffsetDateTime,
 }
 
-pub async fn create(pool: &PgPool, input: &CreateApproval<'_>) -> Result<ApprovalRow, sqlx::Error> {
+pub(crate) async fn create(
+    pool: &PgPool,
+    input: &CreateApproval<'_>,
+) -> Result<ApprovalRow, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
         "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, permission_keys, token, expires_at)
@@ -51,33 +54,49 @@ pub async fn create(pool: &PgPool, input: &CreateApproval<'_>) -> Result<Approva
     .await
 }
 
-pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<ApprovalRow>, sqlx::Error> {
+/// Double-key lookup: id AND org_id. Cross-tenant id probes return None
+/// rather than leaking the row's existence.
+pub(crate) async fn get_by_id(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
         "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
-         FROM approvals WHERE id = $1",
+         FROM approvals WHERE id = $1 AND org_id = $2",
         id,
+        org_id,
     )
     .fetch_optional(pool)
     .await
 }
 
-pub async fn get_by_token(pool: &PgPool, token: &str) -> Result<Option<ApprovalRow>, sqlx::Error> {
+/// Double-key lookup: token AND org_id. A token guessed/leaked from another
+/// org cannot be used to read across tenants.
+pub(crate) async fn get_by_token(
+    pool: &PgPool,
+    org_id: Uuid,
+    token: &str,
+) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
         "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
-         FROM approvals WHERE token = $1",
+         FROM approvals WHERE token = $1 AND org_id = $2",
         token,
+        org_id,
     )
     .fetch_optional(pool)
     .await
 }
 
 /// Atomically resolve a pending approval, with optimistic locking on the
-/// current resolver. Returns None if the approval is not pending OR if the
-/// resolver has been advanced since the caller checked authorization.
-pub async fn resolve(
+/// current resolver and double-key org filter. Returns None if the approval
+/// is not pending, the resolver has been advanced, OR the approval belongs
+/// to a different org.
+pub(crate) async fn resolve(
     pool: &PgPool,
+    org_id: Uuid,
     id: Uuid,
     status: &str,
     resolved_by: &str,
@@ -87,24 +106,26 @@ pub async fn resolve(
     sqlx::query_as!(
         ApprovalRow,
         "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4
-         WHERE id = $1 AND status = 'pending' AND current_resolver_identity_id = $5
+         WHERE id = $1 AND org_id = $6 AND status = 'pending' AND current_resolver_identity_id = $5
          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         id,
         status,
         resolved_by,
         remember,
         expected_resolver,
+        org_id,
     )
     .fetch_optional(pool)
     .await
 }
 
 /// Atomically advance the current resolver of a pending approval (bubble up),
-/// with optimistic locking on `expected_resolver`. Returns None if the
-/// approval is not pending OR has been concurrently bubbled by someone else.
-/// Updates `resolver_assigned_at` so per-bubble timeouts restart.
-pub async fn update_resolver(
+/// with optimistic locking on `expected_resolver` and double-key org filter.
+/// Returns None if the approval is not pending, has been concurrently bubbled,
+/// OR belongs to a different org.
+pub(crate) async fn update_resolver(
     pool: &PgPool,
+    org_id: Uuid,
     id: Uuid,
     new_resolver: Uuid,
     expected_resolver: Uuid,
@@ -114,17 +135,18 @@ pub async fn update_resolver(
         "UPDATE approvals
             SET current_resolver_identity_id = $2,
                 resolver_assigned_at = now()
-          WHERE id = $1 AND status = 'pending' AND current_resolver_identity_id = $3
+          WHERE id = $1 AND org_id = $4 AND status = 'pending' AND current_resolver_identity_id = $3
           RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         id,
         new_resolver,
         expected_resolver,
+        org_id,
     )
     .fetch_optional(pool)
     .await
 }
 
-pub async fn list_pending_by_org(
+pub(crate) async fn list_pending_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
@@ -139,7 +161,7 @@ pub async fn list_pending_by_org(
 }
 
 /// List pending approvals requested by `identity_id` (`?scope=mine`).
-pub async fn list_mine(
+pub(crate) async fn list_mine(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Uuid,
@@ -160,7 +182,7 @@ pub async fn list_mine(
 /// List pending approvals where the caller is the current resolver right now
 /// (`?scope=assigned`). Strict "inbox" view — does NOT include approvals
 /// sitting on a descendant of the caller. Excludes self-requested approvals.
-pub async fn list_assigned_to_identity(
+pub(crate) async fn list_assigned_to_identity(
     pool: &PgPool,
     org_id: Uuid,
     caller_id: Uuid,
@@ -188,7 +210,7 @@ pub async fn list_assigned_to_identity(
 ///     the current resolver (an ancestor can always step in for a descendant), AND
 ///   * `caller_id` is NOT the requester (an identity may never resolve its own
 ///     approval — SPEC §5).
-pub async fn list_actionable_for_identity(
+pub(crate) async fn list_actionable_for_identity(
     pool: &PgPool,
     org_id: Uuid,
     caller_id: Uuid,
@@ -223,7 +245,10 @@ pub async fn list_actionable_for_identity(
 
 /// List pending approvals whose current resolver has held them longer than
 /// their org's `approval_auto_bubble_secs` setting (and the setting is non-zero).
-pub async fn list_pending_for_auto_bubble(pool: &PgPool) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+/// Cross-org by design — exposed via `SystemScope` only.
+pub(crate) async fn list_pending_for_auto_bubble(
+    pool: &PgPool,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
         "SELECT a.id, a.org_id, a.identity_id, a.current_resolver_identity_id, a.resolver_assigned_at, a.action_summary, a.action_detail, a.permission_keys, a.status, a.resolved_at, a.resolved_by, a.remember, a.token, a.expires_at, a.created_at
@@ -237,7 +262,9 @@ pub async fn list_pending_for_auto_bubble(pool: &PgPool) -> Result<Vec<ApprovalR
     .await
 }
 
-pub async fn expire_stale(pool: &PgPool) -> Result<u64, sqlx::Error> {
+/// Cross-org maintenance: expire any pending approval whose `expires_at`
+/// has passed. Exposed via `SystemScope` only.
+pub(crate) async fn expire_stale(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE approvals SET status = 'expired', resolved_at = now(), resolved_by = 'system'
          WHERE status = 'pending' AND expires_at < now()",

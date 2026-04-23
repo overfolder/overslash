@@ -6,7 +6,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_db::repos::audit::{self, AuditEntry};
+use super::util::fmt_time;
+
+use overslash_db::repos::audit::AuditEntry;
+use overslash_db::scopes::OrgScope;
 
 use overslash_core::permissions::{GroupCeilingResult, PermissionKey, parse_derived_key};
 use overslash_core::types::service::Risk;
@@ -16,6 +19,12 @@ use crate::{
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, WriteAcl},
 };
+
+/// Maximum bytes of `action_detail` returned on approval responses. The raw
+/// payload is surfaced to reviewers (behind a "Show Raw Payload" disclosure);
+/// the cap bounds response size and browser render cost. The original
+/// untruncated size is still reported via `action_detail_size_bytes`.
+const MAX_ACTION_DETAIL_BYTES: usize = 100 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -42,10 +51,31 @@ struct ApprovalResponse {
     permission_keys: Vec<String>,
     derived_keys: Vec<overslash_core::permissions::DerivedKey>,
     suggested_tiers: Vec<overslash_core::permissions::SuggestedTier>,
+    /// Pretty-printed serialization of the stored `action_detail` JSONB,
+    /// truncated at a UTF-8 char boundary if the full form exceeds
+    /// `MAX_ACTION_DETAIL_BYTES`. `None` when no detail was stored.
+    action_detail: Option<String>,
+    action_detail_truncated: bool,
+    /// Byte length of the full pretty-printed `action_detail` prior to
+    /// truncation. `0` when no detail was stored.
+    action_detail_size_bytes: usize,
     status: String,
     token: String,
     expires_at: String,
     created_at: String,
+}
+
+/// Truncate a UTF-8 string to at most `max` bytes, walking backward from the
+/// boundary so multibyte characters are never split.
+fn truncate_utf8(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut idx = max;
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    &s[..idx]
 }
 
 impl ApprovalResponse {
@@ -55,6 +85,22 @@ impl ApprovalResponse {
     ) -> Self {
         let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
         let suggested_tiers = overslash_core::permissions::suggest_tiers(&r.permission_keys);
+        let (action_detail, action_detail_truncated, action_detail_size_bytes) = match r
+            .action_detail
+            .as_ref()
+            .and_then(|v| serde_json::to_string_pretty(v).ok())
+        {
+            Some(full) => {
+                let size = full.len();
+                if size > MAX_ACTION_DETAIL_BYTES {
+                    let trimmed = truncate_utf8(&full, MAX_ACTION_DETAIL_BYTES).to_string();
+                    (Some(trimmed), true, size)
+                } else {
+                    (Some(full), false, size)
+                }
+            }
+            None => (None, false, 0),
+        };
         Self {
             id: r.id,
             identity_id: r.identity_id,
@@ -65,19 +111,22 @@ impl ApprovalResponse {
             permission_keys: r.permission_keys,
             derived_keys,
             suggested_tiers,
+            action_detail,
+            action_detail_truncated,
+            action_detail_size_bytes,
             status: r.status,
             token: r.token,
-            expires_at: r.expires_at.to_string(),
-            created_at: r.created_at.to_string(),
+            expires_at: fmt_time(r.expires_at),
+            created_at: fmt_time(r.created_at),
         }
     }
 }
 
 async fn build_response(
-    db: &sqlx::PgPool,
+    scope: &OrgScope,
     row: overslash_db::repos::approval::ApprovalRow,
 ) -> Result<ApprovalResponse> {
-    let identity_path = crate::services::identity_path::build_for_identity(db, row.identity_id)
+    let identity_path = crate::services::identity_path::build_for_identity(scope, row.identity_id)
         .await
         .unwrap_or_else(|e| {
             tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
@@ -100,66 +149,75 @@ struct ListQuery {
     ///
     /// Unset preserves the legacy org-wide listing.
     scope: Option<String>,
+    /// Optional: list pending approvals for a specific identity (used by the
+    /// identity hierarchy view). Caller must own the identity's org.
+    identity_id: Option<Uuid>,
 }
 
 async fn list_approvals(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     auth: AuthContext,
+    scope: OrgScope,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<ApprovalResponse>>> {
+    // ?identity_id= is the identity-hierarchy detail panel filter: list
+    // pending approvals **requested by** that identity. Cross-tenant ids
+    // return NotFound at the scope boundary.
+    if let Some(identity_id) = q.identity_id {
+        scope
+            .get_identity(identity_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        let rows = scope.list_mine_approvals(identity_id).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(build_response(&scope, row).await?);
+        }
+        return Ok(Json(out));
+    }
     let rows = match q.scope.as_deref() {
         Some("mine") => {
             let identity_id = auth.identity_id.ok_or_else(|| {
                 AppError::BadRequest("scope=mine requires an identity-bound api key".into())
             })?;
-            overslash_db::repos::approval::list_mine(&state.db, auth.org_id, identity_id).await?
+            scope.list_mine_approvals(identity_id).await?
         }
         Some("assigned") => {
             let identity_id = auth.identity_id.ok_or_else(|| {
                 AppError::BadRequest("scope=assigned requires an identity-bound api key".into())
             })?;
-            overslash_db::repos::approval::list_assigned_to_identity(
-                &state.db,
-                auth.org_id,
-                identity_id,
-            )
-            .await?
+            scope.list_assigned_approvals(identity_id).await?
         }
         Some("actionable") => {
             let identity_id = auth.identity_id.ok_or_else(|| {
                 AppError::BadRequest("scope=actionable requires an identity-bound api key".into())
             })?;
-            overslash_db::repos::approval::list_actionable_for_identity(
-                &state.db,
-                auth.org_id,
-                identity_id,
-            )
-            .await?
+            scope.list_actionable_approvals(identity_id).await?
         }
         Some(other) => {
             return Err(AppError::BadRequest(format!(
                 "invalid scope '{other}': expected 'mine', 'assigned', or 'actionable'"
             )));
         }
-        None => overslash_db::repos::approval::list_pending_by_org(&state.db, auth.org_id).await?,
+        None => scope.list_pending_approvals().await?,
     };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        out.push(build_response(&state.db, row).await?);
+        out.push(build_response(&scope, row).await?);
     }
     Ok(Json(out))
 }
 
 async fn get_approval(
-    State(state): State<AppState>,
-    auth: AuthContext,
+    State(_state): State<AppState>,
+    scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
-    let row = overslash_db::repos::approval::get_by_id(&state.db, id)
+    let row = scope
+        .get_approval(id)
         .await?
-        .filter(|r| r.org_id == auth.org_id)
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
-    Ok(Json(build_response(&state.db, row).await?))
+    Ok(Json(build_response(&scope, row).await?))
 }
 
 #[derive(Deserialize)]
@@ -172,46 +230,51 @@ struct ResolveRequest {
 async fn resolve_approval(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
     let auth = acl;
 
-    // Load the approval and apply the multi-tenancy guard FIRST, before any
-    // other branch (including bubble_up). 404 (not 403) avoids leaking the
-    // existence of foreign approval ids.
-    let approval_pre = overslash_db::repos::approval::get_by_id(&state.db, id)
+    // Load the approval through the org-scoped lookup. A foreign id returns
+    // None at the SQL boundary — 404 (not 403) avoids leaking existence.
+    let approval_pre = scope
+        .get_approval(id)
         .await?
-        .filter(|r| r.org_id == auth.org_id)
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
     // ── Authorize the caller as the current resolver (or an ancestor of them).
-    // Org-level (no identity_id) keys belong to org admins and are allowed for
-    // backward compatibility with the test/admin flows. Identity-bound keys
-    // must match the current resolver or be one of its ancestors.
+    // Org admins (Users with `is_org_admin = true` or Agents with admin grant
+    // on the overslash meta service — both surfaced as `Admin` access level by
+    // the OrgAcl extractor) bypass the chain walk: they can resolve any
+    // approval in their org. Non-admin callers must be the current resolver or
+    // one of its ancestors.
     //
     // SPEC §5: "The requesting agent itself — never. An agent cannot resolve
     // its own approval requests." This catches edge cases (e.g. an orphaned
     // non-user identity ending up as its own resolver after the chain walk
     // falls back) where is_self_or_ancestor would otherwise pass the same id
     // against itself.
+    use overslash_core::permissions::AccessLevel;
     if let Some(caller_identity) = auth.identity_id {
         if caller_identity == approval_pre.identity_id {
             return Err(AppError::Forbidden(
                 "agents cannot resolve their own approval requests".into(),
             ));
         }
-        let allowed = crate::services::permission_chain::is_self_or_ancestor(
-            &state.db,
-            caller_identity,
-            approval_pre.current_resolver_identity_id,
-        )
-        .await?;
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "caller is not authorized to resolve this approval".into(),
-            ));
+        if auth.access_level < AccessLevel::Admin {
+            let allowed = crate::services::permission_chain::is_self_or_ancestor(
+                &scope,
+                caller_identity,
+                approval_pre.current_resolver_identity_id,
+            )
+            .await?;
+            if !allowed {
+                return Err(AppError::Forbidden(
+                    "caller is not authorized to resolve this approval".into(),
+                ));
+            }
         }
     }
 
@@ -223,7 +286,7 @@ async fn resolve_approval(
             .map(|k| PermissionKey(k.clone()))
             .collect();
         let next = crate::services::permission_chain::find_next_resolver(
-            &state.db,
+            &scope,
             approval_pre.identity_id,
             approval_pre.current_resolver_identity_id,
             &perm_keys,
@@ -237,22 +300,17 @@ async fn resolve_approval(
                 "approval is already at the final resolver".into(),
             ));
         }
-        let updated = overslash_db::repos::approval::update_resolver(
-            &state.db,
-            id,
-            next,
-            approval_pre.current_resolver_identity_id,
-        )
-        .await?
-        .ok_or_else(|| {
-            AppError::Conflict(
-                "approval was concurrently resolved or bubbled by another caller".into(),
-            )
-        })?;
+        let updated = scope
+            .update_approval_resolver(id, next, approval_pre.current_resolver_identity_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "approval was concurrently resolved or bubbled by another caller".into(),
+                )
+            })?;
 
-        let _ = audit::log(
-            &state.db,
-            &AuditEntry {
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
                 action: "approval.bubbled",
@@ -264,11 +322,10 @@ async fn resolve_approval(
                 }),
                 description: None,
                 ip_address: ip.0.as_deref(),
-            },
-        )
-        .await;
+            })
+            .await;
 
-        return Ok(Json(build_response(&state.db, updated).await?));
+        return Ok(Json(build_response(&scope, updated).await?));
     }
 
     let (status, remember) = match req.resolution.as_str() {
@@ -324,14 +381,11 @@ async fn resolve_approval(
         };
 
         // Validate keys don't exceed group ceiling (applies to both explicit and fallback keys)
-        let ceiling_user_id = crate::services::group_ceiling::resolve_ceiling_user_id(
-            &state.db,
-            approval.identity_id,
-        )
-        .await?;
+        let ceiling_user_id =
+            crate::services::group_ceiling::resolve_ceiling_user_id(&scope, approval.identity_id)
+                .await?;
 
-        let ceiling =
-            crate::services::group_ceiling::load_ceiling(&state.db, ceiling_user_id).await?;
+        let ceiling = crate::services::group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
         if ceiling.has_groups {
             for key in effective_keys {
@@ -352,43 +406,37 @@ async fn resolve_approval(
         }
     }
 
-    let row = overslash_db::repos::approval::resolve(
-        &state.db,
-        id,
-        status,
-        "user",
-        remember,
-        approval_pre.current_resolver_identity_id,
-    )
-    .await?
-    .ok_or_else(|| {
-        AppError::Conflict("approval was concurrently resolved or bubbled by another caller".into())
-    })?;
+    let row = scope
+        .resolve_approval(
+            id,
+            status,
+            "user",
+            remember,
+            approval_pre.current_resolver_identity_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(
+                "approval was concurrently resolved or bubbled by another caller".into(),
+            )
+        })?;
 
     if remember {
         // Place the rule on the requester's closest non-inherit_permissions
         // ancestor (inclusive). For a Researcher(inherit) under Marketing,
         // approving "remember" puts the rule on Marketing — not Researcher.
         let placement_id =
-            crate::services::permission_chain::rule_placement_for(&state.db, row.identity_id)
-                .await?;
+            crate::services::permission_chain::rule_placement_for(&scope, row.identity_id).await?;
         let keys = req.remember_keys.as_deref().unwrap_or(&row.permission_keys);
         for key in keys {
-            let _ = overslash_db::repos::permission_rule::create(
-                &state.db,
-                auth.org_id,
-                placement_id,
-                key,
-                "allow",
-                parsed_expires_at,
-            )
-            .await;
+            let _ = scope
+                .create_permission_rule(placement_id, key, "allow", parsed_expires_at)
+                .await;
         }
     }
 
-    let _ = audit::log(
-        &state.db,
-        &AuditEntry {
+    let _ = OrgScope::new(auth.org_id, state.db.clone())
+        .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
             action: "approval.resolved",
@@ -401,9 +449,8 @@ async fn resolve_approval(
             }),
             description: None,
             ip_address: ip.0.as_deref(),
-        },
-    )
-    .await;
+        })
+        .await;
 
     // Dispatch webhook (fire-and-forget)
     {
@@ -429,5 +476,5 @@ async fn resolve_approval(
         });
     }
 
-    Ok(Json(build_response(&state.db, row).await?))
+    Ok(Json(build_response(&scope, row).await?))
 }

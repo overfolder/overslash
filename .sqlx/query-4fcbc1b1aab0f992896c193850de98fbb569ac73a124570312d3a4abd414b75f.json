@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oauth_mcp_clients\n             (client_id, client_name, redirect_uris, software_id, software_version,\n              created_ip, created_user_agent)\n           VALUES ($1, $2, $3, $4, $5, $6, $7)\n           RETURNING id, client_id, client_name, redirect_uris,\n                     software_id, software_version, created_at, last_seen_at,\n                     created_ip, created_user_agent, is_revoked",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "software_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "software_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_ip",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_user_agent",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_revoked",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "4fcbc1b1aab0f992896c193850de98fbb569ac73a124570312d3a4abd414b75f"
+}

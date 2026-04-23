@@ -12,6 +12,7 @@ uuid = { workspace = true }
 time = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+pgvector = { version = "0.4", features = ["sqlx"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
