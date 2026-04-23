@@ -156,15 +156,15 @@ async fn provider_login(
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
-    let nonce_cookie = format!(
-        "oss_auth_nonce={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        nonce
-    );
+    // The OAuth callback always lands on `public_url/auth/callback/<provider>`
+    // (typically the root apex), so when login kicks off from a corp
+    // subdomain the auth-state cookies MUST be set on the shared parent
+    // domain (`session_cookie_domain`, e.g. `.app.overslash.com`) or the
+    // browser won't send them to the callback host. Without this, login
+    // from a subdomain silently fails with "missing auth nonce cookie".
+    let nonce_cookie = auth_cookie(&state, "oss_auth_nonce", &nonce);
     let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
-    let verifier_cookie = format!(
-        "oss_auth_verifier={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        verifier_value
-    );
+    let verifier_cookie = auth_cookie(&state, "oss_auth_verifier", verifier_value);
     // Persist org slug across the OAuth redirect so the callback can resolve
     // DB-stored credentials. Value is "none" when org context isn't needed
     // (env-var social providers). Sanitize to prevent header injection.
@@ -176,10 +176,7 @@ async fn provider_login(
                     .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
         })
         .unwrap_or("none");
-    let org_cookie = format!(
-        "oss_auth_org={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        org_slug_value
-    );
+    let org_cookie = auth_cookie(&state, "oss_auth_org", org_slug_value);
 
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
@@ -191,14 +188,34 @@ async fn provider_login(
     // through login). Only accept path-only targets to keep this from
     // turning into an open redirect.
     if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
-        let next_cookie = format!(
-            "oss_auth_next={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-            next
-        );
+        let next_cookie = auth_cookie(&state, "oss_auth_next", &next);
         headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
     }
 
     Ok((headers, Redirect::to(&auth_url)).into_response())
+}
+
+/// Build a Set-Cookie for the short-lived OAuth auth-state cookies (nonce,
+/// PKCE verifier, org slug, `next`). Scoped to `Path=/auth` so they only
+/// hitch along to auth endpoints. Domain comes from the same config knob
+/// as the session cookie — when set, both the login kickoff host and the
+/// callback host share the cookie.
+fn auth_cookie(state: &AppState, name: &str, value: &str) -> String {
+    let mut out = format!("{name}={value}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600");
+    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
+        out.push_str(&format!("; Domain={domain}"));
+    }
+    out
+}
+
+/// Matching clear for the auth-state cookies. Must emit the same `Domain`
+/// attribute, or the browser keeps a cross-subdomain copy around.
+fn clear_auth_cookie(state: &AppState, name: &str) -> String {
+    let mut out = format!("{name}=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0");
+    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
+        out.push_str(&format!("; Domain={domain}"));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -302,10 +319,13 @@ async fn provider_callback(
 
     // Set session cookie + clear auth cookies
     let session_cookie = session_cookie(&state, &token)?;
-    let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
-    let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
-    let clear_org = "oss_auth_org=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
-    let clear_next = "oss_auth_next=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
+    // Clear with the same Domain attribute we set them with — otherwise the
+    // browser keeps the cross-subdomain copy around and the next login round
+    // picks up stale nonce/verifier state.
+    let clear_nonce = clear_auth_cookie(&state, "oss_auth_nonce");
+    let clear_verifier = clear_auth_cookie(&state, "oss_auth_verifier");
+    let clear_org = clear_auth_cookie(&state, "oss_auth_org");
+    let clear_next = clear_auth_cookie(&state, "oss_auth_next");
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie);
@@ -682,18 +702,21 @@ async fn list_account_memberships(
 }
 
 /// DELETE /v1/account/memberships/{org_id} — drop the caller's own
-/// membership (useful for retiring a bootstrap/breakglass admin). Refuses to
-/// drop a personal-org membership (that'd orphan the account) or the last
-/// admin of a non-personal org.
+/// membership. Refuses to drop a personal-org membership (that'd orphan
+/// the account) or the last admin of a non-personal org.
+///
+/// The "last admin" check and the delete run in a single SERIALIZABLE
+/// transaction that locks the org's admin rows with `FOR UPDATE`. Without
+/// the lock, two concurrent leave requests from the two remaining admins
+/// could both pass the check and both succeed — final state: zero admins,
+/// org is orphaned. With the lock, Postgres serializes the two txs and the
+/// second one observes only one admin and fails.
 async fn drop_account_membership(
     State(state): State<AppState>,
     session: crate::extractors::SessionAuth,
     Path(org_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let user_id = resolve_session_user_id(&state, &session).await?;
-    let existing = membership::find(&state.db, user_id, org_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("no such membership".into()))?;
 
     let org_row = org::get_by_id(&state.db, org_id)
         .await?
@@ -704,20 +727,52 @@ async fn drop_account_membership(
             "cannot drop membership of your own personal org".into(),
         ));
     }
-    if existing.role == membership::ROLE_ADMIN {
-        let all = membership::list_for_org(&state.db, org_id).await?;
-        let remaining_admins = all
-            .iter()
-            .filter(|m| m.user_id != user_id && m.role == membership::ROLE_ADMIN)
-            .count();
-        if remaining_admins == 0 {
+
+    let mut tx = state.db.begin().await?;
+
+    // Lock the caller's row first. If it's gone we just 404 — no lock needed.
+    #[allow(clippy::disallowed_methods)]
+    let existing_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM user_org_memberships
+         WHERE user_id = $1 AND org_id = $2 FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let existing_role =
+        existing_role.ok_or_else(|| AppError::NotFound("no such membership".into()))?;
+
+    if existing_role == membership::ROLE_ADMIN {
+        // Lock all admin rows for this org (including the caller's, already
+        // locked above). Any concurrent drop on another admin serializes
+        // behind this FOR UPDATE and observes the post-delete state.
+        #[allow(clippy::disallowed_methods)]
+        let admin_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM (
+               SELECT 1 FROM user_org_memberships
+               WHERE org_id = $1 AND role = 'admin'
+               FOR UPDATE
+             ) AS admins",
+        )
+        .bind(org_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if admin_count <= 1 {
             return Err(AppError::BadRequest(
                 "cannot drop the last admin of a non-personal org".into(),
             ));
         }
     }
 
-    membership::delete(&state.db, user_id, org_id).await?;
+    #[allow(clippy::disallowed_methods)]
+    sqlx::query("DELETE FROM user_org_memberships WHERE user_id = $1 AND org_id = $2")
+        .bind(user_id)
+        .bind(org_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
     Ok(axum::Json(json!({ "status": "dropped", "org_id": org_id })))
 }
 
@@ -1196,13 +1251,43 @@ async fn provision_root(
         }
     };
 
+    // Everything from here on — user creation, identity, bootstrap,
+    // membership — runs inside `provision_root_contents`. Any error
+    // (other than the unique-violation race, which returns Ok(winner) after
+    // manually cleaning up the org) bubbles up here, and we compensate by
+    // deleting the personal-org shell to avoid leaking an empty row.
+    match provision_root_contents(state, userinfo, &org, display_name).await {
+        Ok(tuple) => Ok(tuple),
+        Err(e) => {
+            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                .execute(&state.db)
+                .await
+            {
+                tracing::error!(
+                    org_id = %org.id,
+                    error = %e,
+                    cleanup_error = %cleanup_err,
+                    "provision_root rollback failed; orphan personal org left in DB"
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn provision_root_contents(
+    state: &AppState,
+    userinfo: &NormalizedUserInfo,
+    org: &overslash_db::repos::org::OrgRow,
+    display_name: &str,
+) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
     // Concurrent-first-login race: another request for the same
     // (provider, subject) may have already created the users row + personal
     // org + identity + membership. We detect the race via the partial
     // UNIQUE on `users.(overslash_idp_provider, overslash_idp_subject)` and
-    // fall through to the winner's state, deleting the personal org we
-    // just created (cascades to identities/memberships — none of our own
-    // writes have happened yet at this point).
+    // fall through to the winner's state. In that case we delete *our* org
+    // ourselves (the caller's outer cleanup won't run because we're
+    // returning Ok) and return the winner's (org, identity, user_id).
     let new_user = match user_repo::create_overslash_backed(
         &state.db,
         Some(&userinfo.email),
