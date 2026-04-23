@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, created_at, updated_at\n         FROM identities WHERE email = $1 AND kind = 'user'",
+  "query": "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at\n         FROM identities WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -85,18 +85,24 @@
       },
       {
         "ordinal": 16,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -116,9 +122,10 @@
       true,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "279b0dedd35a2556c9ee8f403deb2727e30f0dd27cb0fc277a81fc9fd17d3baf"
+  "hash": "e181372bfb58b58e449c51c22ec2272ff720f794bfece56fac117a79720376a6"
 }

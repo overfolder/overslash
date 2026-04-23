@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
+\restrict 8GNYHzAjA07MChf6MmigxCh0ylkAHD7WG33FcxuLsKjoKHYKJYrwId8nv6aUxq8
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -218,6 +218,7 @@ CREATE TABLE public.identities (
     archived_reason text,
     preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
     is_org_admin boolean DEFAULT false NOT NULL,
+    user_id uuid,
     CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
@@ -342,6 +343,7 @@ CREATE TABLE public.orgs (
     allow_user_templates boolean DEFAULT false NOT NULL,
     global_templates_enabled boolean DEFAULT true NOT NULL,
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
+    is_personal boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
 );
 
@@ -515,6 +517,36 @@ CREATE TABLE public.service_templates (
     openapi jsonb NOT NULL,
     status text DEFAULT 'active'::text NOT NULL,
     CONSTRAINT service_templates_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text])))
+);
+
+
+--
+-- Name: user_org_memberships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_org_memberships (
+    user_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    role text NOT NULL,
+    is_bootstrap boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT user_org_memberships_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
+);
+
+
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.users (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    email text,
+    display_name text,
+    overslash_idp_provider text,
+    overslash_idp_subject text,
+    personal_org_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -856,6 +888,22 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: user_org_memberships user_org_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_org_memberships
+    ADD CONSTRAINT user_org_memberships_pkey PRIMARY KEY (user_id, org_id);
+
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: webhook_deliveries webhook_deliveries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1012,6 +1060,13 @@ CREATE INDEX idx_identities_parent ON public.identities USING btree (parent_id) 
 
 
 --
+-- Name: idx_identities_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_user ON public.identities USING btree (user_id);
+
+
+--
 -- Name: idx_identities_user_email; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1065,6 +1120,13 @@ CREATE INDEX idx_mcp_refresh_tokens_client ON public.mcp_refresh_tokens USING bt
 --
 
 CREATE UNIQUE INDEX idx_mcp_refresh_tokens_hash ON public.mcp_refresh_tokens USING btree (hash);
+
+
+--
+-- Name: idx_memberships_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_memberships_org ON public.user_org_memberships USING btree (org_id);
 
 
 --
@@ -1229,6 +1291,20 @@ CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates U
 
 
 --
+-- Name: idx_users_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_email ON public.users USING btree (email);
+
+
+--
+-- Name: idx_users_personal_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_personal_org ON public.users USING btree (personal_org_id);
+
+
+--
 -- Name: idx_webhook_deliveries_retry; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1261,6 +1337,13 @@ CREATE UNIQUE INDEX service_action_embeddings_org_unique ON public.service_actio
 --
 
 CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_action_embeddings USING btree (org_id, owner_identity_id, template_key, action_key) WHERE (tier = 'user'::text);
+
+
+--
+-- Name: users_overslash_idp_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX users_overslash_idp_unique ON public.users USING btree (overslash_idp_provider, overslash_idp_subject) WHERE ((overslash_idp_provider IS NOT NULL) AND (overslash_idp_subject IS NOT NULL));
 
 
 --
@@ -1461,6 +1544,14 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identities identities_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identities
+    ADD CONSTRAINT identities_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -1744,6 +1835,30 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: user_org_memberships user_org_memberships_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_org_memberships
+    ADD CONSTRAINT user_org_memberships_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_org_memberships user_org_memberships_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_org_memberships
+    ADD CONSTRAINT user_org_memberships_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: users users_personal_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_personal_org_id_fkey FOREIGN KEY (personal_org_id) REFERENCES public.orgs(id) ON DELETE SET NULL;
+
+
+--
 -- Name: webhook_deliveries webhook_deliveries_subscription_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1763,5 +1878,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
+\unrestrict 8GNYHzAjA07MChf6MmigxCh0ylkAHD7WG33FcxuLsKjoKHYKJYrwId8nv6aUxq8
 

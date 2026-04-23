@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at\n         FROM users\n         WHERE overslash_idp_provider = $1 AND overslash_idp_subject = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "overslash_idp_provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "overslash_idp_subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "personal_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "d9cb4a7aa6865f69ae55728066e6cfa59c23eb234e67d4598f8b400d9647dbf8"
+}

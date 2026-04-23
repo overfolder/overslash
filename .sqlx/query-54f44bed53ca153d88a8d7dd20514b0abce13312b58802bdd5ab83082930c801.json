@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO orgs (name, slug) VALUES ($1, $2)\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, created_at, updated_at",
+  "query": "INSERT INTO users (email, display_name)\n         VALUES ($1, $2)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -10,31 +10,36 @@
       },
       {
         "ordinal": 1,
-        "name": "name",
+        "name": "email",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "slug",
+        "name": "display_name",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "subagent_idle_timeout_secs",
-        "type_info": "Int4"
+        "name": "overslash_idp_provider",
+        "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "subagent_archive_retention_days",
-        "type_info": "Int4"
+        "name": "overslash_idp_subject",
+        "type_info": "Text"
       },
       {
         "ordinal": 5,
+        "name": "personal_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -47,13 +52,14 @@
     },
     "nullable": [
       false,
-      false,
-      false,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "919499f9789a9518adefce6cb8df0e899c954d41e969c6eb6dd1a616bd3296b0"
+  "hash": "54f44bed53ca153d88a8d7dd20514b0abce13312b58802bdd5ab83082930c801"
 }
