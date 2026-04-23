@@ -20,15 +20,18 @@ use crate::{
     error::AppError,
     extractors::{AuthContext, ClientIp},
     services::{
-        group_ceiling, http_executor,
+        disclosure, group_ceiling, http_executor,
         response_filter::{self, ResponseFilter},
     },
 };
 use overslash_core::{
-    crypto,
+    crypto, disclosure as core_disclosure,
     permissions::{GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
-    types::{ActionRequest, ActionResult, FilteredBody, InjectAs, SecretRef, service::Risk},
+    types::{
+        ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, SecretRef,
+        service::Risk,
+    },
 };
 
 pub fn router() -> Router<AppState> {
@@ -96,6 +99,17 @@ struct ResolvedMeta {
     risk: Option<Risk>,
     /// Owner identity ID of the resolved service instance (for user-owned service bypass).
     service_instance_owner: Option<Uuid>,
+    /// Disclosure declarations from the action template (Mode C only, empty
+    /// for Mode A/B). Runs at approval-create and audit-write time.
+    disclose: Vec<DisclosureField>,
+    /// Redact paths from the action template (Mode C only, empty for Mode
+    /// A/B). Applied to the request projection before it's persisted as
+    /// `approvals.action_detail`.
+    redact: Vec<String>,
+    /// Original resolved params (before url/body assembly), retained for the
+    /// disclosure `.params.*` projection. Empty for Mode A/B where no
+    /// disclosure runs.
+    params: HashMap<String, serde_json::Value>,
 }
 
 struct ServiceScope {
@@ -241,17 +255,46 @@ async fn execute_action(
                     .unwrap_or_else(|| format!("{} {}", action_req.method, action_req.url));
                 let keys: Vec<String> = uncovered_keys.iter().map(|k| k.0.clone()).collect();
 
+                // Configurable detail disclosure (SPEC §N): run the template's
+                // jq filters against the resolved request projection, then
+                // redact sensitive paths from the blob we persist as
+                // action_detail. Falls back to the legacy raw ActionRequest
+                // serialization when the template declares neither extension.
+                let filter_timeout =
+                    std::time::Duration::from_millis(state.config.filter_timeout_ms);
+                let (disclosed_fields, redacted_detail) =
+                    compute_approval_detail(&meta, &action_req, filter_timeout).await;
+
                 let approval = scope
                     .create_approval(
                         identity_id,
                         initial_resolver_id,
                         &summary,
-                        Some(serde_json::to_value(&action_req).unwrap_or_default()),
+                        redacted_detail,
+                        if disclosed_fields.is_empty() {
+                            None
+                        } else {
+                            serde_json::to_value(&disclosed_fields).ok()
+                        },
                         &keys,
                         &token,
                         expires_at,
                     )
                     .await?;
+
+                let mut approval_audit_detail = serde_json::json!({
+                    "summary": summary,
+                    "current_resolver_identity_id": initial_resolver_id,
+                });
+                if !disclosed_fields.is_empty() {
+                    approval_audit_detail
+                        .as_object_mut()
+                        .expect("audit detail is a json object")
+                        .insert(
+                            "disclosed".into(),
+                            serde_json::to_value(&disclosed_fields).unwrap_or_default(),
+                        );
+                }
 
                 let _ = OrgScope::new(auth.org_id, state.db.clone())
                     .log_audit(AuditEntry {
@@ -260,10 +303,7 @@ async fn execute_action(
                         action: "approval.created",
                         resource_type: Some("approval"),
                         resource_id: Some(approval.id),
-                        detail: serde_json::json!({
-                            "summary": summary,
-                            "current_resolver_identity_id": initial_resolver_id,
-                        }),
+                        detail: approval_audit_detail,
                         description: Some(&summary),
                         ip_address: ip.0.as_deref(),
                     })
@@ -378,6 +418,30 @@ async fn execute_action(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
 
+        let mut streamed_detail = serde_json::json!({
+            "method": action_req.method,
+            "url": action_req.url,
+            "status_code": upstream_status.as_u16(),
+            "content_length": content_length,
+            "service": req.service,
+            "action": req.action,
+        });
+        let streamed_disclosed = compute_disclosure(
+            &meta,
+            &action_req,
+            std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        )
+        .await;
+        if !streamed_disclosed.is_empty() {
+            streamed_detail
+                .as_object_mut()
+                .expect("audit detail is a json object")
+                .insert(
+                    "disclosed".into(),
+                    serde_json::to_value(&streamed_disclosed).unwrap_or_default(),
+                );
+        }
+
         let _ = OrgScope::new(auth.org_id, state.db.clone())
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
@@ -385,14 +449,7 @@ async fn execute_action(
                 action: "action.streamed",
                 resource_type: req.service.as_deref(),
                 resource_id: None,
-                detail: serde_json::json!({
-                    "method": action_req.method,
-                    "url": action_req.url,
-                    "status_code": upstream_status.as_u16(),
-                    "content_length": content_length,
-                    "service": req.service,
-                    "action": req.action,
-                }),
+                detail: streamed_detail,
                 description: meta.description.as_deref(),
                 ip_address: ip.0.as_deref(),
             })
@@ -473,6 +530,21 @@ async fn execute_action(
             .as_object_mut()
             .expect("audit_detail is a json object")
             .insert("filter".to_string(), filter_audit);
+    }
+    let executed_disclosed = compute_disclosure(
+        &meta,
+        &action_req,
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+    )
+    .await;
+    if !executed_disclosed.is_empty() {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert(
+                "disclosed".into(),
+                serde_json::to_value(&executed_disclosed).unwrap_or_default(),
+            );
     }
 
     let _ = OrgScope::new(auth.org_id, state.db.clone())
@@ -561,6 +633,9 @@ async fn resolve_request(
                 service_scope: None,
                 risk: None,
                 service_instance_owner: None,
+                disclose: Vec::new(),
+                redact: Vec::new(),
+                params: HashMap::new(),
             },
         ));
     }
@@ -733,6 +808,9 @@ async fn resolve_request(
                 }),
                 risk: Some(action_risk),
                 service_instance_owner: instance_owner,
+                disclose: action.disclose.clone(),
+                redact: action.redact.clone(),
+                params: req.params.clone(),
             },
         ));
     }
@@ -768,6 +846,9 @@ async fn resolve_request(
             service_scope: None,
             risk: None,
             service_instance_owner: None,
+            disclose: Vec::new(),
+            redact: Vec::new(),
+            params: HashMap::new(),
         },
     ))
 }
@@ -1101,4 +1182,58 @@ fn filter_audit_entry(lang: &str, expr: &str, outcome: &FilteredBody) -> serde_j
             .insert("filtered_bytes".to_string(), serde_json::json!(fb));
     }
     entry
+}
+
+/// Run the template's disclose filters against the resolved request and
+/// return the labeled result list for audit rows. Empty vec when no filters
+/// are declared or the batch timed out (failure is non-fatal — execution
+/// continues without a summary rather than aborting the whole request).
+async fn compute_disclosure(
+    meta: &ResolvedMeta,
+    req: &ActionRequest,
+    filter_timeout: std::time::Duration,
+) -> Vec<disclosure::DisclosedField> {
+    if meta.disclose.is_empty() {
+        return Vec::new();
+    }
+    let input = core_disclosure::build_jq_input(req, &meta.params);
+    match disclosure::run_disclosures(&meta.disclose, &input, filter_timeout).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("disclosure batch failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Approval-create variant: returns the disclosed field list AND the
+/// redacted JSON blob to persist as `approvals.action_detail`. Falls back
+/// to the legacy raw `ActionRequest` serialization when the template
+/// declares neither `x-overslash-disclose` nor `x-overslash-redact`, so
+/// pre-feature templates are unaffected.
+async fn compute_approval_detail(
+    meta: &ResolvedMeta,
+    req: &ActionRequest,
+    filter_timeout: std::time::Duration,
+) -> (Vec<disclosure::DisclosedField>, Option<serde_json::Value>) {
+    if meta.disclose.is_empty() && meta.redact.is_empty() {
+        return (Vec::new(), serde_json::to_value(req).ok());
+    }
+    let projection = core_disclosure::build_jq_input(req, &meta.params);
+    let disclosed = if meta.disclose.is_empty() {
+        Vec::new()
+    } else {
+        match disclosure::run_disclosures(&meta.disclose, &projection, filter_timeout).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("disclosure batch failed: {e}");
+                Vec::new()
+            }
+        }
+    };
+    let mut redacted = projection;
+    if !meta.redact.is_empty() {
+        core_disclosure::apply_redactions(&mut redacted, &meta.redact);
+    }
+    (disclosed, Some(redacted))
 }

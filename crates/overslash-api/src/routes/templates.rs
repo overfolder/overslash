@@ -14,10 +14,12 @@ use overslash_core::openapi::{
 };
 use overslash_core::permissions::AccessLevel;
 use overslash_core::template_validation::{
-    ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
+    ValidationIssue, ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
     validate_template_yaml,
 };
 use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
+
+use crate::services::response_filter;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateServiceTemplate};
 use overslash_db::repos::{enabled_global_template, org as org_repo};
@@ -27,6 +29,42 @@ use crate::{
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
 };
+
+/// Run `parse_normalize_compile_yaml` and then validate that every
+/// `x-overslash-disclose` filter is a syntactically valid jq expression. jq
+/// syntax validation lives in `overslash-api` (jq isn't compiled into
+/// `overslash-core` to keep it WASM-friendly), so this is the single gate
+/// any register / update / import / promote path must go through.
+fn parse_normalize_compile_and_check_disclose(
+    yaml: &str,
+) -> std::result::Result<(serde_json::Value, ServiceDefinition), ValidationReport> {
+    let (doc, def) = parse_normalize_compile_yaml(yaml)?;
+    let mut extra = Vec::new();
+    for (action_key, action) in &def.actions {
+        for (i, f) in action.disclose.iter().enumerate() {
+            if let Err(msg) =
+                response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+                    expr: f.filter.clone(),
+                })
+            {
+                extra.push(ValidationIssue::new(
+                    "disclose_invalid_jq",
+                    format!("filter is not a valid jq expression: {msg}"),
+                    format!("actions.{action_key}.disclose[{i}].filter"),
+                ));
+            }
+        }
+    }
+    if extra.is_empty() {
+        Ok((doc, def))
+    } else {
+        Err(ValidationReport {
+            valid: false,
+            errors: extra,
+            warnings: Vec::new(),
+        })
+    }
+}
 
 /// Max body size accepted by `POST /v1/templates/validate`. 512 KiB is roughly
 /// 4x the largest shipped template and several orders of magnitude above any
@@ -577,7 +615,7 @@ async fn create_template(
         None
     };
 
-    let (doc, def) = parse_normalize_compile_yaml(&req.openapi)
+    let (doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
@@ -689,7 +727,7 @@ async fn update_template(
         }
     }
 
-    let (doc, def) = parse_normalize_compile_yaml(&req.openapi)
+    let (doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     // Template key cannot change via update — the unique index pins it.
@@ -1328,7 +1366,7 @@ async fn promote_draft(
     let yaml_source = openapi::to_yaml_string(&existing.openapi).map_err(|i| {
         AppError::Internal(format!("stored draft serializer failed: {}", i.message))
     })?;
-    let (_doc, def) = parse_normalize_compile_yaml(&yaml_source)
+    let (_doc, def) = parse_normalize_compile_and_check_disclose(&yaml_source)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {

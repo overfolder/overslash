@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod description;
 pub(crate) mod description_grammar;
+pub mod disclosure;
 pub mod embeddings;
 pub mod identity_path;
 pub mod openapi;

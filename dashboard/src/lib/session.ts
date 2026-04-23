@@ -162,6 +162,22 @@ export interface SuggestedTier {
 	description: string;
 }
 
+/** One entry from approvals.disclosed_fields — a labeled, human-readable
+ *  slice of the resolved request extracted via the template's
+ *  x-overslash-disclose jq filters. See SPEC §N "Detail disclosure". */
+export interface DisclosedField {
+	label: string;
+	/** Filter output, stringified. Null when the filter produced no value
+	 *  (e.g. missing input field) or when `error` is set. */
+	value: string | null;
+	/** Per-field error message when the filter failed at runtime. Siblings
+	 *  still render normally — errors are isolated per-field. */
+	error: string | null;
+	/** True when the value hit the per-field `max_chars` clamp or a 10 KB
+	 *  hard ceiling. The returned `value` is still the prefix. */
+	truncated: boolean;
+}
+
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ApprovalResponse */
 export interface ApprovalResponse {
 	id: string;
@@ -187,6 +203,11 @@ export interface ApprovalResponse {
 	/** Byte length of the full pretty-printed action_detail prior to
 	 *  truncation. 0 when no detail was stored. */
 	action_detail_size_bytes: number;
+	/** Labeled summary of the resolved request, extracted at approval-create
+	 *  time via the template's x-overslash-disclose filters. Rendered as the
+	 *  "Summary" block above the raw payload. Null when the action template
+	 *  declared no disclose entries. */
+	disclosed_fields: DisclosedField[] | null;
 	status: string;
 	token: string;
 	expires_at: string;

@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{ActionParam, ParamResolver, Risk, ServiceAction, ServiceAuth, TokenInjection};
+use crate::types::{
+    ActionParam, DisclosureField, ParamResolver, Risk, ServiceAction, ServiceAuth, TokenInjection,
+};
 
 // ── servers → hosts ──────────────────────────────────────────────────
 
@@ -329,6 +331,13 @@ pub(super) fn extract_http_action(
         })
         .unwrap_or_default();
 
+    let mut disclose_errors = Vec::new();
+    let disclose = parse_disclose(op.get("x-overslash-disclose"), &base, &mut disclose_errors);
+    let redact = parse_redact(op.get("x-overslash-redact"), &base, &mut disclose_errors);
+    if !disclose_errors.is_empty() {
+        return Err(disclose_errors);
+    }
+
     sink.insert(
         action_key,
         ServiceAction {
@@ -340,6 +349,8 @@ pub(super) fn extract_http_action(
             params,
             scope_param,
             required_scopes,
+            disclose,
+            redact,
         },
     );
 
@@ -384,7 +395,100 @@ pub(super) fn extract_platform_action(
             .and_then(Value::as_str)
             .map(str::to_string),
         required_scopes: Vec::new(),
+        // Platform actions don't have outbound HTTP payloads — disclosure
+        // and redaction are no-ops for them.
+        disclose: Vec::new(),
+        redact: Vec::new(),
     })
+}
+
+// ── x-overslash-disclose / x-overslash-redact ─────────────────────────
+
+fn parse_disclose(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Vec<DisclosureField> {
+    let Some(v) = v else { return Vec::new() };
+    let Some(arr) = v.as_array() else {
+        issues.push(ValidationIssue::new(
+            "disclose_malformed",
+            "x-overslash-disclose must be an array of {label, filter, max_chars?}",
+            format!("{base}.x-overslash-disclose"),
+        ));
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let p = format!("{base}.x-overslash-disclose[{i}]");
+        let Some(obj) = item.as_object() else {
+            issues.push(ValidationIssue::new(
+                "disclose_malformed",
+                "entry must be an object with `label` and `filter`",
+                p,
+            ));
+            continue;
+        };
+        let label = match obj.get("label").and_then(Value::as_str) {
+            Some(s) if !s.trim().is_empty() => s.to_string(),
+            _ => {
+                issues.push(ValidationIssue::new(
+                    "disclose_invalid_label",
+                    "`label` must be a non-empty string",
+                    format!("{p}.label"),
+                ));
+                continue;
+            }
+        };
+        let filter = match obj.get("filter").and_then(Value::as_str) {
+            Some(s) if !s.trim().is_empty() => s.to_string(),
+            _ => {
+                issues.push(ValidationIssue::new(
+                    "disclose_malformed",
+                    "`filter` must be a non-empty jq expression string",
+                    format!("{p}.filter"),
+                ));
+                continue;
+            }
+        };
+        let max_chars = obj
+            .get("max_chars")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
+        out.push(DisclosureField {
+            label,
+            filter,
+            max_chars,
+        });
+    }
+    out
+}
+
+fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>) -> Vec<String> {
+    let Some(v) = v else { return Vec::new() };
+    let Some(arr) = v.as_array() else {
+        issues.push(ValidationIssue::new(
+            "redact_invalid_path",
+            "x-overslash-redact must be an array of dotted-path strings",
+            format!("{base}.x-overslash-redact"),
+        ));
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let p = format!("{base}.x-overslash-redact[{i}]");
+        match item.as_str() {
+            Some(s) if !s.trim().is_empty() && !s.split('.').any(str::is_empty) => {
+                out.push(s.to_string());
+            }
+            _ => issues.push(ValidationIssue::new(
+                "redact_invalid_path",
+                "each entry must be a non-empty dotted path (e.g. `body.api_key`)",
+                p,
+            )),
+        }
+    }
+    out
 }
 
 fn detect_response_type(op: &Map<String, Value>) -> Option<String> {

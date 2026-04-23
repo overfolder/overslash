@@ -59,6 +59,12 @@ struct ApprovalResponse {
     /// Byte length of the full pretty-printed `action_detail` prior to
     /// truncation. `0` when no detail was stored.
     action_detail_size_bytes: usize,
+    /// Labeled, human-readable slice of the resolved request extracted via
+    /// the template's `x-overslash-disclose` filters at approval-create
+    /// time. Rendered as the "Summary" block above the raw payload on the
+    /// review page. `None` when the template declared no disclose entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disclosed_fields: Option<serde_json::Value>,
     status: String,
     token: String,
     expires_at: String,
@@ -114,6 +120,7 @@ impl ApprovalResponse {
             action_detail,
             action_detail_truncated,
             action_detail_size_bytes,
+            disclosed_fields: r.disclosed_fields,
             status: r.status,
             token: r.token,
             expires_at: fmt_time(r.expires_at),
