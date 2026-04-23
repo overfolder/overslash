@@ -705,12 +705,14 @@ async fn list_account_memberships(
 /// membership. Refuses to drop a personal-org membership (that'd orphan
 /// the account) or the last admin of a non-personal org.
 ///
-/// The "last admin" check and the delete run in a single SERIALIZABLE
-/// transaction that locks the org's admin rows with `FOR UPDATE`. Without
-/// the lock, two concurrent leave requests from the two remaining admins
-/// could both pass the check and both succeed — final state: zero admins,
-/// org is orphaned. With the lock, Postgres serializes the two txs and the
-/// second one observes only one admin and fails.
+/// The "last admin" check and the delete run in a single transaction. A
+/// naive two-step lock (caller's row, then all admin rows) can deadlock
+/// when two admins drop concurrently — each acquires their own row lock
+/// first, then blocks waiting for the other's. We avoid that by issuing
+/// a single `SELECT ... FOR UPDATE ORDER BY user_id`, which locks every
+/// admin row of the org in a deterministic order. Both concurrent txs
+/// contend for the same ordered lock set; the second waits for the
+/// first to commit and then reads the post-delete world.
 async fn drop_account_membership(
     State(state): State<AppState>,
     session: crate::extractors::SessionAuth,
@@ -730,7 +732,26 @@ async fn drop_account_membership(
 
     let mut tx = state.db.begin().await?;
 
-    // Lock the caller's row first. If it's gone we just 404 — no lock needed.
+    // Lock every admin row of the org in user_id order. This includes the
+    // caller's row if (and only if) they are an admin — which is the only
+    // case where we care about the count guard. Deterministic order across
+    // concurrent txs rules out deadlock; both serialize on the same lock
+    // set instead of each grabbing a different row first.
+    #[allow(clippy::disallowed_methods)]
+    let admin_user_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM user_org_memberships
+         WHERE org_id = $1 AND role = 'admin'
+         ORDER BY user_id FOR UPDATE",
+    )
+    .bind(org_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let caller_is_admin = admin_user_ids.contains(&user_id);
+
+    // Separately lock the caller's row so a NOT-FOUND ("already left")
+    // check and the subsequent DELETE can proceed even when the caller
+    // is a regular member (not in admin_user_ids).
     #[allow(clippy::disallowed_methods)]
     let existing_role: Option<String> = sqlx::query_scalar(
         "SELECT role FROM user_org_memberships
@@ -740,24 +761,10 @@ async fn drop_account_membership(
     .bind(org_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let existing_role =
-        existing_role.ok_or_else(|| AppError::NotFound("no such membership".into()))?;
+    existing_role.ok_or_else(|| AppError::NotFound("no such membership".into()))?;
 
-    if existing_role == membership::ROLE_ADMIN {
-        // Lock all admin rows for this org (including the caller's, already
-        // locked above). Any concurrent drop on another admin serializes
-        // behind this FOR UPDATE and observes the post-delete state.
-        #[allow(clippy::disallowed_methods)]
-        let admin_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM (
-               SELECT 1 FROM user_org_memberships
-               WHERE org_id = $1 AND role = 'admin'
-               FOR UPDATE
-             ) AS admins",
-        )
-        .bind(org_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    if caller_is_admin {
+        let admin_count = admin_user_ids.len();
         if admin_count <= 1 {
             return Err(AppError::BadRequest(
                 "cannot drop the last admin of a non-personal org".into(),
