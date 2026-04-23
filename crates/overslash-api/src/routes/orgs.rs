@@ -105,52 +105,34 @@ async fn create_org(
     // org is created anonymously (legacy + test-harness path).
     let session_user_id = extract_optional_session_user(&state, &headers);
 
-    // If a multi-org session supplied a `user_id`, attach the bootstrap
-    // admin. Legacy anonymous calls skip this entirely — the org exists
-    // with no memberships and no identities until somebody joins via its
-    // IdP (or via the test suite's API-key bootstrap flow).
-    let bootstrap_identity_id = match session_user_id {
-        Some(user_id) => {
-            let user = user_repo::get_by_id(&state.db, user_id)
-                .await?
-                .ok_or_else(|| AppError::Unauthorized("session user no longer exists".into()))?;
-            let display_name = user
-                .display_name
-                .clone()
-                .unwrap_or_else(|| user.email.clone().unwrap_or_else(|| "admin".into()));
-            let creator_identity = identity::create_with_email(
-                &state.db,
-                org.id,
-                &display_name,
-                "user",
-                None,
-                user.email.as_deref(),
-                serde_json::json!({ "bootstrap": true }),
-            )
-            .await?;
-            identity::set_is_org_admin(&state.db, org.id, creator_identity.id, true).await?;
-            identity::set_user_id(&state.db, org.id, creator_identity.id, Some(user_id)).await?;
-
-            // Bootstrap system assets + admin group placement.
-            overslash_db::repos::org_bootstrap::bootstrap_org(
-                &state.db,
-                org.id,
-                Some(creator_identity.id),
-            )
-            .await?;
-            membership::create(
-                &state.db,
-                user_id,
-                org.id,
-                membership::ROLE_ADMIN,
-                /* is_bootstrap = */ true,
-            )
-            .await?;
-            Some(creator_identity.id)
-        }
-        None => {
-            overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, None).await?;
-            None
+    // The follow-up writes (identity create, admin flag, bootstrap_org
+    // system-asset seeding, membership row) each run in their own sqlx
+    // transactions — sqlx doesn't nest, so a single outer tx isn't
+    // available without refactoring `bootstrap_org`. Instead we roll our
+    // own compensating-rollback: if any step after `org::create` fails,
+    // delete the org (which cascades to identities / memberships /
+    // groups / service_instances / group_grants) and surface the error.
+    let bootstrap_result: Result<Option<Uuid>> =
+        provision_new_org_contents(&state, org.id, session_user_id).await;
+    let bootstrap_identity_id = match bootstrap_result {
+        Ok(id) => id,
+        Err(e) => {
+            // Best-effort cleanup. If this also fails we leave a dangling
+            // org row, but that's strictly better than the half-bootstrapped
+            // state; admins can sweep manually. The audit log entry below
+            // is skipped in this branch.
+            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                .execute(&state.db)
+                .await
+            {
+                tracing::error!(
+                    org_id = %org.id,
+                    bootstrap_error = %e,
+                    cleanup_error = %cleanup_err,
+                    "create_org rollback failed; manual cleanup required"
+                );
+            }
+            return Err(e);
         }
     };
 
@@ -197,6 +179,56 @@ fn extract_optional_session_user(
         crate::services::jwt::verify(&signing_key, token, crate::services::jwt::AUD_SESSION)
             .ok()?;
     claims.user_id
+}
+
+async fn provision_new_org_contents(
+    state: &AppState,
+    org_id: Uuid,
+    session_user_id: Option<Uuid>,
+) -> Result<Option<Uuid>> {
+    match session_user_id {
+        Some(user_id) => {
+            let user = user_repo::get_by_id(&state.db, user_id)
+                .await?
+                .ok_or_else(|| AppError::Unauthorized("session user no longer exists".into()))?;
+            let display_name = user
+                .display_name
+                .clone()
+                .unwrap_or_else(|| user.email.clone().unwrap_or_else(|| "admin".into()));
+            let creator_identity = identity::create_with_email(
+                &state.db,
+                org_id,
+                &display_name,
+                "user",
+                None,
+                user.email.as_deref(),
+                serde_json::json!({ "bootstrap": true }),
+            )
+            .await?;
+            identity::set_is_org_admin(&state.db, org_id, creator_identity.id, true).await?;
+            identity::set_user_id(&state.db, org_id, creator_identity.id, Some(user_id)).await?;
+
+            overslash_db::repos::org_bootstrap::bootstrap_org(
+                &state.db,
+                org_id,
+                Some(creator_identity.id),
+            )
+            .await?;
+            membership::create(
+                &state.db,
+                user_id,
+                org_id,
+                membership::ROLE_ADMIN,
+                /* is_bootstrap = */ true,
+            )
+            .await?;
+            Ok(Some(creator_identity.id))
+        }
+        None => {
+            overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org_id, None).await?;
+            Ok(None)
+        }
+    }
 }
 
 fn redirect_for_org(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {

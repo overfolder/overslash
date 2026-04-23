@@ -489,18 +489,17 @@ async fn me(
 
 async fn me_identity(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: crate::extractors::SessionAuth,
 ) -> Result<impl IntoResponse, AppError> {
-    let token = extract_cookie(&headers, "oss_session")
-        .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
-
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let claims = jwt::verify(&jwt_secret, &token, jwt::AUD_SESSION)
-        .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
-
-    let scope = OrgScope::new(claims.org, state.db.clone());
+    // Was: manual cookie + jwt::verify without the RequestOrgContext cross-
+    // check, so a session scoped to the caller's personal org still
+    // answered `/auth/me/identity` when the request came in on a corp
+    // subdomain — leaking personal-org profile data across trust domains.
+    // `SessionAuth` enforces `jwt.org == subdomain.org` via
+    // `check_subdomain_matches_jwt`.
+    let scope = OrgScope::new(session.org_id, state.db.clone());
     let ident = scope
-        .get_identity(claims.sub)
+        .get_identity(session.identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
@@ -513,9 +512,9 @@ async fn me_identity(
         .map(|s| s.to_string());
 
     // Multi-org surface: memberships + personal-org pointer live on the
-    // `users` row. Legacy tokens (no `user_id` claim) resolve it via the
-    // identity's FK — see `resolve_user_id_for_session`.
-    let user_id = resolve_user_id_for_session(&state, &claims, &ident).await;
+    // `users` row. Legacy tokens (no `user_id` claim) fall back to the
+    // identity's FK.
+    let user_id = session.user_id.or(ident.user_id);
     let (memberships, personal_org_id) = if let Some(uid) = user_id {
         (
             list_membership_summaries(&state, uid).await?,
@@ -527,12 +526,14 @@ async fn me_identity(
         (Vec::new(), None)
     };
 
+    let email = ident.email.clone().unwrap_or_default();
+
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
         "org_name": org_row.as_ref().map(|o| o.name.clone()),
         "org_slug": org_row.as_ref().map(|o| o.slug.clone()),
-        "email": claims.email,
+        "email": email,
         "name": ident.name,
         "kind": ident.kind,
         "external_id": ident.external_id,
@@ -542,28 +543,6 @@ async fn me_identity(
         "personal_org_id": personal_org_id,
         "memberships": memberships,
     })))
-}
-
-/// Resolve the human (`users.id`) behind a session. Prefers the JWT claim so
-/// the hot path stays zero-db; falls back to `identities.user_id` for tokens
-/// minted before the multi-org rewire and that are still within their 7-day
-/// TTL.
-async fn resolve_user_id_for_session(
-    state: &AppState,
-    claims: &jwt::Claims,
-    ident: &overslash_db::repos::identity::IdentityRow,
-) -> Option<Uuid> {
-    if let Some(uid) = claims.user_id {
-        return Some(uid);
-    }
-    if let Some(uid) = ident.user_id {
-        return Some(uid);
-    }
-    // Last resort — identities with NULL user_id should not exist post-040
-    // for kind='user'; return None so the caller surfaces an empty
-    // memberships list rather than a 500.
-    let _ = state; // reserved for future lookups (e.g., by email)
-    None
 }
 
 /// Shape returned by `/auth/me/identity.memberships[]` and `/v1/account/memberships`.
@@ -1307,24 +1286,32 @@ async fn provision_org_subdomain(
     }
 
     // First-time sign-in for this (org, IdP-subject). Gate on the org's
-    // allowed_email_domains — the org admin controls who's auto-provisioned.
+    // `allowed_email_domains` — the org admin controls who's auto-provisioned.
+    //
+    // Semantic: an empty list means "trust the IdP entirely" (the admin
+    // already constrained who can authenticate by provisioning the IdP's
+    // client_id / tenant). A non-empty list is a whitelist — only those
+    // exact domains may provision. The IdP config itself must exist —
+    // absence means this org hasn't enabled this provider, so we reject
+    // with the same `not_permitted_by_org_idp` error as a domain mismatch.
     let email_domain = userinfo
         .email
         .rsplit('@')
         .next()
         .unwrap_or("")
         .to_lowercase();
-    let allowed = overslash_db::repos::org_idp_config::get_by_org_and_provider(
+    let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
         &state.db,
         target_org.id,
         &userinfo.provider_key,
     )
     .await?
-    .map(|c| c.allowed_email_domains.clone())
-    .unwrap_or_default();
-    if !allowed
-        .iter()
-        .any(|d| d.eq_ignore_ascii_case(&email_domain))
+    .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
+    if !idp_config.allowed_email_domains.is_empty()
+        && !idp_config
+            .allowed_email_domains
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(&email_domain))
     {
         return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
     }
