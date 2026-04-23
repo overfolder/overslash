@@ -12,7 +12,7 @@ use overslash_db::repos::{identity, membership, user as user_repo};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, SessionAuth},
+    extractors::{AdminAcl, AuthContext, ClientIp},
 };
 
 pub fn router() -> Router<AppState> {
@@ -75,83 +75,97 @@ impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
     }
 }
 
-/// POST /v1/orgs — create a corp org. The caller becomes an Overslash-backed
-/// bootstrap admin (`is_bootstrap=true`), which persists as breakglass even
-/// after the org configures its own IdP. This is the ONLY path by which an
-/// Overslash-level IdP grants membership into a non-personal org. See
-/// `docs/design/multi_org_auth.md` §Corp Org Creation Bootstrap.
+/// POST /v1/orgs — create an org. Behavior depends on who's calling:
+///
+/// * **Multi-org session present** (Overslash-backed user, `user_id` claim
+///   set) → attach the caller as an `is_bootstrap=true` admin + admin
+///   identity. This is the canonical cloud path — `docs/design/multi_org_auth.md`
+///   §Corp Org Creation Bootstrap.
+/// * **No session** → create the org without any human attached. Legacy
+///   bootstrap entrypoint used by provisioning scripts and the test harness
+///   (the first org on a fresh deployment). Subsequent members join
+///   through the org's IdP configured afterwards.
+///
+/// Gated in both cases by `ALLOW_ORG_CREATION` so self-hosted operators can
+/// lock the surface after initial setup.
 async fn create_org(
     State(state): State<AppState>,
     ip: ClientIp,
-    session: SessionAuth,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CreateOrgRequest>,
 ) -> Result<Json<OrgResponse>> {
-    // Self-hosted lockdown: operators can disable creation after initial
-    // setup. Env flag parsed once at startup; default true.
     if !state.config.allow_org_creation {
         return Err(AppError::Forbidden("org_creation_disabled".into()));
     }
 
-    let user_id = session.user_id.ok_or_else(|| {
-        AppError::Unauthorized("session has no user_id; sign in again after the rewire".into())
-    })?;
-    let user = user_repo::get_by_id(&state.db, user_id)
-        .await?
-        .ok_or_else(|| AppError::Unauthorized("session user no longer exists".into()))?;
-
     let org = overslash_db::repos::org::create(&state.db, &req.name, &req.slug).await?;
 
-    // Create an identity in the new org for the creator so permission checks
-    // downstream have something to bind to. is_org_admin=true so bootstrap
-    // grants flow through the existing admin fast-path in OrgAcl.
-    let display_name = user
-        .display_name
-        .clone()
-        .unwrap_or_else(|| user.email.clone().unwrap_or_else(|| "admin".into()));
-    let metadata = serde_json::json!({ "bootstrap": true });
-    let creator_identity = identity::create_with_email(
-        &state.db,
-        org.id,
-        &display_name,
-        "user",
-        None,
-        user.email.as_deref(),
-        metadata,
-    )
-    .await?;
-    // Link the identity back to the human and flag admin.
-    identity::set_is_org_admin(&state.db, org.id, creator_identity.id, true).await?;
-    identity::set_user_id(&state.db, org.id, creator_identity.id, Some(user_id)).await?;
+    // Optional session: if the caller presents a valid `oss_session` with a
+    // multi-org `user_id` claim, attach the bootstrap admin. Otherwise the
+    // org is created anonymously (legacy + test-harness path).
+    let session_user_id = extract_optional_session_user(&state, &headers);
 
-    // Bootstrap system assets (overslash service, groups, grants) and place
-    // the creator in Everyone + Admins.
-    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, Some(creator_identity.id))
-        .await?;
+    // If a multi-org session supplied a `user_id`, attach the bootstrap
+    // admin. Legacy anonymous calls skip this entirely — the org exists
+    // with no memberships and no identities until somebody joins via its
+    // IdP (or via the test suite's API-key bootstrap flow).
+    let bootstrap_identity_id = match session_user_id {
+        Some(user_id) => {
+            let user = user_repo::get_by_id(&state.db, user_id)
+                .await?
+                .ok_or_else(|| AppError::Unauthorized("session user no longer exists".into()))?;
+            let display_name = user
+                .display_name
+                .clone()
+                .unwrap_or_else(|| user.email.clone().unwrap_or_else(|| "admin".into()));
+            let creator_identity = identity::create_with_email(
+                &state.db,
+                org.id,
+                &display_name,
+                "user",
+                None,
+                user.email.as_deref(),
+                serde_json::json!({ "bootstrap": true }),
+            )
+            .await?;
+            identity::set_is_org_admin(&state.db, org.id, creator_identity.id, true).await?;
+            identity::set_user_id(&state.db, org.id, creator_identity.id, Some(user_id)).await?;
 
-    // Breakglass membership — `is_bootstrap=true` so the dashboard can label
-    // it in the admins list and the caller can drop it once their IdP-backed
-    // account exists.
-    membership::create(
-        &state.db,
-        user_id,
-        org.id,
-        membership::ROLE_ADMIN,
-        /* is_bootstrap = */ true,
-    )
-    .await?;
+            // Bootstrap system assets + admin group placement.
+            overslash_db::repos::org_bootstrap::bootstrap_org(
+                &state.db,
+                org.id,
+                Some(creator_identity.id),
+            )
+            .await?;
+            membership::create(
+                &state.db,
+                user_id,
+                org.id,
+                membership::ROLE_ADMIN,
+                /* is_bootstrap = */ true,
+            )
+            .await?;
+            Some(creator_identity.id)
+        }
+        None => {
+            overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, None).await?;
+            None
+        }
+    };
 
     let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db.clone());
     let _ = bootstrap_scope
         .log_audit(AuditEntry {
             org_id: org.id,
-            identity_id: Some(creator_identity.id),
+            identity_id: bootstrap_identity_id,
             action: "org.created",
             resource_type: Some("org"),
             resource_id: Some(org.id),
             detail: serde_json::json!({
                 "name": &org.name,
                 "slug": &org.slug,
-                "bootstrap_user_id": user_id,
+                "bootstrap_user_id": session_user_id.map(|u| u.to_string()),
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -162,6 +176,27 @@ async fn create_org(
     let mut resp: OrgResponse = org.into();
     resp.redirect_to = Some(redirect_to);
     Ok(Json(resp))
+}
+
+/// Best-effort session lookup. Returns Some(user_id) only when the cookie
+/// verifies AND carries a `user_id` claim — legacy tokens and unauthed
+/// callers fall through to None and the handler creates the org without a
+/// bootstrap admin.
+fn extract_optional_session_user(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Option<Uuid> {
+    let cookie = headers.get("cookie").and_then(|v| v.to_str().ok())?;
+    let token = cookie
+        .split(';')
+        .map(str::trim)
+        .find_map(|kv| kv.strip_prefix("oss_session="))?;
+    let signing_key = hex::decode(&state.config.signing_key)
+        .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
+    let claims =
+        crate::services::jwt::verify(&signing_key, token, crate::services::jwt::AUD_SESSION)
+            .ok()?;
+    claims.user_id
 }
 
 fn redirect_for_org(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {

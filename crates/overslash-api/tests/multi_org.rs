@@ -92,29 +92,17 @@ async fn seed_user_with_single_org(pool: &PgPool) -> (Uuid, Uuid, Uuid) {
 }
 
 #[tokio::test]
-async fn post_v1_orgs_requires_session_and_creates_bootstrap_admin() {
+async fn post_v1_orgs_attaches_bootstrap_admin_when_session_present() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let (_, identity_id, user_id) = seed_user_with_single_org(&pool).await;
-
-    // Get the seeded user's current org so we can mint a session for that scope.
     let primary_org: Uuid = sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
         .bind(identity_id)
         .fetch_one(&pool)
         .await
         .unwrap();
 
-    // Unauth'd → 401 (SessionAuth rejects missing cookie).
-    let anon = client
-        .post(format!("{base}/v1/orgs"))
-        .json(&json!({ "name": "Acme", "slug": format!("acme-{}", Uuid::new_v4().simple()) }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
-
-    // With a real multi-org session → 200 + bootstrap membership rows exist.
     let cookie = mint_session_cookie_with_user(primary_org, identity_id, Some(user_id));
     let slug = format!("acme-{}", Uuid::new_v4().simple());
     let resp = client
@@ -132,7 +120,6 @@ async fn post_v1_orgs_requires_session_and_creates_bootstrap_admin() {
     assert_eq!(body["is_personal"], Value::Bool(false));
     assert!(body["redirect_to"].is_string() || body["redirect_to"].is_null());
 
-    // Membership exists and is flagged as bootstrap.
     let m = membership::find(&pool, user_id, new_org_id)
         .await
         .unwrap()
@@ -145,28 +132,32 @@ async fn post_v1_orgs_requires_session_and_creates_bootstrap_admin() {
 }
 
 #[tokio::test]
-async fn post_v1_orgs_requires_session_with_user_id() {
-    // Legacy sessions (user_id absent) are refused on the new write path;
-    // they'd produce a bootstrap admin unattached to any human.
+async fn post_v1_orgs_without_session_creates_orphan_org() {
+    // Legacy bootstrap path (test harness, provisioning scripts): anonymous
+    // POST /v1/orgs creates the org with NO memberships. Subsequent members
+    // join through the org's IdP once it's configured.
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_, identity_id, _user_id) = seed_user_with_single_org(&pool).await;
-    let primary_org: Uuid = sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
-        .bind(identity_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
 
-    let cookie = mint_session_cookie_with_user(primary_org, identity_id, None);
+    let slug = format!("orphan-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("cookie", format!("oss_session={cookie}"))
-        .json(&json!({ "name": "X", "slug": format!("x-{}", Uuid::new_v4().simple()) }))
+        .json(&json!({ "name": "Orphan", "slug": slug }))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let new_org_id: Uuid = serde_json::from_value(body["id"].clone()).unwrap();
+
+    // Zero memberships for this org.
+    let rows: Vec<overslash_db::repos::membership::MembershipRow> =
+        membership::list_for_org(&pool, new_org_id).await.unwrap();
+    assert!(
+        rows.is_empty(),
+        "anonymous create must not attach a bootstrap admin"
+    );
 }
 
 #[tokio::test]
