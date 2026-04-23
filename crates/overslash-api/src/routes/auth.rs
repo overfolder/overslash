@@ -868,6 +868,19 @@ async fn dev_token(
             }
         };
 
+    // Dev login was single-org pre-multi-org. Post-040 we still back every
+    // `kind='user'` identity with a `users` row; resolve it here so the dev
+    // session participates in the multi-org surface (`/account`, switcher,
+    // `POST /v1/orgs` bootstrap admin).
+    let dev_user_id = overslash_db::repos::identity::get_by_id(&state.db, org_id, identity_id)
+        .await?
+        .and_then(|row| row.user_id);
+    if dev_user_id.is_none() {
+        tracing::warn!(
+            "dev identity {identity_id} has no user_id; /account and switch-org will be limited"
+        );
+    }
+
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let claims = jwt::Claims {
@@ -877,8 +890,7 @@ async fn dev_token(
         aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
-        // Dev login predates the multi-org flow; users.id is looked up lazily.
-        user_id: None,
+        user_id: dev_user_id,
     };
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
