@@ -151,6 +151,15 @@ The stdio shim requires `overslash mcp login` once (runs the same OAuth flow int
 
 `serve` and `web` share the same `create_app` router and config — `web` only adds a static-file fallback and same-origin defaults. The `mcp` shim carries no Postgres or Axum dependency; it is a tiny stdio↔HTTP pipe.
 
+### Multi-Org Deployment Model
+
+- **Cloud** serves orgs off a single wildcard origin `app.overslash.com`. `*.app.overslash.com` resolves to the same instance; subdomain middleware maps the `Host` header to an `org_id`. `app.overslash.com` (the root) hosts Overslash-level login and the `/account` page; `<slug>.app.overslash.com` hosts an individual corp org.
+- **Self-hosted** runs the same binary and code path. Two env flags scope it down:
+  - `ALLOW_ORG_CREATION=false` — disables `POST /v1/orgs` and the dashboard's "Create org" CTAs. Existing orgs keep working.
+  - `SINGLE_ORG_MODE=<slug>` — disables subdomain middleware; every request is scoped to the named org, the root-domain login lands directly in that org with no personal-org auto-creation, and the org switcher is hidden.
+
+Self-hosted operators who want the "old" single-org experience set `SINGLE_ORG_MODE=<their-org-slug>`. Self-hosted operators who want full multi-org (e.g., an internal PaaS) leave both flags unset. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
+
 ---
 
 ## 4. Identity Hierarchy
@@ -173,7 +182,15 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 
 **Per-org IdP configuration:** Each org configures its own IdPs. An org can enable multiple IdPs simultaneously (e.g., Google for convenience + corporate Okta for SSO).
 
-**User provisioning:** On first login via an IdP, Overslash creates the user identity in the org (matched by email domain or explicit org assignment). Subsequent logins update the user's profile (name, avatar) from the IdP's claims.
+**User provisioning.** Overslash separates "the human" (`users` table) from "the actor in an org" (existing `identities` table linked via `user_id`). A `users` row is either **Overslash-backed** (bound to a root-level IdP in `overslash_idp_provider`/`overslash_idp_subject`, owns a personal org) or **org-only** (bound only through `identities` in corp orgs). Lookups at login are always by `(provider, subject)`; email is informational and is never used to merge users across IdPs or grant memberships.
+
+**How humans end up in orgs.**
+
+- *Personal org* — auto-created the first time a human signs in at the root domain via an Overslash-level IdP. Exactly one member, always the owner. Personal orgs cannot configure per-org IdPs and have no subdomain.
+- *Corp org, as creator* — an Overslash-backed user creates a corp org via `POST /v1/orgs`; they receive an `admin` membership flagged `is_bootstrap=true`. This is the only path by which an Overslash-level IdP can admit someone into a corp org. The bootstrap admin is expected to configure an org IdP and then optionally sign in through that IdP to create a separate org-only `users` row; the bootstrap membership persists as a breakglass admin until manually removed.
+- *Corp org, as member* — sign in through the org's own IdP on `<slug>.app.overslash.com`. Auto-provisioning is gated by `org_idp_configs.allowed_email_domains`. There are no invites; membership crossing trust domains (e.g., a Google-backed user into Acme) is not supported.
+
+**No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
 
 ### Hierarchy
 
@@ -185,7 +202,7 @@ Org (acme)
             └── SubAgent (emailer)      depth=2, parent=henry
 ```
 
-- **Users** created by org-admins (or auto-provisioned on first IdP login)
+- **Users** auto-provisioned on first IdP login — at the root domain for personal orgs, at the org subdomain for corp org members, or via `POST /v1/orgs` for corp org creators (bootstrap admin)
 - **Agents** created by users
 - **Sub-agents** created by agents — no user intervention needed
 - **UI equivalence**: the UI does not distinguish between Agents and Sub-agents — they are all presented as "Agents" in the tree. The `sub_agent` kind remains an API/backend distinction (for idle cleanup and depth tracking), but the UI treats them identically. The only difference visible to users is who the parent is.
