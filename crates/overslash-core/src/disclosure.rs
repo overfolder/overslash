@@ -71,9 +71,13 @@ fn is_json_content_type(headers: &HashMap<String, String>) -> bool {
 /// extension is declarative, not assertive.
 ///
 /// Path grammar is the same dotted form used in extension parsing:
-/// `body.api_key`, `headers.X-Custom-Token`, `params.userId`. Array indices
-/// are not supported (templates should redact whole fields, not individual
-/// array elements).
+/// `body.api_key`, `params.userId`. Paths can only address the projection
+/// keys produced by [`build_jq_input`] — currently `method`, `url`,
+/// `params`, and `body`. Headers are intentionally not exposed: Mode C
+/// OAuth auth injects plaintext access tokens into the header map at this
+/// point, and surfacing them through either `disclose` or `redact` would
+/// risk leaks. Array indices are not supported (templates should redact
+/// whole fields, not individual array elements).
 pub fn apply_redactions(value: &mut Value, redact_paths: &[String]) {
     for path in redact_paths {
         let segments: Vec<&str> = path.split('.').collect();
@@ -205,10 +209,19 @@ mod tests {
 
     #[test]
     fn apply_redactions_multiple_paths() {
-        let mut v = json!({"body": {"a": "1", "b": "2"}, "headers": {"x": "y"}});
-        apply_redactions(&mut v, &["body.a".into(), "headers.x".into()]);
+        // Shape mirrors what `build_jq_input` actually produces in
+        // production: method/url/params/body (no headers — they're
+        // deliberately kept out of the projection so Mode C OAuth tokens
+        // don't leak).
+        let mut v = json!({
+            "method": "POST",
+            "url": "https://x",
+            "params": {"token": "pt"},
+            "body": {"a": "1", "b": "2"},
+        });
+        apply_redactions(&mut v, &["body.a".into(), "params.token".into()]);
         assert_eq!(v["body"]["a"], REDACTED);
         assert_eq!(v["body"]["b"], "2");
-        assert_eq!(v["headers"]["x"], REDACTED);
+        assert_eq!(v["params"]["token"], REDACTED);
     }
 }
