@@ -1348,26 +1348,41 @@ async fn provision_org_subdomain(
     // exact domains may provision. The IdP config itself must exist —
     // absence means this org hasn't enabled this provider, so we reject
     // with the same `not_permitted_by_org_idp` error as a domain mismatch.
-    let email_domain = userinfo
-        .email
-        .rsplit('@')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
-    let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
-        &state.db,
-        target_org.id,
-        &userinfo.provider_key,
-    )
-    .await?
-    .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
-    if !idp_config.allowed_email_domains.is_empty()
-        && !idp_config
-            .allowed_email_domains
-            .iter()
-            .any(|d| d.eq_ignore_ascii_case(&email_domain))
-    {
-        return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
+    //
+    // SINGLE_ORG_MODE exception: self-hosted operators typically use the
+    // env-var Overslash-level IdPs (`GOOGLE_AUTH_CLIENT_ID`, etc.), which
+    // have no `org_idp_configs` row. In that mode the operator IS the org
+    // admin — the env creds they provisioned ARE the trust boundary, so
+    // the per-org gate doesn't apply. Without this branch, every new
+    // social-auth login under SINGLE_ORG_MODE fails with 403.
+    let single_org_bypass = state
+        .config
+        .single_org_mode
+        .as_deref()
+        .map(|pinned| pinned == slug)
+        .unwrap_or(false);
+    if !single_org_bypass {
+        let email_domain = userinfo
+            .email
+            .rsplit('@')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
+            &state.db,
+            target_org.id,
+            &userinfo.provider_key,
+        )
+        .await?
+        .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
+        if !idp_config.allowed_email_domains.is_empty()
+            && !idp_config
+                .allowed_email_domains
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&email_domain))
+        {
+            return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
+        }
     }
 
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
