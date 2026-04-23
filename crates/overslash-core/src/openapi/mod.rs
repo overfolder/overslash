@@ -259,6 +259,8 @@ pub fn compile_service(
             category,
             auth,
             actions,
+            runtime: Default::default(),
+            mcp: None,
         },
         warnings,
     ))

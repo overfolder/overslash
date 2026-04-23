@@ -351,6 +351,9 @@ pub(super) fn extract_http_action(
             required_scopes,
             disclose,
             redact,
+            mcp_tool: None,
+            output_schema: None,
+            disabled: false,
         },
     );
 
@@ -399,6 +402,9 @@ pub(super) fn extract_platform_action(
         // and redaction are no-ops for them.
         disclose: Vec::new(),
         redact: Vec::new(),
+        mcp_tool: None,
+        output_schema: None,
+        disabled: false,
     })
 }
 
