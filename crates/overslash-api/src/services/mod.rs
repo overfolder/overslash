@@ -5,6 +5,7 @@ pub mod group_ceiling;
 pub mod http_executor;
 pub mod identity_path;
 pub mod jwt;
+pub mod mcp_client;
 pub mod oauth;
 pub mod oauth_as;
 pub mod oidc_discovery;
