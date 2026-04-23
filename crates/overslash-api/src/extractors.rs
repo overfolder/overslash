@@ -277,11 +277,15 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Try JWT session cookie first
+        // Try JWT session cookie first. Same subdomain↔JWT guard as
+        // `AuthContext` and `SessionAuth` — without it, a personal-org
+        // session would answer against a corp-org subdomain whose scope
+        // it has no membership in.
         if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
+                check_subdomain_matches_jwt(parts, claims.org)?;
                 return Ok(UserOrKeyAuth {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
@@ -289,7 +293,9 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
             }
         }
 
-        // Fall back to API key
+        // Fall back to API key (`AuthContext` runs the same subdomain check
+        // on its own session-cookie branch and treats API-key auth as
+        // subdomain-agnostic — keys are identity-bound, not host-bound).
         let auth_ctx = AuthContext::from_request_parts(parts, state).await?;
         Ok(UserOrKeyAuth {
             org_id: auth_ctx.org_id,
