@@ -1,7 +1,7 @@
 //! Integration tests for the multi-org auth surface introduced by this PR.
 //!
 //! Covers the paths that don't need a live IdP:
-//!   * POST /v1/orgs → bootstrap admin membership (is_bootstrap=true)
+//!   * POST /v1/orgs → creator becomes a regular admin member
 //!   * POST /auth/switch-org — membership guard + cross-org switch
 //!   * GET /v1/account/memberships
 //!   * DELETE /v1/account/memberships/{org_id} — personal-org guard,
@@ -84,7 +84,7 @@ async fn seed_user_with_single_org(pool: &PgPool) -> (Uuid, Uuid, Uuid) {
         .await
         .unwrap();
 
-    membership::create(pool, user.id, org_id, membership::ROLE_ADMIN, false)
+    membership::create(pool, user.id, org_id, membership::ROLE_ADMIN)
         .await
         .unwrap();
 
@@ -92,7 +92,7 @@ async fn seed_user_with_single_org(pool: &PgPool) -> (Uuid, Uuid, Uuid) {
 }
 
 #[tokio::test]
-async fn post_v1_orgs_attaches_bootstrap_admin_when_session_present() {
+async fn post_v1_orgs_attaches_admin_membership_when_session_present() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
@@ -123,11 +123,10 @@ async fn post_v1_orgs_attaches_bootstrap_admin_when_session_present() {
     let m = membership::find(&pool, user_id, new_org_id)
         .await
         .unwrap()
-        .expect("bootstrap membership");
-    assert_eq!(m.role, "admin");
-    assert!(
-        m.is_bootstrap,
-        "creator's membership must carry is_bootstrap=true"
+        .expect("creator membership");
+    assert_eq!(
+        m.role, "admin",
+        "creator is a regular admin — no special flag"
     );
 }
 
@@ -242,10 +241,10 @@ async fn list_and_drop_memberships_round_trip() {
     let other = user_repo::create_org_only(&pool, Some("other@x.test"), Some("Other"))
         .await
         .unwrap();
-    membership::create(&pool, other.id, org_b, membership::ROLE_ADMIN, false)
+    membership::create(&pool, other.id, org_b, membership::ROLE_ADMIN)
         .await
         .unwrap();
-    membership::create(&pool, user_id, org_b, membership::ROLE_ADMIN, true)
+    membership::create(&pool, user_id, org_b, membership::ROLE_ADMIN)
         .await
         .unwrap();
 

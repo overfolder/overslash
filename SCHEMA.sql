@@ -522,7 +522,6 @@ CREATE TABLE public.user_org_memberships (
     user_id uuid NOT NULL,
     org_id uuid NOT NULL,
     role text NOT NULL,
-    is_bootstrap boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT user_org_memberships_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
 );

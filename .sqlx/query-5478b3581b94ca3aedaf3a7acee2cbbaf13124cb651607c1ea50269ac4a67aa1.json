@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT user_id, org_id, role, is_bootstrap, created_at\n         FROM user_org_memberships WHERE user_id = $1 ORDER BY created_at ASC",
+  "query": "INSERT INTO user_org_memberships (user_id, org_id, role)\n         VALUES ($1, $2, $3)\n         RETURNING user_id, org_id, role, created_at",
   "describe": {
     "columns": [
       {
@@ -20,27 +20,23 @@
       },
       {
         "ordinal": 3,
-        "name": "is_bootstrap",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "62a29a77e30369eaeadd548f7774a913ae85f8dd7aa8092bf3f46c4593932228"
+  "hash": "5478b3581b94ca3aedaf3a7acee2cbbaf13124cb651607c1ea50269ac4a67aa1"
 }

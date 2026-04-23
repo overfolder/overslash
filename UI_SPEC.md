@@ -28,6 +28,20 @@ This login form has:
 
 UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /agents if no such page or a loop would form
 
+### Root vs. corp-org subdomain login (multi-org)
+
+The same `/login` page renders differently depending on the host the browser hit. The backend's `/auth/providers` response carries a `scope` field that drives the UI.
+
+- **Root apex (`app.overslash.com`)** — `scope: "root"`. Lists only Overslash-level IdPs (env-var Google / GitHub / Dev Login). A user who signs in here gets their personal org on first login.
+- **Corp subdomain (`<slug>.app.overslash.com`)** — `scope: "org"`. Lists only that org's IdPs from `org_idp_configs`. Env-level IdPs are NOT shown — a corp-subdomain login must go through the corp's IdP. This is the trust-domain boundary.
+- **Corp subdomain with no IdP configured yet** — `scope: "org"` with an empty providers list. The page shows an explanatory empty state: "This organization has no sign-in configured yet. Ask the org admin to add an Identity Provider on their Org Settings page." The admin (= org creator) reaches the org via `/auth/switch-org` from the root dashboard, not via this login page.
+
+### Org creator = regular admin, no "breakglass" framing
+
+When a user creates a corp org via `POST /v1/orgs`, they receive a normal `admin` membership and an admin `identities` row. There is no special "bootstrap" or "breakglass" labeling anywhere in the UI — the creator is simply the org's admin. Their Overslash-level login continues to reach the org regardless of whether the org configures a custom IdP later.
+
+An org may stay on Overslash-level auth indefinitely (only the creator is a member), or later enable one or more IdPs in **Org Settings → Identity Providers**. After an IdP is enabled, additional humans sign in via the corp IdP on the subdomain; the creator's Overslash-level login keeps working via their existing admin membership.
+
 ## Global UX Conventions
 
 **Appearance**: light and dark modes, toggled in user settings. No custom theming.
@@ -302,6 +316,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo ("Overs/ash") at top (bold 18px)
 - Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
+- **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
 - User avatar (32px circle) + name at the bottom.
 - Collapse button (chevron «) at the bottom or top-right of the sidebar.
 
@@ -309,6 +324,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
+- Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
 - User avatar only (no name), centered.
 - Expand button (chevron ») to restore.
 
@@ -1231,6 +1247,25 @@ Renders to the right of (or below, on narrow viewports) the request card:
 #### Identity
 
 The API Explorer always executes as the **logged-in user's own identity**. No agent impersonation. All actions are logged in the audit trail under the user's identity.
+
+## Account view (`/account`)
+
+A top-level page scoped to the human, not any one org — always reachable from the sidebar footer's user avatar. Uses the app shell (sidebar, top bar) like the rest of the dashboard.
+
+**Profile card**:
+- Display name, email (last value the IdP returned, informational)
+- `User ID` (a UUID, in a monospaced chip) so the user can reference their own account when filing support
+
+**Organizations card**:
+- List of the user's memberships, one per row
+- Each row shows the org name, the role (`admin` / `member`), and a `personal` tag for the user's own personal org
+- Per-row actions:
+  - **Current** (disabled) / **Switch** — same `/auth/switch-org` flow as the sidebar switcher
+  - **Leave** — `DELETE /v1/account/memberships/{org_id}`. Confirms before the request. Refused server-side for personal orgs and for the last admin of a non-personal org (dashboard surfaces the error verbatim).
+
+There is no "breakglass" / "bootstrap" tag in this view. The org creator shows up the same as any other admin — a row with `admin`. Their Overslash-level login route is implicit in the fact that the row exists.
+
+**Create org** CTA (top-right of the Organizations card): visible only when `ALLOW_ORG_CREATION=true` on the server. Clicking opens a slim modal (name + slug); on success the browser hard-reloads onto the new org's subdomain (the server returns `redirect_to`) where the creator lands as the sole admin.
 
 ## Standalone Pages
 

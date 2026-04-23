@@ -111,9 +111,6 @@ export interface MembershipSummary {
 	name: string;
 	role: 'admin' | 'member' | string;
 	is_personal: boolean;
-	/** True for the membership created by `POST /v1/orgs`. Persists as a
-	 *  breakglass admin after the org configures its IdP. */
-	is_bootstrap: boolean;
 }
 
 /** Response from GET /auth/me/identity — full identity details */

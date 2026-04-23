@@ -78,9 +78,13 @@ impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
 /// POST /v1/orgs — create an org. Behavior depends on who's calling:
 ///
 /// * **Multi-org session present** (Overslash-backed user, `user_id` claim
-///   set) → attach the caller as an `is_bootstrap=true` admin + admin
-///   identity. This is the canonical cloud path — `docs/design/multi_org_auth.md`
-///   §Corp Org Creation Bootstrap.
+///   set) → attach the caller as a regular `admin` member + an admin
+///   identity in the new org. This is the canonical cloud path — see
+///   `docs/design/multi_org_auth.md` §Org Creation. The creator's
+///   Overslash-backed login continues to work against the new org
+///   indefinitely; the org may choose to configure its own IdP later, at
+///   which point other humans join through that IdP while the creator
+///   retains their root-login access via this membership.
 /// * **No session** → create the org without any human attached. Legacy
 ///   bootstrap entrypoint used by provisioning scripts and the test harness
 ///   (the first org on a fresh deployment). Subsequent members join
@@ -214,14 +218,7 @@ async fn provision_new_org_contents(
                 Some(creator_identity.id),
             )
             .await?;
-            membership::create(
-                &state.db,
-                user_id,
-                org_id,
-                membership::ROLE_ADMIN,
-                /* is_bootstrap = */ true,
-            )
-            .await?;
+            membership::create(&state.db, user_id, org_id, membership::ROLE_ADMIN).await?;
             Ok(Some(creator_identity.id))
         }
         None => {

@@ -39,7 +39,6 @@ user_org_memberships
   user_id             UUID FK → users(id)
   org_id              UUID FK → orgs(id)
   role                TEXT NOT NULL  -- 'admin' | 'member' (room to grow)
-  is_bootstrap        BOOLEAN NOT NULL DEFAULT false  -- see Corp Org Creation Bootstrap
   created_at
   PRIMARY KEY (user_id, org_id)
 
@@ -76,7 +75,7 @@ users
   personal_org_id        = NULL           ← no personal org
 
 user_org_memberships
-  (user_id=U1, org_id=ACME, role='member', is_bootstrap=false)
+  (user_id=U1, org_id=ACME, role='member')
 
 identities
   id = I1
@@ -92,7 +91,7 @@ JWT: `{ user_id: U1, org_id: ACME }`. User can log into `acme.app.overslash.com`
 **Later Google sign-in (stays separate, forever).** Suppose the same person later visits `app.overslash.com` and signs in with Google using the same email `amartcan@acme.org`. Google returns `(sub=G1, email=amartcan@acme.org)`.
 
 - Lookup on `users.(overslash_idp_provider='google', overslash_idp_subject=G1)` → not found.
-- **No email fallback.** Create a fresh users row U2 (Overslash-backed), auto-create personal org P1, membership `(U2, P1, 'admin', is_bootstrap=false)`.
+- **No email fallback.** Create a fresh users row U2 (Overslash-backed), auto-create personal org P1, membership `(U2, P1, 'admin')`.
 - U2 has **no membership to Acme**. The Google-signed user cannot access Acme's data.
 - U1 (Acme / Okta) and U2 (personal / Google) coexist indefinitely and are never merged. This is by design: to use Acme, sign in through Acme's Okta at `acme.app.overslash.com`; to use the personal scope, sign in with Google at `app.overslash.com`. One human, two accounts, one per trust domain.
 
@@ -102,27 +101,29 @@ JWT: `{ user_id: U1, org_id: ACME }`. User can log into `acme.app.overslash.com`
 
 **What if the IDP returns no email claim?** Reject with `{ error: "idp_missing_email", hint: "Configure your IDP to include 'email' in the OIDC claims." }`.
 
-### Corp Org Creation Bootstrap
+### Corp Org Creation
 
-An Overslash-backed user can create a corp org from their root-domain dashboard. Creation is the only path by which an Overslash-backed user gets membership in a non-personal org:
+An Overslash-backed user creates a corp org from their root-domain dashboard. This is the only path by which an Overslash-level IdP admits someone into a non-personal org.
 
 1. User (e.g., U2 with personal org P1) calls `POST /v1/orgs { name, slug }`.
 2. Org is created with `is_personal=false`.
-3. A single `user_org_memberships` row is inserted for the creator: `(U2, ACME, 'admin', is_bootstrap=true)`.
-4. Dashboard redirects the creator to `acme.app.overslash.com/org` to configure the IDP.
-5. Once an `org_idp_config` is enabled, the bootstrap admin persists as a breakglass admin: they can still access Acme via their Overslash-backed session. Additional memberships can only be created by Okta sign-ins matching `allowed_email_domains`.
-6. The creator typically also signs in via Okta to create a proper IDP-backed `users` row (e.g., U1 from the worked example) and then removes their bootstrap membership from the Admins list. If they don't, the bootstrap stays as-is — it's valid, just flagged `is_bootstrap=true` in the UI ("breakglass").
+3. An admin `identities` row is created in the new org for the caller, linked to U2 via `user_id`.
+4. A plain `user_org_memberships(U2, ACME, 'admin')` row is inserted — **no special flag**. The creator is simply an admin.
+5. Dashboard hard-reloads onto `acme.app.overslash.com/`, where the creator lands inside their new org.
 
-**Why keep the bootstrap membership instead of auto-revoking it on IDP enable?** Lockout risk. If the Okta config is wrong and nobody can sign in, the org becomes unrecoverable. The breakglass admin is the escape hatch — deliberate, visible, and removable.
+Two legitimate paths from here:
 
-**Why `is_bootstrap` is a flag, not a separate role:** it still behaves as a normal `admin`; the flag exists so the dashboard can label it and so future auditing can distinguish bootstrapped-from-outside memberships from IDP-provisioned ones.
+- **Stay on the Overslash-level IdP indefinitely.** The org never configures its own IdP. It remains a single-admin org reachable only via the creator's Overslash-level login. This is valid and supported — an org is free to ride the Overslash instance's IdP forever.
+- **Configure a corp IdP later.** The creator adds an `org_idp_config` (Okta / generic OIDC) on the Settings page. Additional humans can now sign in via the corp IdP on the subdomain and auto-provision memberships (gated by `allowed_email_domains`). The creator's original admin membership is unchanged and continues to work — their Overslash-level login remains valid for the corp subdomain because the membership row still grants access.
+
+No `is_bootstrap` flag. No "breakglass" labeling. Removing it was a deliberate simplification: the creator is just the org's admin, identical to any other admin they may later promote from within. The fact that they authenticate via the Overslash-level IdP is derivable from `users.overslash_idp_*` and is not a special state on the membership itself.
 
 ### Migration/backfill
 
 Migration `033_multi_org_users.sql`:
 
 1. Create `users`, `user_org_memberships`, add `orgs.is_personal`, add `identities.user_id`.
-2. For each existing `kind='user'` identity, upsert a `users` row. Dedup strategy: current code already enforces unique email across orgs via `find_user_identity_by_email`, so email is safe as the dedup key for the backfill specifically (we are not using it for new logins). Populate `overslash_idp_provider`/`overslash_idp_subject` where discoverable from existing metadata; otherwise leave NULL (the row becomes org-only post-migration, which is correct for users who only existed inside one org). Backfill `identities.user_id` and `user_org_memberships(user_id, org_id, 'admin', is_bootstrap=false)`.
+2. For each existing `kind='user'` identity, upsert a `users` row. Dedup strategy: current code already enforces unique email across orgs via `find_user_identity_by_email`, so email is safe as the dedup key for the backfill specifically (we are not using it for new logins). Populate `overslash_idp_provider`/`overslash_idp_subject` where discoverable from existing metadata; otherwise leave NULL (the row becomes org-only post-migration, which is correct for users who only existed inside one org). Backfill `identities.user_id` and `user_org_memberships(user_id, org_id, 'admin')`.
 3. For each backfilled user with `overslash_idp_*` set (i.e., would be Overslash-backed going forward), create a personal org (`is_personal=true`, slug `personal-<short-random>`) and set `users.personal_org_id`. Users with no Overslash IDP binding stay org-only and get no personal org.
 
 ## Subdomain Routing (cloud)
@@ -147,7 +148,7 @@ Self-hosted deployments bypass this middleware when `SINGLE_ORG_MODE=<slug>` is 
 - Callback handler:
   1. Exchange code → `{ provider, subject, email, name }`. If email missing → reject (`idp_missing_email`).
   2. Look up `users` by `(overslash_idp_provider, overslash_idp_subject)`. **No email fallback** — this is the rule that prevents Google from vouching its way into an org-only row.
-  3. If not found → create a new users row with the IDP binding set, create a personal org (`is_personal=true`), membership `(user_id, personal_org_id, 'admin', is_bootstrap=false)`, link `users.personal_org_id`, create the identity row in the personal org.
+  3. If not found → create a new users row with the IDP binding set, create a personal org (`is_personal=true`), membership `(user_id, personal_org_id, 'admin')`, link `users.personal_org_id`, create the identity row in the personal org.
   4. If found → refresh `users.email` and `display_name` opportunistically.
   5. Mint session JWT with `{ user_id, org_id: personal_org_id }` by default. If the user has exactly one non-personal membership (typical for a creator who just bootstrapped one corp org), land there instead.
   6. Set `oss_session` cookie with `Domain=.app.overslash.com`.
@@ -157,13 +158,13 @@ Self-hosted deployments bypass this middleware when `SINGLE_ORG_MODE=<slug>` is 
 
 - Subdomain middleware resolves `org_id` for `acme`.
 - `GET /auth/providers` returns only the org's enabled IDPs from `org_idp_configs`. There is no "Continue with Overslash" fallback — an Overslash-level IDP cannot grant membership to a corp org under this design, so offering it would be misleading.
-  - Exception: bootstrap admins with an existing Overslash-backed membership (see Corp Org Creation Bootstrap) reach the org via `/auth/switch-org` from the root dashboard, not via the org's `/login` page.
+  - Exception: the org's creator (and any other Overslash-backed user who already has a membership in the org) reaches it via `/auth/switch-org` from the root dashboard, not via the org's `/login` page.
 - Provisioning on callback — lookups key on `(org_id, external_id)`, never on email:
   1. Exchange code → `{ subject, email, name }` from IDP. If email missing → reject (`idp_missing_email`).
   2. Look up `identities` by `(org_id, kind='user', external_id=<IDP subject>)`.
      - **If found** → use `identities.user_id` as the target `users` row. Refresh `identities.email` and `users.display_name` opportunistically.
      - **If not found** → first-time sign-in for this IDP subject. Create a fresh `users` row (org-only: `overslash_idp_*` NULL, `personal_org_id` NULL). Create the `identities` row in this org with `external_id=<subject>`, `email=<IDP email>`, `user_id=<new users row>`. Never match against existing `users` rows by email.
-  3. Ensure `user_org_memberships(user_id, org_id, role, is_bootstrap=false)` exists. Role comes from the org's `allowed_email_domains` auto-provision rules (default `'member'`). If the IDP email does not match any allowed domain, reject with `not_permitted_by_org_idp` — the org admin controls who gets in through their allowed-domains list.
+  3. Ensure `user_org_memberships(user_id, org_id, role)` exists. Role comes from the org's `allowed_email_domains` auto-provision rules (default `'member'`). If the IDP email does not match any allowed domain, reject with `not_permitted_by_org_idp` — the org admin controls who gets in through their allowed-domains list. Empty `allowed_email_domains` = trust the IdP (any email admitted by it provisions); non-empty = strict whitelist.
   4. Mint JWT `{ user_id, org_id }`, redirect into the org.
 
 ### Flow 3 — Org switch in-app
@@ -183,9 +184,9 @@ Current: reads JWT, extracts `org_id` from claims. New: reads JWT → extracts `
 - **Login page** (`dashboard/src/routes/login/+page.svelte`):
   - On root domain: render only Overslash-level providers; no org field.
   - On org subdomain: render only the org's enabled IDPs. No Overslash fallback button.
-  - If the subdomain has no enabled IDPs yet, show an explanatory page: "This org has no sign-in configured. Contact the org creator." The bootstrap admin reaches the org via root → org switcher.
-- **`+layout.ts`**: `MeIdentity` gains `user_id`, `memberships: [{ org_id, slug, name, role, is_personal, is_bootstrap }]`, `personal_org_id`.
-- **`OrgSwitcher.svelte`** (new) — sidebar-top component. Dropdown listing memberships grouped as Personal / Orgs; calls `/auth/switch-org` then hard-reloads to returned URL. Bootstrap memberships carry a small "breakglass" label.
+  - If the subdomain has no enabled IDPs yet, show an explanatory page: "This org has no sign-in configured. Contact the org admin." The admin (= creator) reaches the org via root → org switcher.
+- **`+layout.ts`**: `MeIdentity` gains `user_id`, `memberships: [{ org_id, slug, name, role, is_personal }]`, `personal_org_id`.
+- **`OrgSwitcher.svelte`** (new) — sidebar-top component. Dropdown listing memberships grouped as Personal / Orgs; calls `/auth/switch-org` then hard-reloads to returned URL. No per-row badges — every row is just an org name.
 - **`/account`** (new) — top-level page outside any org scope; shows profile, linked Overslash IDP, org memberships, "Create org" CTA (gated by `ALLOW_ORG_CREATION`). Lets the user drop a bootstrap membership.
 - **`/org`** (existing) — hide IDP + OAuth credential cards when current org `is_personal=true`. For corp orgs, surface a warning banner when no IDP is enabled: "Configure an IDP to let your team sign in."
 

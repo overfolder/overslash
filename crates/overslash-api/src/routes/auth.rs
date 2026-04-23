@@ -553,7 +553,6 @@ struct MembershipSummary {
     name: String,
     role: String,
     is_personal: bool,
-    is_bootstrap: bool,
 }
 
 async fn list_membership_summaries(
@@ -572,7 +571,6 @@ async fn list_membership_summaries(
             name: o.name,
             role: m.role,
             is_personal: o.is_personal,
-            is_bootstrap: m.is_bootstrap,
         });
     }
     Ok(out)
@@ -1284,14 +1282,7 @@ async fn provision_root(
     overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, Some(identity_row.id))
         .await?;
 
-    membership::create(
-        &state.db,
-        new_user.id,
-        org.id,
-        membership::ROLE_ADMIN,
-        /* is_bootstrap = */ false,
-    )
-    .await?;
+    membership::create(&state.db, new_user.id, org.id, membership::ROLE_ADMIN).await?;
 
     Ok((org.id, identity_row.id, new_user.id, userinfo.email.clone()))
 }
@@ -1416,7 +1407,6 @@ async fn provision_org_subdomain(
         new_user.id,
         target_org.id,
         membership::ROLE_MEMBER,
-        /* is_bootstrap = */ false,
     )
     .await?;
 

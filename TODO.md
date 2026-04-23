@@ -59,9 +59,9 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 - [ ] **MCP Login Flow Fixes** (card `877cb`) — assignment/consent page served from dashboard (not api), default `inherit_permissions = true` for new MCP agents, reuse the existing agent on reauthentication, hide revoked MCP clients from the UI after 3s
 - [~] **UI Component Polish: Toggle Switches + Date Formatting** (card `2e268`, in progress) — design-system Toggle Switch component adopted everywhere (starting with "Inherits Permissions"), fix "Requested Invalid Date" rendering on Pending Approvals
 - [x] Multi-org login design for Cloud Overslash — design doc landed at `docs/design/multi_org_auth.md`; implementation tracked below
-- [ ] **Multi-org implementation** — PRs 1–5 per `docs/design/multi_org_auth.md`: data model + backfill, JWT + `/auth/switch-org` + account routes, subdomain middleware + self-hosted flags (`ALLOW_ORG_CREATION`, `SINGLE_ORG_MODE`), login-flow rewiring with corp-org bootstrap admin, dashboard org switcher + `/account` page
+- [ ] **Multi-org implementation** — PRs 1–5 per `docs/design/multi_org_auth.md`: data model + backfill, JWT + `/auth/switch-org` + account routes, subdomain middleware + self-hosted flags (`ALLOW_ORG_CREATION`, `SINGLE_ORG_MODE`), login-flow rewiring with creator-as-admin on `POST /v1/orgs`, dashboard org switcher + `/account` page
 - [ ] Corp-org slug squatting mitigation — domain verification or admin approval on `POST /v1/orgs` (follow-up to multi-org rollout)
-- [ ] Audit events for bootstrap-admin add/remove — emit on `POST /v1/orgs` and on `DELETE /v1/account/memberships/{org_id}` when the removed row had `is_bootstrap=true`
+- [ ] Audit events for creator-admin add/remove — emit on `POST /v1/orgs` and on `DELETE /v1/account/memberships/{org_id}` when the user dropping is the org's original creator
 - [ ] `/account` profile editing — name + avatar editable once the `users` table exists (follow-up to multi-org PR 1)
 
 ---

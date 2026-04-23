@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT user_id, org_id, role, is_bootstrap, created_at\n         FROM user_org_memberships WHERE org_id = $1 ORDER BY created_at ASC",
+  "query": "SELECT user_id, org_id, role, created_at\n         FROM user_org_memberships WHERE org_id = $1 ORDER BY created_at ASC",
   "describe": {
     "columns": [
       {
@@ -20,11 +20,6 @@
       },
       {
         "ordinal": 3,
-        "name": "is_bootstrap",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -38,9 +33,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "84a34867e4cbffecc6a05a08d7ac41f4f65f2ee83589b81b97c4b2169d594e9f"
+  "hash": "ff31416127e9ff9b94df4d5377e006136721ab871b7e3a4a2092eef5f8c125b5"
 }

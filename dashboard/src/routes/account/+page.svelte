@@ -89,11 +89,6 @@
 								{#if m.is_personal}
 									<span class="tag">personal</span>
 								{/if}
-								{#if m.is_bootstrap}
-									<span class="tag warn" title="Bootstrap admin — remove once your IdP-backed account is in place"
-										>breakglass</span
-									>
-								{/if}
 							</div>
 							<div class="m-actions">
 								<button type="button" onclick={() => switchTo(m.org_id)} disabled={m.org_id === me.org_id}>
@@ -196,10 +191,6 @@
 		border-radius: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-	}
-	.tag.warn {
-		background: var(--color-warning-soft, #fff3cd);
-		color: var(--color-warning, #8a6d3b);
 	}
 	.m-actions {
 		display: flex;

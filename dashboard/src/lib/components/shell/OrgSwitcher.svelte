@@ -56,11 +56,6 @@
 	>
 		{#if current}
 			<span class="name">{collapsed ? current.slug.charAt(0).toUpperCase() : current.name}</span>
-			{#if !collapsed && current.is_bootstrap}
-				<span class="badge" title="Bootstrap admin — drop once your IdP-backed account exists"
-					>breakglass</span
-				>
-			{/if}
 		{:else}
 			<span class="name">{collapsed ? '?' : 'No org'}</span>
 		{/if}
@@ -101,9 +96,6 @@
 						onclick={() => selectOrg(m.org_id)}
 					>
 						<span class="item-name">{m.name}</span>
-						{#if m.is_bootstrap}
-							<span class="badge-small" title="Bootstrap (breakglass) admin">●</span>
-						{/if}
 					</button>
 				{/each}
 			{/if}
@@ -149,18 +141,6 @@
 	.chev {
 		color: var(--color-text-muted);
 		font-size: 0.7rem;
-	}
-	.badge {
-		font-size: 0.65rem;
-		padding: 0.05rem 0.35rem;
-		background: var(--color-warning-soft, #fff3cd);
-		color: var(--color-warning, #8a6d3b);
-		border-radius: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	.badge-small {
-		color: var(--color-warning, #8a6d3b);
 	}
 	.menu {
 		position: absolute;

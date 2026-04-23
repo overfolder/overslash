@@ -42,7 +42,8 @@
 	// Credentials make sense there. See docs/design/multi_org_auth.md.
 	const isPersonalOrg = $derived(org?.is_personal === true);
 	// Corp orgs need at least one enabled IdP before anyone besides the
-	// bootstrap admin can sign in. Banner is meant to nudge the creator.
+	// creator can sign in (via their Overslash-level login). Banner nudges
+	// them to add one so their team can sign in via the corp IdP.
 	const hasEnabledIdp = $derived(idpConfigs.some((c) => c.enabled !== false));
 
 	// Confirmation modal state
@@ -493,9 +494,10 @@
 
 		{#if !isPersonalOrg && !hasEnabledIdp}
 			<div class="idp-warning-banner">
-				<strong>No sign-in configured.</strong> Until you add an Identity Provider below,
-				only your bootstrap (breakglass) admin session can reach this org. Add one so your
-				team can sign in.
+				<strong>No sign-in configured.</strong> Right now only you — the org's admin —
+				can reach this org, via your Overslash-level login. Add an Identity Provider
+				below so your team can sign in on
+				<code>{org?.slug}</code>'s subdomain. You'll keep your own access either way.
 			</div>
 		{/if}
 
