@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{ServiceAction, ServiceDefinition};
+use crate::types::{Runtime, ServiceAction, ServiceDefinition};
 
 mod alias;
 mod extract;
@@ -32,10 +32,13 @@ pub mod import;
 
 use alias::APIKEY_HTTP_SEC_ALIASES;
 use alias::{
-    HTTP_METHODS, INFO_ALIASES, OAUTH2_SEC_ALIASES, OPERATION_ALIASES, ROOT_ALIASES,
-    normalize_parameters_in, rewrite_aliases,
+    HTTP_METHODS, INFO_ALIASES, MCP_TOOL_ALIASES, OAUTH2_SEC_ALIASES, OPERATION_ALIASES,
+    ROOT_ALIASES, normalize_parameters_in, rewrite_aliases,
 };
-use extract::{extract_auth, extract_hosts, extract_http_action, extract_platform_action};
+use extract::{
+    extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
+    extract_platform_action,
+};
 
 // ── Public API ───────────────────────────────────────────────────────
 
@@ -146,6 +149,25 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
         }
     }
 
+    // MCP tools live under x-overslash-mcp.tools[] and x-overslash-mcp.discovered_tools[].
+    // Both are arrays of tool-shaped objects carrying `risk:` / `scope_param:` aliases.
+    if let Some(mcp) = root
+        .get_mut("x-overslash-mcp")
+        .and_then(Value::as_object_mut)
+    {
+        for field in ["tools", "discovered_tools"] {
+            if let Some(arr) = mcp.get_mut(field).and_then(Value::as_array_mut) {
+                for (i, entry) in arr.iter_mut().enumerate() {
+                    let Value::Object(obj) = entry else {
+                        continue;
+                    };
+                    let base = format!("x-overslash-mcp.{field}[{i}]");
+                    rewrite_aliases(obj, MCP_TOOL_ALIASES, &base, &mut issues);
+                }
+            }
+        }
+    }
+
     issues
 }
 
@@ -160,7 +182,7 @@ pub fn compile_service(
     doc: &Value,
 ) -> Result<(ServiceDefinition, Vec<ValidationIssue>), Vec<ValidationIssue>> {
     let mut errors: Vec<ValidationIssue> = Vec::new();
-    let warnings: Vec<ValidationIssue> = Vec::new();
+    let mut warnings: Vec<ValidationIssue> = Vec::new();
 
     let Some(root) = doc.as_object() else {
         errors.push(ValidationIssue::new(
@@ -246,6 +268,39 @@ pub fn compile_service(
         }
     }
 
+    // MCP runtime branch: populate McpSpec + per-tool actions from the
+    // x-overslash-mcp block (merging discovered_tools[] + tools[]).
+    let runtime = match root.get("x-overslash-runtime").and_then(Value::as_str) {
+        Some("mcp") => Runtime::Mcp,
+        Some("http") | None => Runtime::Http,
+        Some(other) => {
+            errors.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("x-overslash-runtime must be `http` or `mcp` (got {other:?})"),
+                "x-overslash-runtime",
+            ));
+            Runtime::Http
+        }
+    };
+    let mcp = if runtime == Runtime::Mcp {
+        match extract_mcp_spec(root) {
+            Ok(spec) => {
+                if let Err(mut es) =
+                    extract_mcp_actions(root, spec.autodiscover, &mut actions, &mut warnings)
+                {
+                    errors.append(&mut es);
+                }
+                Some(spec)
+            }
+            Err(mut es) => {
+                errors.append(&mut es);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -259,6 +314,8 @@ pub fn compile_service(
             category,
             auth,
             actions,
+            runtime,
+            mcp,
         },
         warnings,
     ))
@@ -269,7 +326,7 @@ pub fn compile_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Risk, ServiceAuth};
+    use crate::types::{McpAuth, Risk, Runtime, ServiceAuth};
     use serde_json::json;
 
     #[test]
@@ -360,6 +417,196 @@ mod tests {
         assert_eq!(send.risk, Risk::Write);
         assert_eq!(send.scope_param.as_deref(), Some("channel"));
         assert!(send.params["channel"].required);
+    }
+
+    // ── MCP runtime: aliases + compile + merge ──────────────────────────
+
+    #[test]
+    fn compile_mcp_runtime_with_aliases() {
+        // Unprefixed `runtime:` and `mcp:` must normalize to the canonical
+        // x-overslash-* forms. Tool-level `risk:` / `scope_param:` too.
+        let mut v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "DeepWiki", "key": "deepwiki_mcp"},
+            "runtime": "mcp",
+            "paths": {},
+            "mcp": {
+                "url": "https://mcp.deepwiki.com/mcp",
+                "auth": { "kind": "none" },
+                "autodiscover": false,
+                "tools": [
+                    {
+                        "name": "ask_question",
+                        "risk": "read",
+                        "scope_param": "repo",
+                        "description": "Ask a question about {repo}",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "repo": { "type": "string", "description": "Repo slug" },
+                                "question": { "type": "string" }
+                            },
+                            "required": ["repo", "question"]
+                        }
+                    }
+                ]
+            }
+        });
+        let ns = normalize_aliases(&mut v);
+        assert!(ns.is_empty(), "{ns:?}");
+        // aliases at root rewritten
+        assert!(v.get("x-overslash-runtime").is_some());
+        assert!(v.get("x-overslash-mcp").is_some());
+        assert!(v.get("runtime").is_none());
+        assert!(v.get("mcp").is_none());
+        // tool-level aliases rewritten
+        let tool = &v["x-overslash-mcp"]["tools"][0];
+        assert_eq!(tool["x-overslash-risk"], "read");
+        assert_eq!(tool["x-overslash-scope_param"], "repo");
+
+        let (svc, warnings) = compile_service(&v).expect("compile ok");
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(svc.runtime, Runtime::Mcp);
+        let mcp = svc.mcp.expect("mcp present");
+        assert_eq!(mcp.url, "https://mcp.deepwiki.com/mcp");
+        assert_eq!(mcp.auth, McpAuth::None);
+        assert!(!mcp.autodiscover);
+
+        let a = &svc.actions["ask_question"];
+        assert_eq!(a.mcp_tool.as_deref(), Some("ask_question"));
+        assert_eq!(a.risk, Risk::Read);
+        assert_eq!(a.scope_param.as_deref(), Some("repo"));
+        assert!(a.params["repo"].required);
+        assert!(a.params["question"].required);
+        assert_eq!(a.params["repo"].description, "Repo slug");
+    }
+
+    #[test]
+    fn compile_mcp_merges_discovered_and_authored_tools() {
+        // Discovered brings the schema; authored adds risk + scope_param + disabled.
+        let mut v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Linear", "x-overslash-key": "linear_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": { "kind": "bearer", "secret_name": "linear_api_token" },
+                "discovered_tools": [
+                    {
+                        "name": "search_issues",
+                        "description": "Search Linear issues",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"team": {"type": "string"}},
+                            "required": ["team"]
+                        }
+                    },
+                    {
+                        "name": "debug_internal",
+                        "description": "Debug helper",
+                        "input_schema": {"type": "object"}
+                    }
+                ],
+                "tools": [
+                    { "name": "search_issues", "risk": "read", "scope_param": "team" },
+                    { "name": "debug_internal", "disabled": true }
+                ]
+            }
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (svc, warnings) = compile_service(&v).expect("compile ok");
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        let search = &svc.actions["search_issues"];
+        assert_eq!(search.risk, Risk::Read);
+        assert_eq!(search.scope_param.as_deref(), Some("team"));
+        assert!(
+            search.params["team"].required,
+            "schema came from discovered"
+        );
+
+        let debug = &svc.actions["debug_internal"];
+        assert!(debug.disabled, "YAML disabled=true wins");
+    }
+
+    #[test]
+    fn compile_mcp_yaml_only_tool_warns_when_autodiscover() {
+        // autodiscover=true + a yaml-only tool not in discovered_tools → warning.
+        let mut v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "discovered_tools": [],
+                "tools": [{
+                    "name": "pre_annotated",
+                    "risk": "read",
+                    "description": "x",
+                    "input_schema": {"type": "object"}
+                }]
+            }
+        });
+        assert!(normalize_aliases(&mut v).is_empty());
+        let (svc, warnings) = compile_service(&v).expect("compile ok");
+        assert!(svc.actions.contains_key("pre_annotated"));
+        assert!(
+            warnings.iter().any(|w| w.code == "mcp_tool_not_discovered"),
+            "expected mcp_tool_not_discovered warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compile_mcp_rejects_missing_url() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": { "auth": {"kind": "none"} }
+        });
+        let err = compile_service(&v).unwrap_err();
+        assert!(err.iter().any(|e| e.code == "mcp_invalid"), "{err:?}");
+    }
+
+    #[test]
+    fn compile_mcp_rejects_unknown_auth_kind() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": { "kind": "oauth" }
+            }
+        });
+        let err = compile_service(&v).unwrap_err();
+        assert!(err.iter().any(|e| e.code == "mcp_invalid"), "{err:?}");
+    }
+
+    #[test]
+    fn compile_mcp_autodiscover_false_requires_input_schema() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "T", "x-overslash-key": "t_mcp"},
+            "x-overslash-runtime": "mcp",
+            "paths": {},
+            "x-overslash-mcp": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {"kind": "none"},
+                "autodiscover": false,
+                "tools": [ {"name": "t", "description": "x"} ]
+            }
+        });
+        let err = compile_service(&v).unwrap_err();
+        assert!(
+            err.iter()
+                .any(|e| e.code == "mcp_invalid" && e.path.contains("input_schema")),
+            "{err:?}"
+        );
     }
 
     #[test]

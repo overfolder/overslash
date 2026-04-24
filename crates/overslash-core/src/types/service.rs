@@ -39,6 +39,28 @@ impl fmt::Display for Risk {
     }
 }
 
+/// Execution runtime for a service definition.
+///
+/// - `Http` (default): actions are OpenAPI operations invoked by the HTTP executor.
+/// - `Mcp`: actions are tools on an external MCP server (Streamable HTTP, JSON-RPC 2.0).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Runtime {
+    #[default]
+    Http,
+    Mcp,
+}
+
+impl Runtime {
+    pub fn is_default(&self) -> bool {
+        matches!(self, Runtime::Http)
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// A service definition — describes an external API, its auth methods, and available actions.
 /// Also referred to as a "service template" (the blueprint from which service instances are created).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +76,45 @@ pub struct ServiceDefinition {
     pub auth: Vec<ServiceAuth>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
+    /// Execution runtime. Defaults to `Http` for backwards compat with every
+    /// existing template. MCP templates set this to `Mcp` and populate `mcp`.
+    #[serde(default, skip_serializing_if = "Runtime::is_default")]
+    pub runtime: Runtime,
+    /// MCP-specific config. Present iff `runtime == Mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpSpec>,
+}
+
+/// MCP external-server configuration. Lives inside a `ServiceDefinition` when
+/// `runtime == Mcp`. All per-tool shape lives on `ServiceAction` (one action
+/// per tool) — this struct only carries transport + auth + discovery config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSpec {
+    /// Streamable HTTP endpoint (MCP 2025-06-18). JSON-RPC 2.0 POST target.
+    pub url: String,
+    /// How to authenticate to the MCP server.
+    pub auth: McpAuth,
+    /// When `true` (default), saving the template triggers `tools/list` and
+    /// caches the result; the compile step merges discovered tools with any
+    /// authored `tools:` overrides. When `false`, the tool set is pinned to
+    /// what the YAML declares and every tool must carry `input_schema`.
+    #[serde(default = "default_true")]
+    pub autodiscover: bool,
+}
+
+/// How Overslash authenticates outbound to an MCP server.
+///
+/// The tagged-enum shape is forward-compatible: adding future variants
+/// (`header`, `headers`, `oauth`) is a pure addition that does not break
+/// existing serialized templates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum McpAuth {
+    /// No auth — public or internal MCP servers.
+    None,
+    /// `Authorization: Bearer <secret>`. The secret is resolved at call time
+    /// from the Overslash vault by name (org or user scope, versioned).
+    Bearer { secret_name: String },
 }
 
 /// Alias: a service template is the same as a service definition.
@@ -138,6 +199,21 @@ pub struct ServiceAction {
     /// `detail.request`). Does not affect the disclose jq input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redact: Vec<String>,
+    /// MCP tool name (present iff the owning service's `runtime == Mcp`).
+    /// The map key in `ServiceDefinition.actions` equals this tool name for
+    /// MCP actions, but we store it explicitly so renames are cheap later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tool: Option<String>,
+    /// MCP 2025-06-18 `outputSchema` — carried so agents can consume typed
+    /// structured results without a second round-trip to describe the tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    /// Admin-controlled visibility toggle. When `true`, the action is hidden
+    /// from the agent-visible action list and `/v1/actions/execute` rejects
+    /// invocation. Applies equally to Http and Mcp actions, though v1 only
+    /// surfaces it in the MCP discovery-override flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
 }
 
 /// One entry in `ServiceAction::disclose`. The `filter` is a jq expression
@@ -238,5 +314,174 @@ mod tests {
         assert_eq!(Risk::Read.to_string(), "read");
         assert_eq!(Risk::Write.to_string(), "write");
         assert_eq!(Risk::Delete.to_string(), "delete");
+    }
+
+    // ── MCP types ────────────────────────────────────────────────────
+
+    #[test]
+    fn runtime_default_is_http() {
+        assert_eq!(Runtime::default(), Runtime::Http);
+        assert!(Runtime::Http.is_default());
+        assert!(!Runtime::Mcp.is_default());
+    }
+
+    #[test]
+    fn runtime_serde_roundtrip() {
+        assert_eq!(serde_json::to_string(&Runtime::Http).unwrap(), r#""http""#);
+        assert_eq!(serde_json::to_string(&Runtime::Mcp).unwrap(), r#""mcp""#);
+        assert_eq!(
+            serde_json::from_str::<Runtime>(r#""http""#).unwrap(),
+            Runtime::Http
+        );
+        assert_eq!(
+            serde_json::from_str::<Runtime>(r#""mcp""#).unwrap(),
+            Runtime::Mcp
+        );
+    }
+
+    #[test]
+    fn mcp_auth_none_serde() {
+        let j = serde_json::to_value(McpAuth::None).unwrap();
+        assert_eq!(j, serde_json::json!({ "kind": "none" }));
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, McpAuth::None);
+    }
+
+    #[test]
+    fn mcp_auth_bearer_serde() {
+        let a = McpAuth::Bearer {
+            secret_name: "linear_token".into(),
+        };
+        let j = serde_json::to_value(&a).unwrap();
+        assert_eq!(
+            j,
+            serde_json::json!({ "kind": "bearer", "secret_name": "linear_token" })
+        );
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn mcp_auth_unknown_kind_rejected() {
+        // Forward-compat spec: new variants in the enum are additions; *unknown*
+        // variants must fail deserialization cleanly so callers know to upgrade.
+        let v = serde_json::json!({ "kind": "oauth", "provider": "google" });
+        assert!(serde_json::from_value::<McpAuth>(v).is_err());
+    }
+
+    #[test]
+    fn mcp_spec_autodiscover_defaults_true() {
+        // Omitting autodiscover should default to true.
+        let v = serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "auth": { "kind": "none" }
+        });
+        let spec: McpSpec = serde_json::from_value(v).unwrap();
+        assert!(spec.autodiscover);
+        assert_eq!(spec.url, "https://mcp.example.com/mcp");
+        assert_eq!(spec.auth, McpAuth::None);
+    }
+
+    #[test]
+    fn service_definition_http_defaults_keep_mcp_absent() {
+        // Existing Http templates must serialize without runtime/mcp keys.
+        let svc = ServiceDefinition {
+            key: "slack".into(),
+            display_name: "Slack".into(),
+            description: None,
+            hosts: vec!["slack.com".into()],
+            category: None,
+            auth: vec![],
+            actions: HashMap::new(),
+            runtime: Runtime::Http,
+            mcp: None,
+        };
+        let j = serde_json::to_value(&svc).unwrap();
+        assert!(
+            j.get("runtime").is_none(),
+            "runtime must be elided when Http"
+        );
+        assert!(j.get("mcp").is_none(), "mcp must be elided when absent");
+    }
+
+    #[test]
+    fn service_definition_mcp_roundtrip() {
+        let mut actions = HashMap::new();
+        actions.insert(
+            "search_issues".into(),
+            ServiceAction {
+                method: "".into(),
+                path: "".into(),
+                description: "Search issues".into(),
+                risk: Risk::Read,
+                response_type: None,
+                params: HashMap::new(),
+                scope_param: Some("team".into()),
+                required_scopes: vec![],
+                disclose: vec![],
+                redact: vec![],
+                mcp_tool: Some("search_issues".into()),
+                output_schema: Some(serde_json::json!({ "type": "object" })),
+                disabled: false,
+            },
+        );
+        let svc = ServiceDefinition {
+            key: "linear_mcp".into(),
+            display_name: "Linear".into(),
+            description: None,
+            hosts: vec![],
+            category: Some("Development".into()),
+            auth: vec![],
+            actions,
+            runtime: Runtime::Mcp,
+            mcp: Some(McpSpec {
+                url: "https://mcp.linear.app/mcp".into(),
+                auth: McpAuth::Bearer {
+                    secret_name: "linear_api_token".into(),
+                },
+                autodiscover: true,
+            }),
+        };
+        let j = serde_json::to_value(&svc).unwrap();
+        assert_eq!(j["runtime"], "mcp");
+        assert_eq!(j["mcp"]["url"], "https://mcp.linear.app/mcp");
+        assert_eq!(j["mcp"]["auth"]["kind"], "bearer");
+        let back: ServiceDefinition = serde_json::from_value(j).unwrap();
+        assert_eq!(back.runtime, Runtime::Mcp);
+        let mcp = back.mcp.expect("mcp present");
+        assert!(mcp.autodiscover);
+        assert_eq!(
+            mcp.auth,
+            McpAuth::Bearer {
+                secret_name: "linear_api_token".into()
+            }
+        );
+        let a = &back.actions["search_issues"];
+        assert_eq!(a.mcp_tool.as_deref(), Some("search_issues"));
+        assert!(!a.disabled);
+        assert!(a.output_schema.is_some());
+    }
+
+    #[test]
+    fn service_action_disabled_elided_when_false() {
+        let a = ServiceAction {
+            method: "GET".into(),
+            path: "/foo".into(),
+            description: "x".into(),
+            risk: Risk::Read,
+            response_type: None,
+            params: HashMap::new(),
+            scope_param: None,
+            required_scopes: vec![],
+            disclose: vec![],
+            redact: vec![],
+            mcp_tool: None,
+            output_schema: None,
+            disabled: false,
+        };
+        let j = serde_json::to_value(&a).unwrap();
+        assert!(j.get("disabled").is_none());
+        assert!(j.get("mcp_tool").is_none());
+        assert!(j.get("output_schema").is_none());
     }
 }

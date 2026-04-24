@@ -18,10 +18,35 @@ pub(super) struct Alias {
     pub canonical: &'static str,
 }
 
-pub(super) const ROOT_ALIASES: &[Alias] = &[Alias {
-    alias: "platform_actions",
-    canonical: "x-overslash-platform_actions",
-}];
+pub(super) const ROOT_ALIASES: &[Alias] = &[
+    Alias {
+        alias: "platform_actions",
+        canonical: "x-overslash-platform_actions",
+    },
+    Alias {
+        alias: "runtime",
+        canonical: "x-overslash-runtime",
+    },
+    Alias {
+        alias: "mcp",
+        canonical: "x-overslash-mcp",
+    },
+];
+
+/// MCP tool-level aliases. Tools are shaped like operations, so the same
+/// `risk:` / `scope_param:` unprefixed forms apply. Other tool fields
+/// (`name`, `description`, `input_schema`, `output_schema`, `disabled`) are
+/// plain JSON and not rewritten.
+pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
+    Alias {
+        alias: "risk",
+        canonical: "x-overslash-risk",
+    },
+    Alias {
+        alias: "scope_param",
+        canonical: "x-overslash-scope_param",
+    },
+];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
     Alias {

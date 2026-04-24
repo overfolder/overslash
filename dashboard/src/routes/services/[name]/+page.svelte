@@ -10,6 +10,7 @@
 		listConnections,
 		listServiceGroups,
 		initiateOAuth,
+		resyncMcpTemplate,
 		updateService,
 		setServiceStatus,
 		deleteService,
@@ -48,6 +49,29 @@
 	let saving = $state(false);
 	let connecting = $state(false);
 	let reconnectAbort: AbortController | null = null;
+	let resyncing = $state(false);
+	let resyncError = $state<string | null>(null);
+
+	async function resyncMcpTools() {
+		if (!template) return;
+		resyncing = true;
+		resyncError = null;
+		try {
+			await resyncMcpTemplate(template.key);
+			// Reload template + actions to pick up the refreshed discovered_tools.
+			// Actions must come from the service instance id (not name/key) — same
+			// invariant as load(): user-shadows-org mustn't return a different
+			// instance's actions.
+			const tpl = await getTemplate(template.key);
+			const acts = svc ? await getServiceActions(svc.id) : [];
+			template = tpl;
+			actions = acts;
+		} catch (e) {
+			resyncError = e instanceof ApiError ? e.message : String(e);
+		} finally {
+			resyncing = false;
+		}
+	}
 	let loadAbort: AbortController | null = null;
 	let destroyed = false;
 	let confirmDelete = $state(false);
@@ -641,8 +665,60 @@
 			</div>
 		{:else}
 			<div class="card">
+				{#if template?.runtime === 'mcp'}
+					<div class="mcp-header">
+						<div class="mcp-meta">
+							<span class="mono">MCP · {template.mcp?.url ?? ''}</span>
+							<span class="muted">
+								{#if template.mcp?.autodiscover === false}
+									discovery disabled
+								{:else if template.mcp?.discovered_at}
+									last resync: {template.mcp.discovered_at}
+								{:else}
+									never resynced
+								{/if}
+							</span>
+						</div>
+						{#if template.mcp?.autodiscover !== false && template.tier !== 'global'}
+							<button
+								type="button"
+								class="btn"
+								disabled={resyncing}
+								onclick={resyncMcpTools}
+							>
+								{resyncing ? 'Resyncing…' : 'Resync tools'}
+							</button>
+						{/if}
+					</div>
+					{#if resyncError}
+						<p class="error">{resyncError}</p>
+					{/if}
+				{/if}
 				{#if actions.length === 0}
 					<p class="muted">No actions defined.</p>
+				{:else if template?.runtime === 'mcp'}
+					<table>
+						<thead>
+							<tr>
+								<th>Tool</th>
+								<th>Description</th>
+								<th>Risk</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each actions as a}
+								<tr class:disabled={a.disabled}>
+									<td><span class="mono">{a.mcp_tool ?? a.key}</span></td>
+									<td>{a.description}</td>
+									<td><span class="mono">{a.risk}</span></td>
+									<td>
+										{#if a.disabled}<span class="pill pill-muted">hidden</span>{/if}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
 				{:else}
 					<table>
 						<thead>
@@ -789,6 +865,35 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	.mcp-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0 0 0.75rem 0;
+		border-bottom: 1px solid var(--color-border);
+		margin-bottom: 0.75rem;
+	}
+	.mcp-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+	tr.disabled {
+		opacity: 0.55;
+	}
+	.pill {
+		display: inline-block;
+		padding: 0.1rem 0.5rem;
+		border-radius: 999px;
+		font-size: 0.7rem;
+		border: 1px solid transparent;
+	}
+	.pill-muted {
+		background: rgba(120, 120, 120, 0.12);
+		color: var(--color-text-muted);
+		border-color: rgba(120, 120, 120, 0.25);
 	}
 	.actions {
 		display: flex;

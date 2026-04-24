@@ -183,6 +183,8 @@ mod tests {
                 },
             }],
             actions: HashMap::new(),
+            runtime: Default::default(),
+            mcp: None,
         }
     }
 
@@ -198,6 +200,9 @@ mod tests {
             required_scopes: vec![],
             disclose: vec![],
             redact: vec![],
+            mcp_tool: None,
+            output_schema: None,
+            disabled: false,
         }
     }
 

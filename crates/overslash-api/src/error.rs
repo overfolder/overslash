@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("bad gateway: {0}")]
+    BadGateway(String),
+
     #[error("conflict: {0}")]
     Conflict(String),
 
@@ -79,6 +82,7 @@ impl IntoResponse for AppError {
             Self::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Self::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             Self::FilterSyntax(msg) => {
                 return (
                     StatusCode::BAD_REQUEST,

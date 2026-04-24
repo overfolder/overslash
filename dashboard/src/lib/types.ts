@@ -99,6 +99,10 @@ export interface TemplateDetail {
   actions: ActionSummary[];
   tier: TemplateTier;
   id?: string;
+  /** "http" (default) or "mcp". Dashboard switches column layout on this. */
+  runtime?: ServiceRuntime;
+  /** Present when `runtime === "mcp"`. */
+  mcp?: McpDetail;
 }
 
 export interface CreateTemplateRequest {
@@ -192,6 +196,23 @@ export interface ActionSummary {
   path: string;
   description: string;
   risk: string;
+  /** MCP tool name when the owning service has `runtime: mcp`. Absent for HTTP. */
+  mcp_tool?: string;
+  /** MCP outputSchema (JSON Schema), when the tool declares one. */
+  output_schema?: unknown;
+  /** Admin-hidden tool; the dashboard renders a "hidden" pill. */
+  disabled?: boolean;
+}
+
+export type ServiceRuntime = 'http' | 'mcp';
+
+export interface McpDetail {
+  url: string;
+  /** v1: `none` | `bearer`. */
+  auth_kind: 'none' | 'bearer';
+  autodiscover: boolean;
+  /** ISO-8601 of the most recent `tools/list` sync; absent until first resync. */
+  discovered_at?: string;
 }
 
 /** Full action details including the parameter schema — returned by

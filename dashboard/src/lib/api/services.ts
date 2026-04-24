@@ -74,6 +74,20 @@ export const promoteDraft = (id: string) =>
 export const discardDraft = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/templates/drafts/${encodeURIComponent(id)}`);
 
+// -- MCP tools resync --
+
+export interface McpResyncResponse {
+	key: string;
+	tool_count: number;
+	discovered_at: string;
+}
+
+export const resyncMcpTemplate = (key: string) =>
+	session.post<McpResyncResponse>(
+		`/v1/templates/${encodeURIComponent(key)}/mcp/resync`,
+		{}
+	);
+
 // -- Template validation (pending endpoint, graceful 404) --
 
 export async function validateTemplate(yaml: string): Promise<ValidationResult | null> {

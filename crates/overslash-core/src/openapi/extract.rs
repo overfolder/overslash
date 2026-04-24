@@ -20,7 +20,8 @@ use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, DisclosureField, ParamResolver, Risk, ServiceAction, ServiceAuth, TokenInjection,
+    ActionParam, DisclosureField, McpAuth, McpSpec, ParamResolver, Risk, ServiceAction,
+    ServiceAuth, TokenInjection,
 };
 
 // ── servers → hosts ──────────────────────────────────────────────────
@@ -351,6 +352,9 @@ pub(super) fn extract_http_action(
             required_scopes,
             disclose,
             redact,
+            mcp_tool: None,
+            output_schema: None,
+            disabled: false,
         },
     );
 
@@ -399,6 +403,9 @@ pub(super) fn extract_platform_action(
         // and redaction are no-ops for them.
         disclose: Vec::new(),
         redact: Vec::new(),
+        mcp_tool: None,
+        output_schema: None,
+        disabled: false,
     })
 }
 
@@ -487,6 +494,309 @@ fn parse_redact(v: Option<&Value>, base: &str, issues: &mut Vec<ValidationIssue>
                 p,
             )),
         }
+    }
+    out
+}
+
+// ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
+
+/// Lower the `x-overslash-mcp` block into a typed `McpSpec`.
+pub(super) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec<ValidationIssue>> {
+    let mut errors = Vec::new();
+    let Some(mcp_obj) = root.get("x-overslash-mcp").and_then(Value::as_object) else {
+        errors.push(ValidationIssue::new(
+            "mcp_missing",
+            "runtime is `mcp` but x-overslash-mcp block is absent",
+            "x-overslash-mcp",
+        ));
+        return Err(errors);
+    };
+
+    let url = match mcp_obj.get("url").and_then(Value::as_str) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => {
+            errors.push(ValidationIssue::new(
+                "mcp_invalid",
+                "x-overslash-mcp.url is required and must be a non-empty string",
+                "x-overslash-mcp.url",
+            ));
+            return Err(errors);
+        }
+    };
+
+    // auth: object with a `kind` discriminator. Defaults to {kind: none} when absent.
+    let auth = match mcp_obj.get("auth") {
+        None => McpAuth::None,
+        Some(Value::Object(a)) => match a.get("kind").and_then(Value::as_str) {
+            Some("none") | None => McpAuth::None,
+            Some("bearer") => {
+                let secret_name = a
+                    .get("secret_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if secret_name.is_empty() {
+                    errors.push(ValidationIssue::new(
+                        "mcp_invalid",
+                        "x-overslash-mcp.auth.secret_name is required when kind=bearer",
+                        "x-overslash-mcp.auth.secret_name",
+                    ));
+                    return Err(errors);
+                }
+                McpAuth::Bearer { secret_name }
+            }
+            Some(other) => {
+                errors.push(ValidationIssue::new(
+                    "mcp_invalid",
+                    format!(
+                        "x-overslash-mcp.auth.kind must be one of `none`, `bearer` (got {other:?}); future kinds land in a follow-up PR"
+                    ),
+                    "x-overslash-mcp.auth.kind",
+                ));
+                return Err(errors);
+            }
+        },
+        Some(_) => {
+            errors.push(ValidationIssue::new(
+                "mcp_invalid",
+                "x-overslash-mcp.auth must be an object",
+                "x-overslash-mcp.auth",
+            ));
+            return Err(errors);
+        }
+    };
+
+    let autodiscover = mcp_obj
+        .get("autodiscover")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    Ok(McpSpec {
+        url,
+        auth,
+        autodiscover,
+    })
+}
+
+/// Merge `discovered_tools[]` + `tools[]` from an `x-overslash-mcp` block into
+/// a map of `ServiceAction` (keyed by tool name). YAML-authored `tools[]` wins
+/// field-by-field over discovered entries with the same name. Tools present in
+/// YAML but not in `discovered_tools` are emitted as warnings (admin may be
+/// pre-annotating). When `autodiscover=false`, YAML `tools[]` is the source of
+/// truth and `input_schema` is required on every entry.
+pub(super) fn extract_mcp_actions(
+    root: &Map<String, Value>,
+    autodiscover: bool,
+    sink: &mut HashMap<String, ServiceAction>,
+    warnings: &mut Vec<ValidationIssue>,
+) -> Result<(), Vec<ValidationIssue>> {
+    let mut errors = Vec::new();
+    let mcp_obj = match root.get("x-overslash-mcp").and_then(Value::as_object) {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+
+    // Build the discovered map first (lower priority).
+    let discovered_arr = mcp_obj
+        .get("discovered_tools")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut merged: HashMap<String, Map<String, Value>> = HashMap::new();
+    for (i, entry) in discovered_arr.iter().enumerate() {
+        let Some(obj) = entry.as_object() else {
+            errors.push(ValidationIssue::new(
+                "mcp_invalid",
+                "discovered tool must be an object",
+                format!("x-overslash-mcp.discovered_tools[{i}]"),
+            ));
+            continue;
+        };
+        let Some(name) = obj.get("name").and_then(Value::as_str) else {
+            errors.push(ValidationIssue::new(
+                "mcp_invalid",
+                "discovered tool missing `name`",
+                format!("x-overslash-mcp.discovered_tools[{i}]"),
+            ));
+            continue;
+        };
+        merged.insert(name.to_string(), obj.clone());
+    }
+
+    // Apply YAML overrides (higher priority). Missing discovered entry when
+    // autodiscover=true is a warning; when autodiscover=false it's the source.
+    if let Some(tools_arr) = mcp_obj.get("tools").and_then(Value::as_array) {
+        for (i, entry) in tools_arr.iter().enumerate() {
+            let Some(obj) = entry.as_object() else {
+                errors.push(ValidationIssue::new(
+                    "mcp_invalid",
+                    "authored tool must be an object",
+                    format!("x-overslash-mcp.tools[{i}]"),
+                ));
+                continue;
+            };
+            let Some(name) = obj.get("name").and_then(Value::as_str) else {
+                errors.push(ValidationIssue::new(
+                    "mcp_invalid",
+                    "authored tool missing `name`",
+                    format!("x-overslash-mcp.tools[{i}]"),
+                ));
+                continue;
+            };
+            let name = name.to_string();
+            let entry_path = format!("x-overslash-mcp.tools[{i}]");
+
+            match merged.get_mut(&name) {
+                Some(existing) => {
+                    // Overlay: YAML fields overwrite discovered fields.
+                    for (k, v) in obj {
+                        existing.insert(k.clone(), v.clone());
+                    }
+                }
+                None => {
+                    if autodiscover {
+                        warnings.push(ValidationIssue::new(
+                            "mcp_tool_not_discovered",
+                            format!(
+                                "authored tool `{name}` is not present in discovered_tools — \
+                                 run resync or remove the entry"
+                            ),
+                            entry_path.clone(),
+                        ));
+                    }
+                    merged.insert(name, obj.clone());
+                }
+            }
+        }
+    }
+
+    if !autodiscover && merged.is_empty() {
+        errors.push(ValidationIssue::new(
+            "mcp_invalid",
+            "autodiscover=false but no tools declared under x-overslash-mcp.tools",
+            "x-overslash-mcp.tools",
+        ));
+        return Err(errors);
+    }
+
+    // Lower merged entries to ServiceAction.
+    for (name, obj) in merged {
+        let base = format!("x-overslash-mcp.tools[{name}]");
+
+        let risk = match obj.get("x-overslash-risk").and_then(Value::as_str) {
+            Some("read") | None => Risk::Read,
+            Some("write") => Risk::Write,
+            Some("delete") => Risk::Delete,
+            Some(other) => {
+                errors.push(ValidationIssue::new(
+                    "invalid_risk",
+                    format!("x-overslash-risk must be one of read/write/delete (got {other:?})"),
+                    format!("{base}.x-overslash-risk"),
+                ));
+                continue;
+            }
+        };
+
+        let description = obj
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let scope_param = obj
+            .get("x-overslash-scope_param")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let disabled = obj
+            .get("disabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let output_schema = obj.get("output_schema").cloned();
+
+        // input_schema required when autodiscover=false; otherwise optional.
+        let input_schema = obj.get("input_schema");
+        if !autodiscover && input_schema.is_none() {
+            errors.push(ValidationIssue::new(
+                "mcp_invalid",
+                format!("tool `{name}` missing `input_schema` (required when autodiscover=false)"),
+                format!("{base}.input_schema"),
+            ));
+            continue;
+        }
+        let params = input_schema.map(lower_input_schema).unwrap_or_default();
+
+        sink.insert(
+            name.clone(),
+            ServiceAction {
+                method: String::new(),
+                path: String::new(),
+                description,
+                risk,
+                response_type: None,
+                params,
+                scope_param,
+                required_scopes: Vec::new(),
+                disclose: Vec::new(),
+                redact: Vec::new(),
+                mcp_tool: Some(name),
+                output_schema,
+                disabled,
+            },
+        );
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Lower a JSON-Schema `{type: object, properties: {...}, required: [...]}`
+/// into the subset of `ActionParam` shape Overslash understands. Unsupported
+/// constructs (oneOf, nested object properties) are silently ignored — they
+/// remain in the raw `output_schema` / `input_schema` for agent consumption.
+pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam> {
+    let mut out = HashMap::new();
+    let Some(obj) = schema.as_object() else {
+        return out;
+    };
+    let required: Vec<&str> = obj
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let Some(props) = obj.get("properties").and_then(Value::as_object) else {
+        return out;
+    };
+    for (name, pv) in props {
+        let Some(po) = pv.as_object() else { continue };
+        let param_type = po
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("string")
+            .to_string();
+        let description = po
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let enum_values = po.get("enum").and_then(Value::as_array).map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        });
+        let default = po.get("default").cloned();
+        out.insert(
+            name.clone(),
+            ActionParam {
+                param_type,
+                required: required.contains(&name.as_str()),
+                description,
+                enum_values,
+                default,
+                resolve: None,
+            },
+        );
     }
     out
 }

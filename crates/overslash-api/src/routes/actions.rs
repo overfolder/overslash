@@ -20,7 +20,7 @@ use crate::{
     error::AppError,
     extractors::{AuthContext, ClientIp},
     services::{
-        disclosure, group_ceiling, http_executor,
+        disclosure, group_ceiling, http_executor, mcp_executor,
         response_filter::{self, ResponseFilter},
     },
 };
@@ -29,8 +29,8 @@ use overslash_core::{
     permissions::{GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
     types::{
-        ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, SecretRef,
-        service::Risk,
+        ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpSpec, Runtime,
+        SecretRef, service::Risk,
     },
 };
 
@@ -110,6 +110,15 @@ struct ResolvedMeta {
     /// disclosure `.params.*` projection. Empty for Mode A/B where no
     /// disclosure runs.
     params: HashMap<String, serde_json::Value>,
+    /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
+    /// executor and goes through `mcp_executor::invoke` with this payload.
+    mcp_target: Option<McpTarget>,
+}
+
+struct McpTarget {
+    spec: McpSpec,
+    tool: String,
+    arguments: serde_json::Value,
 }
 
 struct ServiceScope {
@@ -380,6 +389,83 @@ async fn execute_action(
         }
     }
 
+    // ── MCP dispatch fork ────────────────────────────────────────────
+    // Mcp-runtime services skip the HTTP executor: no URL templating, no
+    // secret injection into headers, no streaming path. The executor owns
+    // header resolution through mcp_auth::resolve_headers.
+    if let Some(mcp_target) = meta.mcp_target.as_ref() {
+        let result = mcp_executor::invoke(
+            &state,
+            &scope,
+            &mcp_target.spec,
+            &mcp_target.tool,
+            &mcp_target.arguments,
+        )
+        .await?;
+
+        // Unpack the envelope so the audit row can carry tool-level
+        // success/failure — reviewers need is_error to distinguish "HTTP
+        // 200 but the tool failed" from real successes. The envelope is
+        // a valid JSON object we produced ourselves; if parsing ever
+        // fails we fall back to None rather than crash the audit row.
+        let envelope: Option<serde_json::Value> = serde_json::from_str(&result.body).ok();
+        let is_error = envelope
+            .as_ref()
+            .and_then(|e| e.get("is_error"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        // Disclosure + redaction: MCP actions can declare the same
+        // `disclose` / `redact` blocks HTTP actions do. compute_approval_detail
+        // has an MCP branch that builds a tool/arguments projection; we
+        // reuse it here so both audit and approval surfaces stay consistent.
+        let filter_timeout = std::time::Duration::from_millis(state.config.filter_timeout_ms);
+        let (disclosed_fields, _redacted_detail) =
+            compute_approval_detail(&meta, &action_req, filter_timeout).await;
+
+        let mut audit_detail = serde_json::json!({
+            "runtime": "mcp",
+            "tool": mcp_target.tool,
+            "arguments": mcp_target.arguments,
+            "url": mcp_target.spec.url,
+            "duration_ms": result.duration_ms,
+            "is_error": is_error,
+            "service": req.service,
+            "action": req.action,
+        });
+        if !disclosed_fields.is_empty() {
+            audit_detail
+                .as_object_mut()
+                .expect("audit detail is a json object")
+                .insert(
+                    "disclosed".into(),
+                    serde_json::to_value(&disclosed_fields).unwrap_or_default(),
+                );
+        }
+
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                action: "action.executed",
+                resource_type: req.service.as_deref(),
+                resource_id: None,
+                detail: audit_detail,
+                description: meta.description.as_deref(),
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+
+        return Ok((
+            StatusCode::OK,
+            Json(ExecuteResponse::Executed {
+                result,
+                action_description: meta.description,
+            }),
+        )
+            .into_response());
+    }
+
     // Resolve secrets and inject
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let mut secret_values = HashMap::new();
@@ -636,6 +722,7 @@ async fn resolve_request(
                 disclose: Vec::new(),
                 redact: Vec::new(),
                 params: HashMap::new(),
+                mcp_target: None,
             },
         ));
     }
@@ -682,6 +769,69 @@ async fn resolve_request(
                 "action '{action_key}' not found in service '{service_key}'"
             ))
         })?;
+
+        // ── MCP runtime fork ─────────────────────────────────────────
+        // Disabled tools are invisible to agents even when they exist in
+        // the compiled action map. Every MCP call force-gates (auth_injected)
+        // so empty-auth MCP templates cannot bypass Layer 2 approvals.
+        if svc.runtime == Runtime::Mcp {
+            if action.disabled {
+                return Err(AppError::NotFound(format!(
+                    "action '{action_key}' is disabled on service '{service_key}'"
+                )));
+            }
+            let mcp_spec = svc.mcp.clone().ok_or_else(|| {
+                AppError::Internal(format!(
+                    "service '{service_key}' has runtime=mcp but no mcp block"
+                ))
+            })?;
+            let tool = action
+                .mcp_tool
+                .clone()
+                .unwrap_or_else(|| action_key.clone());
+            let arguments = serde_json::to_value(&req.params).unwrap_or(serde_json::Value::Null);
+            // Interpolate `{param}` placeholders in the action description
+            // using the caller's supplied params. Mirrors the HTTP path so
+            // approvals and audit rows name the actual target — e.g.
+            // "Search issues in team ENG" instead of "Search issues in team
+            // {team}". Resolvers don't apply (MCP has no HTTP parameter
+            // schema), so we pass an empty resolved map.
+            let interpolated = overslash_core::description::interpolate_description_with_resolved(
+                &action.description,
+                &req.params,
+                &std::collections::HashMap::new(),
+            );
+            let description = format!("{interpolated} ({})", svc.display_name);
+            let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
+            return Ok((
+                ActionRequest {
+                    method: String::new(),
+                    url: mcp_spec.url.clone(),
+                    headers: HashMap::new(),
+                    body: None,
+                    secrets: Vec::new(),
+                },
+                ResolvedMeta {
+                    description: Some(description),
+                    auth_injected: true,
+                    service_scope: Some(ServiceScope {
+                        service_key: service_key.clone(),
+                        action_key: action_key.clone(),
+                        scope_param: action.scope_param.clone(),
+                    }),
+                    risk: Some(action.risk),
+                    service_instance_owner: instance_owner,
+                    disclose: action.disclose.clone(),
+                    redact: action.redact.clone(),
+                    params: req.params.clone(),
+                    mcp_target: Some(McpTarget {
+                        spec: mcp_spec,
+                        tool,
+                        arguments,
+                    }),
+                },
+            ));
+        }
 
         let host = svc
             .hosts
@@ -811,6 +961,7 @@ async fn resolve_request(
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
                 params: req.params.clone(),
+                mcp_target: None,
             },
         ));
     }
@@ -849,6 +1000,7 @@ async fn resolve_request(
             disclose: Vec::new(),
             redact: Vec::new(),
             params: HashMap::new(),
+            mcp_target: None,
         },
     ))
 }
@@ -1216,6 +1368,37 @@ async fn compute_approval_detail(
     req: &ActionRequest,
     filter_timeout: std::time::Duration,
 ) -> (Vec<disclosure::DisclosedField>, Option<serde_json::Value>) {
+    // MCP-runtime actions use a different projection: the resolved
+    // ActionRequest has no url/method/body to inspect, so reviewers need
+    // the tool name and arguments to see what the agent actually called.
+    // Disclosure jq filters are still applied when declared — they operate
+    // on the MCP projection ({runtime, tool, arguments, service, action}).
+    if let Some(target) = meta.mcp_target.as_ref() {
+        let projection = serde_json::json!({
+            "runtime": "mcp",
+            "tool": &target.tool,
+            "arguments": &target.arguments,
+            "service": meta.service_scope.as_ref().map(|s| &s.service_key),
+            "action": meta.service_scope.as_ref().map(|s| &s.action_key),
+        });
+        let disclosed = if meta.disclose.is_empty() {
+            Vec::new()
+        } else {
+            match disclosure::run_disclosures(&meta.disclose, &projection, filter_timeout).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("mcp disclosure batch failed: {e}");
+                    Vec::new()
+                }
+            }
+        };
+        let mut redacted = projection;
+        if !meta.redact.is_empty() {
+            core_disclosure::apply_redactions(&mut redacted, &meta.redact);
+        }
+        return (disclosed, Some(redacted));
+    }
+
     if meta.disclose.is_empty() && meta.redact.is_empty() {
         return (Vec::new(), serde_json::to_value(req).ok());
     }

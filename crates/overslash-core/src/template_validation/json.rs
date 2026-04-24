@@ -71,6 +71,8 @@ pub fn parse_template_parts(
         category: category.map(|s| s.to_string()),
         auth,
         actions,
+        runtime: Default::default(),
+        mcp: None,
     };
 
     // JSON inputs have already deduped at the serde_json::Map level, so
