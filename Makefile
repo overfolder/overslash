@@ -3,7 +3,7 @@
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web \
        logs logs-deploy \
-       shortener-dev shortener-down
+       shortener-dev shortener-down shortener-deploy
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -76,6 +76,46 @@ shortener-dev:
 # Stop the shortener dev stack
 shortener-down:
 	$(COMPOSE) -f docker/docker-compose.shortener.yml down --remove-orphans
+
+# Build, push, and deploy the oversla.sh shortener from local.
+# Mirrors the cloud-build-shortener pipeline: builds crates/oversla-sh/Dockerfile,
+# pushes :$(SHA) + :latest to Artifact Registry, then `gcloud run deploy`s.
+# Usage:
+#   make shortener-deploy ENV=prod               # prod with current HEAD sha
+#   make shortener-deploy ENV=prod SHA=v0.1.0    # override tag
+#   DEPLOY_AUTO_APPROVE=1 make shortener-deploy ENV=prod  # skip prod confirm
+shortener-deploy:
+	@test -f $(TF_VAR_FILE) || (echo -e "$(RED)Var file $(TF_VAR_FILE) not found. Use ENV=dev or ENV=prod.$(NC)" && exit 1)
+	@command -v gcloud >/dev/null || (echo -e "$(RED)gcloud CLI not found.$(NC)" && exit 1)
+	@command -v docker >/dev/null || (echo -e "$(RED)docker CLI not found.$(NC)" && exit 1)
+	@test -n "$(GCP_PROJECT)" || (echo -e "$(RED)Could not read project_id from $(TF_VAR_FILE)$(NC)" && exit 1)
+	$(eval BASE_PREFIX := overslash-$(ENV))
+	$(eval REPO := $(BASE_PREFIX)-registry)
+	$(eval SERVICE := $(BASE_PREFIX)-shortener)
+	$(eval AR_HOST := $(REGION)-docker.pkg.dev)
+	$(eval IMAGE := $(AR_HOST)/$(GCP_PROJECT)/$(REPO)/oversla-sh)
+	$(eval SHA ?= $(shell git rev-parse --short HEAD))
+	@if [ "$(ENV)" = "prod" ] && [ "$(DEPLOY_AUTO_APPROVE)" != "1" ]; then \
+		echo -e "$(RED)About to deploy $(SERVICE) ($(IMAGE):$(SHA)) to PRODUCTION ($(GCP_PROJECT))$(NC)"; \
+		echo -n "Type 'deploy' to confirm: "; \
+		read confirm && [ "$$confirm" = "deploy" ] || (echo "Aborted." && exit 1); \
+	fi
+	@echo -e "$(GREEN)[1/3] docker build -> $(IMAGE):$(SHA)$(NC)"
+	docker build \
+		-f crates/oversla-sh/Dockerfile \
+		-t $(IMAGE):$(SHA) \
+		-t $(IMAGE):latest \
+		.
+	@echo -e "$(GREEN)[2/3] docker push (tags: $(SHA), latest)$(NC)"
+	docker push $(IMAGE):$(SHA)
+	docker push $(IMAGE):latest
+	@echo -e "$(GREEN)[3/3] gcloud run deploy $(SERVICE) --image $(IMAGE):$(SHA)$(NC)"
+	gcloud run deploy $(SERVICE) \
+		--image $(IMAGE):$(SHA) \
+		--region $(REGION) \
+		--project $(GCP_PROJECT) \
+		--quiet
+	@echo -e "$(GREEN)Deployed $(SERVICE) at $(IMAGE):$(SHA)$(NC)"
 
 # Remove worktree containers and volumes
 worktree-clean:

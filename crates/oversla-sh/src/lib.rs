@@ -19,6 +19,7 @@ pub struct AppState {
     pub base_url: String,
     pub min_ttl_secs: u64,
     pub max_ttl_secs: u64,
+    pub root_redirect_url: Option<String>,
 }
 
 impl AppState {
@@ -29,6 +30,7 @@ impl AppState {
             base_url: config.base_url.clone(),
             min_ttl_secs: config.min_ttl_secs,
             max_ttl_secs: config.max_ttl_secs,
+            root_redirect_url: config.root_redirect_url.clone(),
         }
     }
 }

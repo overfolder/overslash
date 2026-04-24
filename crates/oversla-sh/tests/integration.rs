@@ -42,6 +42,7 @@ async fn start() -> (SocketAddr, Client) {
         base_url: TEST_BASE_URL.into(),
         min_ttl_secs: 1, // relaxed for tests (production default: 60)
         max_ttl_secs: 3600,
+        root_redirect_url: std::env::var("TEST_ROOT_REDIRECT_URL").ok(),
     };
     let state = AppState::from_config(&config, storage);
     let app = create_app(state);
@@ -253,4 +254,49 @@ async fn slug_with_invalid_chars_is_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn root_is_404_when_unset() {
+    // Default test config leaves ROOT_REDIRECT_URL unset unless the
+    // env var is also set — assert the unset branch here.
+    if std::env::var("TEST_ROOT_REDIRECT_URL").is_ok() {
+        return;
+    }
+    let (addr, client) = start().await;
+    let resp = client.get(format!("http://{addr}/")).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn root_redirects_when_configured() {
+    // SAFETY: setting an env var during tests races with other tests —
+    // we spin up a dedicated server whose config we mutate directly via
+    // a local Config instead of going through AppState::from_config.
+    let url = valkey_url();
+    let storage = Storage::connect(&url).await.expect("valkey");
+    let config = Config {
+        host: "127.0.0.1".into(),
+        port: 0,
+        valkey_url: url,
+        api_key: TEST_API_KEY.into(),
+        base_url: TEST_BASE_URL.into(),
+        min_ttl_secs: 1,
+        max_ttl_secs: 3600,
+        root_redirect_url: Some("https://www.overslash.com".into()),
+    };
+    let state = AppState::from_config(&config, storage);
+    let app = create_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = Client::builder().redirect(Policy::none()).build().unwrap();
+    let resp = client.get(format!("http://{addr}/")).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(
+        resp.headers().get("location").unwrap(),
+        "https://www.overslash.com"
+    );
 }

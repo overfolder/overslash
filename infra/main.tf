@@ -80,7 +80,16 @@ module "cloud_sql" {
 
   db_password = module.secret_manager.db_password_value
 
-  depends_on = [google_project_service.apis]
+  # module.networking must be fully applied (not just the VPC, but the
+  # google_service_networking_connection peering resource) before Cloud
+  # SQL can be flipped to private_network. The implicit dep through
+  # private_network_id only waits for VPC creation, which resolves before
+  # the peering is established, causing NETWORK_NOT_PEERED on the SQL
+  # update. Explicit depends_on forces the correct order.
+  depends_on = [
+    google_project_service.apis,
+    module.networking,
+  ]
 }
 
 # --- Cloud Run ---
@@ -222,8 +231,9 @@ module "cloud_run_shortener" {
   valkey_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   valkey_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
-  base_url = var.shortener_base_url
-  domain   = var.shortener_domain
+  base_url          = var.shortener_base_url
+  domain            = var.shortener_domain
+  root_redirect_url = var.shortener_root_redirect_url
 
   depends_on = [
     module.memorystore,
