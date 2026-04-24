@@ -21,6 +21,7 @@ pub mod audit;
 pub mod byoc_credential;
 pub mod connection;
 pub mod enabled_global_template;
+pub mod execution;
 pub mod group;
 pub mod identity;
 pub mod mcp_client_agent_binding;

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = 'executing',\n                started_at = now() - interval '10 minutes'\n         WHERE approval_id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3d21478805a649f5e2aed0734964eda409f7b9664f957b3896d40486c5f80a83"
+}

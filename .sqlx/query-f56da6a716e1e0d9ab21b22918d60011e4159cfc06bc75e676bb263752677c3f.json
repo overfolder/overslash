@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals\n         WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'\n         ORDER BY created_at DESC",
+  "query": "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, token, expires_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
   "describe": {
     "columns": [
       {
@@ -45,41 +45,46 @@
       },
       {
         "ordinal": 8,
+        "name": "replay_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
         "name": "permission_keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "remember",
         "type_info": "Bool"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "token",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -87,7 +92,15 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Jsonb",
+        "TextArray",
+        "Text",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -97,6 +110,7 @@
       false,
       false,
       false,
+      true,
       true,
       true,
       false,
@@ -109,5 +123,5 @@
       false
     ]
   },
-  "hash": "c2319155cd2dbf274e84a3271da2cda97aaff82667a4eefac21639823431daa5"
+  "hash": "f56da6a716e1e0d9ab21b22918d60011e4159cfc06bc75e676bb263752677c3f"
 }

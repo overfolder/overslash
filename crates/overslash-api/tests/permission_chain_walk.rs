@@ -366,10 +366,21 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
         .to_string();
 
     // Approve & remember (org admin key acts on behalf of the resolver).
+    // Under the two-stage flow this only queues a pending execution — the
+    // permission rule is stored later, after the /execute call succeeds.
     let resp = reqwest::Client::new()
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({"resolution": "allow_remember"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Trigger the replay — the rule is created only on successful execution.
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header("Authorization", format!("Bearer {researcher_key}"))
         .send()
         .await
         .unwrap();
@@ -478,6 +489,7 @@ async fn auto_bubble_advances_resolver() {
             researcher_id,
             chief_id,
             "test",
+            None,
             None,
             None,
             &["http:GET:example.com/x".to_string()],
@@ -866,6 +878,7 @@ async fn stale_expected_resolver_rejects_resolve_and_update() {
             "test",
             None,
             None,
+            None,
             &["http:GET:example.com/x".to_string()],
             &token,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
@@ -946,6 +959,7 @@ async fn requester_cannot_resolve_own_approval_orphan() {
             orphan_id,
             orphan_id,
             "self-resolve attempt",
+            None,
             None,
             None,
             &["http:GET:example.com/x".to_string()],

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals WHERE id = $1 AND org_id = $2",
+  "query": "UPDATE approvals\n            SET current_resolver_identity_id = $2,\n                resolver_assigned_at = now()\n          WHERE id = $1 AND org_id = $4 AND status = 'pending' AND current_resolver_identity_id = $3\n          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
   "describe": {
     "columns": [
       {
@@ -45,47 +45,54 @@
       },
       {
         "ordinal": 8,
+        "name": "replay_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
         "name": "permission_keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "remember",
         "type_info": "Bool"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "token",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
+        "Uuid",
         "Uuid",
         "Uuid"
       ]
@@ -99,6 +106,7 @@
       false,
       true,
       true,
+      true,
       false,
       false,
       true,
@@ -109,5 +117,5 @@
       false
     ]
   },
-  "hash": "aa249095c5154864812ae9dc431867941bd240d5f14e8f7b648a37128b91844f"
+  "hash": "93dacc174245275a7ae6b81fe5fae1e347af2cc7eea30b6e89b32ca7e8a2a9cc"
 }
