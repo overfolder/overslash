@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, patch, post},
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/orgs", post(create_org))
+        .route("/v1/orgs/check-slug", get(check_slug))
         .route("/v1/orgs/{id}", get(get_org).patch(patch_org))
         .route(
             "/v1/orgs/{id}/subagent-cleanup-config",
@@ -44,6 +45,71 @@ const MAX_RETENTION_DAYS: i32 = 60;
 struct CreateOrgRequest {
     name: String,
     slug: String,
+}
+
+/// Slug rejection reason, kept as a stable string so the dashboard can render
+/// human-readable copy without string-matching error messages.
+#[derive(Debug, Clone, Copy)]
+enum SlugReject {
+    TooShort,
+    TooLong,
+    InvalidChars,
+    LeadingOrTrailingHyphen,
+    Reserved,
+}
+
+impl SlugReject {
+    fn code(self) -> &'static str {
+        match self {
+            SlugReject::TooShort => "slug_too_short",
+            SlugReject::TooLong => "slug_too_long",
+            SlugReject::InvalidChars => "slug_invalid_chars",
+            SlugReject::LeadingOrTrailingHyphen => "slug_leading_or_trailing_hyphen",
+            SlugReject::Reserved => "slug_reserved",
+        }
+    }
+}
+
+const SLUG_MIN: usize = 2;
+const SLUG_MAX: usize = 40;
+
+/// Subdomains we can't route to an org because the middleware already
+/// reserves them for the root apex or operator-controlled hosts. Keep in
+/// sync with `middleware::subdomain`.
+const RESERVED_SLUGS: &[&str] = &[
+    "www",
+    "app",
+    "api",
+    "auth",
+    "admin",
+    "dashboard",
+    "root",
+    "static",
+    "mcp",
+];
+
+/// Validate slug format without touching the DB. Mirrors DNS-label rules and
+/// the dashboard's client-side check.
+fn validate_slug_format(slug: &str) -> std::result::Result<(), SlugReject> {
+    if slug.len() < SLUG_MIN {
+        return Err(SlugReject::TooShort);
+    }
+    if slug.len() > SLUG_MAX {
+        return Err(SlugReject::TooLong);
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(SlugReject::InvalidChars);
+    }
+    if slug.starts_with('-') || slug.ends_with('-') {
+        return Err(SlugReject::LeadingOrTrailingHyphen);
+    }
+    if RESERVED_SLUGS.contains(&slug) {
+        return Err(SlugReject::Reserved);
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -102,7 +168,21 @@ async fn create_org(
         return Err(AppError::Forbidden("org_creation_disabled".into()));
     }
 
-    let org = overslash_db::repos::org::create(&state.db, &req.name, &req.slug).await?;
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("name is required".into()));
+    }
+    if let Err(reject) = validate_slug_format(&req.slug) {
+        return Err(AppError::BadRequest(reject.code().into()));
+    }
+
+    let org = match overslash_db::repos::org::create(&state.db, name, &req.slug).await {
+        Ok(row) => row,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(AppError::Conflict("slug_taken".into()));
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     // Optional session: if the caller presents a valid `oss_session` with a
     // multi-org `user_id` claim, attach the bootstrap admin. Otherwise the
@@ -162,6 +242,47 @@ async fn create_org(
     let mut resp: OrgResponse = org.into();
     resp.redirect_to = Some(redirect_to);
     Ok(Json(resp))
+}
+
+#[derive(Deserialize)]
+struct CheckSlugQuery {
+    slug: String,
+}
+
+#[derive(Serialize)]
+struct CheckSlugResponse {
+    available: bool,
+    reason: Option<&'static str>,
+}
+
+/// GET /v1/orgs/check-slug?slug=xxx — live-validate a slug for the create-org
+/// form. Unauthenticated: slugs are effectively public (subdomain probing
+/// reveals the same info) and the dashboard needs this before a session
+/// exists for first-time cloud signups.
+async fn check_slug(
+    State(state): State<AppState>,
+    Query(q): Query<CheckSlugQuery>,
+) -> Json<CheckSlugResponse> {
+    if let Err(reject) = validate_slug_format(&q.slug) {
+        return Json(CheckSlugResponse {
+            available: false,
+            reason: Some(reject.code()),
+        });
+    }
+    match overslash_db::repos::org::get_by_slug(&state.db, &q.slug).await {
+        Ok(Some(_)) => Json(CheckSlugResponse {
+            available: false,
+            reason: Some("slug_taken"),
+        }),
+        Ok(None) => Json(CheckSlugResponse {
+            available: true,
+            reason: None,
+        }),
+        Err(_) => Json(CheckSlugResponse {
+            available: false,
+            reason: Some("lookup_failed"),
+        }),
+    }
 }
 
 /// Best-effort session lookup. Returns Some(user_id) only when the cookie

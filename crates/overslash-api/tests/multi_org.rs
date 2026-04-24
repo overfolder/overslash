@@ -160,6 +160,87 @@ async fn post_v1_orgs_without_session_creates_orphan_org() {
 }
 
 #[tokio::test]
+async fn check_slug_and_collision() {
+    // Live-validation endpoint used by the create-org modal:
+    //   * malformed slug → not available, reason=slug_*
+    //   * reserved slug  → not available, reason=slug_reserved
+    //   * free slug      → available
+    //   * taken slug     → not available, reason=slug_taken
+    // And: POST /v1/orgs on a taken slug must return 409 slug_taken
+    // rather than a generic 500 from the sqlx unique-violation.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    // Malformed (uppercase) → slug_invalid_chars.
+    let resp: Value = client
+        .get(format!("{base}/v1/orgs/check-slug?slug=BadSlug"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["available"], Value::Bool(false));
+    assert_eq!(resp["reason"], "slug_invalid_chars");
+
+    // Reserved.
+    let resp: Value = client
+        .get(format!("{base}/v1/orgs/check-slug?slug=admin"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["available"], Value::Bool(false));
+    assert_eq!(resp["reason"], "slug_reserved");
+
+    // Fresh slug → available.
+    let fresh = format!("fresh-{}", Uuid::new_v4().simple());
+    let resp: Value = client
+        .get(format!("{base}/v1/orgs/check-slug?slug={fresh}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["available"], Value::Bool(true));
+
+    // Create it, then re-check → slug_taken.
+    let create = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({ "name": "Fresh", "slug": fresh }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+
+    let resp: Value = client
+        .get(format!("{base}/v1/orgs/check-slug?slug={fresh}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["available"], Value::Bool(false));
+    assert_eq!(resp["reason"], "slug_taken");
+
+    // POST collision → 409 with stable error code.
+    let dupe = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({ "name": "Duplicate", "slug": fresh }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dupe.status(), StatusCode::CONFLICT);
+    let body: Value = dupe.json().await.unwrap();
+    assert_eq!(body["error"], "slug_taken");
+}
+
+#[tokio::test]
 async fn allow_org_creation_false_returns_403() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api_with(pool.clone(), |cfg| {
