@@ -1,0 +1,14 @@
+[project]
+name = "test-mcp-elicitation"
+version = "0.1.0"
+description = "Mock MCP server that probes elicitation + (eventually) tasks support in Claude Code / Codex / other MCP clients."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.10.0",
+]
+
+[project.scripts]
+test-mcp-elicitation = "server:main"
+
+[tool.uv]
+package = false
