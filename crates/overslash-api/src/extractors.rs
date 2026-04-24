@@ -59,6 +59,24 @@ pub struct AuthContext {
     /// `None` when the caller authenticated via dashboard session cookie
     /// (no API key was used).
     pub key_id: Option<Uuid>,
+    /// Set for session-cookie callers whose JWT carries the new `user_id`
+    /// claim. `None` for API-key callers and for legacy session tokens
+    /// minted before the multi-org rewire.
+    pub user_id: Option<Uuid>,
+}
+
+/// Enforces subdomain↔JWT consistency: if the request hit `<slug>.<apex>`
+/// and the JWT's org claim points somewhere else, reject with
+/// `org_mismatch` so the dashboard can forward through `/auth/switch-org`.
+fn check_subdomain_matches_jwt(parts: &Parts, jwt_org: Uuid) -> Result<(), AppError> {
+    use crate::middleware::subdomain::RequestOrgContext;
+    if let Some(RequestOrgContext::Org { org_id, .. }) = parts.extensions.get::<RequestOrgContext>()
+    {
+        if *org_id != jwt_org {
+            return Err(AppError::Unauthorized("org_mismatch".into()));
+        }
+    }
+    Ok(())
 }
 
 /// Extractor that validates the API key and provides AuthContext.
@@ -76,10 +94,12 @@ impl FromRequestParts<AppState> for AuthContext {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
+                check_subdomain_matches_jwt(parts, claims.org)?;
                 return Ok(AuthContext {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
                     key_id: None,
+                    user_id: claims.user_id,
                 });
             }
         }
@@ -127,6 +147,7 @@ impl FromRequestParts<AppState> for AuthContext {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
                     key_id: None,
+                    user_id: None,
                 });
             }
             return Err(AppError::Unauthorized("invalid key format".into()));
@@ -236,6 +257,7 @@ impl FromRequestParts<AppState> for AuthContext {
             org_id: key_row.org_id,
             identity_id: Some(key_row.identity_id),
             key_id: Some(key_row.id),
+            user_id: None,
         })
     }
 }
@@ -255,11 +277,15 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Try JWT session cookie first
+        // Try JWT session cookie first. Same subdomain↔JWT guard as
+        // `AuthContext` and `SessionAuth` — without it, a personal-org
+        // session would answer against a corp-org subdomain whose scope
+        // it has no membership in.
         if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
+                check_subdomain_matches_jwt(parts, claims.org)?;
                 return Ok(UserOrKeyAuth {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
@@ -267,7 +293,9 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
             }
         }
 
-        // Fall back to API key
+        // Fall back to API key (`AuthContext` runs the same subdomain check
+        // on its own session-cookie branch and treats API-key auth as
+        // subdomain-agnostic — keys are identity-bound, not host-bound).
         let auth_ctx = AuthContext::from_request_parts(parts, state).await?;
         Ok(UserOrKeyAuth {
             org_id: auth_ctx.org_id,
@@ -284,6 +312,11 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
 pub struct SessionAuth {
     pub org_id: Uuid,
     pub identity_id: Uuid,
+    /// The human behind the identity. `None` only for legacy session tokens
+    /// minted before the multi-org rewire — they continue to work until
+    /// they expire, at which point the user signs in again and gets the
+    /// new claim.
+    pub user_id: Option<Uuid>,
 }
 
 impl FromRequestParts<AppState> for SessionAuth {
@@ -299,9 +332,11 @@ impl FromRequestParts<AppState> for SessionAuth {
             .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
         let claims = jwt::verify(&signing_key, &token, jwt::AUD_SESSION)
             .map_err(|_| AppError::Unauthorized("invalid session".into()))?;
+        check_subdomain_matches_jwt(parts, claims.org)?;
         Ok(SessionAuth {
             org_id: claims.org,
             identity_id: claims.sub,
+            user_id: claims.user_id,
         })
     }
 }

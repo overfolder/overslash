@@ -37,6 +37,10 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     // Build the app with the test pool directly
@@ -846,6 +850,10 @@ async fn test_service_registry_api() {
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -1796,6 +1804,10 @@ async fn start_api_with_registry(
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        session_cookie_domain: None,
     };
 
     let state = overslash_api::AppState {

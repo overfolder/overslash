@@ -3,12 +3,21 @@
 	import { NAV_ITEMS, ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM } from './nav-items';
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
+	import OrgSwitcher from './OrgSwitcher.svelte';
 	import ProfileAvatar from './ProfileAvatar.svelte';
+	import type { MembershipSummary } from '$lib/session';
 
 	let {
 		user,
-		isAdmin = false
-	}: { user: { name?: string; email?: string } | null; isAdmin?: boolean } = $props();
+		isAdmin = false,
+		memberships = [],
+		currentOrgId = ''
+	}: {
+		user: { name?: string; email?: string } | null;
+		isAdmin?: boolean;
+		memberships?: MembershipSummary[];
+		currentOrgId?: string;
+	} = $props();
 
 	function toggle() {
 		sidebarCollapsed.update((c) => !c);
@@ -36,6 +45,9 @@
 	</nav>
 
 	<div class="footer">
+		{#if memberships.length > 0 && currentOrgId}
+			<OrgSwitcher {memberships} {currentOrgId} {collapsed} />
+		{/if}
 		{#if isAdmin}
 			<NavItem
 				href={SETTINGS_NAV_ITEM.href}

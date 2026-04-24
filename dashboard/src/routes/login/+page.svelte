@@ -6,6 +6,7 @@
 	const providers = $derived(
 		data.providers as Array<{ key: string; display_name: string; source: string }>
 	);
+	const scope = $derived((data.scope as 'root' | 'org') ?? 'root');
 	const returnTo = $derived(data.returnTo as string);
 	const reason = $derived(data.reason as string | null);
 
@@ -44,7 +45,14 @@
 
 		<h1>Sign in</h1>
 
-		{#if providers.length === 0}
+		{#if providers.length === 0 && scope === 'org'}
+			<p class="empty">
+				This organization has no sign-in configured yet. Ask the org creator to
+				add an identity provider on their Org Settings page — corp orgs admit
+				members only through their own IdP, and the creator's bootstrap
+				admin access is the only route in until that's done.
+			</p>
+		{:else if providers.length === 0}
 			<p class="empty">
 				No identity providers are configured. Set <code>GOOGLE_AUTH_CLIENT_ID</code>,
 				<code>GITHUB_AUTH_CLIENT_ID</code>, or <code>DEV_AUTH</code> on the backend.

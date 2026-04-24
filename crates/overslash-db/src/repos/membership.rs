@@ -11,10 +11,6 @@ pub struct MembershipRow {
     pub org_id: Uuid,
     /// `'admin'` or `'member'` — enforced by a DB CHECK.
     pub role: String,
-    /// `true` for the one membership created by `POST /v1/orgs` when a user
-    /// creates a corp org. Persists as a breakglass admin after the org
-    /// configures its IdP (see `docs/design/multi_org_auth.md`).
-    pub is_bootstrap: bool,
     pub created_at: OffsetDateTime,
 }
 
@@ -28,7 +24,7 @@ pub async fn find(
 ) -> Result<Option<MembershipRow>, sqlx::Error> {
     sqlx::query_as!(
         MembershipRow,
-        "SELECT user_id, org_id, role, is_bootstrap, created_at
+        "SELECT user_id, org_id, role, created_at
          FROM user_org_memberships WHERE user_id = $1 AND org_id = $2",
         user_id,
         org_id,
@@ -43,7 +39,7 @@ pub async fn list_for_user(
 ) -> Result<Vec<MembershipRow>, sqlx::Error> {
     sqlx::query_as!(
         MembershipRow,
-        "SELECT user_id, org_id, role, is_bootstrap, created_at
+        "SELECT user_id, org_id, role, created_at
          FROM user_org_memberships WHERE user_id = $1 ORDER BY created_at ASC",
         user_id,
     )
@@ -54,7 +50,7 @@ pub async fn list_for_user(
 pub async fn list_for_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<MembershipRow>, sqlx::Error> {
     sqlx::query_as!(
         MembershipRow,
-        "SELECT user_id, org_id, role, is_bootstrap, created_at
+        "SELECT user_id, org_id, role, created_at
          FROM user_org_memberships WHERE org_id = $1 ORDER BY created_at ASC",
         org_id,
     )
@@ -67,17 +63,15 @@ pub async fn create(
     user_id: Uuid,
     org_id: Uuid,
     role: &str,
-    is_bootstrap: bool,
 ) -> Result<MembershipRow, sqlx::Error> {
     sqlx::query_as!(
         MembershipRow,
-        "INSERT INTO user_org_memberships (user_id, org_id, role, is_bootstrap)
-         VALUES ($1, $2, $3, $4)
-         RETURNING user_id, org_id, role, is_bootstrap, created_at",
+        "INSERT INTO user_org_memberships (user_id, org_id, role)
+         VALUES ($1, $2, $3)
+         RETURNING user_id, org_id, role, created_at",
         user_id,
         org_id,
         role,
-        is_bootstrap,
     )
     .fetch_one(pool)
     .await

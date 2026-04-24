@@ -22,6 +22,25 @@ pub struct Config {
     pub redis_url: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
+    /// When `false`, `POST /v1/orgs` returns 403 and the dashboard hides the
+    /// "Create org" CTA. Lets a self-hosted operator lock down org creation
+    /// after initial setup. Default `true`.
+    pub allow_org_creation: bool,
+    /// When set, the subdomain middleware is bypassed and every request is
+    /// treated as scoped to the named org slug. Self-hosted operators who
+    /// want the old single-org experience set this to their org's slug.
+    /// Default unset (multi-org cloud mode).
+    pub single_org_mode: Option<String>,
+    /// Optional apex used to resolve `<slug>.<apex>` subdomains into an org.
+    /// e.g. `app.overslash.com`. When unset, subdomain routing is disabled
+    /// (helpful for self-hosted single-host deploys). Leave unset in local
+    /// dev; tests set this explicitly.
+    pub app_host_suffix: Option<String>,
+    /// Optional Domain attribute for the session cookie, typically a leading
+    /// dot + `app_host_suffix` so cookies are shared across subdomains
+    /// (e.g. `.app.overslash.com`). When None, cookies stay origin-scoped,
+    /// which is what local dev without TLS needs.
+    pub session_cookie_domain: Option<String>,
 }
 
 /// Build the default `public_url` from the bind host/port. We map
@@ -92,6 +111,15 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60),
+            allow_org_creation: env::var("ALLOW_ORG_CREATION")
+                .ok()
+                .map(|v| !matches!(v.as_str(), "false" | "0" | "no" | ""))
+                .unwrap_or(true),
+            single_org_mode: env::var("SINGLE_ORG_MODE").ok().filter(|s| !s.is_empty()),
+            app_host_suffix: env::var("APP_HOST_SUFFIX").ok().filter(|s| !s.is_empty()),
+            session_cookie_domain: env::var("SESSION_COOKIE_DOMAIN")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 

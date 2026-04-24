@@ -45,11 +45,10 @@ const BACKFILL_SQL: &str = r#"
     FROM identities
     WHERE kind = 'user' AND email IS NULL AND user_id IS NOT NULL;
 
-    INSERT INTO user_org_memberships (user_id, org_id, role, is_bootstrap, created_at)
+    INSERT INTO user_org_memberships (user_id, org_id, role, created_at)
     SELECT i.user_id,
            i.org_id,
            CASE WHEN i.is_org_admin THEN 'admin' ELSE 'member' END,
-           false,
            i.created_at
     FROM identities i
     WHERE i.kind = 'user' AND i.user_id IS NOT NULL;
@@ -358,10 +357,10 @@ async fn membership_list_for_org_returns_all_members() {
         .await
         .unwrap();
 
-    membership::create(&pool, alice.id, org_id, membership::ROLE_ADMIN, false)
+    membership::create(&pool, alice.id, org_id, membership::ROLE_ADMIN)
         .await
         .unwrap();
-    membership::create(&pool, bob.id, org_id, membership::ROLE_MEMBER, false)
+    membership::create(&pool, bob.id, org_id, membership::ROLE_MEMBER)
         .await
         .unwrap();
 
@@ -387,11 +386,10 @@ async fn membership_repo_round_trip() {
         .await
         .unwrap();
 
-    let created = membership::create(&pool, u.id, org_id, membership::ROLE_MEMBER, false)
+    let created = membership::create(&pool, u.id, org_id, membership::ROLE_MEMBER)
         .await
         .unwrap();
     assert_eq!(created.role, "member");
-    assert!(!created.is_bootstrap);
 
     let found = membership::find(&pool, u.id, org_id)
         .await

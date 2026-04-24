@@ -37,6 +37,15 @@
 		secretRequestSettings = data.secretRequestSettings;
 	});
 
+	// Personal orgs are single-member and always authenticate via the
+	// Overslash-level IdP on the root domain — no per-org IdP or OAuth App
+	// Credentials make sense there. See docs/design/multi_org_auth.md.
+	const isPersonalOrg = $derived(org?.is_personal === true);
+	// Corp orgs need at least one enabled IdP before anyone besides the
+	// creator can sign in (via their Overslash-level login). Banner nudges
+	// them to add one so their team can sign in via the corp IdP.
+	const hasEnabledIdp = $derived(idpConfigs.some((c) => c.enabled !== false));
+
 	// Confirmation modal state
 	let confirmOpen = $state(false);
 	let confirmTitle = $state('');
@@ -483,6 +492,16 @@
 			{/if}
 		</section>
 
+		{#if !isPersonalOrg && !hasEnabledIdp}
+			<div class="idp-warning-banner">
+				<strong>No sign-in configured.</strong> Right now only you — the org's admin —
+				can reach this org, via your Overslash-level login. Add an Identity Provider
+				below so your team can sign in on
+				<code>{org?.slug}</code>'s subdomain. You'll keep your own access either way.
+			</div>
+		{/if}
+
+		{#if !isPersonalOrg}
 		<!-- IdP -->
 		<section class="card">
 			<div class="card-head">
@@ -746,6 +765,7 @@
 				</form>
 			{/if}
 		</section>
+		{/if}
 
 		<!-- MCP Clients -->
 		<section class="card">
@@ -970,6 +990,15 @@
 		border-radius: 8px;
 		padding: 1.5rem;
 		margin-bottom: 1.25rem;
+	}
+	.idp-warning-banner {
+		background: var(--color-warning-soft, #fff3cd);
+		color: var(--color-warning, #8a6d3b);
+		border: 1px solid var(--color-warning-border, #ffeeba);
+		border-radius: 6px;
+		padding: 0.75rem 1rem;
+		margin-bottom: 1rem;
+		font-size: 0.9rem;
 	}
 	.card h2 {
 		font-size: 1rem;

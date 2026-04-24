@@ -66,7 +66,12 @@
 			? 'var(--sidebar-width-collapsed, 64px)'
 			: 'var(--sidebar-width-expanded, 240px)'}
 	>
-		<Sidebar user={data?.user ?? null} {isAdmin} />
+		<Sidebar
+			user={data?.user ?? null}
+			{isAdmin}
+			memberships={data?.user?.memberships ?? []}
+			currentOrgId={data?.user?.org_id ?? ''}
+		/>
 		<div class="main-col">
 			<TopBar onSignOut={signOut} />
 			<main class="content">

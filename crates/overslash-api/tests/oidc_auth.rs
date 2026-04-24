@@ -1212,9 +1212,13 @@ async fn list_providers_includes_db_configured_for_org() {
         .iter()
         .map(|p| p["key"].as_str().unwrap())
         .collect();
-    assert!(keys.contains(&"google"), "env Google: {keys:?}");
-    assert!(keys.contains(&"slack"), "DB Slack: {keys:?}");
-    assert!(keys.contains(&"dev"), "dev login: {keys:?}");
+    // Multi-org trust-domain rule (DECISIONS.md D12): when the caller is
+    // pointed at a corp org (via `?org=<slug>` here, or a subdomain at
+    // runtime), `/auth/providers` lists ONLY that org's IdPs. Overslash-
+    // level env providers (Google here) and the dev-login shortcut are
+    // reachable only from the root apex.
+    assert_eq!(resp["scope"], "org", "scope: {}", resp["scope"]);
+    assert_eq!(keys, vec!["slack"], "org scope should list only org IdPs");
 
     // Slack should be source: "db"
     let slack = providers.iter().find(|p| p["key"] == "slack").unwrap();

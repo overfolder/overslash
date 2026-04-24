@@ -187,8 +187,8 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 **How humans end up in orgs.**
 
 - *Personal org* — auto-created the first time a human signs in at the root domain via an Overslash-level IdP. Exactly one member, always the owner. Personal orgs cannot configure per-org IdPs and have no subdomain.
-- *Corp org, as creator* — an Overslash-backed user creates a corp org via `POST /v1/orgs`; they receive an `admin` membership flagged `is_bootstrap=true`. This is the only path by which an Overslash-level IdP can admit someone into a corp org. The bootstrap admin is expected to configure an org IdP and then optionally sign in through that IdP to create a separate org-only `users` row; the bootstrap membership persists as a breakglass admin until manually removed.
-- *Corp org, as member* — sign in through the org's own IdP on `<slug>.app.overslash.com`. Auto-provisioning is gated by `org_idp_configs.allowed_email_domains`. There are no invites; membership crossing trust domains (e.g., a Google-backed user into Acme) is not supported.
+- *Corp org, as creator* — an Overslash-backed user creates a corp org via `POST /v1/orgs`; they receive a regular `admin` membership + an admin `identities` row in the new org. An org may stay on the Overslash-level IdP indefinitely (creator is its sole admin) or later configure its own IdP to onboard more humans. The creator's Overslash-level login continues to reach the org in either case — they're just an admin, no special flag.
+- *Corp org, as member* — sign in through the org's own IdP on `<slug>.app.overslash.com`. Auto-provisioning is gated by `org_idp_configs.allowed_email_domains` (empty list = trust the IdP entirely). There are no invites; membership crossing trust domains (e.g., a Google-backed user into Acme without the creator path) is not supported.
 
 **No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
 
@@ -202,7 +202,7 @@ Org (acme)
             └── SubAgent (emailer)      depth=2, parent=henry
 ```
 
-- **Users** auto-provisioned on first IdP login — at the root domain for personal orgs, at the org subdomain for corp org members, or via `POST /v1/orgs` for corp org creators (bootstrap admin)
+- **Users** auto-provisioned on first IdP login — at the root domain for personal orgs, at the org subdomain for corp org members, or via `POST /v1/orgs` for corp org creators (who become regular admins)
 - **Agents** created by users
 - **Sub-agents** created by agents — no user intervention needed
 - **UI equivalence**: the UI does not distinguish between Agents and Sub-agents — they are all presented as "Agents" in the tree. The `sub_agent` kind remains an API/backend distinction (for idle cleanup and depth tracking), but the UI treats them identically. The only difference visible to users is who the parent is.

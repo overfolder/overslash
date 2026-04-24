@@ -59,7 +59,12 @@ pub(crate) async fn get_by_id(
     .await
 }
 
-pub(crate) async fn get_by_org_and_provider(
+/// Fetch the IdP config for `(org_id, provider_key)`. Called from the
+/// login-provisioning path to read `allowed_email_domains` before admitting
+/// a new member. Public because org-subdomain provisioning lives in the API
+/// crate; the org_id is always already authorized by the subdomain context,
+/// so we don't need an OrgScope here.
+pub async fn get_by_org_and_provider(
     pool: &PgPool,
     org_id: Uuid,
     provider_key: &str,
