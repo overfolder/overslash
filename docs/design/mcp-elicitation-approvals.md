@@ -1,8 +1,30 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Draft
+**Status:** Rejected for now (2026-04-24) — keep URL-reject as the universal approval surface; revisit if/when MCP clients add better support.
 **Date:** 2026-04-24
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
+
+---
+
+## Decision
+
+**Not adopting elicitation as the primary approval surface.** The existing URL-reject pattern (tool returns `{ status: "pending_approval", approval_url, approval_id }` as a normal tool result, model surfaces the URL to the user, dashboard handles the approval) stays as the universal flow.
+
+Why:
+
+1. **Universal client coverage.** URL-reject works in every MCP client, every transport, every mode (interactive *and* `--print` headless), every `mcp2cli`-style bridge that only forwards `tools/call`. Elicitation requires the client to (a) declare the right capability and (b) actually render the dialog — both fail silently or partially in important cases (see findings table below).
+2. **Failure modes of elicitation are heterogeneous and one is invisible.** URL mode → clean `-32602`, detectable. Form mode in headless → `cancel`, detectable. **Tasks → silently swallowed by Claude Code, no signal at all.** A universal flow that depends on capability detection per client and per mode is a maintenance and audit liability that the URL-reject path doesn't carry.
+3. **Sensitive flows need URL anyway.** Spec forbids form mode for credentials / OAuth, so any rich approval (TTL pickers, scope tier selection, secret entry) ends up in the dashboard regardless. Doing two surfaces buys nothing if one of them already covers everything.
+4. **No client supports the async path.** Form-mode elicitation collapses the round-trip to one keystroke *only when the user is at the keyboard*. Without `tasks.requests.tools.call` in the client (Claude Code 2.1.119: not declared; silent-swallow on attempt), the model still blocks waiting for the human, so there's no latency win versus URL-reject + "say go when ready".
+
+**Revisit when**:
+
+- Claude Code (and ideally Codex) **declares `tasks.requests.tools.call`** at `initialize`, *and*
+- `CreateTaskResult` round-trips correctly (i.e. the client polls `tasks/get` / `tasks/result`, surfaces task status to the user, and resumes the model with the real result).
+
+At that point the upgrade is additive: keep URL-reject as the fallback, optionally task-augment it so the model can keep working while the URL approval pends. URL mode and form-mode dialogs remain optional fast-paths — neither is required for the design to work.
+
+The empirical investigation, design exploration, and mock implementation below remain useful as the reference for what we considered and why we decided against it. The mock under [`test-mcp-elicitation/`](../../test-mcp-elicitation/) stays in the repo as a probe for re-evaluating client support periodically.
 
 ---
 
