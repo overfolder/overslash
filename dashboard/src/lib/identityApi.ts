@@ -4,12 +4,7 @@
  * Backed by `session` (HttpOnly cookie auth) — see lib/session.ts.
  */
 import { session, type ApprovalResponse } from './session';
-import type {
-	Identity,
-	PermissionRule,
-	EnrollmentToken,
-	CreatedEnrollmentToken
-} from './types';
+import type { Identity, PermissionRule } from './types';
 
 // ─── Identities ───────────────────────────────────────────────────────────
 
@@ -81,16 +76,3 @@ export function listApprovals(identity_id?: string): Promise<ApprovalResponse[]>
 	return session.get<ApprovalResponse[]>(path);
 }
 
-// ─── Enrollment tokens ────────────────────────────────────────────────────
-
-export function createEnrollmentToken(identity_id: string): Promise<CreatedEnrollmentToken> {
-	return session.post<CreatedEnrollmentToken>('/v1/enrollment-tokens', { identity_id });
-}
-
-export function listEnrollmentTokens(): Promise<EnrollmentToken[]> {
-	return session.get<EnrollmentToken[]>('/v1/enrollment-tokens');
-}
-
-export function revokeEnrollmentToken(id: string): Promise<void> {
-	return session.delete<void>(`/v1/enrollment-tokens/${id}`);
-}

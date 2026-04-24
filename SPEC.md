@@ -194,25 +194,13 @@ Org (acme)
 
 ### Agent Enrollment
 
-Two enrollment flows connect agents to the identity hierarchy:
+Enrollment is **MCP OAuth 2.1** (MCP spec 2025-06-18 — RFC 8414 + RFC 7591 + PKCE). There is one path: an MCP client (Claude Code, Cursor, Windsurf, an `overslash mcp login` CLI run for editors that only take a static Bearer header, …) connects to `/mcp`, discovers the Authorization Server at `/.well-known/oauth-authorization-server`, registers itself via `POST /oauth/register`, and drives the user through a browser-hosted Authorization Code + PKCE flow at `/oauth/authorize`. A short instruction page for agents lives at `/SKILL.md` (served by the API, see the repo-root `SKILL.md`).
 
-**User-initiated enrollment**: A user creates the agent identity in the dashboard or via API, providing a name, parent placement, and optional `inherit_permissions` flag. Overslash returns a single-use enrollment token. The user pastes the enrollment snippet (containing the Overslash URL, token, and a link to `overslash.dev/enrollment/SKILL.md`) into the agent's conversation. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
+**Consent.** After the user signs in at `/oauth/authorize`, the server pauses the authorize request and redirects the browser to the dashboard at `/oauth/consent?request_id=…`. The dashboard renders the enrollment card (design-system styled) and calls a small JSON API (`GET /v1/oauth/consent/{request_id}`, `POST /v1/oauth/consent/{request_id}/finish`). In **new** mode the user picks a parent (defaults to themselves), toggles `inherit_permissions` (off by default — users opt in rather than out), and optionally attaches the agent to groups (search-and-create, with `everyone` implicit and never shown). In **reauth** mode — recognised when a DCR re-registration produces a new `client_id` but the previously-enrolled `client_name` + `software_id` still match an unrevoked binding for the same user — the card skips the form and simply rebinds the new `client_id` to the existing agent, preserving that agent's rules and groups.
 
-The enrollment token has a **fixed 15-minute TTL**. The agent identity appears in the hierarchy immediately in a **pending enrollment** state (inactive until token exchange). If the token expires unused, the pending identity is cleaned up automatically.
+**Binding.** On submission, the server persists a `(user_identity_id, client_id) → agent_identity_id` row and the dashboard follows the returned `redirect_uri` back to the MCP client with an auth code bound to the agent. Subsequent authorizations from the same `(user, client_id)` reuse the binding and skip the prompt. The issued access token's `sub` is the agent; `/mcp` refuses any token whose `sub` points at a user-kind identity so a pre-binding or CSRF-stolen token can't slip through. The consent screen is hosted inline in the OAuth flow — there is no separate "consent URL" sent out-of-band.
 
-**Agent-initiated enrollment**: The agent discovers Overslash (e.g., via `overslash.dev/SKILL.md` → `overslash.dev/enrollment/SKILL.md` or environment hints) and requests an enrollment token, proposing a name and optional metadata about itself. This token only grants the ability to generate a consent URL. The agent presents this URL to a user (in chat, email, etc.). The authenticated user visits the consent URL, where they can:
-
-- **Edit the agent's proposed name** (pre-filled but fully editable)
-- **Choose placement** in the hierarchy (defaults to directly under the approving user)
-- **Review default settings** (inherit_permissions, etc.)
-
-The consent URL is scoped to the org. Any authenticated user in the org with agent-creation permissions can approve — not just one specific user. After approval, the agent's token is exchanged for a permanent API key server-side. The agent, polling or via webhook, picks up the key.
-
-**Picking up the key.** The agent retrieves its permanent API key from `GET /v1/enrollment/{token}` (the same single-use token from the original request). Until consent, this returns `{ status: "awaiting_consent" }`. After consent it returns `{ status: "ready", api_key: "..." }` exactly once and invalidates the token. The approved-but-unclaimed state has its own **15-minute TTL** (separate from the 15-minute pre-approval TTL); if unclaimed, the enrolled identity is rolled back. Agents can use polling, SSE (§10 *Async event delivery*), or webhooks for the transition.
-
-Note: `inherit_permissions` is not offered during agent-initiated enrollment — the user configures this after enrollment if desired.
-
-**MCP OAuth enrollment.** A third enrollment path, used when an MCP client (Claude Code, Cursor, Windsurf, …) connects over OAuth 2.1 for the first time. After the user signs in at `/oauth/authorize`, the server pauses the authorize request and redirects the browser to the dashboard at `/oauth/consent?request_id=…`. The dashboard renders the enrollment card (design-system styled) and calls a small JSON API (`GET /v1/oauth/consent/{request_id}`, `POST /v1/oauth/consent/{request_id}/finish`). In **new** mode the user picks a parent (defaults to themselves), toggles `inherit_permissions` (off by default — users opt in rather than out), and optionally attaches the agent to groups (search-and-create, with `everyone` implicit and never shown). In **reauth** mode — recognised when a DCR re-registration produces a new `client_id` but the previously-enrolled `client_name` + `software_id` still match an unrevoked binding for the same user — the card skips the form and simply rebinds the new `client_id` to the existing agent, preserving that agent's rules and groups. On submission, the server persists a `(user_identity_id, client_id) → agent_identity_id` binding and the dashboard follows the returned `redirect_uri` to complete the OAuth redirect back to the MCP client with an auth code bound to the agent. Subsequent authorizations from the same `(user, client_id)` reuse the binding and skip the prompt entirely. The issued access token's `sub` is the agent; `/mcp` refuses any token whose `sub` points at a user-kind identity so a pre-binding or CSRF-stolen token can't slip through. Unlike agent-initiated enrollment, there is no separate "consent URL" sent out-of-band — the consent screen is hosted inline in the OAuth flow.
+**Headless / long-lived credentials.** Static `osk_…` API keys minted via `POST /v1/api-keys` remain the credential for non-interactive callers (CI, batch jobs) — see §Authentication. Device-flow OAuth for headless clients is a future add.
 
 ### Identity Reconfiguration
 
@@ -1019,12 +1007,12 @@ Sub-actions, by category:
 
 ### Async Event Delivery
 
-Many flows are asynchronous from the agent's perspective: enrollment consent, OAuth callback, secret provisioning, approval resolution. Overslash supports **three transports** for the same underlying events. Callers pick whichever fits their environment:
+Many flows are asynchronous from the agent's perspective: OAuth callback, secret provisioning, approval resolution. Overslash supports **three transports** for the same underlying events. Callers pick whichever fits their environment:
 
 | Transport | Best for | Mechanism |
 |---|---|---|
-| **Polling** | Simple agents, no infra | Re-call the relevant `GET` endpoint (`/v1/enrollment/{token}`, `/v1/services/{id}`, `/v1/approvals/{id}`). Idempotent. |
-| **SSE** | Agents that can hold an HTTP connection | `GET /v1/events/stream?topics=...` opens a Server-Sent Events stream. Connection has a fixed **30-second timeout** — clients reconnect with `Last-Event-ID` to resume. The 30s ceiling keeps idle connections cheap, plays nicely with proxies, and forces clients to handle reconnection cleanly. Topics are scoped to the authenticated identity (e.g., `approvals`, `services`, `enrollment`). |
+| **Polling** | Simple agents, no infra | Re-call the relevant `GET` endpoint (`/v1/services/{id}`, `/v1/approvals/{id}`). Idempotent. |
+| **SSE** | Agents that can hold an HTTP connection | `GET /v1/events/stream?topics=...` opens a Server-Sent Events stream. Connection has a fixed **30-second timeout** — clients reconnect with `Last-Event-ID` to resume. The 30s ceiling keeps idle connections cheap, plays nicely with proxies, and forces clients to handle reconnection cleanly. Topics are scoped to the authenticated identity (e.g., `approvals`, `services`). |
 | **Webhooks** | Platform integrations with their own infra | Configure a webhook endpoint per identity or per org; Overslash POSTs events with HMAC signature. |
 
 The same event payload is delivered regardless of transport. Agents may use any combination — e.g., SSE for liveness during a foreground task, webhooks for background events, polling as a fallback.
@@ -1037,11 +1025,11 @@ When `notifications.managed_by_platform` is set (§5), Overslash's user-facing n
 
 Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 
-**Two delivery modes.** In **cloud mode** the dashboard is hosted on Vercel with full SvelteKit (SSR allowed) and proxies API/auth/health/enroll/public paths back to the API origin via `vercel.json` rewrites. In **self-hosted mode** the operator runs `overslash web`, which boots the same Axum app *and* serves the dashboard same-origin from embedded static assets (built with `@sveltejs/adapter-static`, embedded into the binary at compile time behind the `embed-dashboard` Cargo feature). Same-origin removes the cross-origin cookie and CORS complexity that Vercel rewrites paper over in cloud mode — the same router serves `/v1/*`, `/auth/*`, `/health/*`, `/enroll/*`, `/public/*`, and falls back to the SPA for everything else (with `index.html` for unknown paths to support client-side routing). Cloud and self-hosted ship from the same codebase; the only difference is which Cargo feature is enabled and which subcommand is invoked.
+**Two delivery modes.** In **cloud mode** the dashboard is hosted on Vercel with full SvelteKit (SSR allowed) and proxies API/auth/health/public/SKILL.md paths back to the API origin via `vercel.json` rewrites. In **self-hosted mode** the operator runs `overslash web`, which boots the same Axum app *and* serves the dashboard same-origin from embedded static assets (built with `@sveltejs/adapter-static`, embedded into the binary at compile time behind the `embed-dashboard` Cargo feature). Same-origin removes the cross-origin cookie and CORS complexity that Vercel rewrites paper over in cloud mode — the same router serves `/v1/*`, `/auth/*`, `/health/*`, `/public/*`, `/SKILL.md`, and falls back to the SPA for everything else (with `index.html` for unknown paths to support client-side routing). Cloud and self-hosted ship from the same codebase; the only difference is which Cargo feature is enabled and which subcommand is invoked.
 
 ### Core Views
 
-- **Agents** (default landing view) — tree view of the identity hierarchy rooted at the logged-in user. The user node is immutable (cannot be deleted, renamed, or reparented). Agent creation does not offer a Kind selector — all created identities are agents, and parentage determines hierarchy position. Inline management: create, edit, delete agents, enrollment tokens.
+- **Agents** (default landing view) — tree view of the identity hierarchy rooted at the logged-in user. The user node is immutable (cannot be deleted, renamed, or reparented). Agent creation does not offer a Kind selector — all created identities are agents, and parentage determines hierarchy position. Inline management: create, edit, delete agents.
 - **User profile** — authenticated user info, API keys, settings
 - **Services** — browse templates, create/manage service instances, connect credentials
 - **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and execute. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
@@ -1059,7 +1047,7 @@ My Services (instances + credentials), My Secrets (names + versions), Approvals 
 
 Overslash provides built-in standalone pages for common user interactions. These serve two purposes: (1) direct use by unplatformed agents (e.g., agents connecting to Overslash without a platform intermediary), and (2) a zero-effort integration path for platforms that don't want to build their own UI for these flows.
 
-Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, enrollment consent payloads. The built-in pages are a convenience, not a requirement.
+Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, OAuth consent payloads. The built-in pages are a convenience, not a requirement.
 
 - **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
 - **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
@@ -1075,7 +1063,8 @@ Platforms can always build fully white-label equivalents using the same REST API
   2. **Required user session (org setting).** Org admins can set `allow_unsigned_secret_provide = false` via `PATCH /v1/orgs/{id}/secret-request-settings`. New secret requests minted while the toggle is off are stamped `require_user_session = true` at mint time and **must** be redeemed by a visitor with a same-org session — anonymous submission is rejected with `401 user_session_required`. The toggle is forward-only: outstanding URLs minted before the flip continue to honor the policy they were issued under, so flipping the toggle never breaks in-flight requests.
 
   **Cross-tenant sessions are ignored** (treated as anonymous). A session in org A cannot be used to provision a secret in org B, regardless of token validity — the standalone page silently drops the cookie in that case.
-- **Enrollment consent** (`/enroll/consent/...`) — requires login. Agent-initiated enrollment approval with name editing and parent placement.
+- **OAuth consent** (`/oauth/consent?request_id=...`) — requires login. MCP-client enrollment approval with name editing, parent placement, and `inherit_permissions`/group toggles. See §4 *Agent Enrollment*.
+- **SKILL.md** (`/SKILL.md`) — unauthenticated. Agent-facing enrollment instructions, served from the repo-root `SKILL.md` file.
 
 ---
 

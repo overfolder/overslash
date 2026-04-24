@@ -10,17 +10,9 @@
 		updateIdentity,
 		deleteIdentity,
 		deletePermission,
-		createEnrollmentToken,
-		listEnrollmentTokens,
-		revokeEnrollmentToken,
 		type CreateIdentityRequest
 	} from '$lib/identityApi';
-	import type {
-		Identity,
-		PermissionRule,
-		EnrollmentToken,
-		CreatedEnrollmentToken
-	} from '$lib/types';
+	import type { Identity, PermissionRule } from '$lib/types';
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
@@ -38,14 +30,12 @@
 
 	let detailRules = $state<PermissionRule[]>([]);
 	let detailApprovals = $state<ApprovalResponse[]>([]);
-	let detailTokens = $state<EnrollmentToken[]>([]);
 	let detailLoading = $state(false);
 	let detailError = $state<string | null>(null);
 
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
 	let createInherit = $state(false);
-	let newToken = $state<CreatedEnrollmentToken | null>(null);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
 
@@ -103,14 +93,9 @@
 		detailLoading = true;
 		detailError = null;
 		try {
-			const [rules, apr, toks] = await Promise.all([
-				listPermissions(id),
-				listApprovals(id),
-				listEnrollmentTokens()
-			]);
+			const [rules, apr] = await Promise.all([listPermissions(id), listApprovals(id)]);
 			detailRules = rules;
 			detailApprovals = apr;
-			detailTokens = toks.filter((t) => t.identity_id === id);
 		} catch (e) {
 			detailError = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -257,25 +242,6 @@
 		try {
 			await updateIdentity(selected.id, { inherit_permissions: checked });
 			await loadAll();
-		} catch (e) {
-			alert(e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	async function handleGenerateToken() {
-		if (!selected) return;
-		try {
-			newToken = await createEnrollmentToken(selected.id);
-			await loadDetail(selected.id);
-		} catch (e) {
-			alert(e instanceof Error ? e.message : String(e));
-		}
-	}
-
-	async function handleRevokeToken(id: string) {
-		try {
-			await revokeEnrollmentToken(id);
-			if (selected) await loadDetail(selected.id);
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
 		}
@@ -452,28 +418,6 @@
 							</tbody>
 						</table>
 					{/if}
-
-					<!-- Enrollment -->
-						<h3 class="section-title">Enrollment</h3>
-						<button class="btn-secondary" onclick={handleGenerateToken}>Generate token</button>
-						{#if newToken && newToken.identity_id === selected.id}
-							<div class="token-box">
-								<p class="muted" style="font-size:0.8rem;">Copy now — this token is shown only once.</p>
-								<code class="token-code">overslash enroll {newToken.token}</code>
-								<button class="btn-secondary small" onclick={() => copy(`overslash enroll ${newToken!.token}`)}>Copy</button>
-							</div>
-						{/if}
-						{#if detailTokens.length > 0}
-							<div class="token-list">
-								{#each detailTokens as t (t.id)}
-									<div class="token-row">
-										<code class="mono">{t.token_prefix}…</code>
-										<span class="muted" style="font-size:0.8rem;">expires {absoluteTime(t.expires_at)}</span>
-										<button class="revoke-link" onclick={() => handleRevokeToken(t.id)}>Revoke</button>
-									</div>
-								{/each}
-							</div>
-						{/if}
 
 					<!-- Delete Agent -->
 					<div class="detail-footer">
@@ -1026,10 +970,6 @@
 	.btn-secondary:hover {
 		background: var(--neutral-100);
 	}
-	.btn-secondary.small {
-		padding: 4px 8px;
-		font-size: 12px;
-	}
 
 	/* ── Mono text ── */
 	.mono {
@@ -1038,36 +978,6 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
-	}
-
-	/* ── Token box ── */
-	.token-box {
-		margin-top: 8px;
-		padding: 12px;
-		background: var(--neutral-50);
-		border: 1px dashed var(--color-border);
-		border-radius: 6px;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.token-code {
-		font-family: var(--font-mono);
-		font-size: 12px;
-		word-break: break-all;
-		color: var(--color-text);
-	}
-	.token-list {
-		margin-top: 8px;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-	.token-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 12px;
 	}
 
 	/* ── Modal (matches Figma New Agent modal) ── */

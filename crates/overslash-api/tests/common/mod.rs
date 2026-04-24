@@ -592,7 +592,6 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
@@ -675,7 +674,6 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
@@ -763,7 +761,6 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1212,7 +1209,6 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
@@ -1373,7 +1369,6 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())

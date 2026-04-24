@@ -99,11 +99,6 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Approval expiry error: {e}"),
                     _ => {}
                 }
-                match overslash_db::repos::pending_enrollment::expire_stale(&db).await {
-                    Ok(n) if n > 0 => tracing::info!("Expired {n} stale pending enrollments"),
-                    Err(e) => tracing::error!("Enrollment expiry error: {e}"),
-                    _ => {}
-                }
                 match system.archive_idle_subagents().await {
                     Ok(n) if n > 0 => {
                         tracing::info!("Archived {n} idle sub-agent identities")
@@ -177,7 +172,6 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())
         .merge(routes::org_oauth_credentials::router())
-        .merge(routes::enrollment::router())
         .merge(routes::groups::router())
         .merge(routes::rate_limits::router())
         .layer(axum::middleware::from_fn_with_state(
@@ -232,6 +226,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
 
     let app = Router::new()
         .merge(routes::health::router())
+        .merge(routes::skill_md::router())
         .merge(routes::oauth_as::router())
         .merge(routes::oauth::router())
         .merge(routes::mcp::router())

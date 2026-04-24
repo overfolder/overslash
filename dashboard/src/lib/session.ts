@@ -134,15 +134,6 @@ export interface PermissionRule {
 	created_at: string;
 }
 
-/** GET /v1/enrollment-tokens item */
-export interface EnrollmentTokenItem {
-	id: string;
-	identity_id: string;
-	token_prefix: string;
-	expires_at: string;
-	created_at: string;
-}
-
 /** GET/PUT /auth/me/preferences */
 export interface UserPreferences {
 	time_display?: 'relative' | 'absolute';
