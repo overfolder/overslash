@@ -9,6 +9,10 @@ pub struct Config {
     pub base_url: String,
     pub min_ttl_secs: u64,
     pub max_ttl_secs: u64,
+    /// If set, `GET /` 302s here. If unset, `GET /` is a 404. Lets
+    /// oversla.sh send curious visitors to the marketing site without
+    /// baking any brand in the code.
+    pub root_redirect_url: Option<String>,
 }
 
 impl Config {
@@ -50,6 +54,11 @@ impl Config {
             );
         }
 
+        let root_redirect_url = env::var("ROOT_REDIRECT_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             host,
             port,
@@ -58,6 +67,7 @@ impl Config {
             base_url,
             min_ttl_secs,
             max_ttl_secs,
+            root_redirect_url,
         })
     }
 }

@@ -17,6 +17,7 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/", get(root))
         .route("/api/links", post(create))
         .route("/{slug}", get(redirect))
 }
@@ -78,6 +79,21 @@ async fn create(
             expires_at,
         }),
     ))
+}
+
+/// Root handler. 302s to `ROOT_REDIRECT_URL` if configured, otherwise 404.
+/// Gives a bare `oversla.sh` visit a useful destination (marketing site,
+/// product page, etc.) without coupling the shortener to any brand.
+async fn root(State(state): State<AppState>) -> Result<Response> {
+    match state.root_redirect_url.as_deref() {
+        Some(target) => Ok((
+            StatusCode::FOUND,
+            [(header::LOCATION, target.to_string())],
+            [(header::CACHE_CONTROL, "no-store, max-age=0")],
+        )
+            .into_response()),
+        None => Err(AppError::NotFound),
+    }
 }
 
 async fn redirect(State(state): State<AppState>, Path(slug): Path<String>) -> Result<Response> {

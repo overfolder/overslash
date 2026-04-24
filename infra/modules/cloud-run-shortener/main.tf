@@ -34,8 +34,9 @@ variable "cpu" {
 }
 
 variable "memory" {
-  type    = string
-  default = "256Mi"
+  type        = string
+  description = "Cloud Run memory. 256Mi is fine because `cpu_idle = true` below puts us on request-based billing (CPU only allocated during requests), which lifts the 512Mi floor."
+  default     = "256Mi"
 }
 
 variable "min_instances" {
@@ -81,6 +82,12 @@ variable "base_url" {
   }
 }
 
+variable "root_redirect_url" {
+  type        = string
+  description = "Where `GET /` 302s to. Empty string = 404 on root."
+  default     = ""
+}
+
 variable "domain" {
   type    = string
   default = ""
@@ -97,15 +104,19 @@ variable "max_ttl_secs" {
 }
 
 locals {
-  env_vars = {
-    HOST         = "0.0.0.0"
-    PORT         = "8080"
-    VALKEY_URL   = "redis://${var.valkey_host}:${var.valkey_port}"
-    BASE_URL     = var.base_url
-    MIN_TTL_SECS = tostring(var.min_ttl_secs)
-    MAX_TTL_SECS = tostring(var.max_ttl_secs)
-    RUST_LOG     = "info,oversla_sh=info"
-  }
+  # Cloud Run v2 auto-injects PORT from `ports.container_port` below and
+  # rejects an explicit PORT env var. Don't set it here.
+  env_vars = merge(
+    {
+      HOST         = "0.0.0.0"
+      VALKEY_URL   = "redis://${var.valkey_host}:${var.valkey_port}"
+      BASE_URL     = var.base_url
+      MIN_TTL_SECS = tostring(var.min_ttl_secs)
+      MAX_TTL_SECS = tostring(var.max_ttl_secs)
+      RUST_LOG     = "info,oversla_sh=info"
+    },
+    var.root_redirect_url != "" ? { ROOT_REDIRECT_URL = var.root_redirect_url } : {},
+  )
 
   env_secrets = {
     API_KEY = var.api_key_secret_id
@@ -144,6 +155,10 @@ resource "google_cloud_run_v2_service" "shortener" {
           cpu    = var.cpu
           memory = var.memory
         }
+        # Request-based billing: CPU throttled when idle. Fits a shortener
+        # whose only work is a Valkey GET per request; also lifts the
+        # always-allocated 512Mi memory floor so 256Mi is legal.
+        cpu_idle          = true
         startup_cpu_boost = true
       }
 

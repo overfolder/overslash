@@ -50,6 +50,18 @@ resource "google_cloudbuild_trigger" "deploy" {
     }
   }
 
+  # Only rebuild when something that actually affects the shortener
+  # image changes. Prevents every master push (dashboard, docs, other
+  # crates) from firing a shortener build + deploy — which would waste
+  # Cloud Build minutes and churn Cloud Run revisions with identical
+  # images tagged by new commit SHAs.
+  included_files = [
+    "crates/oversla-sh/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+  ]
+
   build {
     step {
       name = "gcr.io/cloud-builders/docker"

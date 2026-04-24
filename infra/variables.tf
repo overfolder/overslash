@@ -188,3 +188,9 @@ variable "shortener_max_instances" {
   type        = number
   default     = 3
 }
+
+variable "shortener_root_redirect_url" {
+  description = "URL that `GET /` redirects to on the shortener domain. Empty = 404 on root."
+  type        = string
+  default     = ""
+}

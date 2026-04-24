@@ -16,11 +16,15 @@ terraform {
     }
   }
 
-  # Uncomment and configure for remote state:
-  # backend "gcs" {
-  #   bucket = "overslash-tfstate"
-  #   prefix = "infra"
-  # }
+  # Remote state in GCS. The bucket is managed out-of-band (see
+  # `bin/bootstrap-tfstate.sh`) so it's not a chicken-and-egg for the
+  # very state that lives in it. Versioning is enabled on the bucket
+  # so `tofu state rm` / corruption is recoverable. Workspaces get
+  # their own object path under `infra/terraform.tfstate`.
+  backend "gcs" {
+    bucket = "overslash-tfstate"
+    prefix = "infra"
+  }
 }
 
 provider "google" {
