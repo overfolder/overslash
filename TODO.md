@@ -32,7 +32,7 @@ Existing dashboard code predates the unified permission model and template/servi
 - [ ] API client: remove `GET /v1/connections` (connections absorbed into services)
 
 **Low priority:**
-- [ ] Profile: expand with API keys, secrets, remembered approvals, enrollment tokens, settings sections
+- [ ] Profile: expand with API keys, secrets, remembered approvals, settings sections
 - [ ] CSS: add light mode + theme toggle (currently dark-only)
 
 ### Review Corrections (2026-04-10)
@@ -100,7 +100,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 - [x] Service + action execution (registry-resolved, auth auto-resolve)
 - [x] Human-readable action descriptions from registry metadata (description interpolation, PR #35)
 
-## Phase 2.5: Dashboard + Enrollment
+## Phase 2.5: Dashboard
 
 ### Dashboard (SvelteKit + TypeScript)
 
@@ -112,8 +112,8 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 
 ### Agent Enrollment
 
-- [ ] User-to-Agent enrollment flow — user pre-creates agent identity, gets single-use token, agent exchanges for API key
-- [ ] Agent-initiated enrollment flow + `SKILL.md` — agent discovers Overslash, gets enrollment token, generates consent URL for user approval
+- [x] MCP OAuth 2.1 enrollment — `/oauth/authorize`, `/oauth/consent`, DCR, PKCE, `overslash mcp login` CLI (PRs #121, #123, #142)
+- [x] `SKILL.md` at repo root, served at `/SKILL.md` — v1 enrollment instructions for agents
 
 ## Phase 3: Identity Hierarchy + Permissions
 
@@ -147,7 +147,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 - [ ] Add unit tests for core permission resolution logic
 - [ ] Add tests for edge cases in OAuth token refresh and BYOC fallback
 - [ ] Dashboard component tests
-- [ ] E2E tests for enrollment flows
+- [ ] E2E tests for MCP OAuth enrollment (full `/oauth/authorize` → `/oauth/consent` → `/oauth/token` flow driven by an MCP client)
 
 ---
 

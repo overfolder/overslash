@@ -106,7 +106,7 @@ impl Config {
     }
 
     /// Build a URL for a dashboard deep-link path (e.g., `/approvals/<id>`,
-    /// `/enroll/consent/<token>`, `/secrets/provide/<id>?token=...`).
+    /// `/oauth/consent?request_id=...`, `/secrets/provide/<id>?token=...`).
     ///
     /// `dashboard_url` is the canonical dashboard host. When it's already
     /// absolute (`http://` or `https://`) it's used directly; when relative

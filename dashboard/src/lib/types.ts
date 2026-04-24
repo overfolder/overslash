@@ -444,22 +444,6 @@ export interface PermissionRule {
   effect: string;
 }
 
-export interface EnrollmentToken {
-  id: string;
-  identity_id: string;
-  token_prefix: string;
-  expires_at: string;
-  created_at: string;
-}
-
-export interface CreatedEnrollmentToken {
-  id: string;
-  token: string;
-  token_prefix: string;
-  identity_id: string;
-  expires_at: string;
-}
-
 export interface ActionResult {
   status_code: number;
   headers: Record<string, string>;
