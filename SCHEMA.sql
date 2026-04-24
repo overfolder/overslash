@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4saDG3krTdtiabXh2ltzpMR9VMFBWhHSZfkfjgWAcGuYFa81ZJSbYIwC2VpmyXA
+\restrict Cfm8popeKrflBrfL7fjteBixVHcJCqHiO3EvWwNqFcacpazkgR23fPujucTofgD
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,6 +23,13 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
+
+
+--
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -137,23 +144,6 @@ CREATE TABLE public.enabled_global_templates (
     org_id uuid NOT NULL,
     template_key text NOT NULL,
     enabled_by uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: enrollment_tokens; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.enrollment_tokens (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    org_id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    token_hash text NOT NULL,
-    token_prefix character varying(16) NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    used_at timestamp with time zone,
-    created_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
@@ -339,33 +329,6 @@ CREATE TABLE public.orgs (
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     is_personal boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
-);
-
-
---
--- Name: pending_enrollments; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.pending_enrollments (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    suggested_name text NOT NULL,
-    platform text,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    approval_token text NOT NULL,
-    poll_token_hash text NOT NULL,
-    poll_token_prefix character varying(16) NOT NULL,
-    org_id uuid,
-    identity_id uuid,
-    api_key_hash text,
-    api_key_prefix character varying(16),
-    approved_by uuid,
-    final_name text,
-    expires_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    resolved_at timestamp with time zone,
-    requester_ip text,
-    CONSTRAINT pending_enrollments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'denied'::text, 'expired'::text])))
 );
 
 
@@ -641,14 +604,6 @@ ALTER TABLE ONLY public.enabled_global_templates
 
 
 --
--- Name: enrollment_tokens enrollment_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_pkey PRIMARY KEY (id);
-
-
---
 -- Name: group_grants group_grants_group_id_service_instance_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -782,22 +737,6 @@ ALTER TABLE ONLY public.orgs
 
 ALTER TABLE ONLY public.orgs
     ADD CONSTRAINT orgs_slug_key UNIQUE (slug);
-
-
---
--- Name: pending_enrollments pending_enrollments_approval_token_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_approval_token_key UNIQUE (approval_token);
-
-
---
--- Name: pending_enrollments pending_enrollments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_pkey PRIMARY KEY (id);
 
 
 --
@@ -983,13 +922,6 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
--- Name: idx_enrollment_tokens_prefix; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_enrollment_tokens_prefix ON public.enrollment_tokens USING btree (token_prefix);
-
-
---
 -- Name: idx_group_grants_group; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1141,20 +1073,6 @@ CREATE INDEX idx_org_idp_configs_domains ON public.org_idp_configs USING gin (al
 --
 
 CREATE INDEX idx_org_idp_configs_org ON public.org_idp_configs USING btree (org_id);
-
-
---
--- Name: idx_pending_enrollments_poll_prefix; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_pending_enrollments_poll_prefix ON public.pending_enrollments USING btree (poll_token_prefix);
-
-
---
--- Name: idx_pending_enrollments_status; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_pending_enrollments_status ON public.pending_enrollments USING btree (status) WHERE (status = 'pending'::text);
 
 
 --
@@ -1468,30 +1386,6 @@ ALTER TABLE ONLY public.enabled_global_templates
 
 
 --
--- Name: enrollment_tokens enrollment_tokens_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.identities(id);
-
-
---
--- Name: enrollment_tokens enrollment_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
-
-
---
--- Name: enrollment_tokens enrollment_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
-
-
---
 -- Name: group_grants group_grants_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1641,30 +1535,6 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
-
-
---
--- Name: pending_enrollments pending_enrollments_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.identities(id);
-
-
---
--- Name: pending_enrollments pending_enrollments_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id);
-
-
---
--- Name: pending_enrollments pending_enrollments_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id);
 
 
 --
@@ -1871,5 +1741,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4saDG3krTdtiabXh2ltzpMR9VMFBWhHSZfkfjgWAcGuYFa81ZJSbYIwC2VpmyXA
+\unrestrict Cfm8popeKrflBrfL7fjteBixVHcJCqHiO3EvWwNqFcacpazkgR23fPujucTofgD
 
