@@ -928,6 +928,8 @@ mod tests {
                 },
                 scope_param: Some("team".into()),
                 required_scopes: vec![],
+                disclose: vec![],
+                redact: vec![],
                 mcp_tool: Some("search".into()),
                 output_schema: None,
                 disabled: false,

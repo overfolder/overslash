@@ -30,8 +30,7 @@ use overslash_core::{
     secret_injection::inject_secrets,
     types::{
         ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpSpec, Runtime,
-        SecretRef,
-        service::Risk,
+        SecretRef, service::Risk,
     },
 };
 
