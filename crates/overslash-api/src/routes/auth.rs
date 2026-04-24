@@ -827,7 +827,10 @@ fn build_org_redirect(state: &AppState, org: &overslash_db::repos::org::OrgRow) 
 
 /// Construct the `Set-Cookie` value for the session token, honoring the
 /// configured cookie Domain for cross-subdomain sessions.
-fn session_cookie(state: &AppState, token: &str) -> Result<header::HeaderValue, AppError> {
+pub(crate) fn session_cookie(
+    state: &AppState,
+    token: &str,
+) -> Result<header::HeaderValue, AppError> {
     let mut value = format!("oss_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800");
     if let Some(domain) = state.config.session_cookie_domain.as_deref() {
         value.push_str(&format!("; Domain={domain}"));
@@ -1584,7 +1587,7 @@ fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
-fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
+pub(crate) fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
     hex::decode(signing_key).unwrap_or_else(|_| signing_key.as_bytes().to_vec())
 }
 

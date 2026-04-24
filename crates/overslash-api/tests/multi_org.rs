@@ -113,6 +113,10 @@ async fn post_v1_orgs_attaches_admin_membership_when_session_present() {
         .await
         .unwrap();
     let status = resp.status();
+    let set_cookie = resp
+        .headers()
+        .get("set-cookie")
+        .map(|v| v.to_str().unwrap().to_string());
     let body: Value = resp.json().await.unwrap();
     assert_eq!(status, StatusCode::OK, "body={body}");
 
@@ -128,6 +132,36 @@ async fn post_v1_orgs_attaches_admin_membership_when_session_present() {
         m.role, "admin",
         "creator is a regular admin — no special flag"
     );
+
+    // The response must re-mint the session cookie scoped to the NEW org;
+    // without this the dashboard lands on the new subdomain carrying the
+    // old JWT and trips the subdomain↔JWT guard. The new JWT's `org` and
+    // `sub` must point at the new org + its bootstrap identity.
+    let raw_cookie = set_cookie.expect("create_org must Set-Cookie the new session");
+    let token = raw_cookie
+        .split(';')
+        .next()
+        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .expect("Set-Cookie carries an oss_session token");
+    let secret = hex::decode("cd".repeat(32)).unwrap();
+    let claims = overslash_api::services::jwt::verify(
+        &secret,
+        token,
+        overslash_api::services::jwt::AUD_SESSION,
+    )
+    .expect("new session JWT verifies");
+    assert_eq!(claims.org, new_org_id);
+    assert_eq!(claims.user_id, Some(user_id));
+    // `sub` must be the bootstrap-admin identity in the new org, not the
+    // caller's identity from the old org.
+    assert_ne!(claims.sub, identity_id);
+    let bootstrap_ident: Uuid =
+        sqlx::query_scalar("SELECT id FROM identities WHERE org_id = $1 AND kind = 'user'")
+            .bind(new_org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(claims.sub, bootstrap_ident);
 }
 
 #[tokio::test]

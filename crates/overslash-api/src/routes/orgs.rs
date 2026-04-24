@@ -1,9 +1,12 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::{HeaderMap, header},
+    response::IntoResponse,
     routing::{get, patch, post},
 };
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use overslash_db::repos::audit::AuditEntry;
@@ -13,6 +16,8 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp},
+    routes::auth::{session_cookie, signing_key_bytes},
+    services::jwt,
 };
 
 pub fn router() -> Router<AppState> {
@@ -163,7 +168,7 @@ async fn create_org(
     ip: ClientIp,
     headers: axum::http::HeaderMap,
     Json(req): Json<CreateOrgRequest>,
-) -> Result<Json<OrgResponse>> {
+) -> Result<axum::response::Response> {
     if !state.config.allow_org_creation {
         return Err(AppError::Forbidden("org_creation_disabled".into()));
     }
@@ -241,7 +246,34 @@ async fn create_org(
     let redirect_to = redirect_for_org(&state, &org);
     let mut resp: OrgResponse = org.into();
     resp.redirect_to = Some(redirect_to);
-    Ok(Json(resp))
+
+    // Re-mint the session cookie scoped to the new org when the caller came
+    // in with a multi-org session. Without this, the client redirects to
+    // the new subdomain and the old JWT's `org` claim trips the
+    // subdomain↔JWT guard (`org_mismatch` 401), forcing an extra switch-org
+    // round-trip. Anonymous creators keep no session.
+    let mut response_headers = HeaderMap::new();
+    if let (Some(user_id), Some(identity_id)) = (session_user_id, bootstrap_identity_id) {
+        let jwt_secret = signing_key_bytes(&state.config.signing_key);
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let claims = jwt::Claims {
+            sub: identity_id,
+            org: resp.id,
+            email: user_repo::get_by_id(&state.db, user_id)
+                .await?
+                .and_then(|u| u.email)
+                .unwrap_or_default(),
+            aud: jwt::AUD_SESSION.into(),
+            iat: now,
+            exp: now + 7 * 24 * 3600,
+            user_id: Some(user_id),
+        };
+        let token = jwt::mint(&jwt_secret, &claims)
+            .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+        response_headers.insert(header::SET_COOKIE, session_cookie(&state, &token)?);
+    }
+
+    Ok((response_headers, Json(resp)).into_response())
 }
 
 #[derive(Deserialize)]
