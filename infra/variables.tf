@@ -150,3 +150,41 @@ variable "valkey_memory_size_gb" {
   type        = number
   default     = 1
 }
+
+# --- oversla.sh shortener ---
+
+variable "enable_shortener" {
+  description = "Deploy the oversla.sh URL shortener Cloud Run service. Requires enable_valkey=true and use_private_vpc=true."
+  type        = bool
+  default     = false
+}
+
+variable "shortener_domain" {
+  description = "Custom domain for the shortener (e.g. oversla.sh). Empty = no domain mapping."
+  type        = string
+  default     = ""
+}
+
+variable "shortener_base_url" {
+  description = "Public base URL used in short_url responses (e.g. https://oversla.sh)."
+  type        = string
+  default     = ""
+}
+
+variable "shortener_cpu" {
+  description = "Cloud Run CPU for the shortener"
+  type        = string
+  default     = "1"
+}
+
+variable "shortener_memory" {
+  description = "Cloud Run memory for the shortener"
+  type        = string
+  default     = "256Mi"
+}
+
+variable "shortener_max_instances" {
+  description = "Max Cloud Run instances for the shortener"
+  type        = number
+  default     = 3
+}

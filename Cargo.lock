@@ -2893,6 +2893,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "oversla-sh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "dotenvy",
+ "rand 0.10.0",
+ "redis",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "subtle",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "overslash-api"
 version = "0.1.0"
 dependencies = [
