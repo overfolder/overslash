@@ -341,6 +341,31 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
     })
 }
 
+/// Carry the system-managed MCP discovery fields (`discovered_tools`,
+/// `discovered_at`) from `old` forward onto `new` when `new` does not
+/// already declare them. The admin-facing update path accepts the same
+/// template editor YAML that created the row, which doesn't round-trip
+/// through the discovery blob — without this carry-over, each edit
+/// would silently wipe the last resync.
+fn preserve_mcp_discovered_fields(old: &serde_json::Value, new: &mut serde_json::Value) {
+    let Some(old_mcp) = old.get("x-overslash-mcp").and_then(|v| v.as_object()) else {
+        return;
+    };
+    let Some(new_mcp) = new
+        .get_mut("x-overslash-mcp")
+        .and_then(|v| v.as_object_mut())
+    else {
+        return;
+    };
+    for field in ["discovered_tools", "discovered_at"] {
+        if !new_mcp.contains_key(field) {
+            if let Some(v) = old_mcp.get(field) {
+                new_mcp.insert(field.into(), v.clone());
+            }
+        }
+    }
+}
+
 fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefinition> {
     let (def, _warnings) = openapi::compile_service(&t.openapi).map_err(|errors| {
         AppError::Internal(format!(
@@ -798,7 +823,7 @@ async fn update_template(
         }
     }
 
-    let (doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
+    let (mut doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     // Template key cannot change via update — the unique index pins it.
@@ -808,6 +833,13 @@ async fn update_template(
             existing.key, def.key
         )));
     }
+
+    // Preserve system-managed MCP discovery state across YAML edits.
+    // Admins authoring the template in the editor don't hand-edit
+    // x-overslash-mcp.discovered_tools / discovered_at — those are owned
+    // by the resync flow. Wiping them on update would silently invalidate
+    // every discovered-only tool until the admin hits resync again.
+    preserve_mcp_discovered_fields(&existing.openapi, &mut doc);
 
     let input = UpdateServiceTemplate {
         display_name: Some(&def.display_name),
@@ -1690,100 +1722,53 @@ fn scalars_from_compiled(compiled: Option<&ServiceDefinition>) -> DraftScalars {
 ///
 /// Returns `(body_bytes, content_type_hint, warnings)`.
 async fn fetch_openapi_url(url: &str) -> Result<(Vec<u8>, Option<String>, Vec<ImportWarning>)> {
-    fetch_openapi_url_with_policy(url, is_disallowed_ip).await
+    fetch_openapi_url_with_policy(url, crate::services::ssrf_guard::is_disallowed_ip).await
 }
 
 /// Inner implementation of [`fetch_openapi_url`] parameterized on the IP
-/// policy. Production uses [`is_disallowed_ip`]; tests inject a permissive
-/// policy so they can point at a loopback mock server without tripping the
-/// real SSRF guard. Keeping the split internal (not `pub`) means no caller
-/// outside this module can accidentally bypass the guard.
+/// policy. Production uses [`crate::services::ssrf_guard::is_disallowed_ip`];
+/// tests inject a permissive policy so they can point at a loopback mock
+/// server without tripping the real SSRF guard. Keeping the split internal
+/// (not `pub`) means no caller outside this module can accidentally
+/// bypass the guard.
 async fn fetch_openapi_url_with_policy<F>(
     url: &str,
     is_blocked: F,
 ) -> Result<(Vec<u8>, Option<String>, Vec<ImportWarning>)>
 where
-    F: Fn(&std::net::IpAddr) -> bool,
+    F: Fn(&std::net::IpAddr) -> bool + Clone,
 {
-    use std::net::{IpAddr, ToSocketAddrs};
     use std::time::Duration;
 
     let mut warnings = Vec::new();
     let mut current = url.to_string();
 
     for _hop in 0..=3 {
-        let parsed = ::url::Url::parse(&current)
-            .map_err(|e| AppError::BadRequest(format!("invalid source URL {current:?}: {e}")))?;
+        // Delegate URL parsing, DNS resolution, IP policy check, and
+        // reqwest client pinning to the shared SSRF guard. The hop loop
+        // still lives here because the guard doesn't know about http→http
+        // redirect following; each hop runs its own resolve+pin.
+        let (fetch_client, parsed) = crate::services::ssrf_guard::build_pinned_client_with_policy(
+            &current,
+            Duration::from_secs(10),
+            is_blocked.clone(),
+        )
+        .await?;
 
-        let scheme = parsed.scheme();
-        match scheme {
-            "https" => {}
-            "http" => {
-                if !warnings
-                    .iter()
-                    .any(|w: &ImportWarning| w.code == "http_insecure")
-                {
-                    warnings.push(ImportWarning {
-                        code: "http_insecure".into(),
-                        message: "source fetched over plain HTTP; prefer https://".into(),
-                        path: "source.url".into(),
-                    });
-                }
-            }
-            other => {
-                return Err(AppError::BadRequest(format!(
-                    "unsupported URL scheme {other:?}; only http(s) are allowed"
-                )));
-            }
+        // Emit the plain-HTTP warning once per import (mirrors the original
+        // behavior — the guard itself is scheme-agnostic beyond accepting
+        // http/https).
+        if parsed.scheme() == "http"
+            && !warnings
+                .iter()
+                .any(|w: &ImportWarning| w.code == "http_insecure")
+        {
+            warnings.push(ImportWarning {
+                code: "http_insecure".into(),
+                message: "source fetched over plain HTTP; prefer https://".into(),
+                path: "source.url".into(),
+            });
         }
-
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| AppError::BadRequest("source URL has no host".into()))?
-            .to_string();
-        let port = parsed
-            .port_or_known_default()
-            .ok_or_else(|| AppError::BadRequest("source URL has no port".into()))?;
-
-        // Resolve + validate IPs. Use a blocking resolver on the tokio
-        // blocking pool so we don't stall the runtime.
-        let host_for_resolve = host.clone();
-        let addrs: Vec<IpAddr> = tokio::task::spawn_blocking(move || {
-            (host_for_resolve.as_str(), port)
-                .to_socket_addrs()
-                .map(|iter| iter.map(|a| a.ip()).collect::<Vec<_>>())
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("dns resolver join error: {e}")))?
-        .map_err(|e| AppError::BadRequest(format!("could not resolve host {host:?}: {e}")))?;
-
-        if addrs.is_empty() {
-            return Err(AppError::BadRequest(format!(
-                "host {host:?} resolved to no addresses"
-            )));
-        }
-        for ip in &addrs {
-            if is_blocked(ip) {
-                return Err(AppError::BadRequest(format!(
-                    "refusing to fetch from {ip}: private / loopback / link-local addresses are blocked"
-                )));
-            }
-        }
-
-        // Pin the hostname to the first validated IP via reqwest's `resolve`
-        // override. Without this, reqwest would perform its own DNS lookup
-        // inside `.send()` and a TOCTOU-friendly resolver could return a
-        // different (internal) address than the one we just validated. This is
-        // the actual DNS-rebinding mitigation.
-        let pinned_ip = addrs[0];
-        let pinned_sock = std::net::SocketAddr::new(pinned_ip, port);
-        let fetch_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(10))
-            .resolve(&host, pinned_sock)
-            .build()
-            .map_err(|e| AppError::Internal(format!("could not build fetch client: {e}")))?;
 
         let resp = fetch_client
             .get(&current)
@@ -1843,37 +1828,6 @@ where
     Err(AppError::BadRequest(
         "too many redirects fetching source URL (max 3)".into(),
     ))
-}
-
-fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_unspecified()
-                || v4.is_documentation()
-                // carrier-grade NAT 100.64.0.0/10
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_multicast()
-                || v6.is_unspecified()
-                // unique local fc00::/7
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                // link-local fe80::/10
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                // IPv4-mapped (::ffff:x.x.x.x) — re-check as v4
-                || v6.to_ipv4_mapped().map(|m| {
-                    let as_ipaddr = IpAddr::V4(m);
-                    is_disallowed_ip(&as_ipaddr)
-                }).unwrap_or(false)
-        }
-    }
 }
 
 // -- Shared helpers (used by services routes too) --
@@ -2023,8 +1977,18 @@ async fn resync_mcp_tools(
         }
     };
 
-    let client = crate::services::mcp_client::McpClient::new(state.http_client.clone(), &mcp.url)
-        .map_err(|e| AppError::BadRequest(format!("invalid mcp.url: {e}")))?;
+    // SSRF guard: resolve-once and pin the validated IP on the outbound
+    // reqwest client. See services::ssrf_guard for the full rationale.
+    let (http, base) = crate::services::ssrf_guard::build_pinned_client(
+        &mcp.url,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let client = crate::services::mcp_client::McpClient::with_client_and_base(
+        http,
+        base,
+        crate::services::mcp_client::DEFAULT_MAX_BODY_BYTES,
+    );
     let tools = client
         .tools_list(&headers)
         .await
@@ -2112,18 +2076,22 @@ mod tests {
     use tokio::net::TcpListener;
 
     // ── is_disallowed_ip: every branch in the SSRF guard ─────────────
+    // (policy lives in crate::services::ssrf_guard; tests retained here to
+    // keep coverage attached to the surface that actually consumes it).
+
+    use crate::services::ssrf_guard::is_disallowed_ip as ssrf_is_disallowed;
 
     fn assert_blocked(ip: &str) {
         let parsed: IpAddr = ip.parse().unwrap();
         assert!(
-            is_disallowed_ip(&parsed),
+            ssrf_is_disallowed(&parsed),
             "expected {ip} to be blocked, but the SSRF guard allowed it"
         );
     }
     fn assert_allowed(ip: &str) {
         let parsed: IpAddr = ip.parse().unwrap();
         assert!(
-            !is_disallowed_ip(&parsed),
+            !ssrf_is_disallowed(&parsed),
             "expected {ip} to be allowed, but the SSRF guard blocked it"
         );
     }
@@ -2217,9 +2185,9 @@ mod tests {
         // Sanity check that the helpers we exercise compile + construct
         // identical addresses via the typed constructors too.
         let loop_v4 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert!(is_disallowed_ip(&loop_v4));
+        assert!(ssrf_is_disallowed(&loop_v4));
         let unspec_v6 = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
-        assert!(is_disallowed_ip(&unspec_v6));
+        assert!(ssrf_is_disallowed(&unspec_v6));
     }
 
     // ── fetch_openapi_url_with_policy: end-to-end against a loopback mock ─
@@ -2245,7 +2213,7 @@ mod tests {
         if ip.is_loopback() {
             false
         } else {
-            is_disallowed_ip(ip)
+            ssrf_is_disallowed(ip)
         }
     }
 
@@ -2375,7 +2343,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            AppError::BadRequest(msg) => assert!(msg.contains("invalid source URL"), "got: {msg}"),
+            AppError::BadRequest(msg) => assert!(msg.contains("invalid URL"), "got: {msg}"),
             other => panic!("expected BadRequest, got {other:?}"),
         }
     }
@@ -2402,12 +2370,15 @@ mod tests {
         let (addr, _h) = spawn_mock(app).await;
         let url = format!("http://{addr}/spec");
 
-        let err = fetch_openapi_url_with_policy(&url, is_disallowed_ip)
+        let err = fetch_openapi_url_with_policy(&url, ssrf_is_disallowed)
             .await
             .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
-                assert!(msg.contains("refusing to fetch from"), "got: {msg}");
+                assert!(
+                    msg.contains("private / loopback / link-local"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected BadRequest, got {other:?}"),
         }

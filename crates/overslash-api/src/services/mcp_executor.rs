@@ -20,7 +20,7 @@
 //! and write nothing to the audit body.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use overslash_core::types::{ActionResult, McpSpec};
 use overslash_db::scopes::OrgScope;
@@ -28,7 +28,16 @@ use serde_json::{Value, json};
 
 use crate::AppState;
 use crate::error::AppError;
-use crate::services::{mcp_auth, mcp_client::McpClient};
+use crate::services::{
+    mcp_auth,
+    mcp_client::{DEFAULT_MAX_BODY_BYTES, McpClient},
+    ssrf_guard,
+};
+
+/// Total read/connect timeout for every outbound MCP call. Matches the
+/// `fetch_openapi_url` import path so admins see consistent latency-bound
+/// behavior across the two user-URL code paths.
+const MCP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn invoke(
     state: &AppState,
@@ -39,8 +48,12 @@ pub async fn invoke(
 ) -> Result<ActionResult, AppError> {
     let headers = mcp_auth::resolve_headers(state, scope, &mcp.auth).await?;
 
-    let client = McpClient::new(state.http_client.clone(), &mcp.url)
-        .map_err(|e| AppError::BadRequest(format!("invalid mcp.url: {e}")))?;
+    // SSRF guard: validate mcp.url's host resolves to a public IP and pin
+    // the reqwest client to that IP so a compromised resolver cannot rebind
+    // to an internal target between validation and connect. Timeouts live
+    // on this client too — state.http_client has no per-request deadline.
+    let (http, base) = ssrf_guard::build_pinned_client(&mcp.url, MCP_TIMEOUT).await?;
+    let client = McpClient::with_client_and_base(http, base, DEFAULT_MAX_BODY_BYTES);
 
     let start = Instant::now();
     let result = client
@@ -81,6 +94,9 @@ fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppErro
             AppError::BadGateway(format!("mcp JSON-RPC error {code}: {message}"))
         }
         UnexpectedShape(m) => AppError::BadGateway(format!("mcp unexpected response: {m}")),
+        ResponseTooLarge { limit_bytes } => {
+            AppError::BadGateway(format!("mcp response exceeded {limit_bytes} bytes"))
+        }
     }
 }
 

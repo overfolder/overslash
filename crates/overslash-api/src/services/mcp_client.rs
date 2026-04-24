@@ -15,6 +15,7 @@
 //! `text/event-stream` responses are tolerated (first event delivers the
 //! payload, we do not aggregate further SSE frames).
 
+use futures_util::StreamExt;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -22,6 +23,12 @@ use url::Url;
 
 const JSONRPC_VERSION: &str = "2.0";
 const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Default cap on upstream response bytes. The MCP spec places no ceiling
+/// on tool results; a cooperative-but-buggy server could stream megabytes
+/// into our buffer. The 5 MB cap matches `max_response_body_bytes` used by
+/// the HTTP executor.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpClientError {
@@ -42,6 +49,9 @@ pub enum McpClientError {
 
     #[error("unexpected response shape: {0}")]
     UnexpectedShape(String),
+
+    #[error("response exceeded {limit_bytes} bytes")]
+    ResponseTooLarge { limit_bytes: usize },
 }
 
 /// A tool description as returned by `tools/list`. We only keep the fields
@@ -71,12 +81,28 @@ pub struct ToolCallResult {
 pub struct McpClient {
     http: reqwest::Client,
     base: Url,
+    max_body_bytes: usize,
 }
 
 impl McpClient {
     pub fn new(http: reqwest::Client, url: &str) -> Result<Self, McpClientError> {
         let base = Url::parse(url).map_err(|e| McpClientError::InvalidUrl(e.to_string()))?;
-        Ok(Self { http, base })
+        Ok(Self {
+            http,
+            base,
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+        })
+    }
+
+    /// Construct with a caller-provided base URL (already validated) and a
+    /// pre-built reqwest client (usually SSRF-pinned with timeouts). Used
+    /// on the hot path so SSRF resolution happens once per request.
+    pub fn with_client_and_base(http: reqwest::Client, base: Url, max_body_bytes: usize) -> Self {
+        Self {
+            http,
+            base,
+            max_body_bytes,
+        }
     }
 
     /// Send `initialize` and return the server info payload. Callers that
@@ -169,7 +195,32 @@ impl McpClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let text = response.text().await?;
+
+        // Short-circuit if Content-Length is already oversized. This stops us
+        // buffering anything when a server advertises a huge payload upfront.
+        if let Some(len) = response.content_length() {
+            if len as usize > self.max_body_bytes {
+                return Err(McpClientError::ResponseTooLarge {
+                    limit_bytes: self.max_body_bytes,
+                });
+            }
+        }
+
+        // Stream + cap: the MCP spec places no ceiling on tool results, and
+        // `response.text()` would buffer without bound. A misbehaving or
+        // compromised upstream could pipe megabytes into our process.
+        let mut collected: Vec<u8> = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if collected.len() + chunk.len() > self.max_body_bytes {
+                return Err(McpClientError::ResponseTooLarge {
+                    limit_bytes: self.max_body_bytes,
+                });
+            }
+            collected.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8_lossy(&collected).into_owned();
 
         if !status.is_success() {
             return Err(McpClientError::Http {
@@ -418,6 +469,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.structured.unwrap()["echo"]["x"], "sse");
+    }
+
+    #[tokio::test]
+    async fn oversized_response_is_rejected_before_buffering_everything() {
+        // Serve a response that's well over the configured cap. The client
+        // must return ResponseTooLarge, not buffer everything and OOM.
+        let app = Router::new().route(
+            "/mcp",
+            post(|| async {
+                // 2 MiB payload — dwarfs the 64 KiB cap we pass in this test.
+                let big = "x".repeat(2 * 1024 * 1024);
+                Json(json!({ "jsonrpc": "2.0", "id": 1, "result": { "blob": big } }))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let base = Url::parse(&format!("http://{addr}/mcp")).unwrap();
+        let client = McpClient::with_client_and_base(reqwest::Client::new(), base, 64 * 1024);
+        let err = client
+            .tools_call(&HeaderMap::new(), "echo", &json!({}))
+            .await
+            .unwrap_err();
+        match err {
+            McpClientError::ResponseTooLarge { limit_bytes } => {
+                assert_eq!(limit_bytes, 64 * 1024)
+            }
+            other => panic!("wrong err: {other:?}"),
+        }
     }
 
     #[tokio::test]

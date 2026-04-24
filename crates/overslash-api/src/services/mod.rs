@@ -16,4 +16,5 @@ pub mod permission_chain;
 pub mod rate_limit;
 pub mod response_filter;
 pub mod session;
+pub mod ssrf_guard;
 pub mod webhook_dispatcher;

@@ -6,6 +6,24 @@
 
 mod common;
 
+use std::sync::Once;
+
+/// Opt tests out of the SSRF guard that otherwise blocks every loopback
+/// outbound in `services::ssrf_guard`. Called from `start_stub()` before
+/// any test hits `/v1/actions/execute` or `/mcp/resync`. The production
+/// binary never sets this env var; the knob exists solely so integration
+/// tests can point at loopback stubs without widening the guard.
+fn allow_loopback_ssrf() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: runs exactly once, before any thread that might read the
+        // env concurrently (Once provides the happens-before).
+        unsafe {
+            std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+        }
+    });
+}
+
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -114,6 +132,7 @@ async fn stub_handler(
 }
 
 async fn start_stub() -> (SocketAddr, Stub) {
+    allow_loopback_ssrf();
     let stub = Stub::default();
     let app = Router::new()
         .route("/mcp", post(stub_handler))
@@ -655,7 +674,7 @@ async fn mcp_agent_without_permission_triggers_approval() {
         .json(&json!({
             "service": "stub_mcp_noperm",
             "action": "echo",
-            "params": { "x": "x" }
+            "params": { "x": "hello-approval" }
         }))
         .send()
         .await
@@ -663,4 +682,208 @@ async fn mcp_agent_without_permission_triggers_approval() {
     assert_eq!(resp.status(), 202, "{:?}", resp.text().await);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "pending_approval");
+    let approval_id = body["approval_id"]
+        .as_str()
+        .expect("approval_id")
+        .to_string();
+
+    // Reviewer-visible detail must contain the tool name and the arguments
+    // — not an empty ActionRequest (vet finding: approval detail empty).
+    // The approvals endpoint returns action_detail as a pretty-printed
+    // JSON string (see ACTION_DETAIL_MAX_BYTES cap); parse it back.
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap();
+    let detail: Value = resp.json().await.unwrap();
+    let detail_str = detail["action_detail"]
+        .as_str()
+        .expect("action_detail string");
+    let parsed: Value = serde_json::from_str(detail_str).expect("action_detail parses as JSON");
+    assert_eq!(parsed["runtime"], "mcp");
+    assert_eq!(parsed["tool"], "echo");
+    assert_eq!(parsed["arguments"]["x"], "hello-approval");
+}
+
+/// Audit row for an MCP action.executed must carry `runtime: "mcp"`,
+/// `is_error`, and the tool arguments. Regression for vet findings
+/// "audit omits is_error" and "audit + approval detail omit tool arguments".
+#[tokio::test]
+async fn mcp_execute_audit_contains_tool_arguments_and_is_error_success() {
+    let pool = common::test_pool().await;
+    let (addr, _stub) = start_stub().await;
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, agent_ident, agent_key, org_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    setup_template_and_grants(SetupCtx {
+        base: &base,
+        client: &client,
+        admin_key: &org_key,
+        agent_key: &agent_key,
+        agent_ident,
+        key: "stub_mcp_audit",
+        url: &stub_url,
+        auth_bearer_secret: None,
+    })
+    .await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "stub_mcp_audit",
+            "action": "echo",
+            "params": { "x": "observable" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let audit: Value = client
+        .get(format!("{base}/v1/audit"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let executed = audit
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "action.executed")
+        .expect("action.executed entry");
+    assert_eq!(executed["detail"]["runtime"], "mcp");
+    assert_eq!(executed["detail"]["tool"], "echo");
+    assert_eq!(executed["detail"]["arguments"]["x"], "observable");
+    assert_eq!(executed["detail"]["is_error"], false);
+}
+
+/// Tool-level isError must flip `is_error: true` on the audit row too.
+#[tokio::test]
+async fn mcp_execute_audit_is_error_true_on_tool_failure() {
+    let pool = common::test_pool().await;
+    let (addr, stub) = start_stub().await;
+    stub.force_error(vec![json!({ "type": "text", "text": "nope" })]);
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, agent_ident, agent_key, org_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    setup_template_and_grants(SetupCtx {
+        base: &base,
+        client: &client,
+        admin_key: &org_key,
+        agent_key: &agent_key,
+        agent_ident,
+        key: "stub_mcp_fail",
+        url: &stub_url,
+        auth_bearer_secret: None,
+    })
+    .await;
+
+    client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({"service": "stub_mcp_fail", "action": "echo", "params": {"x": "a"}}))
+        .send()
+        .await
+        .unwrap();
+
+    let audit: Value = client
+        .get(format!("{base}/v1/audit"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let executed = audit
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "action.executed")
+        .expect("action.executed entry");
+    assert_eq!(executed["detail"]["is_error"], true);
+}
+
+/// Updating an MCP template's YAML must NOT wipe the system-managed
+/// `discovered_tools` / `discovered_at` fields populated by /mcp/resync.
+/// Regression for vet finding: "Template update wipes discovered_tools".
+#[tokio::test]
+async fn mcp_template_update_preserves_discovered_tools() {
+    let pool = common::test_pool().await;
+    let (addr, _stub) = start_stub().await;
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _agent_ident, _agent_key, org_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let create_resp: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml("stub_mcp_keep", &stub_url, None)}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let template_id = create_resp["id"].as_str().unwrap().to_string();
+
+    // Resync first — populates discovered_tools.
+    let resync_resp: Value = client
+        .post(format!("{base}/v1/templates/stub_mcp_keep/mcp/resync"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let initial_tool_count = resync_resp["tool_count"].as_u64().unwrap();
+    assert!(initial_tool_count >= 1);
+    let initial_discovered_at = resync_resp["discovered_at"].as_str().unwrap().to_string();
+
+    // Edit the YAML (same key, tweak description). This exercises the
+    // PUT /v1/templates/:id/manage code path that re-compiles the openapi.
+    let updated_yaml = mcp_template_yaml("stub_mcp_keep", &stub_url, None)
+        .replace("Echo a string", "Echo a string (edited)");
+    let resp = client
+        .put(format!("{base}/v1/templates/{template_id}/manage"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": updated_yaml}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+
+    // discovered_tools + discovered_at must survive the edit.
+    let detail: Value = client
+        .get(format!("{base}/v1/templates/stub_mcp_keep"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["mcp"]["discovered_at"], initial_discovered_at);
+    // Compiled action list still includes `echo` (authored) AND anything the
+    // stub's tools/list returns — so action_count stays >= initial tool_count.
+    let actions = detail["actions"].as_array().unwrap();
+    assert!(!actions.is_empty());
 }
