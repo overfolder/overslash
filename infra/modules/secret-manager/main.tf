@@ -146,8 +146,33 @@ resource "google_secret_manager_secret_version" "google_services_client_secret" 
   }
 }
 
+# --- oversla.sh shortener API key. Clients (overslash-api) and the shortener
+#     service both read this secret. Value populated manually via
+#     `gcloud secrets versions add` (random 32+ byte base64). ---
+
+resource "google_secret_manager_secret" "shortener_api_key" {
+  secret_id = "${var.base_prefix}-shortener-api-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "shortener_api_key" {
+  secret      = google_secret_manager_secret.shortener_api_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 output "db_password_secret_id" {
   value = google_secret_manager_secret.db_password.secret_id
+}
+
+output "shortener_api_key_secret_id" {
+  value = google_secret_manager_secret.shortener_api_key.secret_id
 }
 
 output "db_password_value" {

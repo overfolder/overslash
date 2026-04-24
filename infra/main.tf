@@ -196,3 +196,63 @@ module "memorystore" {
 
   depends_on = [google_project_service.apis]
 }
+
+# --- oversla.sh shortener Cloud Run service (optional) ---
+# Requires `enable_valkey = true` + `use_private_vpc = true` so the service
+# can reach private Memorystore via the Serverless VPC Access connector.
+module "cloud_run_shortener" {
+  count = var.enable_shortener ? 1 : 0
+
+  source      = "./modules/cloud-run-shortener"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  service_account_email = module.iam.cloud_run_sa_email
+  vpc_connector_id      = var.use_private_vpc ? module.networking[0].vpc_connector_id : ""
+
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/oversla-sh:latest"
+
+  cpu           = var.shortener_cpu
+  memory        = var.shortener_memory
+  max_instances = var.shortener_max_instances
+
+  api_key_secret_id = module.secret_manager.shortener_api_key_secret_id
+
+  valkey_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
+  valkey_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
+
+  base_url = var.shortener_base_url
+  domain   = var.shortener_domain
+
+  depends_on = [
+    module.memorystore,
+    module.secret_manager,
+    module.artifact_registry,
+  ]
+}
+
+# --- Cloud Build trigger for the shortener image (optional) ---
+module "cloud_build_shortener" {
+  count = var.enable_shortener ? 1 : 0
+
+  source      = "./modules/cloud-build-shortener"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  repository_name = module.artifact_registry.repository_name
+
+  cloud_build_sa_id = module.iam.cloud_build_sa_id
+  cloud_run_service = module.cloud_run_shortener[0].service_name
+
+  github_owner  = var.github_owner
+  github_repo   = var.github_repo
+  github_branch = var.github_branch
+
+  depends_on = [
+    module.artifact_registry,
+    module.iam,
+    module.cloud_run_shortener,
+  ]
+}

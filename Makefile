@@ -2,7 +2,8 @@
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web \
-       logs logs-deploy
+       logs logs-deploy \
+       shortener-dev shortener-down
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -67,6 +68,14 @@ web: web-build
 # Stop services
 down:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans
+
+# Start the oversla.sh shortener dev stack (valkey + shortener on :8081)
+shortener-dev:
+	$(COMPOSE) -f docker/docker-compose.shortener.yml up --build
+
+# Stop the shortener dev stack
+shortener-down:
+	$(COMPOSE) -f docker/docker-compose.shortener.yml down --remove-orphans
 
 # Remove worktree containers and volumes
 worktree-clean:
