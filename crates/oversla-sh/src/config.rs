@@ -20,8 +20,16 @@ impl Config {
             .unwrap_or(8080);
         let valkey_url =
             env::var("VALKEY_URL").map_err(|_| anyhow::anyhow!("VALKEY_URL is required"))?;
-        let api_key = env::var("API_KEY").map_err(|_| anyhow::anyhow!("API_KEY is required"))?;
-        if api_key.trim().is_empty() {
+        // Trim the key on load so it stays symmetric with the presented
+        // token (also trimmed in `auth::ApiKey`). Secret Manager values
+        // frequently pick up trailing newlines when populated from shell
+        // pipelines; without trimming, a valid key would fail the
+        // constant-time length check.
+        let api_key = env::var("API_KEY")
+            .map_err(|_| anyhow::anyhow!("API_KEY is required"))?
+            .trim()
+            .to_string();
+        if api_key.is_empty() {
             anyhow::bail!("API_KEY must not be empty");
         }
         let base_url = env::var("BASE_URL").map_err(|_| anyhow::anyhow!("BASE_URL is required"))?;
