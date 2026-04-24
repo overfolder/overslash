@@ -55,8 +55,8 @@ export default defineConfig(({ mode }) => {
 					target: apiTarget,
 					changeOrigin: true
 				},
-				// Backend enrollment approval endpoints (consumed by /enroll/consent SvelteKit page)
-				'/enroll/approve': {
+				// Agent-facing enrollment instructions, served by the API at /SKILL.md.
+				'/SKILL.md': {
 					target: apiTarget,
 					changeOrigin: true
 				},
