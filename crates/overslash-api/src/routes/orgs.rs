@@ -76,7 +76,9 @@ impl SlugReject {
 }
 
 const SLUG_MIN: usize = 2;
-const SLUG_MAX: usize = 40;
+// DNS label max is 63 octets. We use the slug as a subdomain label, so
+// anything above that cannot be represented as `<slug>.<apex>`.
+const SLUG_MAX: usize = 63;
 
 /// Subdomains we can't route to an org because the middleware already
 /// reserves them for the root apex or operator-controlled hosts. Keep in

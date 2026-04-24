@@ -39,7 +39,7 @@
 
 	const SLUG_REASONS: Record<string, string> = {
 		slug_too_short: 'Slug must be at least 2 characters.',
-		slug_too_long: 'Slug must be at most 40 characters.',
+		slug_too_long: 'Slug must be at most 63 characters.',
 		slug_invalid_chars: 'Only lowercase letters, digits, and hyphens.',
 		slug_leading_or_trailing_hyphen: 'No leading or trailing hyphens.',
 		slug_reserved: 'This slug is reserved.',
@@ -86,7 +86,7 @@
 			.toLowerCase()
 			.replace(/[^a-z0-9-]+/g, '-')
 			.replace(/^-+|-+$/g, '')
-			.slice(0, 40);
+			.slice(0, 63);
 	}
 
 	function scheduleSlugCheck(slug: string) {
