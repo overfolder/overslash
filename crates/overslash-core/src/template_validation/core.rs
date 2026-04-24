@@ -314,8 +314,19 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
         check_action_path(&action.path, &action.params, &action_path, issues);
     }
 
-    // Description required always (even for platform actions).
-    check_description(&action.description, &action.params, &action_path, issues);
+    // Description required for HTTP + platform actions, optional for MCP
+    // tools — the MCP spec declares the tool description as optional, and
+    // tools/list responses frequently omit it for trivial utilities.
+    // Placeholder / bracket syntax is still checked when a description is
+    // present, regardless of runtime.
+    let is_mcp_action = action.mcp_tool.is_some();
+    check_description(
+        &action.description,
+        &action.params,
+        &action_path,
+        is_mcp_action,
+        issues,
+    );
 
     // Params validation (type, enum, resolvers).
     for (name, param) in &action.params {
@@ -432,14 +443,17 @@ fn check_description(
     desc: &str,
     params: &std::collections::HashMap<String, ActionParam>,
     action_path: &str,
+    optional: bool,
     issues: &mut Issues,
 ) {
     if desc.trim().is_empty() {
-        issues.err(
-            "missing_field",
-            "description is required",
-            format!("{action_path}.description"),
-        );
+        if !optional {
+            issues.err(
+                "missing_field",
+                "description is required",
+                format!("{action_path}.description"),
+            );
+        }
         return;
     }
 
@@ -959,6 +973,33 @@ mod tests {
         });
         let r = run(&d);
         assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn mcp_description_is_optional() {
+        // MCP spec: tool description is optional. A tools/list response
+        // that omits description should still validate — HTTP actions
+        // require one, platform actions require one, but MCP tools do not.
+        let mut d = minimal_mcp(McpAuth::None);
+        d.actions.get_mut("search").unwrap().description = String::new();
+        let r = run(&d);
+        assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn http_description_still_required() {
+        // Regression guard: making description optional for MCP must not
+        // relax the HTTP path. Platform + HTTP actions still reject empty
+        // descriptions.
+        let mut d = minimal_valid();
+        let a = d.actions.get_mut("list").unwrap();
+        a.description = String::new();
+        let r = run(&d);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.code == "missing_field" && e.path.contains("description"))
+        );
     }
 
     #[test]
