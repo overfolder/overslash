@@ -215,15 +215,18 @@ fn tools_list_response(id: Value) -> Response {
                 },
                 {
                     "name": "overslash_execute",
-                    "description": "Execute an Overslash action. May return pending_approval if the user must approve.",
+                    "description": "Execute an Overslash action. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "service": { "type": "string" },
-                            "action":  { "type": "string" },
-                            "params":  {}
+                            "service":     { "type": "string" },
+                            "action":      { "type": "string" },
+                            "params":      {},
+                            "approval_id": {
+                                "type": "string",
+                                "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
+                            }
                         },
-                        "required": ["service", "action"],
                         "additionalProperties": false
                     }
                 },
@@ -304,10 +307,23 @@ async fn call_search(state: &AppState, bearer: &str, args: &Value) -> Result<Val
 }
 
 async fn call_execute(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+    // Resume-mode: caller is triggering the replay of a previously-approved
+    // action. Forwards to POST /v1/approvals/{id}/execute.
+    if let Some(approval_id) = args.get("approval_id").and_then(|v| v.as_str()) {
+        if args.get("service").is_some() || args.get("action").is_some() {
+            return Err("approval_id is mutually exclusive with service/action/params".into());
+        }
+        let path = format!("/v1/approvals/{}/execute", urlencoding::encode(approval_id));
+        return forward(state, bearer, Method::POST, &path, None).await;
+    }
+
+    // Fresh-execute mode: service + action required.
     let service = args
         .get("service")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "service required".to_string())?;
+        .ok_or_else(|| {
+            "service required (or pass approval_id to resume a pending approval)".to_string()
+        })?;
     let action = args
         .get("action")
         .and_then(|v| v.as_str())

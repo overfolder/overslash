@@ -13,7 +13,7 @@ use jaq_core::{
 };
 use jaq_json::{Val, read};
 use overslash_core::types::{FilterErrorKind, FilteredBody};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const FILTER_LANG_JQ: &str = "jq";
 
@@ -24,7 +24,7 @@ const MAX_FILTER_OUTPUT_VALUES: usize = 10_000;
 
 /// Tagged wire form of a response filter. Future languages add new
 /// variants; the discriminant is `lang`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "lang", rename_all = "lowercase")]
 pub enum ResponseFilter {
     Jq { expr: String },

@@ -8,6 +8,13 @@ pub struct Config {
     pub secrets_encryption_key: String,
     pub signing_key: String,
     pub approval_expiry_secs: u64,
+    /// Seconds a pending execution row (`executions.status='pending'`) lives
+    /// before the sweeper marks it `expired`. Default 900 (15 minutes).
+    pub execution_pending_ttl_secs: u64,
+    /// Upper bound on how long the synchronous replay inside
+    /// `POST /v1/approvals/{id}/execute` may wait for the upstream call.
+    /// Beyond this the row is finalised as `failed` with `error='replay_timeout'`.
+    pub execution_replay_timeout_secs: u64,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
@@ -82,6 +89,14 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1800),
+            execution_pending_ttl_secs: env::var("EXECUTION_PENDING_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(900),
+            execution_replay_timeout_secs: env::var("EXECUTION_REPLAY_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
             services_dir: env::var("SERVICES_DIR").unwrap_or_else(|_| "services".into()),
             google_auth_client_id: env::var("GOOGLE_AUTH_CLIENT_ID").ok(),
             google_auth_client_secret: env::var("GOOGLE_AUTH_CLIENT_SECRET").ok(),

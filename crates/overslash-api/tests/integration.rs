@@ -23,6 +23,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         secrets_encryption_key: "ab".repeat(32),
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -468,6 +470,30 @@ async fn test_approval_flow() {
         time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|e| panic!("ApprovalResponse.{field} {s:?} not RFC 3339: {e}"));
     }
+
+    // /resolve does NOT run the action — it creates a pending execution row.
+    // The approval must carry that row on response, status='pending'.
+    let execution = &resolved["execution"];
+    assert_eq!(execution["status"], "pending");
+    assert!(execution["id"].as_str().is_some());
+
+    // Now trigger the replay from the agent side.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let executed: Value = resp.json().await.unwrap();
+    assert_eq!(executed["execution"]["status"], "executed");
+    assert_eq!(executed["execution"]["triggered_by"], "agent");
+    // Replay result is carried inline on the response.
+    assert!(
+        executed["execution"]["result"]["status_code"]
+            .as_u64()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -503,16 +529,37 @@ async fn test_allow_remember_creates_rule() {
         .unwrap()
         .to_string();
 
-    // Resolve with allow_remember (admin context)
-    client
+    // Resolve with allow_remember (admin context). Under the new two-stage
+    // model this does NOT create a permission rule yet — it only queues a
+    // pending execution. The rule is stored after a successful /execute.
+    let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"resolution": "allow_remember"}))
         .send()
         .await
         .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resolved: Value = resp.json().await.unwrap();
+    assert_eq!(resolved["execution"]["status"], "pending");
 
-    // Second execute — should auto-approve (rule was created)
+    // A second top-level execute BEFORE the /execute fires would still 202
+    // because no rule exists yet. (We don't assert it here to keep the happy
+    // path test focused.) Trigger the pending execution.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["execution"]["status"],
+        "executed"
+    );
+
+    // Now the rule exists. A second top-level execute auto-approves and
+    // runs without creating a new approval.
     let resp = client
         .post(format!("{base}/v1/actions/execute"))
         .header(auth(&key).0, auth(&key).1)
@@ -526,6 +573,371 @@ async fn test_allow_remember_creates_rule() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+}
+
+#[tokio::test]
+async fn test_execute_is_at_most_once() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // First /execute succeeds
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Second /execute on the same approval: terminal state, 409 conflict.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn test_user_cancels_pending_execution_blocks_agent() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // User cancels.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["execution"]["status"],
+        "cancelled"
+    );
+
+    // Agent's subsequent /execute is rejected; the approval is terminal
+    // from the agent's perspective.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn test_agent_cannot_cancel_own_pending_execution() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Agent (the requester) attempts to cancel — resolver-only, 403.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn test_deny_creates_no_execution_row() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Deny: no execution row should be created.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "deny"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resolved: Value = resp.json().await.unwrap();
+    assert!(
+        resolved.get("execution").is_none() || resolved["execution"].is_null(),
+        "denied approvals must not carry an execution row; got {resolved:?}"
+    );
+
+    // GET /execution → 404
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // /execute → 409 (approval not allowed)
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn test_allow_remember_failed_execute_does_not_create_rule() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Point the stored URL at an unreachable address so /execute fails.
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": "http://127.0.0.1:1/definitely-not-listening",
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow_remember"}))
+        .send()
+        .await
+        .unwrap();
+
+    // /execute fails at replay time.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["execution"]["status"], "failed");
+
+    // Second top-level execute hitting the mock should still require approval
+    // (the rule wasn't stored because the replay failed).
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn test_get_execution_endpoint_shape() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Before resolve: no execution row, 404.
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // After resolve: pending execution visible.
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "pending");
+    assert!(body["id"].as_str().is_some());
+    assert!(body["expires_at"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -836,6 +1248,8 @@ async fn test_service_registry_api() {
         secrets_encryption_key: "ab".repeat(32),
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1790,6 +2204,8 @@ async fn start_api_with_registry(
         secrets_encryption_key: enc_key_hex,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -2187,4 +2603,210 @@ async fn test_members_list_includes_extended_fields_and_api_keys() {
         assert!(k["key_prefix"].is_string());
         assert!(k["created_at"].is_string());
     }
+}
+
+/// The 15-minute pending-execution sweep should move timed-out pending rows
+/// to `expired` and clear them out of the dashboard's default view.
+#[tokio::test]
+async fn test_sweeper_expires_pending_executions() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, org_id, _ident_id, admin_key) = setup(pool.clone()).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id: Uuid = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Backdate the pending row so the sweeper considers it expired.
+    sqlx::query!(
+        "UPDATE executions SET expires_at = now() - interval '1 second'
+         WHERE approval_id = $1 AND org_id = $2",
+        approval_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
+    let swept = system.expire_stale_executions().await.unwrap();
+    assert_eq!(swept, 1);
+
+    // State is now expired, agent's /execute returns 410 Gone.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 410);
+}
+
+/// An `executing` row abandoned by a process crash should be reaped to
+/// `failed` with `error='orphaned'` once the grace window elapses.
+#[tokio::test]
+async fn test_sweeper_reaps_orphaned_executing_rows() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, org_id, _ident_id, admin_key) = setup(pool.clone()).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id: Uuid = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Manually transition to 'executing' and backdate started_at to simulate
+    // a process crash partway through a replay.
+    sqlx::query!(
+        "UPDATE executions
+            SET status = 'executing',
+                started_at = now() - interval '10 minutes'
+         WHERE approval_id = $1 AND org_id = $2",
+        approval_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
+    // Grace window of 60s — our backdated row is well past it.
+    let reaped = system.expire_orphaned_executions(60).await.unwrap();
+    assert_eq!(reaped, 1);
+
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "failed");
+    assert_eq!(body["error"], "orphaned");
+}
+
+/// Regression for the Sentry finding on action_executor.rs — the original
+/// `filter` must survive through approval → resolve → execute and shape the
+/// replay's response body. Without the `replay_payload` column, the wrapped
+/// filter was being lost on replay.
+#[tokio::test]
+async fn test_filter_preserved_across_approval_and_replay() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // First execute carries a jq filter that reshapes the response. The
+    // mock's /echo endpoint returns { headers, body, uri } — filter to
+    // `.uri` so we can tell from the replay body whether the filter ran.
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}],
+            "filter": {"lang": "jq", "expr": ".uri"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["execution"]["status"], "executed");
+    // The filtered_body on the replay's result must be populated — proof that
+    // the stored `filter` travelled through the approval → /execute path.
+    let filtered = &body["execution"]["result"]["filtered_body"];
+    assert!(
+        !filtered.is_null(),
+        "replay must carry filtered_body when the original request had a filter; got {body}"
+    );
 }

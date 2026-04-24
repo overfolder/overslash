@@ -324,10 +324,10 @@ The approval has a **current resolver**: the closest ancestor that can act on it
 
 The current resolver receives the approval (via webhook or polling) and chooses one of:
 
-- **Approve** — one-time, no rule stored.
-- **Approve & Remember** — store a permission rule (see "Rule placement" below).
+- **Approve (Allow Once)** — the approval transitions to `allowed` and an `executions` row (`status='pending'`, 15-minute lifetime) is created. The requesting agent (via `POST /v1/approvals/{id}/execute`) or the resolver (via the dashboard's "Execute Now" button calling the same endpoint) can then trigger the replay. If neither fires within 15 minutes, the pending execution expires and no action runs. The resolver may also `POST /v1/approvals/{id}/cancel` to invalidate the pending execution; on Allow Once this is terminal for the agent — it must request a fresh approval to try again.
+- **Approve & Remember** — as above, and on **successful `/execute`** a permission rule is stored (see "Rule placement" below). Cancel, expire, or replay failure ⇒ no rule is persisted; the reviewer can retry after addressing the underlying cause.
 - **Bubble up** — defer to the next ancestor that can resolve, or the user if none.
-- **Reject** — denied.
+- **Reject** — denied. No execution row is created; the stored `action_detail` remains for audit.
 
 **Rule placement on Approve & Remember**: the new permission rule is added to the **closest non-`inherit_permissions` ancestor of the requester** (inclusive of the requester). Identities with `inherit_permissions=true` are skipped because their permissions are dynamic — putting a rule there would be silently overridden by parent walks. This is the requester's "permission-owning" identity.
 
@@ -380,11 +380,17 @@ The core trust assumption: **agents are not trusted to approve their own actions
 
 **How approvals flow through the platform:**
 
-1. Agent calls `overslash_execute` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`
+1. Agent calls `overslash_execute` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`.
 2. The agent cannot resolve this. The platform receives the approval event (via webhook or polling on the user's behalf).
 3. The platform surfaces the approval to the user in its own UX (Telegram buttons, Slack message, CLI prompt, etc.) including the `suggested_tiers` and `description` from the approval payload.
-4. The user makes a decision. The platform calls `POST /v1/approvals/{id}/resolve` using the **user's** Overslash credentials — not the agent's API key.
-5. The agent's pending request completes (via polling or webhook to the platform).
+4. The user makes a decision. The platform calls `POST /v1/approvals/{id}/resolve` using the **user's** Overslash credentials — not the agent's API key. Resolve **does not run the action**; on `allow`/`allow_remember` it moves the approval to `allowed` and creates a pending `executions` row.
+5. Replay is then triggered explicitly by one of:
+   - **Agent** — `POST /v1/approvals/{id}/execute` (sync; returns the replayed result).
+   - **User** — "Execute Now" in the dashboard, which calls the same endpoint.
+   An atomic `pending → executing` transition plus a unique index on `(approval_id)` guarantees at-most-one replay even under user+agent races.
+6. Pending executions expire after **15 minutes**. The resolver may also `POST /v1/approvals/{id}/cancel` to invalidate a pending execution before it fires; `cancelled` and `expired` are terminal for Allow Once. On Allow & Remember, the permission rule is stored only after a successful `/execute`.
+
+The agent observes the outcome by polling `GET /v1/approvals/{id}` (the nested `execution` object transitions with the row) or by listening for the `approval.executed` / `approval.execution_failed` / `approval.execution_cancelled` webhooks. A dedicated `GET /v1/approvals/{id}/execution` endpoint returns the execution summary directly.
 
 **There is no self-authenticating approval URL.** Approval resolution always requires credentials of an identity with authority over the requesting identity. This prevents an agent from obtaining and resolving its own approval link.
 
@@ -403,6 +409,19 @@ Approval and secret requests are **not notified immediately**. Only requests tha
 ### Remembered Approvals
 
 "Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Permission rules and remembered approvals are the same concept — "permission rules" is the storage format, "remembered approvals" is the user-facing term. Users can view and revoke them per identity via the dashboard.
+
+The rule is stored **only after a successful `POST /v1/approvals/{id}/execute`** — a cancelled, expired, or failed replay leaves no rule behind. This prevents a reviewer from being silently committed to auto-approving an action they never saw succeed.
+
+### Replay Semantics
+
+Approval and action execution are decoupled into two stages. `POST /v1/approvals/{id}/resolve` records a decision (and, on `allow`/`allow_remember`, creates a pending `executions` row with a 15-minute lifetime); the action itself only runs when something explicitly calls `POST /v1/approvals/{id}/execute`.
+
+- **Stored payload.** At approval creation, Overslash serialises the resolved `ActionRequest` plus the original caller's `filter` and `prefer_stream` flags into `approvals.action_detail`. Secret values are never stored — only `SecretRef` (name + injection metadata), resolved fresh at replay time. A rotated secret is used in its current form.
+- **At-most-once.** `executions.approval_id` is uniquely indexed and the `pending → executing` transition is an atomic SQL UPDATE guarded by `status='pending' AND expires_at > now()`. User and agent can race `/execute`; exactly one wins, the other receives 409. Any terminal state (executed / failed / cancelled / expired) is sticky.
+- **Identity & audit.** Replay always uses the **requester's** identity for audit and rate limiting, regardless of whether the agent or the resolver pressed the button. The `audit_logs` row for `action.executed` carries `detail.replayed_from_approval` and `detail.execution_id`; a separate `approval.executed` entry records the button press.
+- **Streaming.** Originally-streaming requests are replayed as buffered requests (bounded by `MAX_RESPONSE_BODY_BYTES`) — there is no agent connection to stream to. The stored result flags `streamed_originally: true` so callers can tell.
+- **Timeouts & orphans.** The `/execute` handler bounds the upstream call with `EXECUTION_REPLAY_TIMEOUT_SECS` (default 30). If the API crashes while `status='executing'`, a sweeper transitions the row to `failed` with `error='orphaned'` after the timeout plus a minute of slack.
+- **Ceilings.** The group-ceiling check is not re-run at `/execute` — the resolver's allow is authoritative, and the ceiling was enforced at approval creation.
 
 ### User Identities Skip Layer 2
 
@@ -975,7 +994,7 @@ A small tool set that lets any LLM agent use Overslash. These are the underlying
 | Tool | Purpose | Credential | Surfaces |
 |------|---------|------------|----------|
 | `overslash_search` | Discover services and actions. Returns schemas + auth status. | agent (or user) | REST, CLI, MCP |
-| `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. | agent (or user) | REST, CLI, MCP |
+| `overslash_execute` | Execute any action (all three modes). Returns result or `pending_approval`. Called with `{approval_id}` to resume a previously-approved action and receive the replay result — see §5 *Replay Semantics*. | agent (or user) | REST, CLI, MCP |
 | `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. | agent (or user) | REST, CLI, MCP |
 | `overslash_approve` | Resolve a pending approval (one-time, "Allow & Remember", bubble, or reject). See §5 *Approval Bubbling*. | **user** (an agent cannot approve its own requests) | REST, CLI, MCP |
 

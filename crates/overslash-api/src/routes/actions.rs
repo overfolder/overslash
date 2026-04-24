@@ -20,6 +20,7 @@ use crate::{
     error::AppError,
     extractors::{AuthContext, ClientIp},
     services::{
+        action_executor::StoredExecuteRequest,
         disclosure, group_ceiling, http_executor, mcp_executor,
         response_filter::{self, ResponseFilter},
     },
@@ -274,6 +275,24 @@ async fn execute_action(
                 let (disclosed_fields, redacted_detail) =
                     compute_approval_detail(&meta, &action_req, filter_timeout).await;
 
+                // Raw replay payload (full ActionRequest + side-channel fields)
+                // stored separately from action_detail so the replay at
+                // POST /v1/approvals/{id}/execute reproduces the agent's
+                // original request faithfully — including jq `filter` and
+                // `prefer_stream` — even when `action_detail` has been
+                // redacted via x-overslash-redact for reviewer display.
+                // None for MCP-runtime approvals (different execution path).
+                let replay_payload = if meta.mcp_target.is_some() {
+                    None
+                } else {
+                    serde_json::to_value(StoredExecuteRequest::new(
+                        action_req.clone(),
+                        req.filter.clone(),
+                        req.prefer_stream.unwrap_or(false),
+                    ))
+                    .ok()
+                };
+
                 let approval = scope
                     .create_approval(
                         identity_id,
@@ -285,6 +304,7 @@ async fn execute_action(
                         } else {
                             serde_json::to_value(&disclosed_fields).ok()
                         },
+                        replay_payload,
                         &keys,
                         &token,
                         expires_at,

@@ -1542,3 +1542,201 @@ async fn consent_context_reports_reauth_for_similar_reregistered_client() {
         .count();
     assert_eq!(count, 1, "reauth must not create a second agent");
 }
+
+/// After an approval is allowed, the agent must be able to trigger the replay
+/// through MCP. This is the new two-stage flow: `overslash_execute` with
+/// `approval_id` forwards to `POST /v1/approvals/{id}/execute`.
+#[tokio::test]
+async fn mcp_overslash_execute_resumes_pending_approval() {
+    use tokio::net::TcpListener;
+    use uuid::Uuid;
+
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+
+    // In-process mock upstream so the replay has somewhere to land.
+    let mock_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = mock_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/echo",
+            axum::routing::get(|| async { "hello" }).post(|| async { "hello" }),
+        );
+        axum::serve(mock_listener, app).await.unwrap();
+    });
+
+    // Bootstrap org + agent + admin keys (same shape as integration.rs::setup).
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name":"McpExec","slug":format!("mcp-exec-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let admin: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id":org_id,"name":"bootstrap"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admin_key = admin["key"].as_str().unwrap().to_string();
+    let user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name":"user","kind":"user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id = user["id"].as_str().unwrap();
+    let ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name":"agent","kind":"agent","parent_id":user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
+    let agent_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"org_id":org_id,"identity_id":ident_id,"name":"agent-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_key = agent_key_resp["key"].as_str().unwrap().to_string();
+
+    // Agent triggers an action that hits the permission gap.
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({"value":"v"}))
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .post(format!("{base}/v1/actions/execute"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "method":"GET",
+            "url":format!("http://{mock_addr}/echo"),
+            "secrets":[{"name":"tk","inject_as":"header","header_name":"X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // User approves via REST. The action has NOT run yet — only a pending
+    // execution row exists.
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"resolution":"allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Agent now resumes the approval through MCP. `overslash_execute` with
+    // `approval_id` must forward to POST /v1/approvals/{id}/execute.
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .bearer_auth(&agent_key)
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params": {
+                "name":"overslash_execute",
+                "arguments": {"approval_id": approval_id}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let frame: Value = resp.json().await.unwrap();
+    assert_eq!(frame["jsonrpc"], "2.0");
+    assert!(
+        frame["error"].is_null(),
+        "expected ok response, got {frame}"
+    );
+    // `content[0].text` is a stringified ApprovalResponse with execution.status=executed.
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "executed");
+    assert_eq!(inner["execution"]["triggered_by"], "agent");
+}
+
+/// `overslash_execute` must reject a call that mixes fresh-execute args with
+/// approval_id — the two modes are mutually exclusive.
+#[tokio::test]
+async fn mcp_overslash_execute_rejects_mixed_approval_and_service_args() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+
+    // Minimal bootstrap to get any agent key.
+    let org: Value = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({"name":"McpMixed","slug":format!("mcp-mixed-{}", uuid::Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admin: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .json(&json!({"org_id":org["id"].as_str().unwrap(),"name":"bootstrap"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admin_key = admin["key"].as_str().unwrap().to_string();
+
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .bearer_auth(&admin_key)
+        .json(&json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params": {
+                "name":"overslash_execute",
+                "arguments": {
+                    "approval_id": "apr_whatever",
+                    "service": "github",
+                    "action": "get_user"
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let frame: Value = resp.json().await.unwrap();
+    assert!(frame["error"].is_object(), "expected JSON-RPC error");
+    let msg = frame["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("mutually exclusive"),
+        "expected mutually-exclusive error, got {msg:?}"
+    );
+}

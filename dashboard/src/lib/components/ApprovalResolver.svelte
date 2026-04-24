@@ -49,6 +49,17 @@
 	];
 
 	const isPending = $derived(current.status === 'pending');
+	/** Execution lifecycle — populated once approval is allowed. */
+	const execution = $derived(current.execution ?? null);
+	const executionPending = $derived(execution?.status === 'pending');
+	const executionRunning = $derived(execution?.status === 'executing');
+	const executionTerminal = $derived(
+		!!execution &&
+			(execution.status === 'executed' ||
+				execution.status === 'failed' ||
+				execution.status === 'cancelled' ||
+				execution.status === 'expired')
+	);
 
 	// Derive Service / Action display from the first parsed permission key.
 	// `derived_keys` comes from the API as `{service, action, arg}`.
@@ -100,6 +111,60 @@
 			.split(/[_\-]/)
 			.map((s) => s.charAt(0).toUpperCase() + s.slice(1))
 			.join(' ');
+	}
+
+	async function triggerExecute() {
+		submitting = true;
+		error = null;
+		try {
+			const updated = await session.post<ApprovalResponse>(
+				`/v1/approvals/${current.id}/execute`,
+				{}
+			);
+			override = updated;
+			onResolved?.(updated);
+		} catch (e) {
+			if (e instanceof ApiError) {
+				const body = e.body as { error?: string } | string;
+				error =
+					typeof body === 'object' && body && 'error' in body
+						? body.error ?? `Error ${e.status}`
+						: typeof body === 'string'
+							? body
+							: `Error ${e.status}`;
+			} else {
+				error = 'Network error';
+			}
+		} finally {
+			submitting = false;
+		}
+	}
+
+	async function cancelExecution() {
+		submitting = true;
+		error = null;
+		try {
+			const updated = await session.post<ApprovalResponse>(
+				`/v1/approvals/${current.id}/cancel`,
+				{}
+			);
+			override = updated;
+			onResolved?.(updated);
+		} catch (e) {
+			if (e instanceof ApiError) {
+				const body = e.body as { error?: string } | string;
+				error =
+					typeof body === 'object' && body && 'error' in body
+						? body.error ?? `Error ${e.status}`
+						: typeof body === 'string'
+							? body
+							: `Error ${e.status}`;
+			} else {
+				error = 'Network error';
+			}
+		} finally {
+			submitting = false;
+		}
 	}
 
 	async function resolve(resolution: 'allow' | 'deny' | 'allow_remember' | 'bubble_up') {
@@ -231,7 +296,47 @@
 		</details>
 	{/if}
 
-	{#if !isPending}
+	{#if !isPending && executionPending}
+		<div class="exec-block">
+			<div class="exec-label">Execution pending</div>
+			<p class="exec-hint">
+				The approval has been allowed. Trigger the action now, or cancel to invalidate —
+				cancelling <strong>Allow Once</strong> means the agent must request a fresh approval.
+				Expires {execution ? relativeTime(execution.expires_at) : ''}.
+			</p>
+			{#if error}<div class="error">{error}</div>{/if}
+			<div class="actions">
+				<button class="btn btn-primary" disabled={submitting} onclick={triggerExecute}>
+					Execute Now
+				</button>
+				<button class="btn btn-deny" disabled={submitting} onclick={cancelExecution}>
+					Cancel
+				</button>
+			</div>
+		</div>
+	{:else if !isPending && executionRunning}
+		<div class="banner banner-allowed">
+			Executing upstream call…
+		</div>
+	{:else if !isPending && executionTerminal && execution}
+		<div class="banner banner-{execution.status}">
+			{#if execution.status === 'executed'}
+				Executed successfully.
+			{:else if execution.status === 'failed'}
+				Execution failed{execution.error ? `: ${execution.error}` : ''}.
+			{:else if execution.status === 'cancelled'}
+				Execution was cancelled.
+			{:else if execution.status === 'expired'}
+				Pending execution expired before it ran.
+			{/if}
+		</div>
+		{#if execution.status === 'executed' && execution.result}
+			<details class="raw-payload">
+				<summary>Result</summary>
+				<pre class="code">{@html highlightJson(execution.result)}</pre>
+			</details>
+		{/if}
+	{:else if !isPending}
 		<div class="banner banner-{current.status}">
 			This approval is <strong>{current.status}</strong>.
 		</div>
@@ -542,10 +647,37 @@
 		color: #2e7d32;
 		background: rgba(46, 125, 50, 0.06);
 	}
-	.banner-denied {
+	.banner-denied,
+	.banner-failed {
 		border-color: #d14343;
 		color: #d14343;
 		background: rgba(209, 67, 67, 0.06);
+	}
+	.banner-executed {
+		border-color: #2e7d32;
+		color: #2e7d32;
+		background: rgba(46, 125, 50, 0.06);
+	}
+	.banner-cancelled,
+	.banner-expired {
+		border-color: var(--color-border);
+		color: var(--color-text-muted);
+		background: var(--color-bg);
+	}
+	.exec-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+	.exec-label {
+		font-weight: 600;
+		font-size: 0.85rem;
+		color: var(--color-text);
+	}
+	.exec-hint {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
 	}
 	.error {
 		padding: 0.6rem 0.8rem;

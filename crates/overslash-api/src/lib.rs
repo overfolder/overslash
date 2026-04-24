@@ -99,6 +99,22 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
                     Err(e) => tracing::error!("Approval expiry error: {e}"),
                     _ => {}
                 }
+                match system.expire_stale_executions().await {
+                    Ok(n) if n > 0 => tracing::info!("Expired {n} pending executions"),
+                    Err(e) => tracing::error!("Execution expiry error: {e}"),
+                    _ => {}
+                }
+                // Orphaned `executing` rows — API crashed mid-replay. Grace
+                // window is the replay timeout plus a minute of slack.
+                let orphan_grace =
+                    (state.config.execution_replay_timeout_secs as i64).saturating_add(60);
+                match system.expire_orphaned_executions(orphan_grace).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!("Reaped {n} orphaned executing executions")
+                    }
+                    Err(e) => tracing::error!("Orphan executing reap error: {e}"),
+                    _ => {}
+                }
                 match system.archive_idle_subagents().await {
                     Ok(n) if n > 0 => {
                         tracing::info!("Archived {n} idle sub-agent identities")

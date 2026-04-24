@@ -218,6 +218,24 @@ export interface ApprovalResponse {
 	token: string;
 	expires_at: string;
 	created_at: string;
+	/** Replay lifecycle state, present once /resolve allow has created the
+	 *  pending execution row. Absent on denied / bubbled / pre-replay
+	 *  approvals. */
+	execution?: ExecutionSummary;
+}
+
+/** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
+export interface ExecutionSummary {
+	id: string;
+	/** pending | executing | executed | failed | cancelled | expired */
+	status: string;
+	result?: unknown;
+	error?: string;
+	triggered_by?: 'agent' | 'user';
+	started_at?: string;
+	completed_at?: string;
+	expires_at: string;
+	created_at: string;
 }
 
 export interface ResolveApprovalRequest {

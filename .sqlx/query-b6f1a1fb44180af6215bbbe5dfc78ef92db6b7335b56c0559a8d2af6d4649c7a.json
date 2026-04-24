@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals WHERE token = $1 AND org_id = $2",
+  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -45,48 +45,53 @@
       },
       {
         "ordinal": 8,
+        "name": "replay_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
         "name": "permission_keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "resolved_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "resolved_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "remember",
         "type_info": "Bool"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "token",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -99,6 +104,7 @@
       false,
       true,
       true,
+      true,
       false,
       false,
       true,
@@ -109,5 +115,5 @@
       false
     ]
   },
-  "hash": "6456b69b530d77124b0af9d49d7e87a8381d2a9cc46ae559cb27de30aba42c28"
+  "hash": "b6f1a1fb44180af6215bbbe5dfc78ef92db6b7335b56c0559a8d2af6d4649c7a"
 }
