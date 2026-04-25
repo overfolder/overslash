@@ -22,3 +22,9 @@ coverage:
 comment:
   layout: "reach, diff, flags, files"
   require_changes: false
+
+ignore:
+  # Real fastembed backend — only compiled with the `embeddings` feature,
+  # which CI doesn't enable (would require a ~130 MB HuggingFace model
+  # download per run). Tests exercise StubEmbedder instead.
+  - "crates/overslash-core/src/embeddings/fastembed.rs"
