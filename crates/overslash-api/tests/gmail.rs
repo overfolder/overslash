@@ -138,7 +138,7 @@ async fn test_gmail_e2e() {
     // ===== TEST 1: get_profile (Mode C) =====
     eprintln!("  [1/6] get_profile ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "gmail",
@@ -150,7 +150,7 @@ async fn test_gmail_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let profile: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let email = profile["emailAddress"]
         .as_str()
@@ -160,7 +160,7 @@ async fn test_gmail_e2e() {
     // ===== TEST 2: list_labels (Mode C) =====
     eprintln!("  [2/6] list_labels ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "gmail",
@@ -172,7 +172,7 @@ async fn test_gmail_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let labels_resp: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let labels = labels_resp["labels"]
@@ -185,7 +185,7 @@ async fn test_gmail_e2e() {
     // ===== TEST 3: list_messages with search query (Mode C) =====
     eprintln!("  [3/6] list_messages ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "gmail",
@@ -197,7 +197,7 @@ async fn test_gmail_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let messages_resp: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(
@@ -218,7 +218,7 @@ async fn test_gmail_e2e() {
     if let Some(ref msg_id) = first_message_id {
         eprintln!("  [4/6] get_message ({msg_id}) ...");
         let resp = client
-            .post(format!("{base}/v1/actions/execute"))
+            .post(format!("{base}/v1/actions/call"))
             .header(common::auth(&key).0, common::auth(&key).1)
             .json(&json!({
                 "service": "gmail",
@@ -230,7 +230,7 @@ async fn test_gmail_e2e() {
             .unwrap();
         assert_eq!(resp.status(), 200);
         let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["status"], "executed");
+        assert_eq!(body["status"], "called");
         let msg: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
         assert!(msg["id"].is_string(), "get_message should return id");
         assert!(
@@ -260,7 +260,7 @@ async fn test_gmail_e2e() {
         let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mime_message.as_bytes());
 
         let resp = client
-            .post(format!("{base}/v1/actions/execute"))
+            .post(format!("{base}/v1/actions/call"))
             .header(common::auth(&key).0, common::auth(&key).1)
             .json(&json!({
                 "service": "gmail",
@@ -272,7 +272,7 @@ async fn test_gmail_e2e() {
             .unwrap();
         assert_eq!(resp.status(), 200);
         let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["status"], "executed");
+        assert_eq!(body["status"], "called");
         let sent: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
         let sid = sent["id"]
             .as_str()
@@ -289,7 +289,7 @@ async fn test_gmail_e2e() {
     if let Some(trash_id) = trash_target {
         eprintln!("  [6/6] trash_message ({trash_id}) ...");
         let resp = client
-            .post(format!("{base}/v1/actions/execute"))
+            .post(format!("{base}/v1/actions/call"))
             .header(common::auth(&key).0, common::auth(&key).1)
             .json(&json!({
                 "service": "gmail",
@@ -301,7 +301,7 @@ async fn test_gmail_e2e() {
             .unwrap();
         assert_eq!(resp.status(), 200);
         let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["status"], "executed");
+        assert_eq!(body["status"], "called");
         let trashed: Value =
             serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
         assert!(

@@ -341,7 +341,7 @@ async fn test_whoami_returns_caller_identity_for_bearer_key() {
 }
 
 #[tokio::test]
-async fn test_happy_path_execute_with_permission() {
+async fn test_happy_path_call_with_permission() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
@@ -372,7 +372,7 @@ async fn test_happy_path_execute_with_permission() {
     assert_eq!(resp.status(), 200);
 
     // Execute action — should auto-approve
-    let resp = client.post(format!("{base}/v1/actions/execute"))
+    let resp = client.post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -385,7 +385,7 @@ async fn test_happy_path_execute_with_permission() {
     assert_eq!(resp.status(), 200);
 
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
 
     // Verify secret injection in echo response
     let echo_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
@@ -410,7 +410,7 @@ async fn test_approval_flow() {
 
     // Execute without permission — should get 202
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -479,7 +479,7 @@ async fn test_approval_flow() {
 
     // Now trigger the replay from the agent side.
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -513,7 +513,7 @@ async fn test_allow_remember_creates_rule() {
 
     // First execute — needs approval
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -547,7 +547,7 @@ async fn test_allow_remember_creates_rule() {
     // because no rule exists yet. (We don't assert it here to keep the happy
     // path test focused.) Trigger the pending execution.
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -561,7 +561,7 @@ async fn test_allow_remember_creates_rule() {
     // Now the rule exists. A second top-level execute auto-approves and
     // runs without creating a new approval.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -572,11 +572,11 @@ async fn test_allow_remember_creates_rule() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "called");
 }
 
 #[tokio::test]
-async fn test_execute_is_at_most_once() {
+async fn test_call_is_at_most_once() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
@@ -591,7 +591,7 @@ async fn test_execute_is_at_most_once() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -617,7 +617,7 @@ async fn test_execute_is_at_most_once() {
 
     // First /execute succeeds
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -626,7 +626,7 @@ async fn test_execute_is_at_most_once() {
 
     // Second /execute on the same approval: terminal state, 409 conflict.
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -650,7 +650,7 @@ async fn test_user_cancels_pending_execution_blocks_agent() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -690,7 +690,7 @@ async fn test_user_cancels_pending_execution_blocks_agent() {
     // Agent's subsequent /execute is rejected; the approval is terminal
     // from the agent's perspective.
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -714,7 +714,7 @@ async fn test_agent_cannot_cancel_own_pending_execution() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -763,7 +763,7 @@ async fn test_deny_creates_no_execution_row() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -804,7 +804,7 @@ async fn test_deny_creates_no_execution_row() {
 
     // /execute → 409 (approval not allowed)
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -813,7 +813,7 @@ async fn test_deny_creates_no_execution_row() {
 }
 
 #[tokio::test]
-async fn test_allow_remember_failed_execute_does_not_create_rule() {
+async fn test_allow_remember_failed_call_does_not_create_rule() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
@@ -829,7 +829,7 @@ async fn test_allow_remember_failed_execute_does_not_create_rule() {
 
     // Point the stored URL at an unreachable address so /execute fails.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -855,7 +855,7 @@ async fn test_allow_remember_failed_execute_does_not_create_rule() {
 
     // /execute fails at replay time.
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -866,7 +866,7 @@ async fn test_allow_remember_failed_execute_does_not_create_rule() {
     // Second top-level execute hitting the mock should still require approval
     // (the rule wasn't stored because the replay failed).
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -895,7 +895,7 @@ async fn test_get_execution_endpoint_shape() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -956,7 +956,7 @@ async fn test_resolve_rejects_invalid_remember_keys() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -1002,7 +1002,7 @@ async fn test_resolve_rejects_invalid_ttl() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -1101,7 +1101,7 @@ async fn test_deny_keeps_gating() {
 
     // First — needs approval
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -1127,7 +1127,7 @@ async fn test_deny_keeps_gating() {
 
     // Second — still needs approval (deny doesn't create allow rule)
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -1149,7 +1149,7 @@ async fn test_unauthenticated_request_no_gate() {
 
     // Execute without secrets — should go through without permission check
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -1161,7 +1161,7 @@ async fn test_unauthenticated_request_no_gate() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "called");
 }
 
 #[tokio::test]
@@ -1181,7 +1181,7 @@ async fn test_audit_trail() {
         .unwrap();
 
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -1223,7 +1223,7 @@ async fn test_mode_c_service_action() {
 
     // Mode A works as before (raw HTTP pointing at mock)
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -1234,7 +1234,7 @@ async fn test_mode_c_service_action() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "called");
 }
 
 #[tokio::test]
@@ -1434,7 +1434,7 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -2316,7 +2316,7 @@ async fn test_e2e_resend_send_email() {
 
     // Execute Mode C: service=resend, action=send_email
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "service": "resend",
@@ -2334,7 +2334,7 @@ async fn test_e2e_resend_send_email() {
     assert_eq!(resp.status(), 200);
 
     let result: Value = resp.json().await.unwrap();
-    assert_eq!(result["status"], "executed");
+    assert_eq!(result["status"], "called");
 
     // Resend returns {"id": "..."} on successful send
     let body: Value = serde_json::from_str(result["result"]["body"].as_str().unwrap()).unwrap();
@@ -2364,7 +2364,7 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
 
     // Execute without permission → 202 pending approval
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -2435,7 +2435,7 @@ async fn test_resolve_with_broader_remember_keys_succeeds() {
 
     // Execute → 202
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -2511,7 +2511,7 @@ async fn test_resolve_with_unrelated_broader_keys_still_fails() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -2623,7 +2623,7 @@ async fn test_sweeper_expires_pending_executions() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -2664,7 +2664,7 @@ async fn test_sweeper_expires_pending_executions() {
 
     // State is now expired, agent's /execute returns 410 Gone.
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
@@ -2690,7 +2690,7 @@ async fn test_sweeper_reaps_orphaned_executing_rows() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -2745,7 +2745,7 @@ async fn test_sweeper_reaps_orphaned_executing_rows() {
     assert_eq!(body["error"], "orphaned");
 }
 
-/// Regression for the Sentry finding on action_executor.rs — the original
+/// Regression for the Sentry finding on action_caller.rs — the original
 /// `filter` must survive through approval → resolve → execute and shape the
 /// replay's response body. Without the `replay_payload` column, the wrapped
 /// filter was being lost on replay.
@@ -2768,7 +2768,7 @@ async fn test_filter_preserved_across_approval_and_replay() {
     // mock's /echo endpoint returns { headers, body, uri } — filter to
     // `.uri` so we can tell from the replay body whether the filter ran.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -2794,7 +2794,7 @@ async fn test_filter_preserved_across_approval_and_replay() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await

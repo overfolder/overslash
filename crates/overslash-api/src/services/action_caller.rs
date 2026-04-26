@@ -1,5 +1,5 @@
-//! Shared execute pipeline used by both direct `POST /v1/actions/execute`
-//! callers and the approval-replay path at `POST /v1/approvals/{id}/execute`.
+//! Shared call pipeline used by both direct `POST /v1/actions/call`
+//! callers and the approval-replay path at `POST /v1/approvals/{id}/call`.
 //!
 //! Given a resolved `ActionRequest`, this:
 //!   1. Decrypts each referenced secret and injects it.
@@ -29,22 +29,22 @@ use crate::{
     AppState,
     error::AppError,
     services::{
-        http_executor,
+        http_caller,
         response_filter::{self, ResponseFilter},
     },
 };
 
 /// Wrapper written into `approvals.action_detail` at approval-creation time.
 /// Carries the resolved `ActionRequest` plus the two side-channel fields the
-/// original `ExecuteRequest` passed in (`filter`, `prefer_stream`) so a replay
-/// at `/v1/approvals/{id}/execute` faithfully reproduces the shape of the
+/// original `CallRequest` passed in (`filter`, `prefer_stream`) so a replay
+/// at `/v1/approvals/{id}/call` faithfully reproduces the shape of the
 /// response the agent would have received.
 ///
 /// Reading old rows: `from_stored_detail` falls back to a bare `ActionRequest`
 /// value so pre-migration approvals stay replayable (filter=None,
 /// prefer_stream=false).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredExecuteRequest {
+pub struct StoredCallRequest {
     pub action: ActionRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<ResponseFilter>,
@@ -52,7 +52,7 @@ pub struct StoredExecuteRequest {
     pub prefer_stream: bool,
 }
 
-impl StoredExecuteRequest {
+impl StoredCallRequest {
     pub fn new(action: ActionRequest, filter: Option<ResponseFilter>, prefer_stream: bool) -> Self {
         Self {
             action,
@@ -64,7 +64,7 @@ impl StoredExecuteRequest {
     /// Parse `approvals.action_detail`. First tries the wrapper shape; if that
     /// fails (pre-migration rows), falls back to a bare `ActionRequest`.
     pub fn from_stored_detail(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
-        if let Ok(wrapped) = serde_json::from_value::<StoredExecuteRequest>(value.clone()) {
+        if let Ok(wrapped) = serde_json::from_value::<StoredCallRequest>(value.clone()) {
             return Ok(wrapped);
         }
         let action: ActionRequest = serde_json::from_value(value.clone())?;
@@ -84,7 +84,7 @@ pub enum AuditSource {
     },
 }
 
-pub struct ExecuteContext<'a> {
+pub struct CallContext<'a> {
     pub state: &'a AppState,
     pub scope: &'a OrgScope,
     pub identity_id: Uuid,
@@ -97,8 +97,8 @@ pub struct ExecuteContext<'a> {
     pub audit_source: AuditSource,
 }
 
-pub enum ExecuteOutcome {
-    /// Buffered response — the only shape `/execute` on an approval can produce.
+pub enum CallOutcome {
+    /// Buffered response — the only shape `/call` on an approval can produce.
     Buffered {
         result: ActionResult,
         description: Option<String>,
@@ -108,10 +108,10 @@ pub enum ExecuteOutcome {
     Streamed(Response),
 }
 
-pub async fn execute_action_request(
-    ctx: ExecuteContext<'_>,
+pub async fn call_action_request(
+    ctx: CallContext<'_>,
     action_req: &ActionRequest,
-) -> Result<ExecuteOutcome, AppError> {
+) -> Result<CallOutcome, AppError> {
     // ── Resolve secrets ──────────────────────────────────────────────
     let enc_key = crypto::parse_hex_key(&ctx.state.config.secrets_encryption_key)?;
     let mut secret_values = HashMap::new();
@@ -134,7 +134,7 @@ pub async fn execute_action_request(
 
     // ── Streaming path ───────────────────────────────────────────────
     if ctx.prefer_stream {
-        let upstream = http_executor::execute_streaming(
+        let upstream = http_caller::call_streaming(
             &ctx.state.http_client,
             &action_req.method,
             &resolved_url,
@@ -171,11 +171,11 @@ pub async fn execute_action_request(
                 _ => {}
             }
         }
-        return Ok(ExecuteOutcome::Streamed(response.body(body).unwrap()));
+        return Ok(CallOutcome::Streamed(response.body(body).unwrap()));
     }
 
     // ── Buffered path (default) ──────────────────────────────────────
-    let mut result = http_executor::execute(
+    let mut result = http_caller::call(
         &ctx.state.http_client,
         &action_req.method,
         &resolved_url,
@@ -185,7 +185,7 @@ pub async fn execute_action_request(
     )
     .await
     .map_err(|e| match e {
-        http_executor::ExecuteError::ResponseTooLarge {
+        http_caller::CallError::ResponseTooLarge {
             content_length,
             content_type,
             limit_bytes,
@@ -194,7 +194,7 @@ pub async fn execute_action_request(
             content_type,
             limit_bytes,
         },
-        http_executor::ExecuteError::Request(e) => AppError::Request(e),
+        http_caller::CallError::Request(e) => AppError::Request(e),
     })?;
 
     let filter_audit = if let Some(filter) = ctx.filter.clone() {
@@ -251,14 +251,14 @@ pub async fn execute_action_request(
         })
         .await;
 
-    Ok(ExecuteOutcome::Buffered {
+    Ok(CallOutcome::Buffered {
         result,
         description: ctx.description.map(|s| s.to_string()),
     })
 }
 
 async fn write_stream_audit(
-    ctx: &ExecuteContext<'_>,
+    ctx: &CallContext<'_>,
     action_req: &ActionRequest,
     status_code: u16,
     content_length: Option<u64>,

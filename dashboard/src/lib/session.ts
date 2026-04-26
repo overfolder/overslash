@@ -227,7 +227,7 @@ export interface ApprovalResponse {
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
 export interface ExecutionSummary {
 	id: string;
-	/** pending | executing | executed | failed | cancelled | expired */
+	/** pending | calling | called | failed | cancelled | expired */
 	status: string;
 	result?: unknown;
 	error?: string;

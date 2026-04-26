@@ -19,7 +19,7 @@ async fn test_filter_jq_happy_path() {
     // stream its items[].id — the same shape an agent would use against
     // Google Calendar's events.list.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "POST",
@@ -37,7 +37,7 @@ async fn test_filter_jq_happy_path() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
 
     let result = &body["result"];
     let filtered = &result["filtered_body"];
@@ -72,7 +72,7 @@ async fn test_filter_jq_syntax_error_returns_400() {
     let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",
@@ -103,7 +103,7 @@ async fn test_filter_body_not_json_returns_200_with_envelope() {
     // application/octet-stream. After utf8-lossy decoding, this is N
     // U+FFFD characters — never valid JSON.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",
@@ -116,7 +116,7 @@ async fn test_filter_body_not_json_returns_200_with_envelope() {
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
 
     let filtered = &body["result"]["filtered_body"];
     assert_eq!(filtered["status"], "error");
@@ -139,7 +139,7 @@ async fn test_filter_runtime_error_returns_envelope() {
     // string `"{\"a\":1}"`). Calling `tonumber` on a non-numeric string
     // errors at runtime in jq.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "POST",
@@ -169,7 +169,7 @@ async fn test_filter_rejected_with_prefer_stream() {
     let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",
@@ -201,7 +201,7 @@ async fn test_filter_does_not_rescue_oversized_upstream() {
     let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",

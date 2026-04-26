@@ -3,9 +3,9 @@ use std::time::Instant;
 
 use overslash_core::types::ActionResult;
 
-/// Errors from HTTP execution.
+/// Errors from an HTTP call.
 #[derive(Debug, thiserror::Error)]
-pub enum ExecuteError {
+pub enum CallError {
     #[error(transparent)]
     Request(#[from] reqwest::Error),
 
@@ -47,16 +47,16 @@ fn build_request(
     builder
 }
 
-/// Execute an HTTP request, buffering the response. Returns an error if the
+/// Call an HTTP endpoint, buffering the response. Returns an error if the
 /// response body exceeds `max_body_bytes`.
-pub async fn execute(
+pub async fn call(
     client: &reqwest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
     body: Option<&str>,
     max_body_bytes: usize,
-) -> Result<ActionResult, ExecuteError> {
+) -> Result<ActionResult, CallError> {
     let start = Instant::now();
 
     let response = build_request(client, method, url, headers, body)
@@ -76,7 +76,7 @@ pub async fn execute(
 
     if let Some(len) = content_length {
         if len > max_body_bytes as u64 {
-            return Err(ExecuteError::ResponseTooLarge {
+            return Err(CallError::ResponseTooLarge {
                 content_length: Some(len),
                 content_type,
                 limit_bytes: max_body_bytes,
@@ -92,7 +92,7 @@ pub async fn execute(
         let chunk = chunk?;
         collected.extend_from_slice(&chunk);
         if collected.len() > max_body_bytes {
-            return Err(ExecuteError::ResponseTooLarge {
+            return Err(CallError::ResponseTooLarge {
                 content_length,
                 content_type,
                 limit_bytes: max_body_bytes,
@@ -112,9 +112,9 @@ pub async fn execute(
     })
 }
 
-/// Execute an HTTP request and return the raw response for streaming.
+/// Call an HTTP endpoint and return the raw response for streaming.
 /// The caller is responsible for consuming the response body.
-pub async fn execute_streaming(
+pub async fn call_streaming(
     client: &reqwest::Client,
     method: &str,
     url: &str,

@@ -1,10 +1,10 @@
 # Overslash — Specification
 
-A standalone, multi-tenant **identity and authentication gateway** for AI agents. Overslash handles everything between "an agent wants to call an external API" and "the API call executes with the right credentials."
+A standalone, multi-tenant **identity and authentication gateway** for AI agents. Overslash handles everything between "an agent wants to call an external API" and "the API call runs with the right credentials."
 
-Overslash is **purely an auth and identity layer**. It does not orchestrate agents, manage compute, track which nodes are connected, schedule work, or know anything about the runtime environment agents live in. It answers one question: "is this identity allowed to do this action with these credentials?" — and if yes, executes the authenticated HTTP request.
+Overslash is **purely an auth and identity layer**. It does not orchestrate agents, manage compute, track which nodes are connected, schedule work, or know anything about the runtime environment agents live in. It answers one question: "is this identity allowed to do this action with these credentials?" — and if yes, calls the authenticated HTTP request.
 
-It owns: identity hierarchy, secret management, OAuth flows, permission rules, human approval workflows, action execution, service registry, and audit trail.
+It owns: identity hierarchy, secret management, OAuth flows, permission rules, human approval workflows, action calls, service registry, and audit trail.
 
 The name: it slashes through doors and auth for the user.
 
@@ -41,7 +41,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 9. Service registry — YAML-defined services (global + org-extensible) with human-readable action descriptions
 10. Audit everything — every action, approval, secret access, connection change
 11. Three integration surfaces over one backend — REST API, CLI (`overslash`), and MCP server, so any HTTP client, shell-capable agent, or MCP-aware editor can use Overslash without rebuilding the same plumbing
-12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_execute`, `overslash_auth`, `overslash_approve`) available across REST, CLI, and MCP surfaces
+12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_call`, `overslash_auth`, `overslash_approve`) available across REST, CLI, and MCP surfaces
 13. Web UI — for org admins and users to manage everything visually, served by Vercel in cloud mode and embedded same-origin in self-hosted mode (`overslash web`)
 14. Single-binary self-hosting — `overslash` ships everything (API, dashboard, MCP server) so an org can run the entire product from one executable
 
@@ -51,7 +51,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 2. **Orchestrating agents** — Overslash does not schedule, dispatch, or coordinate agent work. It has no concept of tasks, queues, or workflows.
 3. **Managing compute or infrastructure** — no awareness of nodes, containers, runtimes, or where agents run. Overslash doesn't know or care what machine an agent lives on.
 4. **Tracking agent connectivity** — Overslash does not monitor which agents are online, healthy, or reachable. It authenticates requests when they arrive.
-5. **Executing code or managing VMs** — Overslash executes HTTP requests, not arbitrary programs
+5. **Executing code or managing VMs** — Overslash calls HTTP requests, not arbitrary programs
 6. **Channel-specific UIs** (Telegram bots, WhatsApp) — callers build their own; Overslash provides approval URLs
 7. **Being a general-purpose API gateway** — no rate limiting of upstream APIs, no caching, no transformation
 
@@ -305,11 +305,11 @@ Within the group ceiling, agents require specific permission keys for each actio
 
 ### Hierarchical Resolution
 
-When a sub-agent executes an action, every level in the ancestor chain must authorize:
+When a sub-agent calls an action, every level in the ancestor chain must authorize:
 
 1. Check sub-agent → has matching key or `inherit_permissions`? Pass, continue up.
 2. Check agent → has matching key? Pass, continue up.
-3. Check user → within group ceiling? Pass. All levels authorized → **execute**.
+3. Check user → within group ceiling? Pass. All levels authorized → **call**.
 4. First level without a matching key and without `inherit_permissions` → **gap**. Create an approval (see below).
 
 ### Approval Bubbling
@@ -324,8 +324,8 @@ The approval has a **current resolver**: the closest ancestor that can act on it
 
 The current resolver receives the approval (via webhook or polling) and chooses one of:
 
-- **Approve (Allow Once)** — the approval transitions to `allowed` and an `executions` row (`status='pending'`, 15-minute lifetime) is created. The requesting agent (via `POST /v1/approvals/{id}/execute`) or the resolver (via the dashboard's "Execute Now" button calling the same endpoint) can then trigger the replay. If neither fires within 15 minutes, the pending execution expires and no action runs. The resolver may also `POST /v1/approvals/{id}/cancel` to invalidate the pending execution; on Allow Once this is terminal for the agent — it must request a fresh approval to try again.
-- **Approve & Remember** — as above, and on **successful `/execute`** a permission rule is stored (see "Rule placement" below). Cancel, expire, or replay failure ⇒ no rule is persisted; the reviewer can retry after addressing the underlying cause.
+- **Approve (Allow Once)** — the approval transitions to `allowed` and an `executions` row (`status='pending'`, 15-minute lifetime) is created. The requesting agent (via `POST /v1/approvals/{id}/call`) or the resolver (via the dashboard's "Execute Now" button calling the same endpoint) can then trigger the replay. If neither fires within 15 minutes, the pending execution expires and no action runs. The resolver may also `POST /v1/approvals/{id}/cancel` to invalidate the pending execution; on Allow Once this is terminal for the agent — it must request a fresh approval to try again.
+- **Approve & Remember** — as above, and on **successful `/call`** a permission rule is stored (see "Rule placement" below). Cancel, expire, or replay failure ⇒ no rule is persisted; the reviewer can retry after addressing the underlying cause.
 - **Bubble up** — defer to the next ancestor that can resolve, or the user if none.
 - **Reject** — denied. No execution row is created; the stored `action_detail` remains for audit.
 
@@ -380,15 +380,15 @@ The core trust assumption: **agents are not trusted to approve their own actions
 
 **How approvals flow through the platform:**
 
-1. Agent calls `overslash_execute` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`.
+1. Agent calls `overslash_call` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`.
 2. The agent cannot resolve this. The platform receives the approval event (via webhook or polling on the user's behalf).
 3. The platform surfaces the approval to the user in its own UX (Telegram buttons, Slack message, CLI prompt, etc.) including the `suggested_tiers` and `description` from the approval payload.
 4. The user makes a decision. The platform calls `POST /v1/approvals/{id}/resolve` using the **user's** Overslash credentials — not the agent's API key. Resolve **does not run the action**; on `allow`/`allow_remember` it moves the approval to `allowed` and creates a pending `executions` row.
 5. Replay is then triggered explicitly by one of:
-   - **Agent** — `POST /v1/approvals/{id}/execute` (sync; returns the replayed result).
-   - **User** — "Execute Now" in the dashboard, which calls the same endpoint.
+   - **Agent** — `POST /v1/approvals/{id}/call` (sync; returns the replayed result).
+   - **User** — "Call Now" in the dashboard, which calls the same endpoint.
    An atomic `pending → executing` transition plus a unique index on `(approval_id)` guarantees at-most-one replay even under user+agent races.
-6. Pending executions expire after **15 minutes**. The resolver may also `POST /v1/approvals/{id}/cancel` to invalidate a pending execution before it fires; `cancelled` and `expired` are terminal for Allow Once. On Allow & Remember, the permission rule is stored only after a successful `/execute`.
+6. Pending executions expire after **15 minutes**. The resolver may also `POST /v1/approvals/{id}/call`.
 
 The agent observes the outcome by polling `GET /v1/approvals/{id}` (the nested `execution` object transitions with the row) or by listening for the `approval.executed` / `approval.execution_failed` / `approval.execution_cancelled` webhooks. A dedicated `GET /v1/approvals/{id}/execution` endpoint returns the execution summary directly.
 
@@ -410,22 +410,22 @@ Approval and secret requests are **not notified immediately**. Only requests tha
 
 "Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Permission rules and remembered approvals are the same concept — "permission rules" is the storage format, "remembered approvals" is the user-facing term. Users can view and revoke them per identity via the dashboard.
 
-The rule is stored **only after a successful `POST /v1/approvals/{id}/execute`** — a cancelled, expired, or failed replay leaves no rule behind. This prevents a reviewer from being silently committed to auto-approving an action they never saw succeed.
+The rule is stored **only after a successful `POST /v1/approvals/{id}/call`** — a cancelled, expired, or failed replay leaves no rule behind. This prevents a reviewer from being silently committed to auto-approving an action they never saw succeed.
 
 ### Replay Semantics
 
-Approval and action execution are decoupled into two stages. `POST /v1/approvals/{id}/resolve` records a decision (and, on `allow`/`allow_remember`, creates a pending `executions` row with a 15-minute lifetime); the action itself only runs when something explicitly calls `POST /v1/approvals/{id}/execute`.
+Approval and action execution are decoupled into two stages. `POST /v1/approvals/{id}/resolve` records a decision (and, on `allow`/`allow_remember`, creates a pending `executions` row with a 15-minute lifetime); the action itself only runs when something explicitly calls `POST /v1/approvals/{id}/call`.
 
 - **Stored payload.** At approval creation, Overslash serialises the resolved `ActionRequest` plus the original caller's `filter` and `prefer_stream` flags into `approvals.action_detail`. Secret values are never stored — only `SecretRef` (name + injection metadata), resolved fresh at replay time. A rotated secret is used in its current form.
 - **At-most-once.** `executions.approval_id` is uniquely indexed and the `pending → executing` transition is an atomic SQL UPDATE guarded by `status='pending' AND expires_at > now()`. User and agent can race `/execute`; exactly one wins, the other receives 409. Any terminal state (executed / failed / cancelled / expired) is sticky.
 - **Identity & audit.** Replay always uses the **requester's** identity for audit and rate limiting, regardless of whether the agent or the resolver pressed the button. The `audit_logs` row for `action.executed` carries `detail.replayed_from_approval` and `detail.execution_id`; a separate `approval.executed` entry records the button press.
 - **Streaming.** Originally-streaming requests are replayed as buffered requests (bounded by `MAX_RESPONSE_BODY_BYTES`) — there is no agent connection to stream to. The stored result flags `streamed_originally: true` so callers can tell.
-- **Timeouts & orphans.** The `/execute` handler bounds the upstream call with `EXECUTION_REPLAY_TIMEOUT_SECS` (default 30). If the API crashes while `status='executing'`, a sweeper transitions the row to `failed` with `error='orphaned'` after the timeout plus a minute of slack.
-- **Ceilings.** The group-ceiling check is not re-run at `/execute` — the resolver's allow is authoritative, and the ceiling was enforced at approval creation.
+- **Timeouts & orphans.** The `/call` handler bounds the upstream call with `EXECUTION_REPLAY_TIMEOUT_SECS` (default 30). If the API crashes while `status='executing'`, a sweeper transitions the row to `failed` with `error='orphaned'` after the timeout plus a minute of slack.
+- **Ceilings.** The group-ceiling check is not re-run at `/call` — the resolver's allow is authoritative, and the ceiling was enforced at approval creation.
 
 ### User Identities Skip Layer 2
 
-Permission keys (Layer 2) are an **agent-only** concept. When a request is authenticated as a **user identity** — not an agent — only Layer 1 (group ceiling) applies. There is no approval flow, no permission key resolution, no "Allow & Remember" prompt: the user is their own approver, and any action within their group ceiling executes immediately.
+Permission keys (Layer 2) are an **agent-only** concept. When a request is authenticated as a **user identity** — not an agent — only Layer 1 (group ceiling) applies. There is no approval flow, no permission key resolution, no "Allow & Remember" prompt: the user is their own approver, and any action within their group ceiling is called immediately.
 
 This rule is transport-agnostic. It holds for the dashboard, the API Explorer, an MCP session logged in as a user, a CLI calling the REST API directly with user credentials, or any other surface. **What matters is the identity type on the credential, not the channel.**
 
@@ -572,7 +572,7 @@ When a user creates a service from a template that uses OAuth, the connect flow 
 
 ## 8. Action Execution
 
-### `POST /v1/actions/execute`
+### `POST /v1/actions/call`
 
 All action execution goes through a single endpoint. The caller specifies a service instance and action — the level of abstraction is determined by what they choose:
 
@@ -594,7 +594,7 @@ Every request derives permission keys. Resolution follows the two-layer model (�
 
 ### Approval URLs
 
-When `execute_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approvals/<id>`"). The URL points at the dashboard deep-link page (`/approvals/{id}`), which renders as a modal overlay on top of `/agents` after login. The host portion is resolved from the deployment-level **`DASHBOARD_URL`** envvar (served by `overslash serve`; `overslash web` uses the same-origin dashboard host) — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
+When `call_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approvals/<id>`"). The URL points at the dashboard deep-link page (`/approvals/{id}`), which renders as a modal overlay on top of `/agents` after login. The host portion is resolved from the deployment-level **`DASHBOARD_URL`** envvar (served by `overslash serve`; `overslash web` uses the same-origin dashboard host) — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
 
 ### Secret Injection (`http` service only)
 
@@ -819,13 +819,13 @@ A service instance moves through a small state machine. The same machine applies
 | **`error`** | OAuth denied, scopes insufficient, secret rejected, or credential verification failed in a non-recoverable way | **No** | TTL: **24 hours** for forensic visibility, then deleted |
 | **`archived`** | Soft-deleted, hidden from discovery; audit log + remembered approvals preserved | No | Manual restore or hard-delete by owner |
 
-There is intentionally **no `Draft` state**. A service is either configured-and-active or it is not. To test an active service before exposing it to agents, set the per-service flag `exposed_to_agents: false` — `overslash_search` filters it out for agent identities but the API Explorer can still execute against it as the owner-user.
+There is intentionally **no `Draft` state**. A service is either configured-and-active or it is not. To test an active service before exposing it to agents, set the per-service flag `exposed_to_agents: false` — `overslash_search` filters it out for agent identities but the API Explorer can still call against it as the owner-user.
 
 **`pending_credentials` is a single state with a `flow_kind: "oauth" | "secret"` discriminator** on the row. The lifecycle code has one path; only the credential-redemption surfaces (OAuth callback handler vs `/secrets/provide/...` page) differ.
 
 **Pending visibility:** the owner-user sees pending services in the dashboard with a "Connecting…" badge and a "Cancel" button (manual delete before TTL). The creating agent sees its own pending services via `overslash_auth(action="status")`. No other identity in the org sees them.
 
-**Executing against a pending service** returns `service_not_ready`, distinct from `not_authorized`. Agents should poll `status` (or subscribe via SSE) instead of retry-spamming `execute`.
+**Executing against a pending service** returns `service_not_ready`, distinct from `not_authorized`. Agents should poll `status` (or subscribe via SSE) instead of retry-spamming `call`.
 
 **Retrying a failed credential flow:** `overslash_auth(action="retry_credentials", service=...)` works on rows in `pending_credentials` (extends TTL, mints a fresh URL, invalidates the previous one) or `error` (flips back to `pending_credentials`, mints a fresh URL). The service ID and name are preserved across retries — the dashboard's "Connecting…" view stays continuous.
 
@@ -859,7 +859,7 @@ The creation call returns one of:
 - **Secret-based template** (API key, bearer token) → a signed secret-provide URL the user must visit. The service is created in a pending state pending secret provisioning. (See §11 *Standalone Pages*.)
 - **Shared/no-credential template** → the service is created `Active` immediately.
 
-Once the user has supplied credentials at the returned URL, the service flips to `Active` and the agent learns about it via polling, SSE (§10 *Async event delivery*), or webhook. From the agent's perspective, the entire onboarding of a new integration is: search → auth.create → surface URL to user → poll for active → execute. **No dashboard required.**
+Once the user has supplied credentials at the returned URL, the service flips to `Active` and the agent learns about it via polling, SSE (§10 *Async event delivery*), or webhook. From the agent's perspective, the entire onboarding of a new integration is: search → auth.create → surface URL to user → poll for active → call. **No dashboard required.**
 
 ### OpenAPI Import
 
@@ -994,11 +994,11 @@ A small tool set that lets any LLM agent use Overslash. These are the underlying
 | Tool | Purpose | Credential | Surfaces |
 |------|---------|------------|----------|
 | `overslash_search` | Discover services and actions. Returns schemas + auth status. | agent (or user) | REST, CLI, MCP |
-| `overslash_execute` | Execute any action (all three modes). Returns result or `pending_approval`. Called with `{approval_id}` to resume a previously-approved action and receive the replay result — see §5 *Replay Semantics*. | agent (or user) | REST, CLI, MCP |
+| `overslash_call` | Call any action (all three modes). Returns result or `pending_approval`. Called with `{approval_id}` to resume a previously-approved action and receive the replay result — see §5 *Replay Semantics*. | agent (or user) | REST, CLI, MCP |
 | `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. | agent (or user) | REST, CLI, MCP |
 | `overslash_approve` | Resolve a pending approval (one-time, "Allow & Remember", bubble, or reject). See §5 *Approval Bubbling*. | **user** (an agent cannot approve its own requests) | REST, CLI, MCP |
 
-When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is skipped entirely, so `overslash_execute` returns results directly without ever producing a `pending_approval` for `overslash_approve` to resolve. The tool exists for the inverse direction — a user surface (dashboard, CLI, or an MCP session in user mode) resolving approvals raised by an *agent* identity elsewhere in the org. Platforms that wrap the agent surface handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`).
+When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is skipped entirely, so `overslash_call` returns results directly without ever producing a `pending_approval` for `overslash_approve` to resolve. The tool exists for the inverse direction — a user surface (dashboard, CLI, or an MCP session in user mode) resolving approvals raised by an *agent* identity elsewhere in the org. Platforms that wrap the agent surface handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`).
 
 ### `overslash_search`
 
@@ -1068,7 +1068,7 @@ Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 - **Agents** (default landing view) — tree view of the identity hierarchy rooted at the logged-in user. The user node is immutable (cannot be deleted, renamed, or reparented). Agent creation does not offer a Kind selector — all created identities are agents, and parentage determines hierarchy position. Inline management: create, edit, delete agents.
 - **User profile** — authenticated user info, API keys, settings
 - **Services** — browse templates, create/manage service instances, connect credentials
-- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and execute. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
+- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and call. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always calls as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
 - **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
 
 ### Org-Admin Views
@@ -1114,7 +1114,7 @@ Every action execution, approval resolution, secret access, and connection chang
 
 For approvals and audit rows to be useful for human review, resolvers need to know *what* an action is about to do — not just that an HTTP request is pending. Templates can declare two opt-in extensions on any HTTP action to control how a resolved request is surfaced:
 
-- **`x-overslash-disclose`** — a labeled list of jq filters. Each filter runs at approval-create time (and again at execute-success audit-write time) against a structured projection of the resolved request. Results land on `approvals.disclosed_fields` and on `audit_log.detail.disclosed`, rendered in the dashboard as a prominent "Summary" block *above* the raw-payload disclosure.
+- **`x-overslash-disclose`** — a labeled list of jq filters. Each filter runs at approval-create time (and again at call-success audit-write time) against a structured projection of the resolved request. Results land on `approvals.disclosed_fields` and on `audit_log.detail.disclosed`, rendered in the dashboard as a prominent "Summary" block *above* the raw-payload disclosure.
 - **`x-overslash-redact`** — a list of dotted paths into the same projection. Matched values are replaced with the sentinel `"[REDACTED]"` **before** the projection is persisted as `approvals.action_detail`. Redaction defends the raw-payload blob from leaking template-declared sensitive fields; it does *not* affect disclosure extraction (which runs first).
 
 ### jq input shape

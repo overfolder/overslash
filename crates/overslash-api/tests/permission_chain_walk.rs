@@ -19,9 +19,13 @@ use uuid::Uuid;
 
 // ── helpers ─────────────────────────────────────────────────────────
 
-async fn execute(base: &str, api_key: &str, mock_addr: std::net::SocketAddr) -> reqwest::Response {
+async fn call_action(
+    base: &str,
+    api_key: &str,
+    mock_addr: std::net::SocketAddr,
+) -> reqwest::Response {
     reqwest::Client::new()
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "POST",
@@ -144,7 +148,7 @@ async fn agent_no_rules_gap_resolver_is_user() {
     let agent_id = create_identity(&base, &org_key, "bot", "agent", Some(user_id)).await;
     let agent_key = create_api_key(&base, &org_key, org_id, agent_id, "agent-key").await;
 
-    let resp = execute(&base, &agent_key, mock_addr).await;
+    let resp = call_action(&base, &agent_key, mock_addr).await;
     assert_eq!(resp.status(), 202);
     let body: Value = resp.json().await.unwrap();
     let approval_id = body["approval_id"].as_str().unwrap().to_string();
@@ -212,7 +216,7 @@ async fn action_detail_truncated_at_100kb_on_char_boundary() {
     let large_body: String = "🌵".repeat(40_000); // 40_000 × 4 bytes = 160_000 bytes
 
     let resp = reqwest::Client::new()
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
             "method": "POST",
@@ -305,7 +309,7 @@ async fn spec_example_service_b_routes_to_chief() {
 
     // Researcher does a POST → marketing's GET-only rule doesn't cover →
     // gap at marketing → resolver search above marketing: chief covers POST.
-    let resp = execute(&base, &researcher_key, mock_addr).await;
+    let resp = call_action(&base, &researcher_key, mock_addr).await;
     assert_eq!(resp.status(), 202);
     let body: Value = resp.json().await.unwrap();
     let approval_id = body["approval_id"].as_str().unwrap();
@@ -358,7 +362,7 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
     )
     .await;
 
-    let resp = execute(&base, &researcher_key, mock_addr).await;
+    let resp = call_action(&base, &researcher_key, mock_addr).await;
     assert_eq!(resp.status(), 202);
     let approval_id: String = resp.json::<Value>().await.unwrap()["approval_id"]
         .as_str()
@@ -367,7 +371,7 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
 
     // Approve & remember (org admin key acts on behalf of the resolver).
     // Under the two-stage flow this only queues a pending execution — the
-    // permission rule is stored later, after the /execute call succeeds.
+    // permission rule is stored later, after the /call call succeeds.
     let resp = reqwest::Client::new()
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header("Authorization", format!("Bearer {org_key}"))
@@ -379,7 +383,7 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
 
     // Trigger the replay — the rule is created only on successful execution.
     let resp = reqwest::Client::new()
-        .post(format!("{base}/v1/approvals/{approval_id}/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
         .header("Authorization", format!("Bearer {researcher_key}"))
         .send()
         .await
@@ -403,8 +407,8 @@ async fn remember_places_rule_on_closest_non_inherit_ancestor() {
         "no rule should be placed on researcher"
     );
 
-    // Re-execute → researcher inherits, marketing now has the rule, chief has it → 200
-    let resp = execute(&base, &researcher_key, mock_addr).await;
+    // Re-call → researcher inherits, marketing now has the rule, chief has it → 200
+    let resp = call_action(&base, &researcher_key, mock_addr).await;
     assert_eq!(resp.status(), 200);
 }
 
@@ -441,7 +445,7 @@ async fn explicit_bubble_up_advances_resolver() {
     )
     .await;
 
-    let approval_id: String = execute(&base, &researcher_key, mock_addr)
+    let approval_id: String = call_action(&base, &researcher_key, mock_addr)
         .await
         .json::<Value>()
         .await
@@ -534,7 +538,7 @@ async fn deny_rule_in_chain_short_circuits() {
 
     add_rule(&base, &org_key, agent_id, "http:POST:**", "deny").await;
 
-    let resp = execute(&base, &sub_key, mock_addr).await;
+    let resp = call_action(&base, &sub_key, mock_addr).await;
     assert_eq!(resp.status(), 403);
 }
 
@@ -552,7 +556,7 @@ async fn bubble_up_at_top_returns_conflict() {
     let agent_id = create_identity(&base, &org_key, "bot", "agent", Some(user_id)).await;
     let agent_key = create_api_key(&base, &org_key, org_id, agent_id, "ak").await;
 
-    let approval_id: String = execute(&base, &agent_key, mock_addr)
+    let approval_id: String = call_action(&base, &agent_key, mock_addr)
         .await
         .json::<Value>()
         .await
@@ -602,7 +606,7 @@ async fn deny_rule_above_gap_short_circuits() {
 
     add_rule(&base, &org_key, chief_id, "http:POST:**", "deny").await;
 
-    let resp = execute(&base, &researcher_key, mock_addr).await;
+    let resp = call_action(&base, &researcher_key, mock_addr).await;
     assert_eq!(resp.status(), 403);
 }
 
@@ -621,7 +625,7 @@ async fn unrelated_identity_cannot_resolve() {
     let agent_b_key = create_api_key(&base, &org_key, org_id, agent_b, "kb").await;
 
     // Agent A triggers an approval (no rules → gap at A → resolver = user).
-    let approval_id: String = execute(&base, &agent_a_key, mock_addr)
+    let approval_id: String = call_action(&base, &agent_a_key, mock_addr)
         .await
         .json::<Value>()
         .await
@@ -692,7 +696,7 @@ async fn force_user_resolver_when_auto_bubble_zero() {
         .await
         .unwrap();
 
-    let resp = execute(&base, &researcher_key, mock_addr).await;
+    let resp = call_action(&base, &researcher_key, mock_addr).await;
     assert_eq!(resp.status(), 202);
     let approval_id: String = resp.json::<Value>().await.unwrap()["approval_id"]
         .as_str()
@@ -753,7 +757,7 @@ async fn current_resolver_identity_key_can_resolve() {
     .await;
 
     // First approval: Chief resolves with their own identity key.
-    let approval_id: String = execute(&base, &researcher_key, mock_addr)
+    let approval_id: String = call_action(&base, &researcher_key, mock_addr)
         .await
         .json::<Value>()
         .await
@@ -776,7 +780,7 @@ async fn current_resolver_identity_key_can_resolve() {
 
     // Second approval: same chain, but the user (Chief's ancestor) resolves
     // with their own identity key. is_self_or_ancestor should permit this.
-    let approval_id2: String = execute(&base, &researcher_key, mock_addr)
+    let approval_id2: String = call_action(&base, &researcher_key, mock_addr)
         .await
         .json::<Value>()
         .await
@@ -815,7 +819,7 @@ async fn user_level_deny_rule_blocks() {
     // index 0 is normally skipped.
     add_rule(&base, &org_key, user_id, "http:POST:**", "deny").await;
 
-    let resp = execute(&base, &agent_key, mock_addr).await;
+    let resp = call_action(&base, &agent_key, mock_addr).await;
     assert_eq!(resp.status(), 403);
 }
 
@@ -848,7 +852,7 @@ async fn orphaned_non_user_identity_requires_approval() {
     // No rules anywhere. Without the orphan guard the chain walk would
     // return Allowed and the action would execute. With the guard, the
     // requester itself is treated as the gap and we get a 202.
-    let resp = execute(&base, &orphan_key, mock_addr).await;
+    let resp = call_action(&base, &orphan_key, mock_addr).await;
     assert_eq!(resp.status(), 202);
 }
 

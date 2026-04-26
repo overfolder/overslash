@@ -382,7 +382,7 @@ async fn test_x_real_e2e() {
     // ===== TEST 1: get_me (Mode C) =====
     eprintln!("  [1/4] get_me ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -394,7 +394,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let me: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(
         me["data"]["username"].is_string(),
@@ -413,7 +413,7 @@ async fn test_x_real_e2e() {
         time::OffsetDateTime::now_utc().unix_timestamp()
     );
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -427,7 +427,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let tweet_resp: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let tweet_id = tweet_resp["data"]["id"]
         .as_str()
@@ -437,7 +437,7 @@ async fn test_x_real_e2e() {
     // ===== TEST 3: delete_tweet (Mode C) — path param substitution =====
     eprintln!("  [3/4] delete_tweet ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -451,7 +451,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let del_resp: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(del_resp["data"]["deleted"], true, "tweet should be deleted");
     eprintln!("  delete_tweet: deleted {tweet_id}");
@@ -459,7 +459,7 @@ async fn test_x_real_e2e() {
     // ===== TEST 4: get_user_tweets (Mode C) — path param + query string =====
     eprintln!("  [4/4] get_user_tweets ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -474,7 +474,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let tweets_resp: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     // data may be absent if the test account has no tweets — that's fine,

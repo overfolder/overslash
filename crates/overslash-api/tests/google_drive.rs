@@ -160,7 +160,7 @@ async fn test_google_drive_e2e() {
     // ===== TEST 1: get_about (Mode C) =====
     eprintln!("  [1/5] get_about ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "google_drive",
@@ -174,7 +174,7 @@ async fn test_google_drive_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let about: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let email = about["user"]["emailAddress"]
         .as_str()
@@ -184,7 +184,7 @@ async fn test_google_drive_e2e() {
     // ===== TEST 2: list_files (Mode C) =====
     eprintln!("  [2/5] list_files ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "google_drive",
@@ -199,7 +199,7 @@ async fn test_google_drive_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let listing: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let files = listing["files"]
         .as_array()
@@ -210,7 +210,7 @@ async fn test_google_drive_e2e() {
     let folder_name = format!("overslash-e2e-{}", Uuid::new_v4());
     eprintln!("  [3/5] create_folder '{folder_name}' ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "google_drive",
@@ -225,7 +225,7 @@ async fn test_google_drive_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let folder: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let folder_id = folder["id"]
         .as_str()
@@ -241,7 +241,7 @@ async fn test_google_drive_e2e() {
     // ===== TEST 4: get_file on the folder we just created (Mode C) =====
     eprintln!("  [4/5] get_file ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "google_drive",
@@ -256,7 +256,7 @@ async fn test_google_drive_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let fetched: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(fetched["id"].as_str(), Some(folder_id.as_str()));
     assert_eq!(fetched["name"].as_str(), Some(folder_name.as_str()));
@@ -273,7 +273,7 @@ async fn test_google_drive_e2e() {
     // ===== TEST 5: delete_file to clean up (Mode C) =====
     eprintln!("  [5/5] delete_file ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "google_drive",
@@ -287,7 +287,7 @@ async fn test_google_drive_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     // Drive returns 204 No Content on a successful delete.
     let upstream_status = body["result"]["status_code"].as_u64().unwrap();
     assert!(

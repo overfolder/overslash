@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { highlightJson } from '$lib/api';
-	import type { ExecuteResponse } from '$lib/types';
+	import type { CallResponse } from '$lib/types';
 
 	let {
 		response,
@@ -8,7 +8,7 @@
 		running,
 		elapsedMs
 	}: {
-		response: ExecuteResponse | null;
+		response: CallResponse | null;
 		error: string | null;
 		running: boolean;
 		elapsedMs: number | null;
@@ -52,7 +52,7 @@
 <section class="card" aria-label="Response">
 	<header class="head">
 		<h2>Response</h2>
-		{#if response && response.status === 'executed'}
+		{#if response && response.status === 'called'}
 			{@const v = statusVariant(response.result.status_code)}
 			<span class={`chip ${v}`}>{response.result.status_code}</span>
 			<span class="duration">{response.result.duration_ms}ms</span>
@@ -62,7 +62,7 @@
 	</header>
 
 	{#if running}
-		<p class="placeholder">Executing…</p>
+		<p class="placeholder">Calling…</p>
 	{:else if error}
 		<div class="error">
 			<strong>Request failed</strong>
@@ -70,7 +70,7 @@
 		</div>
 	{:else if !response}
 		<p class="placeholder">Run a request to see the response here.</p>
-	{:else if response.status === 'executed'}
+	{:else if response.status === 'called'}
 		{@const fb = response.result.filtered_body}
 		{#if fb && fb.status === 'error'}
 			<div class="filter-warning">

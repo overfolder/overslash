@@ -52,10 +52,10 @@
 	/** Execution lifecycle — populated once approval is allowed. */
 	const execution = $derived(current.execution ?? null);
 	const executionPending = $derived(execution?.status === 'pending');
-	const executionRunning = $derived(execution?.status === 'executing');
+	const executionRunning = $derived(execution?.status === 'calling');
 	const executionTerminal = $derived(
 		!!execution &&
-			(execution.status === 'executed' ||
+			(execution.status === 'called' ||
 				execution.status === 'failed' ||
 				execution.status === 'cancelled' ||
 				execution.status === 'expired')
@@ -113,12 +113,12 @@
 			.join(' ');
 	}
 
-	async function triggerExecute() {
+	async function triggerCall() {
 		submitting = true;
 		error = null;
 		try {
 			const updated = await session.post<ApprovalResponse>(
-				`/v1/approvals/${current.id}/execute`,
+				`/v1/approvals/${current.id}/call`,
 				{}
 			);
 			override = updated;
@@ -306,8 +306,8 @@
 			</p>
 			{#if error}<div class="error">{error}</div>{/if}
 			<div class="actions">
-				<button class="btn btn-primary" disabled={submitting} onclick={triggerExecute}>
-					Execute Now
+				<button class="btn btn-primary" disabled={submitting} onclick={triggerCall}>
+					Call Now
 				</button>
 				<button class="btn btn-deny" disabled={submitting} onclick={cancelExecution}>
 					Cancel
@@ -316,21 +316,21 @@
 		</div>
 	{:else if !isPending && executionRunning}
 		<div class="banner banner-allowed">
-			Executing upstream call…
+			Calling upstream action…
 		</div>
 	{:else if !isPending && executionTerminal && execution}
 		<div class="banner banner-{execution.status}">
-			{#if execution.status === 'executed'}
-				Executed successfully.
+			{#if execution.status === 'called'}
+				Called successfully.
 			{:else if execution.status === 'failed'}
-				Execution failed{execution.error ? `: ${execution.error}` : ''}.
+				Call failed{execution.error ? `: ${execution.error}` : ''}.
 			{:else if execution.status === 'cancelled'}
-				Execution was cancelled.
+				Call was cancelled.
 			{:else if execution.status === 'expired'}
-				Pending execution expired before it ran.
+				Pending call expired before it ran.
 			{/if}
 		</div>
-		{#if execution.status === 'executed' && execution.result}
+		{#if execution.status === 'called' && execution.result}
 			<details class="raw-payload">
 				<summary>Result</summary>
 				<pre class="code">{@html highlightJson(execution.result)}</pre>
@@ -653,7 +653,7 @@
 		color: #d14343;
 		background: rgba(209, 67, 67, 0.06);
 	}
-	.banner-executed {
+	.banner-called {
 		border-color: #2e7d32;
 		color: #2e7d32;
 		background: rgba(46, 125, 50, 0.06);

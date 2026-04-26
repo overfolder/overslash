@@ -1220,9 +1220,9 @@ Can be **hidden from users via an org setting** (e.g., orgs that don't want user
 
 A pill toggle at the top of the tab switches between two execution modes:
 
-1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/execute` as Mode C.
+1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/call` as Mode C.
 
-2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/execute` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
+2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/call` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
 
    ```
    Method:  [POST ▾]

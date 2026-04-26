@@ -41,17 +41,17 @@ Each story names: the **actors**, the **happy path**, the **Overslash surfaces**
    The agent now knows: there is no live calendar service for Alice, but there is a global template it can instantiate. No human-driven dashboard tour needed.
 6. **Agent-led service creation.** OpenClaw calls `overslash_auth(action="create_service_from_template", template="google-calendar", name="google-calendar", on_behalf_of="alice")`. Because the template uses OAuth and no token exists yet, Overslash creates the service in `pending_credentials` state (with `flow_kind: "oauth"`, §9 *Service Lifecycle States*) and returns an OAuth start URL bound to Overslash's system Google client (§7). OpenClaw prints the URL in chat: *"To connect your Google Calendar I need you to authorize this link."*
 7. **OAuth consent.** Alice clicks, signs into Google, grants the calendar scope, and lands on Overslash's OAuth callback. The token is encrypted and bound to Alice's new `google-calendar` service instance (§6, §9). Overslash flips the service to `active`. OpenClaw, polling `overslash_auth(action="status", service="google-calendar")` (or via webhook), sees the transition.
-8. **Re-discovery and execute.** OpenClaw re-runs `overslash_search(query="calendar")` — now `services` contains the live instance with full action schemas, and OpenClaw calls `overslash_execute(service="google-calendar", action="list_events")`.
+8. **Re-discovery and execute.** OpenClaw re-runs `overslash_search(query="calendar")` — now `services` contains the live instance with full action schemas, and OpenClaw calls `overslash_call(service="google-calendar", action="list_events")`.
 9. **Approval.** No matching permission key exists for `openclaw-laptop`. Overslash returns `{ status: "pending_approval", approval_id: "apr_..." }` with `suggested_tiers` (§5 *Specificity Tiers*). Because there is no platform mediating, OpenClaw surfaces the Overslash-hosted approval URL (`https://personal.overslash.dev/approvals/apr_...`) directly to Alice.
 10. **Resolution.** Alice opens the URL, is already logged in, and picks the broadest sensible tier: `google-calendar:list_events:*` with **Allow & Remember** + 30-day TTL. Resolution succeeds (§5 *Trust Model*) — Alice has authority over her own agent.
-11. **Execution.** OpenClaw's pending request resumes; Overslash injects the OAuth token from the `google-calendar` service, executes the GET, returns the event list. Audit records: identity `spiffe://personal/user/alice/agent/openclaw-laptop`, service `user/google-calendar`, action `list_events`, key `google-calendar:list_events:*` (§12).
+11. **Execution.** OpenClaw's pending request resumes; Overslash injects the OAuth token from the `google-calendar` service, calls the GET, returns the event list. Audit records: identity `spiffe://personal/user/alice/agent/openclaw-laptop`, service `user/google-calendar`, action `list_events`, key `google-calendar:list_events:*` (§12).
 12. **Subsequent reads.** All later `list_events` calls auto-approve via the stored permission key. A future `create_event` call will trigger a fresh approval (different key, `risk: write`).
 
 The key shift: **Alice never opens the Overslash dashboard.** Service connection, OAuth handoff, and permission grants are all driven by the agent through the meta tools, with Alice only clicking the two URLs she has authority over (the OAuth consent and the approval page).
 
 ### Surfaces touched
 - Public marketing site (`overslash.dev/SKILL.md`, `enrollment/SKILL.md`).
-- REST API: enrollment endpoints, all 3 meta tools (`overslash_search`, `overslash_execute`, `overslash_auth`).
+- REST API: enrollment endpoints, all 3 meta tools (`overslash_search`, `overslash_call`, `overslash_auth`).
 - OAuth: Google consent screen (system OAuth client).
 - Standalone pages: `/enroll/consent/...`, `/approvals/apr_...` (§11). **No dashboard usage.**
 
@@ -75,12 +75,12 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 
 ### Happy path
 
-1. **Install.** Bob runs the Overslash MCP install command (e.g., `claude mcp add overslash …`) pointing at `https://acme.overslash.dev`. The MCP server registers `overslash_search`, `overslash_execute`, `overslash_auth` as tools in Claude Code (§10).
+1. **Install.** Bob runs the Overslash MCP install command (e.g., `claude mcp add overslash …`) pointing at `https://acme.overslash.dev`. The MCP server registers `overslash_search`, `overslash_call`, `overslash_auth` as tools in Claude Code (§10).
 2. **Authentication.** On first use, the MCP server initiates a device-code / browser login flow against `acme.overslash.dev`. Bob's browser opens, he authenticates via ACME's corporate Okta SSO (§4), and the MCP server stores the resulting Overslash credentials locally. Bob is now acting as `spiffe://acme/user/bob` — **not** as an agent. Claude Code is treated as a UI front-end for Bob himself, governed by his group membership (§5 Layer 1).
 3. **Discovery.** Bob asks Claude Code: *"list open PRs assigned to me in the backend repo"*. Claude Code calls `overslash_search` → MCP forwards to Overslash → Overslash returns only services Bob's group grants visibility to (§9 *Service discovery is group-gated*): `github`, `slack`, `jira`, plus the global read-only specs Engineering has access to.
-4. **Execution.** Claude Code calls `overslash_execute` with `service=github`, `action=list_pull_requests`, `repo=acme/backend`, `assignee=bob`. Because Bob is acting as himself (not as an agent), the **two-layer model collapses to Layer 1 only**: the request must be within the Engineering group ceiling (§5). `github` (write) covers `list_pull_requests` (`risk: read`), so it passes immediately — **no approval needed, ever, for actions within Bob's own group ceiling**.
+4. **Execution.** Claude Code calls `overslash_call` with `service=github`, `action=list_pull_requests`, `repo=acme/backend`, `assignee=bob`. Because Bob is acting as himself (not as an agent), the **two-layer model collapses to Layer 1 only**: the request must be within the Engineering group ceiling (§5). `github` (write) covers `list_pull_requests` (`risk: read`), so it passes immediately — **no approval needed, ever, for actions within Bob's own group ceiling**.
 5. **Audit.** The audit log records the action under identity `spiffe://acme/user/bob`, service `org/github` (fully qualified, §9 *Qualified vs unqualified names by context*), with the resolved underlying GitHub user being Bob's per-user OAuth token under the org's GitHub OAuth app.
-6. **Mutating action.** Bob asks: *"comment on PR #1234 saying 'lgtm'"*. Claude Code calls `overslash_execute` with `service=github`, `action=create_issue_comment`. `risk: write`, still within Engineering's `github (write)` grant → executes, audited.
+6. **Mutating action.** Bob asks: *"comment on PR #1234 saying 'lgtm'"*. Claude Code calls `overslash_call` with `service=github`, `action=create_issue_comment`. `risk: write`, still within Engineering's `github (write)` grant → called, audited.
 7. **Out-of-bounds action.** Bob asks: *"delete the staging branch"*. Action is `risk: delete`. Engineering only has `github (write)`, not `admin`. Overslash returns a hard **deny** with `not_approvable: true` — no approval flow, the group ceiling cannot be lifted by anyone except an org-admin reassigning Bob's group (§5 *Layer 1*). Claude Code surfaces the deny to Bob with the reason.
 8. **Discovering a personal service via templates.** Bob asks: *"track my personal Linear tickets too"*. Linear is not in ACME's org services. Claude Code calls `overslash_search(query="linear")`. Because `allow_user_templates` is enabled for Engineering, Overslash returns:
    ```json
@@ -92,7 +92,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
      ]
    }
    ```
-   Claude Code calls `overslash_auth(action="create_service_from_template", template="linear", name="my-linear", scope="user")`. Linear uses an API key, not OAuth, so Overslash creates the service in `pending_credentials` state (with `flow_kind: "secret"`, §9 *Service Lifecycle States*) and returns a **secret request URL** (`/secrets/provide/req_...?token=jwt`, §11). Bob pastes his Linear API key once into that signed page; the service flips to `active`. Subsequent `overslash_execute` calls work — and because this is a *user-owned* service, it bypasses the group ceiling for Bob himself (§5, §9).
+   Claude Code calls `overslash_auth(action="create_service_from_template", template="linear", name="my-linear", scope="user")`. Linear uses an API key, not OAuth, so Overslash creates the service in `pending_credentials` state (with `flow_kind: "secret"`, §9 *Service Lifecycle States*) and returns a **secret request URL** (`/secrets/provide/req_...?token=jwt`, §11). Bob pastes his Linear API key once into that signed page; the service flips to `active`. Subsequent `overslash_call` calls work — and because this is a *user-owned* service, it bypasses the group ceiling for Bob himself (§5, §9).
 
 ### Surfaces touched
 - MCP server (Overslash's first-party MCP, see [mcp-integration.md](mcp-integration.md)).
@@ -127,7 +127,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 4. **Platform-mediated UX.** Overfolder receives the OAuth URL through its event channel (webhook from Overslash). Overfolder's Telegram integration formats a Telegram message: *"Your assistant wants to connect to Google Calendar. [Connect Google Calendar]"* with the URL behind the button. Carol taps it.
 5. **Google OAuth.** Carol completes Google's consent screen in her browser. Google redirects to Overslash's callback. Overslash creates the `google-calendar` service instance owned by `carol`, stores the encrypted token (§6, §7), and fires a webhook back to Overfolder: *"service instance ready"*.
 6. **Continuation.** Overfolder sends Carol a Telegram message: *"Connected. What would you like me to do?"* Carol replies: *"add lunch with Dave tomorrow at 1pm"*.
-7. **Action attempt.** The assistant calls `overslash_execute` with `service=google-calendar`, `action=create_event`, `summary="Lunch with Dave"`, `start=...`, `end=...`. Overslash derives keys: `google-calendar:create_event:primary` (`risk: write`). No matching permission key for `carols-assistant` → Overslash returns `{ status: "pending_approval", approval_id, suggested_tiers, description }`.
+7. **Action attempt.** The assistant calls `overslash_call` with `service=google-calendar`, `action=create_event`, `summary="Lunch with Dave"`, `start=...`, `end=...`. Overslash derives keys: `google-calendar:create_event:primary` (`risk: write`). No matching permission key for `carols-assistant` → Overslash returns `{ status: "pending_approval", approval_id, suggested_tiers, description }`.
 8. **Approval surfacing.** Overfolder receives the approval event via webhook. Its Telegram integration renders inline buttons:
    - **Allow once** — `resolution: allow`
    - **Allow this calendar** — `remember_keys: ["google-calendar:create_event:primary"]`, TTL `7d`
@@ -140,7 +140,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 
 ### Surfaces touched
 - Overfolder's Telegram bot (entirely Overfolder-side).
-- Overfolder backend ↔ Overslash REST API (search, execute, auth, resolve).
+- Overfolder backend ↔ Overslash REST API (search, call, auth, resolve).
 - Overslash webhooks → Overfolder (approval events, OAuth-completion events).
 - **Zero** Overslash dashboard or standalone-page exposure to Carol. No Overslash URL is ever shown.
 
@@ -177,19 +177,19 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
    ```
    Because `inherit_permissions=true` is a **live pointer** (§4), each worker dynamically has whatever permission keys `research-bot` has — current and future. No keys are copied.
 3. **Parallel fan-out.** `research-bot` dispatches three subtasks to the workers in parallel.
-4. **Auto-approved action via inheritance.** `worker-1` calls `overslash_execute(service="arxiv", action="list_papers", query="GNN protein folding")`. Hierarchical resolution (§5):
+4. **Auto-approved action via inheritance.** `worker-1` calls `overslash_call(service="arxiv", action="list_papers", query="GNN protein folding")`. Hierarchical resolution (§5):
    - `worker-1`: no own keys, `inherit_permissions=true` → check parent
    - `research-bot`: has `arxiv:*:*` → covers `arxiv:list_papers:*` → pass
    - `diego`: within group ceiling (Diego has no groups configured → permissive) → pass
    
    Auto-approved. Audit logs the action under `spiffe://personal/user/diego/agent/research-bot/worker-1`, with the resolution chain recorded.
-5. **Gap at the parent boundary, bubbling to the user.** `worker-2` calls `overslash_execute(service="google-scholar", action="search", query="...")`. Resolution:
+5. **Gap at the parent boundary, bubbling to the user.** `worker-2` calls `overslash_call(service="google-scholar", action="search", query="...")`. Resolution:
    - `worker-2`: no own keys, inherit → check parent
    - `research-bot`: has `google-search:search:*` but **not** `google-scholar:search:*` (different service) → gap at this level
    
    The approval is created **at `research-bot`**, not at `worker-2`, because that's the first level where a key could resolve it (§5 *Approval Bubbling*). `research-bot` cannot resolve approvals for keys it does not already hold itself (§5 *Trust Model*: "A parent cannot grant a child more than it has itself") — and it doesn't have any `google-scholar` access. So the approval bubbles further: it surfaces to **Diego**, the first identity with authority to grant a brand-new key.
 6. **3-pending cap kicks in.** While step 5 is in flight, `worker-3` discovers a paper PDF on a new domain and tries to fetch metadata via a different unfamiliar service. That's the third unresolved approval bubbled to `research-bot` in this job. But `research-bot` had a stale pending approval from a previous job two days ago (Diego never resolved it). Adding `worker-3`'s request would put `research-bot` at 4 pending — over the cap (§5 *Pending Approval Limits*). Overslash auto-drops the oldest one, marks it `superseded`, and creates the new one. The audit log records both events.
-7. **Diego resolves the user-level approval.** Diego sees the bubbled approval from step 5 in his dashboard (or via whatever notification channel he uses). He picks the broadest sensible tier: `google-scholar:search:*`, **Allow & Remember**, 7-day TTL. The key is stored on **`research-bot`** (the gap level), not on `worker-2` directly. Because workers `inherit_permissions`, all three workers immediately gain `google-scholar:search:*` access through the live pointer. The pending request from `worker-2` resumes and executes.
+7. **Diego resolves the user-level approval.** Diego sees the bubbled approval from step 5 in his dashboard (or via whatever notification channel he uses). He picks the broadest sensible tier: `google-scholar:search:*`, **Allow & Remember**, 7-day TTL. The key is stored on **`research-bot`** (the gap level), not on `worker-2` directly. Because workers `inherit_permissions`, all three workers immediately gain `google-scholar:search:*` access through the live pointer. The pending request from `worker-2` resumes and is called.
 8. **Ancestor agent resolves for descendant — within boundary.** Later, `worker-1` wants to post a status update to Slack: `slack:post_message:#research`. Resolution:
    - `worker-1`: no own keys, inherit → check parent
    - `research-bot`: has `slack:post_message:#research` exactly → covers → pass
@@ -201,7 +201,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 10. **Disabling inheritance for a future run.** Diego decides next session's workers should not inherit — he wants tighter control. He toggles `inherit_permissions: false` in the dashboard for the next batch of workers `research-bot` spawns. Now the next workers will need their own explicit keys for everything. (The toggle is on the worker template / spawn defaults Diego configures, not retroactively on already-spawned workers.)
 
 ### Surfaces touched
-- Meta tools: `create_subagent`, `execute`, `resolve_descendant_approval`.
+- Meta tools: `create_subagent`, `call`, `resolve_descendant_approval`.
 - Dashboard: identity hierarchy tree, pending approvals view (showing the bubbled approval at `research-bot` level with the descendant chain).
 - Audit log: per-sub-agent SPIFFE paths, resolution chains for hierarchical resolution.
 
@@ -247,7 +247,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 8. **Allow user templates.** Erin enables `allow_user_templates` in **Settings → Org Policies**. Some advanced engineers will want to import their own personal OpenAPI specs for niche internal tools or test fixtures. ACME's policy is "user templates are private to the user and their agents; sharing to org level requires Erin's review."
 9. **First end user joins.** Erin shares `acme.overslash.com` with the Engineering team. Frank logs in: he's redirected to Okta, authenticates with his ACME credentials, and lands back on Overslash. Auto-provisioning (§4) creates `spiffe://acme/user/frank`. Erin had pre-mapped Okta groups → Overslash groups (or assigned manually), so Frank lands in Engineering automatically. He sees his profile with the services Engineering has access to: `github`, `slack`, `jira`, `google-calendar`, `acme-inventory`.
 10. **User-initiated agent enrollment.** Frank wants to enroll his Claude Code CLI as an agent. Goes to **My Agents → New Agent**, names it `claude-code-laptop`, leaves `inherit_permissions=false`. Overslash returns an enrollment snippet: a URL, a single-use token, and a link to `overslash.dev/enrollment/SKILL.md`. Frank copy-pastes the snippet into Claude Code. Claude Code reads the SKILL, exchanges the token for a permanent API key (15-min TTL on the token, §4). The agent is live.
-11. **API Explorer test.** Frank opens **API Explorer**, picks the `github` service, picks the `list_repositories` action, hits Run. The action executes as `spiffe://acme/user/frank` — the API Explorer never impersonates agents (§11). Layer 1 group check passes (Engineering has github write), no Layer 2 because Frank is acting as himself (§5 *User Identities Skip Layer 2*). Audit log records the call under Frank's user identity, with `via: api_explorer`.
+11. **API Explorer test.** Frank opens **API Explorer**, picks the `github` service, picks the `list_repositories` action, hits Run. The action calls as `spiffe://acme/user/frank` — the API Explorer never impersonates agents (§11). Layer 1 group check passes (Engineering has github write), no Layer 2 because Frank is acting as himself (§5 *User Identities Skip Layer 2*). Audit log records the call under Frank's user identity, with `via: api_explorer`.
 12. **Service shadowing vignette.** Frank also has a personal GitHub account he uses for open-source contributions. He creates a *user-owned* service from the GitHub template, also named `github`, with his personal OAuth token. No conflict — user services and org services have separate name scopes (§9). Now when Frank's `claude-code-laptop` agent calls `service=github`, resolution returns the **user's** instance (user-shadows-org). To explicitly hit the org instance, the agent uses `service=org/github`. This lets Frank toggle between work and personal GitHub by adjusting the agent's prompt rather than reconfiguring services.
 
 ### Surfaces touched
@@ -282,7 +282,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 1. **Request.** Hank tells `automation-bot`: *"create a row in the project tracker at internal.tinyco.com/api/projects with name='Q2 launch', owner=hank, status=planning."*
 2. **Discovery turns up nothing.** `automation-bot` calls `overslash_search(query="project tracker")` — no template hits, no service. It tries `overslash_search(query="tinyco")` — still nothing. The agent recognizes there's no first-class integration and falls back to the raw HTTP path.
 3. **Secret check.** `automation-bot` calls `overslash_auth(action="list_secrets")` and finds `tinyco_api_token` already stored on Hank's identity (Hank pasted it weeks ago via `/secrets/provide` for an earlier task). The agent has the metadata: secret name, version 1, last used 12 days ago. It does **not** see the value.
-4. **Raw HTTP execute.** `automation-bot` calls `overslash_execute` with the `http` pseudo-service:
+4. **Raw HTTP execute.** `automation-bot` calls `overslash_call` with the `http` pseudo-service:
    ```json
    {
      "service": "http",
@@ -300,7 +300,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
    - `http:POST:internal.tinyco.com` — the raw HTTP key
    - `secret:tinyco_api_token:internal.tinyco.com` — the secret-injection key, scoped to this specific host so a token approved for one host cannot be exfiltrated to another (§5 *Pseudo-services*)
    
-   Both keys must be covered for the request to execute.
+   Both keys must be covered for the request to proceed.
 6. **Layer 1 check.** Hank is in `PowerUser`, which has `allow_raw_http: true`. The raw HTTP path is permitted. (If Hank had been in Engineering instead, the request would be hard-denied at this layer regardless of any approval — `allow_raw_http` is a separate gate, not a service grant.)
 7. **Layer 2 check + approval.** Neither key exists for `automation-bot`. Overslash creates an approval with **multi-key tier composition** (§5 *Specificity Tiers*) — keys broaden together as coherent sets, not independently:
    ```json
@@ -323,12 +323,12 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
    }
    ```
    Notice there are only **2 tiers**, not 4 — multi-key requests compose within tiers to avoid combinatorial explosion (§5 design principle: "2-4 tiers max").
-8. **Resolution.** Hank picks the most specific tier (POST + that secret + that host) with a 7-day TTL. Both keys are stored together as a coherent rule on `automation-bot`. Approval resolves, request executes.
+8. **Resolution.** Hank picks the most specific tier (POST + that secret + that host) with a 7-day TTL. Both keys are stored together as a coherent rule on `automation-bot`. Approval resolves, request proceeds.
 9. **Execution.** Overslash builds the outbound request, injects the encrypted secret as `Authorization: Bearer ...`, fires the POST to `internal.tinyco.com`, returns the response body to the agent. The agent reports success to Hank: *"Created row 'Q2 launch'."*
 10. **Audit forensics.** Audit log records the action with the qualified `http` pseudo-service, both derived keys, the host, the secret slot used, the request method/URL (but **not** body or response — those are too sensitive to log indiscriminately by default), and the resolution chain.
 
 ### Surfaces touched
-- Meta tools: `overslash_search`, `overslash_auth.list_secrets`, `overslash_execute` with the `http` pseudo-service.
+- Meta tools: `overslash_search`, `overslash_auth.list_secrets`, `overslash_call` with the `http` pseudo-service.
 - Approval UI: rendering the multi-key tier composition (whatever surface Hank uses — dashboard, MCP, etc.).
 - Audit: forensic record of raw HTTP usage.
 
@@ -532,7 +532,7 @@ Beyond the matrix above, this is which SPEC concepts each story exercises (✅ =
 | Async event delivery: SSE |  |  |  | ◐ |  |  | ◐ |  |
 | Async event delivery: webhook |  |  | ✅ |  |  |  |  | ◐ |
 | `overslash_search` (services + templates) | ✅ | ✅ | ✅ | ◐ |  | ✅ |  |  |
-| `overslash_execute` (any mode) | ✅ | ✅ | ✅ | ✅ |  | ✅ | ✅ |  |
+| `overslash_call` (any mode) | ✅ | ✅ | ✅ | ✅ |  | ✅ | ✅ |  |
 | `overslash_auth.create_service_from_template` | ✅ | ✅ | ✅ |  |  |  | ✅ |  |
 | `overslash_auth.create_subagent` |  |  |  | ✅ |  |  |  |  |
 | `overslash_auth.list_secrets` |  |  |  |  |  | ✅ |  |  |

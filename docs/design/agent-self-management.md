@@ -7,9 +7,9 @@
 
 ## Context
 
-Today the Overslash MCP surface exposes four tools: `overslash_search`, `overslash_execute`, `overslash_auth` (a multiplexer over six sub-actions), and `overslash_approve`. In practice only the "use a configured service" path is safe and useful to an agent: discovery + execution + identity introspection. The rest of the surface — creating subagents, creating service instances, requesting secrets, resolving approvals — is self-management, and a self-managing agent combined with Claude Code's auto mode opens real privilege-escalation paths that we don't yet have the gates for.
+Today the Overslash MCP surface exposes four tools: `overslash_search`, `overslash_call`, `overslash_auth` (a multiplexer over six sub-actions), and `overslash_approve`. In practice only the "use a configured service" path is safe and useful to an agent: discovery + execution + identity introspection. The rest of the surface — creating subagents, creating service instances, requesting secrets, resolving approvals — is self-management, and a self-managing agent combined with Claude Code's auto mode opens real privilege-escalation paths that we don't yet have the gates for.
 
-This document captures the long-term vision for agent self-management without committing to an implementation. It is the follow-up bucket for everything that was pulled out of the MCP surface in the cleanup PR ("MCP execute-only"). Short-term the MCP tool list is trimmed to `overslash_search`, `overslash_execute`, and a reduced `overslash_auth` (`whoami` + `service_status` only). Self-management happens in the dashboard until this document's pieces land.
+This document captures the long-term vision for agent self-management without committing to an implementation. It is the follow-up bucket for everything that was pulled out of the MCP surface in the cleanup PR ("MCP call-only"). Short-term the MCP tool list is trimmed to `overslash_search`, `overslash_call`, and a reduced `overslash_auth` (`whoami` + `service_status` only). Self-management happens in the dashboard until this document's pieces land.
 
 ---
 
@@ -28,10 +28,10 @@ Non-goal: arbitrary admin actions from an agent. The `overslash` metaservice dec
 
 ### 1. Platform-action bridge on the metaservice
 
-The `overslash` service template declares `platform_actions` but the execute route doesn't route them — they exist only as permission labels on REST endpoints. Bridge a subset through `overslash_execute` so an agent with the right permission can do e.g.:
+The `overslash` service template declares `platform_actions` but the call route doesn't route them — they exist only as permission labels on REST endpoints. Bridge a subset through `overslash_call` so an agent with the right permission can do e.g.:
 
 ```
-overslash_execute(service="overslash", action="create_service_instance", params={...})
+overslash_call(service="overslash", action="create_service_instance", params={...})
 ```
 
 Candidate actions to bridge (in rough order of safety):
@@ -67,7 +67,7 @@ Approvals today have one `overslash_approve` MCP tool and one `POST /v1/approval
 - Caller is ancestor of requester → **downstream** — accept through `overslash_approve_downstream`.
 - Caller is sibling / unrelated → **not_in_your_chain** — reject with structured error.
 
-**Tool-selection ergonomics**: the `PendingApproval` response from `overslash_execute` already carries `approval_id`. Extend it to also carry `relationship: "self" | "downstream"` (from the classifier above, evaluated at creation time) so the agent knows which tool to call without trial-and-error. This avoids fatigue approvals where the human is prompted once per mis-chosen tool.
+**Tool-selection ergonomics**: the `PendingApproval` response from `overslash_call` already carries `approval_id`. Extend it to also carry `relationship: "self" | "downstream"` (from the classifier above, evaluated at creation time) so the agent knows which tool to call without trial-and-error. This avoids fatigue approvals where the human is prompted once per mis-chosen tool.
 
 ### 3. Identity-scoped secret visibility
 
@@ -93,7 +93,7 @@ Claude Code's permission engine matches on tool name and argument patterns, not 
       "mcp__overslash__overslash_approve_downstream"
     ],
     "ask": [
-      "mcp__overslash__overslash_execute(service:overslash)",
+      "mcp__overslash__overslash_call(service:overslash)",
       "mcp__overslash__overslash_approve_self"
     ]
   }
@@ -102,9 +102,9 @@ Claude Code's permission engine matches on tool name and argument patterns, not 
 
 This relies on Claude Code matching argument patterns in permission rules; if the pattern isn't expressive enough (`action:whoami` vs `action:service_status`), the `overslash_auth` multiplexer should be split into one tool per sub-action at the MCP layer. That's a small ergonomic choice, not a design constraint.
 
-### 5. Structured errors from `overslash_execute`
+### 5. Structured errors from `overslash_call`
 
-Related but separate from self-management: today when an OAuth connection needs reauth, the MCP `forward` returns a string-wrapped 400 that ends up as "secret not found". For agents to self-serve recovery, `overslash_execute` needs to surface structured error types alongside `PendingApproval`:
+Related but separate from self-management: today when an OAuth connection needs reauth, the MCP `forward` returns a string-wrapped 400 that ends up as "secret not found". For agents to self-serve recovery, `overslash_call` needs to surface structured error types alongside `PendingApproval`:
 
 - `reauth_required { connection_id, reauth_url, reason }`
 - `missing_scopes { connection_id, missing, upgrade_url }` *(already structured)*

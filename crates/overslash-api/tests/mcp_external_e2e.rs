@@ -53,7 +53,7 @@ x-overslash-mcp:
 ///   running the whole ignored suite in an air-gapped CI doesn't fail.
 #[ignore]
 #[tokio::test]
-async fn deepwiki_live_resync_and_execute() {
+async fn deepwiki_live_resync_and_call() {
     if std::env::var("OVERSLASH_E2E_SKIP").as_deref() == Ok("1") {
         eprintln!("SKIP: OVERSLASH_E2E_SKIP=1");
         return;
@@ -125,7 +125,7 @@ async fn deepwiki_live_resync_and_execute() {
 
     // Execute ask_question against a small, well-indexed repo.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "deepwiki_live",
@@ -140,7 +140,7 @@ async fn deepwiki_live_resync_and_execute() {
         .unwrap();
     assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["runtime"], "mcp");
     assert_eq!(envelope["tool"], "ask_question");

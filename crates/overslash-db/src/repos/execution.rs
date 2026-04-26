@@ -1,7 +1,7 @@
 //! Execution lifecycle: once an approval is `allowed`, a pending `executions`
 //! row is created. The row transitions through `pending → executing → executed`
 //! (or `failed`, `cancelled`, `expired`) and is triggered by an explicit
-//! `POST /v1/approvals/{id}/execute`.
+//! `POST /v1/approvals/{id}/call`.
 //!
 //! The unique index on `approval_id` and the `status='pending' AND expires_at > now()`
 //! guard on `claim_for_execution` together enforce at-most-one replay per approval,

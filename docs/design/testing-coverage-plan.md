@@ -13,7 +13,7 @@ Prioritized list of missing test coverage for the Overslash codebase, with speci
 ### What's covered today
 
 - **Auth login**: dev token (enabled/disabled/idempotent), `/auth/me` (valid/401/invalid), Google login 404
-- **Execute flow**: happy path with permission, approval flow, allow & remember, deny keeps gating, unauthenticated, Mode C service action
+- **Call flow**: happy path with permission, approval flow, allow & remember, deny keeps gating, unauthenticated, Mode C service action
 - **Secrets**: versioning (put creates new version)
 - **OAuth**: callback stores connection, BYOC priority (identity > org), pinned BYOC, callback fails without creds, token refresh (expired + valid), PKCE (X with / GitHub without)
 - **BYOC**: full CRUD lifecycle including duplicate constraint (409)
@@ -67,7 +67,7 @@ No test creates two orgs and verifies org A cannot access org B's resources. Thi
 | 7 | `cross_org_secret_invisible` | Org A creates secret "foo", org B queries `GET /v1/secrets/foo` → should 404 | `get_by_name` WHERE clause scopes by org_id |
 | 8 | `cross_org_secret_list_isolation` | Org A creates secrets, org B lists → should see empty array | `list_by_org` scoping |
 | 9 | `cross_org_connection_delete_rejected` | Org A's key tries `DELETE /v1/connections/{org_b_conn_id}` → should fail | `delete_by_org` checks org_id match |
-| 10 | `cross_org_approval_list_isolation` | Org A creates approval (via gated execute), org B lists approvals → empty | `list_pending_by_org` filters by org_id |
+| 10 | `cross_org_approval_list_isolation` | Org A creates approval (via gated call), org B lists approvals → empty | `list_pending_by_org` filters by org_id |
 | 11 | `cross_org_webhook_delete_rejected` | Org A tries to delete org B's webhook | `delete_subscription` checks org_id |
 
 ### 1.3 Secret Value Never Exposed
@@ -137,7 +137,7 @@ Many endpoints are only exercised as side-effects of setup helpers, not directly
 | 24 | `delete_secret_then_recreate_restores` | PUT → DELETE → PUT same name, verify second PUT succeeds | Upsert SQL clears `deleted_at` — critical for secret rotation |
 | 25 | `delete_permission_returns_true` | Create permission, delete by ID, verify deleted | `permission_rule::delete` untested |
 | 26 | `delete_webhook_returns_true` | Create webhook, delete by ID, verify deleted | `webhooks::delete_subscription` untested |
-| 27 | `list_approvals_returns_pending` | Create approval (via gated execute), list, verify it appears | `list_pending_by_org` only implicitly tested |
+| 27 | `list_approvals_returns_pending` | Create approval (via gated call), list, verify it appears | `list_pending_by_org` only implicitly tested |
 
 ### 2.2 Mode B Execution (Connection-Based)
 

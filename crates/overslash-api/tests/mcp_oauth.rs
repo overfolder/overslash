@@ -353,7 +353,7 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(tools.len(), 3);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"overslash_search"));
-    assert!(names.contains(&"overslash_execute"));
+    assert!(names.contains(&"overslash_call"));
     assert!(names.contains(&"overslash_auth"));
     assert!(
         !names.contains(&"overslash_approve"),
@@ -1544,10 +1544,10 @@ async fn consent_context_reports_reauth_for_similar_reregistered_client() {
 }
 
 /// After an approval is allowed, the agent must be able to trigger the replay
-/// through MCP. This is the new two-stage flow: `overslash_execute` with
-/// `approval_id` forwards to `POST /v1/approvals/{id}/execute`.
+/// through MCP. This is the new two-stage flow: `overslash_call` with
+/// `approval_id` forwards to `POST /v1/approvals/{id}/call`.
 #[tokio::test]
-async fn mcp_overslash_execute_resumes_pending_approval() {
+async fn mcp_overslash_call_resumes_pending_approval() {
     use tokio::net::TcpListener;
     use uuid::Uuid;
 
@@ -1630,7 +1630,7 @@ async fn mcp_overslash_execute_resumes_pending_approval() {
         .await
         .unwrap();
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
             "method":"GET",
@@ -1656,15 +1656,15 @@ async fn mcp_overslash_execute_resumes_pending_approval() {
         .await
         .unwrap();
 
-    // Agent now resumes the approval through MCP. `overslash_execute` with
-    // `approval_id` must forward to POST /v1/approvals/{id}/execute.
+    // Agent now resumes the approval through MCP. `overslash_call` with
+    // `approval_id` must forward to POST /v1/approvals/{id}/call.
     let resp = client
         .post(format!("{base}/mcp"))
         .bearer_auth(&agent_key)
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params": {
-                "name":"overslash_execute",
+                "name":"overslash_call",
                 "arguments": {"approval_id": approval_id}
             }
         }))
@@ -1685,10 +1685,10 @@ async fn mcp_overslash_execute_resumes_pending_approval() {
     assert_eq!(inner["execution"]["triggered_by"], "agent");
 }
 
-/// `overslash_execute` must reject a call that mixes fresh-execute args with
+/// `overslash_call` must reject a call that mixes fresh-call args with
 /// approval_id — the two modes are mutually exclusive.
 #[tokio::test]
-async fn mcp_overslash_execute_rejects_mixed_approval_and_service_args() {
+async fn mcp_overslash_call_rejects_mixed_approval_and_service_args() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
@@ -1720,7 +1720,7 @@ async fn mcp_overslash_execute_rejects_mixed_approval_and_service_args() {
         .json(&json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params": {
-                "name":"overslash_execute",
+                "name":"overslash_call",
                 "arguments": {
                     "approval_id": "apr_whatever",
                     "service": "github",

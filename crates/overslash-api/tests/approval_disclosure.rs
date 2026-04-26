@@ -86,7 +86,7 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
     // user level → 202 Pending Approval *before* any HTTP call, so we never
     // need the mock's real port (extract_hosts strips it anyway).
     let exec: Value = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
             "service": "discloser",

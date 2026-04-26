@@ -73,7 +73,7 @@ struct SearchResponse {
 #[derive(Serialize)]
 struct SearchResult {
     /// Template key (same across all instances). Agents use this to call
-    /// `overslash_execute` in template-keyed mode, or pick an
+    /// `overslash_call` in template-keyed mode, or pick an
     /// `auth.instances[i].name` for instance-keyed mode.
     service: String,
     service_display_name: String,
@@ -106,7 +106,7 @@ struct AuthStatus {
 #[derive(Serialize, Clone)]
 struct InstanceRef {
     /// The instance's runtime name — the string to pass as
-    /// `overslash_execute.service`.
+    /// `overslash_call.service`.
     name: String,
     /// Owner's email, resolved from `identities.email`. Never a raw UUID.
     /// Absent for org-tier instances (no owner identity) and for users

@@ -3,7 +3,7 @@ import type {
   ServiceSummary,
   ServiceDetail,
   ConnectionSummary,
-  ExecuteResponse
+  CallResponse
 } from './types';
 
 function persistedWritable(key: string, initial: string) {
@@ -27,7 +27,7 @@ export const selectedService = writable<ServiceDetail | null>(null);
 export const selectedActionKey = writable<string | null>(null);
 export const connections = writable<ConnectionSummary[]>([]);
 export const executionMode = writable<'A' | 'B' | 'C'>('C');
-export const response = writable<ExecuteResponse | null>(null);
+export const response = writable<CallResponse | null>(null);
 export const lastRequest = writable<Record<string, unknown> | null>(null);
 export const loading = writable(false);
 export const error = writable<string | null>(null);
