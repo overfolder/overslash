@@ -651,6 +651,9 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     }
 }
 

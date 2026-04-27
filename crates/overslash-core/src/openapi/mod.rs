@@ -305,6 +305,15 @@ pub fn compile_service(
         return Err(errors);
     }
 
+    let runtime = match root
+        .get("x-overslash-runtime")
+        .and_then(Value::as_str)
+        .unwrap_or("http")
+    {
+        "platform" => Runtime::Platform,
+        _ => Runtime::Http,
+    };
+
     Ok((
         ServiceDefinition {
             key,

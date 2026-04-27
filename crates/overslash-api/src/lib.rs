@@ -48,6 +48,7 @@ pub struct AppState {
     /// short-circuits the cosine retrieval and blends only keyword +
     /// fuzzy scores.
     pub embeddings_available: bool,
+    pub platform_registry: std::sync::Arc<services::platform_caller::PlatformRegistry>,
 }
 
 /// Create the application router with all routes and middleware.
@@ -84,6 +85,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         pending_authorize_store: services::oauth_as::PendingAuthorizeStore::new(),
         embedder,
         embeddings_available,
+        platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
     };
 
     // Spawn background tasks

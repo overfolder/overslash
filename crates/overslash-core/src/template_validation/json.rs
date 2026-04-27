@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::types::{ServiceAction, ServiceAuth, ServiceDefinition};
+use crate::types::{Runtime, ServiceAction, ServiceAuth, ServiceDefinition};
 
 use super::{Issues, ValidationReport, core::validate_service_definition};
 
@@ -71,7 +71,7 @@ pub fn parse_template_parts(
         category: category.map(|s| s.to_string()),
         auth,
         actions,
-        runtime: Default::default(),
+        runtime: Runtime::Http,
         mcp: None,
     };
 

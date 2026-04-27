@@ -68,6 +68,9 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -1300,6 +1303,9 @@ async fn test_service_registry_api() {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -2246,6 +2252,9 @@ async fn start_api_with_registry(
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()

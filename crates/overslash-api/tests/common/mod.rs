@@ -604,6 +604,9 @@ where
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -696,6 +699,9 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -789,6 +795,9 @@ pub async fn start_api_with_auth_providers(
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -1247,6 +1256,9 @@ pub async fn start_api_with_registry(
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -1347,6 +1359,9 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::StubEmbedder),
         embeddings_available: true,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()
@@ -1419,6 +1434,9 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
     };
 
     let app = axum::Router::new()

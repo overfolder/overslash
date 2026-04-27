@@ -43,12 +43,16 @@ impl fmt::Display for Risk {
 ///
 /// - `Http` (default): actions are OpenAPI operations invoked by the HTTP executor.
 /// - `Mcp`: actions are tools on an external MCP server (Streamable HTTP, JSON-RPC 2.0).
+/// - `Platform`: actions are dispatched in-process to registered Rust handlers.
+///   Used by the `overslash` meta-service so agents can manage templates, secrets,
+///   etc. through the same Mode-C permission/approval graph as external services.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Runtime {
     #[default]
     Http,
     Mcp,
+    Platform,
 }
 
 impl Runtime {
@@ -189,6 +193,13 @@ pub struct ServiceAction {
     /// scope set granted at connect time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_scopes: Vec<String>,
+    /// Platform-runtime only. When set, overrides the action key used for
+    /// permission key derivation, letting multiple actions share a single
+    /// permission anchor. E.g. `list_templates` and `get_template` both
+    /// set `permission: manage_templates` so one `overslash:manage_templates:*`
+    /// grant covers both without granting the broad action-key wildcard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
     /// Labeled jq filters to extract human-readable fields from the resolved
     /// request (method / url / params / body) at approval-create and audit
     /// write time. See SPEC §N "Detail disclosure".
@@ -316,19 +327,24 @@ mod tests {
         assert_eq!(Risk::Delete.to_string(), "delete");
     }
 
-    // ── MCP types ────────────────────────────────────────────────────
+    // ── Runtime types ─────────────────────────────────────────────────
 
     #[test]
     fn runtime_default_is_http() {
         assert_eq!(Runtime::default(), Runtime::Http);
         assert!(Runtime::Http.is_default());
         assert!(!Runtime::Mcp.is_default());
+        assert!(!Runtime::Platform.is_default());
     }
 
     #[test]
     fn runtime_serde_roundtrip() {
         assert_eq!(serde_json::to_string(&Runtime::Http).unwrap(), r#""http""#);
         assert_eq!(serde_json::to_string(&Runtime::Mcp).unwrap(), r#""mcp""#);
+        assert_eq!(
+            serde_json::to_string(&Runtime::Platform).unwrap(),
+            r#""platform""#
+        );
         assert_eq!(
             serde_json::from_str::<Runtime>(r#""http""#).unwrap(),
             Runtime::Http
@@ -337,7 +353,13 @@ mod tests {
             serde_json::from_str::<Runtime>(r#""mcp""#).unwrap(),
             Runtime::Mcp
         );
+        assert_eq!(
+            serde_json::from_str::<Runtime>(r#""platform""#).unwrap(),
+            Runtime::Platform
+        );
     }
+
+    // ── MCP types ────────────────────────────────────────────────────
 
     #[test]
     fn mcp_auth_none_serde() {
@@ -418,6 +440,7 @@ mod tests {
                 params: HashMap::new(),
                 scope_param: Some("team".into()),
                 required_scopes: vec![],
+                permission: None,
                 disclose: vec![],
                 redact: vec![],
                 mcp_tool: Some("search_issues".into()),
@@ -473,6 +496,7 @@ mod tests {
             params: HashMap::new(),
             scope_param: None,
             required_scopes: vec![],
+            permission: None,
             disclose: vec![],
             redact: vec![],
             mcp_tool: None,

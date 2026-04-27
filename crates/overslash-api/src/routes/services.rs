@@ -802,6 +802,7 @@ mod classify_scopes_tests {
                     params: HashMap::new(),
                     scope_param: None,
                     required_scopes: required.iter().map(|s| s.to_string()).collect(),
+                    permission: None,
                     disclose: Vec::new(),
                     redact: Vec::new(),
                     mcp_tool: None,
