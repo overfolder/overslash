@@ -30,6 +30,7 @@ dashboard/node_modules/*
 !dashboard/node_modules/.gitkeep
 dashboard/.svelte-kit/
 dashboard/build/
+.fastembed_cache/
 
 # Logs
 *.log
