@@ -699,7 +699,7 @@ async fn test_user_cancels_pending_execution_blocks_agent() {
 }
 
 #[tokio::test]
-async fn test_agent_cannot_cancel_own_pending_execution() {
+async fn test_agent_can_cancel_own_pending_execution() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
@@ -737,14 +737,14 @@ async fn test_agent_cannot_cancel_own_pending_execution() {
         .await
         .unwrap();
 
-    // Agent (the requester) attempts to cancel — resolver-only, 403.
+    // Agent (the requester) can now cancel their own pending execution (200).
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.status(), 200);
 }
 
 #[tokio::test]
