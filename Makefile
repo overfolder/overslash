@@ -1,7 +1,7 @@
 .PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
-       dashboard-static web-build web \
+       dashboard-static web-build web build install \
        logs logs-deploy \
        shortener-dev shortener-down shortener-deploy
 
@@ -17,6 +17,9 @@ TF_VAR_FILE := $(TOFU_DIR)/env/$(ENV).tfvars
 # where the file is created by bin/worktree-env.sh just before being read.
 -include .env.local
 export
+
+# Install prefix (default: ~/.local). Override: PREFIX=/usr/local make install
+PREFIX ?= $(HOME)/.local
 
 # Colors
 GREEN := \033[0;32m
@@ -56,13 +59,25 @@ dev-dashboard:
 dashboard-static:
 	cd dashboard && npm install && npm run build:static
 
-# Build the self-hosted single-binary release with the embedded dashboard.
+# Build the self-hosted single-binary release with embedded dashboard and MCP.
 # Produces target/release/overslash. Run `overslash web` to start it.
+build: dashboard-static
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+
+# Alias kept for backward compatibility.
 web-build: dashboard-static
-	cargo build --release -p overslash-cli --features embed-dashboard
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+
+# Install overslash to $(PREFIX)/bin (default: ~/.local/bin).
+# Override: PREFIX=/usr/local make install
+install: build
+	install -d $(PREFIX)/bin
+	install -m 755 target/release/overslash $(PREFIX)/bin/overslash
+	@echo -e "$(GREEN)Installed:$(NC) $(PREFIX)/bin/overslash"
+	@echo "Make sure $(PREFIX)/bin is in your PATH, then run: overslash web"
 
 # Build + run the self-hosted binary directly (foreground).
-web: web-build
+web: build
 	./target/release/overslash web
 
 # Stop services

@@ -36,7 +36,7 @@ enum Command {
     Web {
         #[arg(long, env = "HOST", default_value = "0.0.0.0")]
         host: String,
-        /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 8080.
+        /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 7171.
         #[arg(long)]
         port: Option<u16>,
     },
@@ -182,11 +182,11 @@ async fn main() -> anyhow::Result<()> {
             //      doesn't collide with sibling worktrees or the Docker API
             //      container (which uses API_HOST_PORT / internal :3000).
             //   3. PORT — legacy fallback from .env / shell env.
-            //   4. 8080 default.
+            //   4. 7171 default.
             let effective_port = port
                 .or_else(|| env_port("OVERSLASH_WEB_PORT"))
                 .or_else(|| env_port("PORT"))
-                .unwrap_or(8080);
+                .unwrap_or(7171);
             web::run(host, effective_port).await
         }
         Command::Watch {
@@ -324,7 +324,7 @@ mod cli_tests {
         }
     }
 
-    // Precedence helper mirrors main(): --port > OVERSLASH_WEB_PORT > PORT > 8080.
+    // Precedence helper mirrors main(): --port > OVERSLASH_WEB_PORT > PORT > 7171.
     fn resolve_web_port(
         cli_port: Option<u16>,
         web_env: Option<&str>,
@@ -333,7 +333,7 @@ mod cli_tests {
         cli_port
             .or_else(|| web_env.and_then(|v| v.parse().ok()))
             .or_else(|| port_env.and_then(|v| v.parse().ok()))
-            .unwrap_or(8080)
+            .unwrap_or(7171)
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod cli_tests {
     #[test]
     fn web_port_falls_back_to_port_env_then_default() {
         assert_eq!(resolve_web_port(None, None, Some("3000")), 3000);
-        assert_eq!(resolve_web_port(None, None, None), 8080);
+        assert_eq!(resolve_web_port(None, None, None), 7171);
     }
 
     #[test]
