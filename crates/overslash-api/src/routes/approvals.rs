@@ -723,7 +723,12 @@ async fn call_approval(
     // MCP-runtime approvals have a different shape (runtime, tool,
     // arguments) that this HTTP-replay path can't call. Clean 409 until
     // a dedicated MCP-replay path lands.
-    if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("mcp") {
+    // Also check for "tool" presence: apply_redactions keeps the key but
+    // replaces the value, so "runtime" may be "[REDACTED]" while "tool"
+    // (MCP-only) still signals the projection type unambiguously.
+    if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("mcp")
+        || replay_value.get("tool").is_some()
+    {
         return fail_and_return(
             &scope,
             execution_id,
