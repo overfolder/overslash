@@ -24,31 +24,17 @@ pub async fn list(config_path: PathBuf) -> anyhow::Result<()> {
             config_path.display()
         )
     })?;
-
     let client = build_client()?;
-    let url = format!("{}/v1/services", config.server_url.trim_end_matches('/'));
-
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", config.token))
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
-
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        eprintln!("error: token expired or invalid — run `overslash mcp login`");
-        std::process::exit(2);
+    match list_inner(&client, &config.server_url, &config.token).await {
+        Ok(body) => {
+            println!("{body}");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
     }
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        eprintln!("error: API returned {}: {}", status, body);
-        std::process::exit(2);
-    }
-
-    let body_text = resp.text().await.context("read response body")?;
-    println!("{body_text}");
-    std::process::exit(0);
 }
 
 pub async fn call(config_path: PathBuf, args: CallArgs) -> anyhow::Result<()> {
@@ -58,61 +44,107 @@ pub async fn call(config_path: PathBuf, args: CallArgs) -> anyhow::Result<()> {
             config_path.display()
         )
     })?;
-
     let client = build_client()?;
-    let url = format!(
-        "{}/v1/actions/call",
-        config.server_url.trim_end_matches('/')
-    );
+    let req_body = build_request_body(&args);
+    match call_inner(&client, &config.server_url, &config.token, &req_body).await {
+        Ok(CallOutcome::Called(body)) => {
+            println!("{body}");
+            std::process::exit(0);
+        }
+        Ok(CallOutcome::PendingApproval {
+            approval_id,
+            approval_url,
+            body,
+        }) => {
+            if let (Some(id), Some(url)) = (&approval_id, &approval_url) {
+                eprintln!(
+                    "pending approval — id: {id}\n  review at: {url}\n  run: overslash watch {id}"
+                );
+            }
+            println!("{body}");
+            std::process::exit(0);
+        }
+        Ok(CallOutcome::Denied(body)) => {
+            println!("{body}");
+            std::process::exit(1);
+        }
+        Ok(CallOutcome::Unknown { status, body }) => {
+            eprintln!("error: unexpected status {status:?}");
+            println!("{body}");
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    }
+}
 
-    let mut req_body = serde_json::Map::new();
+// ---------------------------------------------------------------------------
+// Inner functions — tested directly with mock servers
+// ---------------------------------------------------------------------------
 
-    if let Some(service) = &args.service {
-        req_body.insert("service".into(), serde_json::Value::String(service.clone()));
-    }
-    if let Some(action) = &args.action {
-        req_body.insert("action".into(), serde_json::Value::String(action.clone()));
-    }
-    if !args.params.is_empty() {
-        let params: serde_json::Map<String, serde_json::Value> = args.params.into_iter().collect();
-        req_body.insert("params".into(), serde_json::Value::Object(params));
-    }
-    if let Some(url_val) = &args.url {
-        req_body.insert("url".into(), serde_json::Value::String(url_val.clone()));
-    }
-    if let Some(method) = &args.method {
-        req_body.insert("method".into(), serde_json::Value::String(method.clone()));
-    }
-    if !args.headers.is_empty() {
-        let headers: serde_json::Map<String, serde_json::Value> = args
-            .headers
-            .into_iter()
-            .map(|(k, v)| (k, serde_json::Value::String(v)))
-            .collect();
-        req_body.insert("headers".into(), serde_json::Value::Object(headers));
-    }
-    if let Some(body) = &args.body {
-        req_body.insert("body".into(), serde_json::Value::String(body.clone()));
-    }
-    if let Some(expr) = &args.filter {
-        req_body.insert(
-            "filter".into(),
-            serde_json::json!({ "lang": "jq", "expr": expr }),
-        );
-    }
+async fn list_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+) -> anyhow::Result<String> {
+    let url = format!("{}/v1/services", base_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .with_context(|| format!("GET {url}"))?;
 
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(anyhow!(
+            "token expired or invalid — run `overslash mcp login`"
+        ));
+    }
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("API returned {}: {}", status, body));
+    }
+    resp.text().await.context("read response body")
+}
+
+#[derive(Debug, PartialEq)]
+enum CallOutcome {
+    Called(String),
+    PendingApproval {
+        approval_id: Option<String>,
+        approval_url: Option<String>,
+        body: String,
+    },
+    Denied(String),
+    Unknown {
+        status: String,
+        body: String,
+    },
+}
+
+async fn call_inner(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    req_body: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<CallOutcome> {
+    let url = format!("{}/v1/actions/call", base_url.trim_end_matches('/'));
     let resp = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", config.token))
-        .json(&req_body)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(req_body)
         .send()
         .await
         .with_context(|| format!("POST {url}"))?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        eprintln!("error: token expired or invalid — run `overslash mcp login`");
-        std::process::exit(2);
+        return Err(anyhow!(
+            "token expired or invalid — run `overslash mcp login`"
+        ));
     }
     // 403 FORBIDDEN carries a {"status":"denied",...} body — fall through to
     // the status-dispatch below rather than treating it as a generic error.
@@ -121,39 +153,64 @@ pub async fn call(config_path: PathBuf, args: CallArgs) -> anyhow::Result<()> {
         && status != reqwest::StatusCode::FORBIDDEN
     {
         let body = resp.text().await.unwrap_or_default();
-        eprintln!("error: API returned {}: {}", status, body);
-        std::process::exit(2);
+        return Err(anyhow!("API returned {}: {}", status, body));
     }
 
     let body_text = resp.text().await.context("read response body")?;
     let poll: CallStatusPoll = serde_json::from_str(&body_text).context("parse call response")?;
 
-    match poll.status.as_str() {
-        "called" => {
-            println!("{body_text}");
-            std::process::exit(0);
-        }
-        "pending_approval" => {
-            if let Some(approval_id) = &poll.approval_id {
-                if let Some(approval_url) = &poll.approval_url {
-                    eprintln!(
-                        "pending approval — id: {approval_id}\n  review at: {approval_url}\n  run: overslash watch {approval_id}"
-                    );
-                }
-            }
-            println!("{body_text}");
-            std::process::exit(0);
-        }
-        "denied" => {
-            println!("{body_text}");
-            std::process::exit(1);
-        }
-        other => {
-            eprintln!("error: unexpected status {other:?}");
-            println!("{body_text}");
-            std::process::exit(2);
-        }
+    Ok(match poll.status.as_str() {
+        "called" => CallOutcome::Called(body_text),
+        "pending_approval" => CallOutcome::PendingApproval {
+            approval_id: poll.approval_id,
+            approval_url: poll.approval_url,
+            body: body_text,
+        },
+        "denied" => CallOutcome::Denied(body_text),
+        _ => CallOutcome::Unknown {
+            status: poll.status,
+            body: body_text,
+        },
+    })
+}
+
+fn build_request_body(args: &CallArgs) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    if let Some(v) = &args.service {
+        m.insert("service".into(), serde_json::Value::String(v.clone()));
     }
+    if let Some(v) = &args.action {
+        m.insert("action".into(), serde_json::Value::String(v.clone()));
+    }
+    if !args.params.is_empty() {
+        let params: serde_json::Map<String, serde_json::Value> =
+            args.params.iter().cloned().collect();
+        m.insert("params".into(), serde_json::Value::Object(params));
+    }
+    if let Some(v) = &args.url {
+        m.insert("url".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(v) = &args.method {
+        m.insert("method".into(), serde_json::Value::String(v.clone()));
+    }
+    if !args.headers.is_empty() {
+        let headers: serde_json::Map<String, serde_json::Value> = args
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect();
+        m.insert("headers".into(), serde_json::Value::Object(headers));
+    }
+    if let Some(v) = &args.body {
+        m.insert("body".into(), serde_json::Value::String(v.clone()));
+    }
+    if let Some(expr) = &args.filter {
+        m.insert(
+            "filter".into(),
+            serde_json::json!({ "lang": "jq", "expr": expr }),
+        );
+    }
+    m
 }
 
 /// Parse `key=value`. Value is JSON-parsed; falls back to a plain string.
@@ -191,6 +248,14 @@ fn build_client() -> anyhow::Result<reqwest::Client> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use axum::Router;
+    use axum::routing::{get, post};
+    use tokio::net::TcpListener;
+
+    // ---------------------------------------------------------------------------
+    // parse_param / parse_header unit tests
+    // ---------------------------------------------------------------------------
 
     #[test]
     fn parse_param_plain_string() {
@@ -248,24 +313,54 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Integration-style tests with a mock HTTP server
+    // build_request_body unit tests
     // ---------------------------------------------------------------------------
 
-    use axum::Router;
-    use axum::routing::{get, post};
-    use tokio::net::TcpListener;
-
-    fn test_config(server_url: String) -> overslash_mcp::config::McpConfig {
-        overslash_mcp::config::McpConfig {
-            server_url,
-            token: "test-token".into(),
-            refresh_token: None,
-            client_id: None,
-            redirect_uri: None,
-        }
+    #[test]
+    fn build_request_body_mode_c() {
+        let args = CallArgs {
+            service: Some("github".into()),
+            action: Some("list_repos".into()),
+            params: vec![("org".into(), serde_json::json!("acme"))],
+            url: None,
+            method: None,
+            headers: vec![],
+            body: None,
+            filter: None,
+        };
+        let m = build_request_body(&args);
+        assert_eq!(m["service"], "github");
+        assert_eq!(m["action"], "list_repos");
+        assert_eq!(m["params"]["org"], "acme");
+        assert!(!m.contains_key("url"));
     }
 
-    fn test_http_client() -> reqwest::Client {
+    #[test]
+    fn build_request_body_mode_a() {
+        let args = CallArgs {
+            service: None,
+            action: None,
+            params: vec![],
+            url: Some("https://api.example.com/v1".into()),
+            method: Some("POST".into()),
+            headers: vec![("X-Key".into(), "val".into())],
+            body: Some(r#"{"foo":1}"#.into()),
+            filter: Some(".data".into()),
+        };
+        let m = build_request_body(&args);
+        assert_eq!(m["url"], "https://api.example.com/v1");
+        assert_eq!(m["method"], "POST");
+        assert_eq!(m["headers"]["X-Key"], "val");
+        assert_eq!(m["body"], r#"{"foo":1}"#);
+        assert_eq!(m["filter"]["lang"], "jq");
+        assert_eq!(m["filter"]["expr"], ".data");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Mock server helpers
+    // ---------------------------------------------------------------------------
+
+    fn test_client() -> reqwest::Client {
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(5))
@@ -273,7 +368,7 @@ mod tests {
             .unwrap()
     }
 
-    async fn serve_json(path: &'static str, body: serde_json::Value) -> String {
+    async fn serve_get_json(path: &'static str, body: serde_json::Value) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = Router::new().route(
@@ -329,76 +424,160 @@ mod tests {
         format!("http://{addr}")
     }
 
-    #[tokio::test]
-    async fn list_endpoint_fetches_services() {
-        let body = serde_json::json!([{"id": "abc", "name": "github", "status": "active"}]);
-        let base_url = serve_json("/v1/services", body.clone()).await;
+    async fn serve_get_status(path: &'static str, http_status: u16) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            path,
+            get(move || async move {
+                axum::http::Response::builder()
+                    .status(http_status)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
 
-        let config = test_config(base_url);
-        let client = test_http_client();
-        let url = format!("{}/v1/services", config.server_url.trim_end_matches('/'));
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", config.token))
-            .send()
-            .await
-            .unwrap();
-        assert!(resp.status().is_success());
-        let got: serde_json::Value = resp.json().await.unwrap();
+    async fn serve_post_status(path: &'static str, http_status: u16) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            path,
+            post(move || async move {
+                axum::http::Response::builder()
+                    .status(http_status)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
+    // ---------------------------------------------------------------------------
+    // list_inner tests
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_inner_returns_body_on_success() {
+        let body = serde_json::json!([{"id": "abc", "name": "github", "status": "active"}]);
+        let base_url = serve_get_json("/v1/services", body.clone()).await;
+        let client = test_client();
+        let result = list_inner(&client, &base_url, "tok").await.unwrap();
+        let got: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(got, body);
     }
 
     #[tokio::test]
-    async fn call_endpoint_posts_and_returns_result() {
-        let response_body = serde_json::json!({
-            "status": "called",
-            "result": { "status_code": 200, "body": "ok", "headers": {}, "duration_ms": 42 }
-        });
-        let base_url = serve_post_json("/v1/actions/call", response_body.clone()).await;
-
-        let config = test_config(base_url);
-        let client = test_http_client();
-        let url = format!(
-            "{}/v1/actions/call",
-            config.server_url.trim_end_matches('/')
-        );
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", config.token))
-            .json(&serde_json::json!({"service": "github", "action": "list_repos"}))
-            .send()
-            .await
-            .unwrap();
-        assert!(resp.status().is_success());
-        let got: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(got["status"], "called");
+    async fn list_inner_401_returns_err() {
+        let base_url = serve_get_status("/v1/services", 401).await;
+        let client = test_client();
+        let err = list_inner(&client, &base_url, "bad-tok").await.unwrap_err();
+        assert!(err.to_string().contains("token expired"));
     }
 
     #[tokio::test]
-    async fn call_403_denied_body_is_parseable_as_denied() {
-        // The API returns 403 FORBIDDEN with {"status":"denied","reason":"..."}.
-        // Verify that the response parses correctly as a CallStatusPoll with
-        // status "denied" so the CLI can exit with code 1 rather than 2.
-        let denied_body =
-            serde_json::json!({"status": "denied", "reason": "insufficient permissions"});
-        let base_url = serve_post_status_json("/v1/actions/call", 403, denied_body.clone()).await;
+    async fn list_inner_500_returns_err() {
+        let base_url = serve_get_status("/v1/services", 500).await;
+        let client = test_client();
+        let err = list_inner(&client, &base_url, "tok").await.unwrap_err();
+        assert!(err.to_string().contains("500"));
+    }
 
-        let config = test_config(base_url);
-        let client = test_http_client();
-        let url = format!(
-            "{}/v1/actions/call",
-            config.server_url.trim_end_matches('/')
-        );
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", config.token))
-            .json(&serde_json::json!({"service": "github", "action": "delete_repo"}))
-            .send()
+    // ---------------------------------------------------------------------------
+    // call_inner tests
+    // ---------------------------------------------------------------------------
+
+    fn empty_body() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::Map::new()
+    }
+
+    #[tokio::test]
+    async fn call_inner_called_returns_called_outcome() {
+        let resp = serde_json::json!({
+            "status": "called",
+            "result": {"status_code": 200, "body": "ok", "headers": {}, "duration_ms": 5}
+        });
+        let base_url = serve_post_json("/v1/actions/call", resp).await;
+        let client = test_client();
+        let outcome = call_inner(&client, &base_url, "tok", &empty_body())
             .await
             .unwrap();
-        assert_eq!(resp.status(), 403);
-        let body_text = resp.text().await.unwrap();
-        let poll: CallStatusPoll = serde_json::from_str(&body_text).unwrap();
-        assert_eq!(poll.status, "denied");
+        assert!(matches!(outcome, CallOutcome::Called(_)));
+    }
+
+    #[tokio::test]
+    async fn call_inner_pending_approval_returns_pending_outcome() {
+        let resp = serde_json::json!({
+            "status": "pending_approval",
+            "approval_id": "appr-123",
+            "approval_url": "https://x.y/approvals/appr-123",
+            "action_description": "delete repo",
+            "expires_at": "2099-01-01T00:00:00Z"
+        });
+        let base_url = serve_post_json("/v1/actions/call", resp).await;
+        let client = test_client();
+        let outcome = call_inner(&client, &base_url, "tok", &empty_body())
+            .await
+            .unwrap();
+        if let CallOutcome::PendingApproval {
+            approval_id,
+            approval_url,
+            ..
+        } = outcome
+        {
+            assert_eq!(approval_id.as_deref(), Some("appr-123"));
+            assert!(approval_url.is_some());
+        } else {
+            panic!("expected PendingApproval, got {outcome:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn call_inner_denied_200_returns_denied_outcome() {
+        let resp = serde_json::json!({"status": "denied", "reason": "no permission"});
+        let base_url = serve_post_json("/v1/actions/call", resp).await;
+        let client = test_client();
+        let outcome = call_inner(&client, &base_url, "tok", &empty_body())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CallOutcome::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn call_inner_denied_403_returns_denied_outcome() {
+        let resp = serde_json::json!({"status": "denied", "reason": "insufficient permissions"});
+        let base_url = serve_post_status_json("/v1/actions/call", 403, resp).await;
+        let client = test_client();
+        let outcome = call_inner(&client, &base_url, "tok", &empty_body())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CallOutcome::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn call_inner_401_returns_err() {
+        let base_url = serve_post_status("/v1/actions/call", 401).await;
+        let client = test_client();
+        let err = call_inner(&client, &base_url, "bad-tok", &empty_body())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("token expired"));
+    }
+
+    #[tokio::test]
+    async fn call_inner_500_returns_err() {
+        let base_url = serve_post_status("/v1/actions/call", 500).await;
+        let client = test_client();
+        let err = call_inner(&client, &base_url, "tok", &empty_body())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("500"));
     }
 }
