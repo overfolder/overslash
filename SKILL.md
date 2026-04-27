@@ -3,6 +3,25 @@ name: overslash
 description: Overslash is a multi-tenant actions and authentication gateway for AI agents on app.overslash.com. USE WHEN you need to call external services on behalf of a user, manage OAuth connections, resolve approvals, or run service actions.
 ---
 
+# Installing the CLI
+
+```bash
+git clone https://github.com/overfolder/overslash
+cd overslash
+make install        # builds dashboard + binary, installs to ~/.local/bin
+```
+
+Make sure `~/.local/bin` is in your PATH. Then confirm:
+
+```bash
+overslash --version
+```
+
+Self-host the gateway with `overslash web` (starts on `http://localhost:7171`).  
+To use the managed cloud instead, see the enrollment sections below.
+
+---
+
 # Enrolling with app.overslash.com
 
 Point your MCP client at `https://app.overslash.com/mcp`.
@@ -62,7 +81,7 @@ When `overslash_call` hits a permission gap it does not execute — it returns:
 
 **Step 2 — wait for resolution.**
 
-If the `overslash` CLI is available ([install](https://github.com/overfolder/overslash#installation)), use it — works in any harness:
+If the `overslash` CLI is available (see [Installing the CLI](#installing-the-cli) above), use it — works in any harness:
 
 ```bash
 overslash watch abc-123          # --timeout 15m --poll 3s by default
