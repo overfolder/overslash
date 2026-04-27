@@ -4,6 +4,7 @@ mod common;
 mod mcp;
 mod mcp_login;
 mod serve;
+mod watch;
 mod web;
 
 #[derive(Parser)]
@@ -37,6 +38,26 @@ enum Command {
         /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 8080.
         #[arg(long)]
         port: Option<u16>,
+    },
+    /// Watch a pending approval until it resolves (or times out), then exit.
+    ///
+    /// Polls GET /v1/approvals/{id} and writes the final JSON to stdout.
+    /// Exit code: 0 = allowed, 1 = denied/expired/timeout, 2 = error.
+    Watch {
+        /// Approval UUID to watch.
+        approval_id: String,
+        /// Maximum time to wait, e.g. "15m", "1h", "900s". Default: 15m.
+        #[arg(long, default_value = "15m")]
+        timeout: String,
+        /// Poll interval, e.g. "3s", "10s". Default: 3s.
+        #[arg(long, default_value = "3s")]
+        poll: String,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
     },
     /// MCP server and configuration helper.
     Mcp {
@@ -104,6 +125,17 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| env_port("PORT"))
                 .unwrap_or(8080);
             web::run(host, effective_port).await
+        }
+        Command::Watch {
+            approval_id,
+            timeout,
+            poll,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            watch::run(path, approval_id, timeout, poll).await
         }
         Command::Mcp {
             command,
