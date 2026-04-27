@@ -231,6 +231,9 @@ struct ListQuery {
     /// Optional: list pending approvals for a specific identity (used by the
     /// identity hierarchy view). Caller must own the identity's org.
     identity_id: Option<Uuid>,
+    /// Optional: filter results to a specific approval status
+    /// (pending | allowed | denied | expired).
+    status: Option<String>,
 }
 
 async fn list_approvals(
@@ -255,6 +258,12 @@ async fn list_approvals(
             let identity_id = auth.identity_id.ok_or_else(|| {
                 AppError::BadRequest("scope=mine requires an identity-bound api key".into())
             })?;
+            if let Some(ref status) = q.status {
+                let rows = scope
+                    .list_mine_approvals_by_status(identity_id, status)
+                    .await?;
+                return Ok(Json(batch_responses(&scope, rows).await?));
+            }
             scope.list_mine_approvals(identity_id).await?
         }
         Some("assigned") => {
@@ -276,6 +285,10 @@ async fn list_approvals(
         }
         None => scope.list_pending_approvals().await?,
     };
+    let mut rows = rows;
+    if let Some(ref s) = q.status {
+        rows.retain(|r| r.status == *s);
+    }
     Ok(Json(batch_responses(&scope, rows).await?))
 }
 
@@ -892,37 +905,38 @@ async fn call_approval(
 
 async fn cancel_approval_execution(
     State(state): State<AppState>,
-    WriteAcl(acl): WriteAcl,
+    auth: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
-    let auth = acl;
     let approval = scope
         .get_approval(id)
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
-    // Cancellation is resolver-only. Agents cannot cancel their own pending
-    // executions — the agent's fallback is to let the 15-minute window expire.
+    // Requesters may cancel their own pending execution (self-cancel).
+    // Third parties need resolver-level access (Write ACL).
     use overslash_core::permissions::AccessLevel;
     if let Some(caller_identity) = auth.identity_id {
-        if caller_identity == approval.identity_id {
-            return Err(AppError::Forbidden(
-                "agents cannot cancel their own pending executions".into(),
-            ));
-        }
-        if auth.access_level < AccessLevel::Admin {
-            let allowed = crate::services::permission_chain::is_self_or_ancestor(
-                &scope,
-                caller_identity,
-                approval.current_resolver_identity_id,
-            )
-            .await?;
-            if !allowed {
-                return Err(AppError::Forbidden(
-                    "caller is not authorized to cancel this execution".into(),
-                ));
+        let is_requester = caller_identity == approval.identity_id;
+        let is_admin = auth.access_level >= AccessLevel::Admin;
+        if !is_requester {
+            if auth.access_level < AccessLevel::Write {
+                return Err(AppError::Forbidden("write access required".into()));
+            }
+            if !is_admin {
+                let allowed = crate::services::permission_chain::is_self_or_ancestor(
+                    &scope,
+                    caller_identity,
+                    approval.current_resolver_identity_id,
+                )
+                .await?;
+                if !allowed {
+                    return Err(AppError::Forbidden(
+                        "caller is not authorized to cancel this execution".into(),
+                    ));
+                }
             }
         }
     }

@@ -53,3 +53,21 @@ platform_actions:
   manage_api_keys:
     description: "Create API keys"
     risk: delete
+  list_pending:
+    description: >
+      List approved actions with a pending execution, ready to dispatch or
+      cancel. Scoped to the caller's own requests. Returns an array of approval
+      objects; each includes a nested execution with status, expires_at, and
+      result.
+    risk: read
+  call_pending:
+    description: >
+      Dispatch a previously-approved action. Requires params.approval_id
+      (string). The execution must still be in pending state — it expires 15
+      minutes after the approval was granted.
+    risk: write
+  cancel_pending:
+    description: >
+      Cancel a pending execution. Requires params.approval_id (string). The
+      requesting agent or any resolver with write access may cancel.
+    risk: write

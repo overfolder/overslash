@@ -16,6 +16,11 @@ use uuid::Uuid;
 
 /// Start the Overslash API server in-process on a random port.
 async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    // Bind first so `public_url` reflects the real port — MCP loopback calls
+    // use `public_url` as the base and would fail against a wrong address.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -30,7 +35,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         filter_timeout_ms: 2000,
@@ -80,10 +85,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::mcp::router())
         .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -699,7 +702,7 @@ async fn test_user_cancels_pending_execution_blocks_agent() {
 }
 
 #[tokio::test]
-async fn test_agent_cannot_cancel_own_pending_execution() {
+async fn test_agent_can_cancel_own_pending_execution() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
@@ -737,14 +740,14 @@ async fn test_agent_cannot_cancel_own_pending_execution() {
         .await
         .unwrap();
 
-    // Agent (the requester) attempts to cancel — resolver-only, 403.
+    // Agent (the requester) can now cancel their own pending execution (200).
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.status(), 200);
 }
 
 #[tokio::test]
@@ -2808,5 +2811,258 @@ async fn test_filter_preserved_across_approval_and_replay() {
     assert!(
         !filtered.is_null(),
         "replay must carry filtered_body when the original request had a filter; got {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Pending calls monitor — scope=mine&status=allowed + MCP platform actions
+// ---------------------------------------------------------------------------
+
+/// Helper: create a secret, trigger a raw-HTTP action (gets approved because
+/// secrets are used), have admin allow it, return the approval_id.
+async fn create_allowed_approval(
+    base: &str,
+    mock_addr: &SocketAddr,
+    agent_key: &str,
+    admin_key: &str,
+) -> String {
+    let client = Client::new();
+    client
+        .put(format!("{base}/v1/secrets/pending-tk"))
+        .header(auth(agent_key).0, auth(agent_key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(agent_key).0, auth(agent_key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "pending-tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(admin_key).0, auth(admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    approval_id
+}
+
+#[tokio::test]
+async fn test_scope_mine_status_allowed_returns_allowed_approvals() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    // Before any approval: list is empty.
+    let pre: Vec<Value> = client
+        .get(format!("{base}/v1/approvals?scope=mine&status=allowed"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(pre.is_empty(), "expected empty before any approval");
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    // After allow: scope=mine&status=allowed returns the approval with pending execution.
+    let post: Vec<Value> = client
+        .get(format!("{base}/v1/approvals?scope=mine&status=allowed"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(post.len(), 1, "expected one allowed approval; got {post:?}");
+    assert_eq!(post[0]["id"], approval_id);
+    assert_eq!(post[0]["status"], "allowed");
+    assert_eq!(post[0]["execution"]["status"], "pending");
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_list_pending() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "list_pending"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let items: Vec<Value> = serde_json::from_str(text).unwrap();
+    assert_eq!(items.len(), 1, "expected one pending item; got {items:?}");
+    assert_eq!(items[0]["id"], approval_id);
+    assert_eq!(items[0]["status"], "allowed");
+    assert_eq!(items[0]["execution"]["status"], "pending");
+
+    // After the execution is dispatched it should be filtered out of list_pending.
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    let frame2: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "list_pending"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(frame2["error"].is_null(), "MCP error after call: {frame2}");
+    let text2 = frame2["result"]["content"][0]["text"].as_str().unwrap();
+    let items2: Vec<Value> = serde_json::from_str(text2).unwrap();
+    assert!(
+        items2.is_empty(),
+        "list_pending should exclude non-pending executions; got {items2:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_call_pending() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "call_pending",
+                    "params": {"approval_id": approval_id}
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "executed");
+    assert_eq!(inner["execution"]["triggered_by"], "agent");
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_cancel_pending() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "cancel_pending",
+                    "params": {"approval_id": approval_id}
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_unknown_platform_action_returns_error() {
+    let pool = common::test_pool().await;
+    let (base, key, ..) = setup(pool).await;
+    let client = Client::new();
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "nonexistent"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(
+        !frame["error"].is_null(),
+        "expected error for unknown platform action; got {frame}"
     );
 }

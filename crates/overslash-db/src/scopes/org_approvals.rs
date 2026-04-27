@@ -113,6 +113,16 @@ impl OrgScope {
         crate::repos::approval::list_mine(self.db(), self.org_id(), identity_id).await
     }
 
+    /// List approvals for `identity_id` with the given `status`.
+    pub async fn list_mine_approvals_by_status(
+        &self,
+        identity_id: Uuid,
+        status: &str,
+    ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+        crate::repos::approval::list_mine_by_status(self.db(), self.org_id(), identity_id, status)
+            .await
+    }
+
     /// List approvals where `identity_id` is the current resolver right now.
     pub async fn list_assigned_approvals(
         &self,

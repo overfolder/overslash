@@ -188,6 +188,28 @@ pub(crate) async fn list_mine(
     .await
 }
 
+/// List approvals for `identity_id` filtered by an arbitrary `status` string.
+/// Used when the caller explicitly passes `?status=<value>` (e.g. `allowed`).
+pub(crate) async fn list_mine_by_status(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    status: &str,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+         FROM approvals
+         WHERE org_id = $1 AND identity_id = $2 AND status = $3
+         ORDER BY created_at DESC",
+        org_id,
+        identity_id,
+        status,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// List pending approvals where the caller is the current resolver right now
 /// (`?scope=assigned`). Strict "inbox" view — does NOT include approvals
 /// sitting on a descendant of the caller. Excludes self-requested approvals.

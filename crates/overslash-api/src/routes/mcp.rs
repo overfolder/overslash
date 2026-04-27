@@ -328,12 +328,71 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
         .get("action")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "action required".to_string())?;
+
+    // Overslash metaservice platform actions are handled in-process; they have
+    // no upstream HTTP host to forward to.
+    if service == "overslash" {
+        return dispatch_overslash_platform(state, bearer, action, args).await;
+    }
+
     let body = json!({
         "service": service,
         "action": action,
         "params": args.get("params").cloned().unwrap_or(Value::Null),
     });
     forward(state, bearer, Method::POST, "/v1/actions/call", Some(body)).await
+}
+
+async fn dispatch_overslash_platform(
+    state: &AppState,
+    bearer: &str,
+    action: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let params = args.get("params");
+    match action {
+        "list_pending" => {
+            let mut result = forward(
+                state,
+                bearer,
+                Method::GET,
+                "/v1/approvals?scope=mine&status=allowed",
+                None,
+            )
+            .await?;
+            // An approval's status stays 'allowed' even after its execution
+            // has been dispatched, failed, or expired. Only return entries
+            // where the execution is still dispatchable.
+            if let Some(arr) = result.as_array_mut() {
+                arr.retain(|item| {
+                    item.get("execution")
+                        .and_then(|e| e.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("pending")
+                });
+            }
+            Ok(result)
+        }
+        "call_pending" => {
+            let id = params
+                .and_then(|p| p.get("approval_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "call_pending requires params.approval_id".to_string())?;
+            let path = format!("/v1/approvals/{}/call", urlencoding::encode(id));
+            forward(state, bearer, Method::POST, &path, None).await
+        }
+        "cancel_pending" => {
+            let id = params
+                .and_then(|p| p.get("approval_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| "cancel_pending requires params.approval_id".to_string())?;
+            let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
+            forward(state, bearer, Method::POST, &path, None).await
+        }
+        other => Err(format!(
+            "overslash platform action '{other}' is not callable via MCP"
+        )),
+    }
 }
 
 async fn dispatch_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
