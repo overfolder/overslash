@@ -114,7 +114,12 @@ pub async fn call(config_path: PathBuf, args: CallArgs) -> anyhow::Result<()> {
         eprintln!("error: token expired or invalid — run `overslash mcp login`");
         std::process::exit(2);
     }
-    if !status.is_success() && status != reqwest::StatusCode::ACCEPTED {
+    // 403 FORBIDDEN carries a {"status":"denied",...} body — fall through to
+    // the status-dispatch below rather than treating it as a generic error.
+    if !status.is_success()
+        && status != reqwest::StatusCode::ACCEPTED
+        && status != reqwest::StatusCode::FORBIDDEN
+    {
         let body = resp.text().await.unwrap_or_default();
         eprintln!("error: API returned {}: {}", status, body);
         std::process::exit(2);
@@ -300,6 +305,30 @@ mod tests {
         format!("http://{addr}")
     }
 
+    async fn serve_post_status_json(
+        path: &'static str,
+        http_status: u16,
+        body: serde_json::Value,
+    ) -> String {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            path,
+            post(move || {
+                let b = body.clone();
+                async move {
+                    (StatusCode::from_u16(http_status).unwrap(), axum::Json(b)).into_response()
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
     #[tokio::test]
     async fn list_endpoint_fetches_services() {
         let body = serde_json::json!([{"id": "abc", "name": "github", "status": "active"}]);
@@ -343,5 +372,33 @@ mod tests {
         assert!(resp.status().is_success());
         let got: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(got["status"], "called");
+    }
+
+    #[tokio::test]
+    async fn call_403_denied_body_is_parseable_as_denied() {
+        // The API returns 403 FORBIDDEN with {"status":"denied","reason":"..."}.
+        // Verify that the response parses correctly as a CallStatusPoll with
+        // status "denied" so the CLI can exit with code 1 rather than 2.
+        let denied_body =
+            serde_json::json!({"status": "denied", "reason": "insufficient permissions"});
+        let base_url = serve_post_status_json("/v1/actions/call", 403, denied_body.clone()).await;
+
+        let config = test_config(base_url);
+        let client = test_http_client();
+        let url = format!(
+            "{}/v1/actions/call",
+            config.server_url.trim_end_matches('/')
+        );
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", config.token))
+            .json(&serde_json::json!({"service": "github", "action": "delete_repo"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 403);
+        let body_text = resp.text().await.unwrap();
+        let poll: CallStatusPoll = serde_json::from_str(&body_text).unwrap();
+        assert_eq!(poll.status, "denied");
     }
 }
