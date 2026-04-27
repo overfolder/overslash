@@ -899,32 +899,38 @@ async fn call_approval(
 
 async fn cancel_approval_execution(
     State(state): State<AppState>,
-    WriteAcl(acl): WriteAcl,
+    auth: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
-    let auth = acl;
     let approval = scope
         .get_approval(id)
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
+    // Requesters may cancel their own pending execution (self-cancel).
+    // Third parties need resolver-level access (Write ACL).
     use overslash_core::permissions::AccessLevel;
     if let Some(caller_identity) = auth.identity_id {
         let is_requester = caller_identity == approval.identity_id;
         let is_admin = auth.access_level >= AccessLevel::Admin;
-        if !is_requester && !is_admin {
-            let allowed = crate::services::permission_chain::is_self_or_ancestor(
-                &scope,
-                caller_identity,
-                approval.current_resolver_identity_id,
-            )
-            .await?;
-            if !allowed {
-                return Err(AppError::Forbidden(
-                    "caller is not authorized to cancel this execution".into(),
-                ));
+        if !is_requester {
+            if auth.access_level < AccessLevel::Write {
+                return Err(AppError::Forbidden("write access required".into()));
+            }
+            if !is_admin {
+                let allowed = crate::services::permission_chain::is_self_or_ancestor(
+                    &scope,
+                    caller_identity,
+                    approval.current_resolver_identity_id,
+                )
+                .await?;
+                if !allowed {
+                    return Err(AppError::Forbidden(
+                        "caller is not authorized to cancel this execution".into(),
+                    ));
+                }
             }
         }
     }

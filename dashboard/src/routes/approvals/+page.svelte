@@ -19,6 +19,7 @@
 	let pendingExecutions = $state<ApprovalResponse[]>([]);
 	let expandedId = $state<string | null>(null);
 	let execBusy = $state<Record<string, boolean>>({});
+	let execError = $state<string | null>(null);
 
 	$effect(() => {
 		approvals = data.approvals;
@@ -68,9 +69,12 @@
 
 	async function callExecution(a: ApprovalResponse) {
 		execBusy = { ...execBusy, [a.id]: true };
+		execError = null;
 		try {
 			await session.post(`/v1/approvals/${a.id}/call`);
 			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
+		} catch (e) {
+			execError = e instanceof Error ? e.message : 'Failed to dispatch execution.';
 		} finally {
 			execBusy = { ...execBusy, [a.id]: false };
 		}
@@ -78,9 +82,12 @@
 
 	async function cancelExecution(a: ApprovalResponse) {
 		execBusy = { ...execBusy, [a.id]: true };
+		execError = null;
 		try {
 			await session.post(`/v1/approvals/${a.id}/cancel`);
 			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
+		} catch (e) {
+			execError = e instanceof Error ? e.message : 'Failed to cancel execution.';
 		} finally {
 			execBusy = { ...execBusy, [a.id]: false };
 		}
@@ -135,6 +142,9 @@
 				<h2>Pending Executions</h2>
 				<span class="count">{pendingExecutions.length} ready</span>
 			</header>
+			{#if execError}
+				<div class="banner banner-error">{execError}</div>
+			{/if}
 			<ul class="list">
 				{#each pendingExecutions as a (a.id)}
 					<li class="row exec-row">
