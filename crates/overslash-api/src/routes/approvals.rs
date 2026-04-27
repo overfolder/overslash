@@ -258,6 +258,12 @@ async fn list_approvals(
             let identity_id = auth.identity_id.ok_or_else(|| {
                 AppError::BadRequest("scope=mine requires an identity-bound api key".into())
             })?;
+            if let Some(ref status) = q.status {
+                let rows = scope
+                    .list_mine_approvals_by_status(identity_id, status)
+                    .await?;
+                return Ok(Json(batch_responses(&scope, rows).await?));
+            }
             scope.list_mine_approvals(identity_id).await?
         }
         Some("assigned") => {
