@@ -196,17 +196,16 @@ pub(crate) async fn list_mine_by_status(
     identity_id: Uuid,
     status: &str,
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
-    sqlx::query_as::<_, ApprovalRow>(
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at,
-                action_summary, action_detail, disclosed_fields, replay_payload, permission_keys,
-                status, resolved_at, resolved_by, remember, token, expires_at, created_at
+    sqlx::query_as!(
+        ApprovalRow,
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals
          WHERE org_id = $1 AND identity_id = $2 AND status = $3
          ORDER BY created_at DESC",
+        org_id,
+        identity_id,
+        status,
     )
-    .bind(org_id)
-    .bind(identity_id)
-    .bind(status)
     .fetch_all(pool)
     .await
 }

@@ -1,0 +1,120 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at\n         FROM approvals\n         WHERE org_id = $1 AND identity_id = $2 AND status = $3\n         ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "current_resolver_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "resolver_assigned_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "action_summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "action_detail",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "disclosed_fields",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "replay_payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "permission_keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 10,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "resolved_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "resolved_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "remember",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 14,
+        "name": "token",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6ceb86bd2b1753c4b4120ebad652cb2666d43746b0928e1c8ae1e74b7599d3d5"
+}
