@@ -5,6 +5,7 @@ env        = "prod"
 domain           = "api.overslash.com"
 dashboard_origin = "https://app.overslash.com"
 dashboard_url    = "https://app.overslash.com"
+enable_dev_auth  = false
 
 # Cloud SQL — minimum viable for pre-GA
 cloud_sql_tier         = "db-f1-micro"
