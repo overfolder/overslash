@@ -272,11 +272,12 @@ pub fn compile_service(
     // x-overslash-mcp block (merging discovered_tools[] + tools[]).
     let runtime = match root.get("x-overslash-runtime").and_then(Value::as_str) {
         Some("mcp") => Runtime::Mcp,
+        Some("platform") => Runtime::Platform,
         Some("http") | None => Runtime::Http,
         Some(other) => {
             errors.push(ValidationIssue::new(
                 "openapi_invalid",
-                format!("x-overslash-runtime must be `http` or `mcp` (got {other:?})"),
+                format!("x-overslash-runtime must be `http`, `mcp`, or `platform` (got {other:?})"),
                 "x-overslash-runtime",
             ));
             Runtime::Http
@@ -304,15 +305,6 @@ pub fn compile_service(
     if !errors.is_empty() {
         return Err(errors);
     }
-
-    let runtime = match root
-        .get("x-overslash-runtime")
-        .and_then(Value::as_str)
-        .unwrap_or("http")
-    {
-        "platform" => Runtime::Platform,
-        _ => Runtime::Http,
-    };
 
     Ok((
         ServiceDefinition {

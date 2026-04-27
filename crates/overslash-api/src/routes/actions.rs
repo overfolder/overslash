@@ -27,7 +27,7 @@ use crate::{
 };
 use overslash_core::{
     crypto, disclosure as core_disclosure,
-    permissions::{GroupCeilingResult, PermissionKey},
+    permissions::{AccessLevel, GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
     types::{
         ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpSpec, Runtime,
@@ -289,7 +289,8 @@ async fn call_action(
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
                 // None for MCP-runtime and platform-runtime approvals (different execution paths).
-                let replay_payload = if meta.mcp_target.is_some() || meta.platform_target.is_some() {
+                let replay_payload = if meta.mcp_target.is_some() || meta.platform_target.is_some()
+                {
                     None
                 } else {
                     serde_json::to_value(StoredCallRequest::new(
@@ -502,9 +503,20 @@ async fn call_action(
             ))
         })?;
 
+        let platform_access_level = {
+            let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
+            ceiling
+                .grants
+                .iter()
+                .filter(|g| g.template_key == "overslash")
+                .filter_map(|g| AccessLevel::parse(&g.access_level))
+                .max()
+                .unwrap_or(AccessLevel::Read)
+        };
         let ctx = crate::services::platform_caller::PlatformCallContext {
             org_id: auth.org_id,
             identity_id,
+            access_level: platform_access_level,
             db: state.db.clone(),
             registry: std::sync::Arc::clone(&state.registry),
         };

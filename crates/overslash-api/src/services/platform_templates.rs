@@ -4,6 +4,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use overslash_core::openapi;
+use overslash_core::permissions::AccessLevel;
 use overslash_db::repos::{enabled_global_template, org as org_repo, service_template};
 
 use super::platform_caller::PlatformCallContext;
@@ -108,6 +109,11 @@ pub async fn kernel_create_template(
         }
         Some(ctx.identity_id)
     } else {
+        if ctx.access_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden(
+                "admin access required to create org-level templates".into(),
+            ));
+        }
         None
     };
 

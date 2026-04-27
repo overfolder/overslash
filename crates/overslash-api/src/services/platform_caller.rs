@@ -7,6 +7,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use overslash_core::permissions::AccessLevel;
 use overslash_core::registry::ServiceRegistry;
 
 use crate::error::AppError;
@@ -14,6 +15,7 @@ use crate::error::AppError;
 pub struct PlatformCallContext {
     pub org_id: Uuid,
     pub identity_id: Uuid,
+    pub access_level: AccessLevel,
     pub db: PgPool,
     pub registry: Arc<ServiceRegistry>,
 }
