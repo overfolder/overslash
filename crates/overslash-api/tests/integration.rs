@@ -16,6 +16,11 @@ use uuid::Uuid;
 
 /// Start the Overslash API server in-process on a random port.
 async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    // Bind first so `public_url` reflects the real port — MCP loopback calls
+    // use `public_url` as the base and would fail against a wrong address.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -30,7 +35,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         filter_timeout_ms: 2000,
@@ -80,10 +85,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::mcp::router())
         .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
