@@ -157,7 +157,15 @@ async fn call_inner(
     }
 
     let body_text = resp.text().await.context("read response body")?;
-    let poll: CallStatusPoll = serde_json::from_str(&body_text).context("parse call response")?;
+    // If a proxy/WAF returns a non-JSON 403, surface the status + raw body
+    // rather than a confusing "parse call response" JSON error.
+    let poll: CallStatusPoll = match serde_json::from_str(&body_text) {
+        Ok(p) => p,
+        Err(_) if status == reqwest::StatusCode::FORBIDDEN => {
+            return Err(anyhow!("403 Forbidden: {}", body_text.trim()));
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     Ok(match poll.status.as_str() {
         "called" => CallOutcome::Called(body_text),
@@ -559,6 +567,42 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(outcome, CallOutcome::Denied(_)));
+    }
+
+    #[tokio::test]
+    async fn call_inner_403_non_json_returns_clear_forbidden_err() {
+        // Proxies and WAFs can return 403 with HTML/plain-text bodies.
+        // Verify the error message names the 403 status rather than "parse
+        // call response".
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/v1/actions/call",
+            post(|| async {
+                (
+                    StatusCode::FORBIDDEN,
+                    axum::http::header::HeaderMap::new(),
+                    "<html>403 Forbidden</html>",
+                )
+                    .into_response()
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let base_url = format!("http://{addr}");
+        let client = test_client();
+        let err = call_inner(&client, &base_url, "tok", &empty_body())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("403"), "expected 403 in error, got: {msg}");
+        assert!(
+            !msg.contains("parse call response"),
+            "should not leak parse error: {msg}"
+        );
     }
 
     #[tokio::test]
