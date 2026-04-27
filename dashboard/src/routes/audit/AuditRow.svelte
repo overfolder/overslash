@@ -56,6 +56,9 @@
 		{:else}
 			<span class="muted">—</span>
 		{/if}
+		{#if entry.impersonated_by_identity_id}
+			<span class="via-imp" title="via impersonation by {entry.impersonated_by_name ?? entry.impersonated_by_identity_id}">imp</span>
+		{/if}
 	</td>
 	<td><code class="badge">{entry.action}</code></td>
 	<td class="resource">
@@ -83,6 +86,12 @@
 					{#if entry.identity_id}
 						<dt>Identity ID</dt>
 						<dd class="mono">{entry.identity_id}</dd>
+					{/if}
+					{#if entry.impersonated_by_identity_id}
+						<dt>Impersonated by</dt>
+						<dd class="mono impersonation-badge" title={entry.impersonated_by_identity_id}>
+							{entry.impersonated_by_name ?? entry.impersonated_by_identity_id}
+						</dd>
 					{/if}
 					{#if entry.description}
 						<dt>Description</dt>
@@ -226,5 +235,22 @@
 	.disclosed .trunc {
 		color: var(--color-text-muted);
 		font-size: 0.75rem;
+	}
+	.via-imp {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 1px 5px;
+		border-radius: var(--radius-sm, 4px);
+		background: color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent);
+		color: var(--color-warning, #b45309);
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		vertical-align: middle;
+		cursor: help;
+	}
+	.impersonation-badge {
+		color: var(--color-warning, #b45309);
 	}
 </style>

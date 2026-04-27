@@ -14,6 +14,10 @@ pub struct AuditRow {
     pub description: Option<String>,
     pub ip_address: Option<String>,
     pub created_at: OffsetDateTime,
+    /// Set when the request was made via `X-Overslash-As` impersonation.
+    /// Records the service-account identity that performed the impersonation;
+    /// `identity_id` is the effective (impersonated) identity.
+    pub impersonated_by_identity_id: Option<Uuid>,
 }
 
 pub struct AuditEntry<'a> {
@@ -27,10 +31,17 @@ pub struct AuditEntry<'a> {
     pub ip_address: Option<&'a str>,
 }
 
-pub(crate) async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sqlx::Error> {
+/// Insert an audit row. `impersonated_by_identity_id` is passed separately
+/// so callers (handlers) never need to set it — `OrgScope::log_audit`
+/// injects it automatically from the scope's impersonation context.
+pub(crate) async fn log(
+    pool: &PgPool,
+    entry: &AuditEntry<'_>,
+    impersonated_by_identity_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO audit_log (org_id, identity_id, action, resource_type, resource_id, detail, description, ip_address, impersonated_by_identity_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         entry.org_id,
         entry.identity_id,
         entry.action,
@@ -39,6 +50,7 @@ pub(crate) async fn log(pool: &PgPool, entry: &AuditEntry<'_>) -> Result<(), sql
         entry.detail,
         entry.description,
         entry.ip_address,
+        impersonated_by_identity_id,
     )
     .execute(pool)
     .await?;
@@ -70,7 +82,7 @@ pub(crate) async fn query_filtered(
     let like = filter.q.as_deref().map(|q| format!("%{q}%"));
     sqlx::query_as!(
         AuditRow,
-        "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at
+        "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id
          FROM audit_log a
          LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id
          WHERE a.org_id = $1

@@ -63,6 +63,11 @@ pub struct AuthContext {
     /// claim. `None` for API-key callers and for legacy session tokens
     /// minted before the multi-org rewire.
     pub user_id: Option<Uuid>,
+    /// Set when the request carried `X-Overslash-As` and the presenting API
+    /// key had the `"impersonate"` scope. Holds the *caller's* identity (the
+    /// service account doing the impersonating). `identity_id` is rewritten
+    /// to the target so all downstream permission checks use target context.
+    pub impersonated_by: Option<Uuid>,
 }
 
 /// Enforces subdomain↔JWT consistency: if the request hit `<slug>.<apex>`
@@ -100,6 +105,7 @@ impl FromRequestParts<AppState> for AuthContext {
                     identity_id: Some(claims.sub),
                     key_id: None,
                     user_id: claims.user_id,
+                    impersonated_by: None,
                 });
             }
         }
@@ -148,6 +154,7 @@ impl FromRequestParts<AppState> for AuthContext {
                     identity_id: Some(claims.sub),
                     key_id: None,
                     user_id: None,
+                    impersonated_by: None,
                 });
             }
             return Err(AppError::Unauthorized("invalid key format".into()));
@@ -253,11 +260,50 @@ impl FromRequestParts<AppState> for AuthContext {
             let _ = touch_scope.touch_api_key_last_used(key_id).await;
         });
 
+        // X-Overslash-As: identity substitution for keys with "impersonate" scope.
+        let has_impersonate_scope = key_row.scopes.iter().any(|s| s == "impersonate");
+        let as_header = parts.headers.get("x-overslash-as");
+
+        let (effective_identity_id, impersonated_by) = match as_header {
+            Some(raw) if has_impersonate_scope => {
+                let target_id: Uuid =
+                    raw.to_str()
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| {
+                            AppError::BadRequest("x-overslash-as must be a valid UUID".into())
+                        })?;
+
+                let tmp_scope = OrgScope::new(key_row.org_id, state.db.clone());
+                let target = tmp_scope
+                    .get_identity(target_id)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| AppError::NotFound("impersonation target not found".into()))?;
+
+                if target.archived_at.is_some() {
+                    return Err(AppError::Forbidden(
+                        "impersonation target is archived".into(),
+                    ));
+                }
+
+                (Some(target_id), Some(key_row.identity_id))
+            }
+            Some(_) => {
+                // Header present but key lacks "impersonate" scope — reject explicitly.
+                return Err(AppError::Forbidden(
+                    "this API key does not have the 'impersonate' scope".into(),
+                ));
+            }
+            None => (Some(key_row.identity_id), None),
+        };
+
         Ok(AuthContext {
             org_id: key_row.org_id,
-            identity_id: Some(key_row.identity_id),
+            identity_id: effective_identity_id,
             key_id: Some(key_row.id),
             user_id: None,
+            impersonated_by,
         })
     }
 }
@@ -512,6 +558,8 @@ impl FromRequestParts<AppState> for UserScope {
 
 /// Axum extractor that mints an `OrgScope` from a verified API key or
 /// session cookie. Any authenticated caller in any role can produce one.
+/// Uses `AuthContext` (not `UserOrKeyAuth`) so impersonation context is
+/// captured and propagated to `log_audit` without touching handler call sites.
 impl FromRequestParts<AppState> for OrgScope {
     type Rejection = AppError;
 
@@ -519,8 +567,15 @@ impl FromRequestParts<AppState> for OrgScope {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
-        Ok(OrgScope::new(auth.org_id, state.db.clone()))
+        let auth = AuthContext::from_request_parts(parts, state).await?;
+        match auth.impersonated_by {
+            Some(caller_id) => Ok(OrgScope::new_impersonated(
+                auth.org_id,
+                state.db.clone(),
+                caller_id,
+            )),
+            None => Ok(OrgScope::new(auth.org_id, state.db.clone())),
+        }
     }
 }
 

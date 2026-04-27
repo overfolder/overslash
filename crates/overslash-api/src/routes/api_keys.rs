@@ -23,6 +23,7 @@ struct ApiKeySummary {
     identity_id: Uuid,
     name: String,
     key_prefix: String,
+    scopes: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -38,6 +39,7 @@ impl From<overslash_db::repos::api_key::ApiKeyRow> for ApiKeySummary {
             identity_id: r.identity_id,
             name: r.name,
             key_prefix: r.key_prefix,
+            scopes: r.scopes,
             created_at: r.created_at,
             last_used_at: r.last_used_at,
             revoked_at: r.revoked_at,
@@ -62,14 +64,20 @@ struct CreateApiKeyRequest {
     /// server will mint a fresh admin User and bind the key to it.
     identity_id: Option<Uuid>,
     name: String,
+    /// Optional list of capability scopes for this key. The `"impersonate"`
+    /// scope enables `X-Overslash-As` header usage and requires admin ACL.
+    #[serde(default)]
+    scopes: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct CreateApiKeyResponse {
     id: Uuid,
+    identity_id: Uuid,
     key: String,
     key_prefix: String,
     name: String,
+    scopes: Vec<String>,
 }
 
 /// Create an API key. Requires admin-level ACL access.
@@ -85,6 +93,20 @@ async fn create_api_key(
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
     let create_scope = OrgScope::new(req.org_id, state.db.clone());
+
+    // The "impersonate" scope is admin-only; reject early so the error is
+    // clear regardless of which path (authenticated vs. bootstrap) we take.
+    let wants_impersonate = req.scopes.iter().any(|s| s == "impersonate");
+    if wants_impersonate {
+        match &acl {
+            Some(acl) if acl.access_level >= AccessLevel::Admin => {}
+            _ => {
+                return Err(AppError::Forbidden(
+                    "'impersonate' scope requires admin access".into(),
+                ));
+            }
+        }
+    }
 
     // Resolve which identity the new key will be bound to.
     let identity_id: Uuid = match acl {
@@ -135,7 +157,7 @@ async fn create_api_key(
     let (raw_key, key_hash, key_prefix) = generate_api_key()?;
 
     let row = create_scope
-        .create_api_key(identity_id, &req.name, &key_hash, &key_prefix, &[])
+        .create_api_key(identity_id, &req.name, &key_hash, &key_prefix, &req.scopes)
         .await?;
 
     let _ = create_scope
@@ -145,7 +167,11 @@ async fn create_api_key(
             action: "api_key.created",
             resource_type: Some("api_key"),
             resource_id: Some(row.id),
-            detail: serde_json::json!({ "name": &row.name, "key_prefix": &key_prefix }),
+            detail: serde_json::json!({
+                "name": &row.name,
+                "key_prefix": &key_prefix,
+                "scopes": &row.scopes,
+            }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
@@ -153,9 +179,11 @@ async fn create_api_key(
 
     Ok(Json(CreateApiKeyResponse {
         id: row.id,
+        identity_id,
         key: raw_key,
         key_prefix,
         name: row.name,
+        scopes: row.scopes,
     }))
 }
 
