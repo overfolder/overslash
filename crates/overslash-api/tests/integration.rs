@@ -2932,6 +2932,37 @@ async fn test_mcp_overslash_list_pending() {
     assert_eq!(items[0]["id"], approval_id);
     assert_eq!(items[0]["status"], "allowed");
     assert_eq!(items[0]["execution"]["status"], "pending");
+
+    // After the execution is dispatched it should be filtered out of list_pending.
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    let frame2: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "list_pending"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(frame2["error"].is_null(), "MCP error after call: {frame2}");
+    let text2 = frame2["result"]["content"][0]["text"].as_str().unwrap();
+    let items2: Vec<Value> = serde_json::from_str(text2).unwrap();
+    assert!(
+        items2.is_empty(),
+        "list_pending should exclude non-pending executions; got {items2:?}"
+    );
 }
 
 #[tokio::test]

@@ -352,14 +352,26 @@ async fn dispatch_overslash_platform(
     let params = args.get("params");
     match action {
         "list_pending" => {
-            forward(
+            let mut result = forward(
                 state,
                 bearer,
                 Method::GET,
                 "/v1/approvals?scope=mine&status=allowed",
                 None,
             )
-            .await
+            .await?;
+            // An approval's status stays 'allowed' even after its execution
+            // has been dispatched, failed, or expired. Only return entries
+            // where the execution is still dispatchable.
+            if let Some(arr) = result.as_array_mut() {
+                arr.retain(|item| {
+                    item.get("execution")
+                        .and_then(|e| e.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("pending")
+                });
+            }
+            Ok(result)
         }
         "call_pending" => {
             let id = params
