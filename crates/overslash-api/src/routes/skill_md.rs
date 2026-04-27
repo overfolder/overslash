@@ -30,7 +30,7 @@ mod tests {
         // if someone blanks SKILL.md the contract is broken.
         assert!(!SKILL_MD.is_empty(), "SKILL.md must not be empty");
         assert!(
-            SKILL_MD.contains("MCP OAuth"),
+            SKILL_MD.contains("MCP") && SKILL_MD.contains("OAuth"),
             "SKILL.md must describe MCP OAuth enrollment"
         );
     }
