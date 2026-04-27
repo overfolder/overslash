@@ -1,0 +1,33 @@
+openapi: 3.1.0
+info:
+  title: WhatsApp
+  key: whatsapp
+  category: Communication
+  description: >
+    Send and read WhatsApp messages via a self-hosted whatsapp-mcp-docker
+    container (https://github.com/angel-manuel/whatsapp-mcp-docker), which
+    bundles `whatsmeow` and exposes its tools over Streamable HTTP MCP
+    with mandatory bearer auth. Each container holds one WhatsApp session
+    (one paired phone number); operators run one container per
+    end-user/account.
+x-overslash-runtime: mcp
+servers: []
+paths: {}
+x-overslash-mcp:
+  # Placeholder. Override this URL with your hosted whatsapp-mcp container
+  # (e.g. via an org/user template overlay) before enabling the service —
+  # the container speaks Streamable HTTP MCP on `:PORT/mcp` (default 8081).
+  url: https://whatsapp-mcp.example.com/mcp
+  auth:
+    kind: bearer
+    # Token configured on the container via its `AUTH_TOKEN` env var.
+    # Stored in the org vault under this name; injected at call time and
+    # never returned to agents.
+    secret_name: whatsapp_mcp_token
+  # Tool list is populated by `POST /v1/templates/whatsapp/mcp/resync`,
+  # which calls upstream `tools/list` and caches the result in
+  # `discovered_tools`. The container ships ~16 tools today (read/send
+  # messages, contacts, pairing); see the upstream README for the
+  # current matrix.
+  autodiscover: true
+  tools: []
