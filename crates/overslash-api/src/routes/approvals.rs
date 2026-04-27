@@ -425,7 +425,7 @@ async fn resolve_approval(
                 )
             })?;
 
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = scope
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
@@ -557,7 +557,7 @@ async fn resolve_approval(
         None
     };
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = scope
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -845,7 +845,7 @@ async fn call_approval(
     } else {
         "approval.execution_failed"
     };
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = scope
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -948,7 +948,7 @@ async fn cancel_approval_execution(
     };
     let execution_id = cancelled.id;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = scope
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,

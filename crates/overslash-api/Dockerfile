@@ -36,6 +36,7 @@ RUN cargo build --release --package overslash-cli
 COPY crates/ crates/
 COPY services/ services/
 COPY .sqlx/ .sqlx/
+COPY SKILL.md SKILL.md
 
 # Touch source files to invalidate the dummy builds
 RUN find crates/ -name "*.rs" -exec touch {} +
