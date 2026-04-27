@@ -828,7 +828,7 @@ mod classify_scopes_tests {
                 },
             }],
             actions: map,
-            runtime: Default::default(),
+            runtime: overslash_core::types::Runtime::Http,
             mcp: None,
         }
     }
@@ -847,7 +847,7 @@ mod classify_scopes_tests {
             category: None,
             auth: vec![],
             actions: HashMap::new(),
-            runtime: Default::default(),
+            runtime: overslash_core::types::Runtime::Http,
             mcp: None,
         };
         assert!(classify_scopes(&scopes(&["x"]), &tpl).is_none());

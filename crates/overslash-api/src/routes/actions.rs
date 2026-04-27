@@ -288,8 +288,8 @@ async fn call_action(
                 // original request faithfully — including jq `filter` and
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
-                // None for MCP-runtime approvals (different execution path).
-                let replay_payload = if meta.mcp_target.is_some() {
+                // None for MCP-runtime and platform-runtime approvals (different execution paths).
+                let replay_payload = if meta.mcp_target.is_some() || meta.platform_target.is_some() {
                     None
                 } else {
                     serde_json::to_value(StoredCallRequest::new(
@@ -1530,6 +1530,16 @@ async fn compute_approval_detail(
             core_disclosure::apply_redactions(&mut redacted, &meta.redact);
         }
         return (disclosed, Some(redacted));
+    }
+
+    if let Some(pt) = meta.platform_target.as_ref() {
+        let projection = serde_json::json!({
+            "runtime": "platform",
+            "action": &pt.action_key,
+            "params": &pt.params,
+            "service": meta.service_scope.as_ref().map(|s| &s.service_key),
+        });
+        return (Vec::new(), Some(projection));
     }
 
     if meta.disclose.is_empty() && meta.redact.is_empty() {

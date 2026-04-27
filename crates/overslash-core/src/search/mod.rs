@@ -183,7 +183,7 @@ mod tests {
                 },
             }],
             actions: HashMap::new(),
-            runtime: Default::default(),
+            runtime: crate::types::Runtime::Http,
             mcp: None,
         }
     }
