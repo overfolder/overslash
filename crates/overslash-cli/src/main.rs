@@ -1,9 +1,10 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 mod common;
 mod mcp;
 mod mcp_login;
 mod serve;
+mod services;
 mod watch;
 mod web;
 
@@ -70,6 +71,68 @@ enum Command {
         #[arg(long, env = "OVERSLASH_MCP_CONFIG", global = true)]
         config: Option<std::path::PathBuf>,
     },
+    /// List and call services.
+    Services {
+        #[command(subcommand)]
+        command: ServicesCommand,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Call a service action (shortcut for `services call`).
+    Call {
+        #[command(flatten)]
+        fields: CallFields,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServicesCommand {
+    /// List all service instances visible to this identity.
+    List,
+    /// Call a service action.
+    Call {
+        #[command(flatten)]
+        fields: CallFields,
+    },
+}
+
+/// Shared fields for `call` and `services call`.
+#[derive(Args)]
+struct CallFields {
+    /// Service instance name or UUID (Mode C).
+    #[arg(long)]
+    service: Option<String>,
+    /// Action key (Mode C).
+    #[arg(long)]
+    action: Option<String>,
+    /// Action parameter as key=value (repeatable; value is JSON or plain string).
+    #[arg(long = "param", value_name = "KEY=VALUE")]
+    params: Vec<String>,
+    /// Raw URL to call (Mode A).
+    #[arg(long)]
+    url: Option<String>,
+    /// HTTP method for raw call (Mode A, default GET).
+    #[arg(long)]
+    method: Option<String>,
+    /// Extra request header as key:value (repeatable, Mode A).
+    #[arg(long = "header", value_name = "KEY:VALUE")]
+    headers: Vec<String>,
+    /// Raw request body string (Mode A).
+    #[arg(long)]
+    body: Option<String>,
+    /// jq expression to filter the response body.
+    #[arg(long)]
+    filter: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -154,7 +217,53 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Services {
+            command,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            match command {
+                ServicesCommand::List => services::list(path).await,
+                ServicesCommand::Call { fields } => {
+                    services::call(path, fields_into_call_args(fields)?).await
+                }
+            }
+        }
+        Command::Call {
+            fields,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            services::call(path, fields_into_call_args(fields)?).await
+        }
     }
+}
+
+fn fields_into_call_args(fields: CallFields) -> anyhow::Result<services::CallArgs> {
+    let params = fields
+        .params
+        .iter()
+        .map(|s| services::parse_param(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let headers = fields
+        .headers
+        .iter()
+        .map(|s| services::parse_header(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(services::CallArgs {
+        service: fields.service,
+        action: fields.action,
+        params,
+        url: fields.url,
+        method: fields.method,
+        headers,
+        body: fields.body,
+        filter: fields.filter,
+    })
 }
 
 #[cfg(test)]
