@@ -1,17 +1,34 @@
 <script lang="ts">
 	import ApprovalResolver from '$lib/components/ApprovalResolver.svelte';
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
-	import type { ApprovalResponse } from '$lib/session';
+	import { session, type ApprovalResponse } from '$lib/session';
 	import { relativeTime as relativeTimeUtil } from '$lib/utils/time';
 	import { onMount } from 'svelte';
 
-	let { data }: { data: { approvals: ApprovalResponse[]; error: string | null } } = $props();
+	let {
+		data
+	}: {
+		data: {
+			approvals: ApprovalResponse[];
+			pendingExecutions: ApprovalResponse[];
+			error: string | null;
+		};
+	} = $props();
 
 	let approvals = $state<ApprovalResponse[]>([]);
+	let pendingExecutions = $state<ApprovalResponse[]>([]);
 	let expandedId = $state<string | null>(null);
+	let execBusy = $state<Record<string, boolean>>({});
+
 	$effect(() => {
 		approvals = data.approvals;
 	});
+	$effect(() => {
+		pendingExecutions = data.pendingExecutions.filter(
+			(a) => a.execution?.status === 'pending'
+		);
+	});
+
 	// Tick state to drive periodic re-render of relativeTime() output.
 	let tick = $state(0);
 
@@ -47,6 +64,26 @@
 			!!a.current_resolver_identity_id &&
 			a.current_resolver_identity_id !== a.requesting_identity_id
 		);
+	}
+
+	async function callExecution(a: ApprovalResponse) {
+		execBusy = { ...execBusy, [a.id]: true };
+		try {
+			await session.post(`/v1/approvals/${a.id}/call`);
+			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
+		} finally {
+			execBusy = { ...execBusy, [a.id]: false };
+		}
+	}
+
+	async function cancelExecution(a: ApprovalResponse) {
+		execBusy = { ...execBusy, [a.id]: true };
+		try {
+			await session.post(`/v1/approvals/${a.id}/cancel`);
+			pendingExecutions = pendingExecutions.filter((x) => x.id !== a.id);
+		} finally {
+			execBusy = { ...execBusy, [a.id]: false };
+		}
 	}
 </script>
 
@@ -90,6 +127,55 @@
 				</li>
 			{/each}
 		</ul>
+	{/if}
+
+	{#if pendingExecutions.length > 0}
+		<section class="exec-section">
+			<header class="exec-header">
+				<h2>Pending Executions</h2>
+				<span class="count">{pendingExecutions.length} ready</span>
+			</header>
+			<ul class="list">
+				{#each pendingExecutions as a (a.id)}
+					<li class="row exec-row">
+						<div class="exec-body">
+							<div class="exec-main">
+								<div class="col col-identity">
+									{#if a.identity_path}
+										<IdentityPath path={a.identity_path} />
+									{:else}
+										<code class="mono mute">{a.requesting_identity_id}</code>
+									{/if}
+								</div>
+								<div class="col col-summary">{a.action_summary}</div>
+								<div class="col col-key"><code class="mono">{primaryKey(a)}</code></div>
+								<div class="col col-time">
+									<div class="mute small">
+										expires {relativeTime(a.execution?.expires_at ?? a.expires_at)}
+									</div>
+								</div>
+							</div>
+							<div class="exec-actions">
+								<button
+									class="btn btn-call"
+									disabled={execBusy[a.id]}
+									onclick={() => callExecution(a)}
+								>
+									{execBusy[a.id] ? 'Calling…' : 'Call now'}
+								</button>
+								<button
+									class="btn btn-cancel"
+									disabled={execBusy[a.id]}
+									onclick={() => cancelExecution(a)}
+								>
+									Cancel
+								</button>
+							</div>
+						</div>
+					</li>
+				{/each}
+			</ul>
+		</section>
 	{/if}
 </div>
 
@@ -207,5 +293,77 @@
 	}
 	.small {
 		font-size: 0.72rem;
+	}
+
+	/* Pending Executions section */
+	.exec-section {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+	.exec-header {
+		display: flex;
+		align-items: baseline;
+		gap: 0.75rem;
+	}
+	h2 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--color-text);
+	}
+	.exec-row {
+		background: #fffbf0;
+		border-color: #f5d87a;
+	}
+	.exec-body {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		padding: 0.85rem 1rem;
+	}
+	.exec-main {
+		display: grid;
+		grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr) minmax(0, 1.2fr) auto;
+		gap: 1rem;
+		align-items: center;
+		flex: 1;
+		min-width: 0;
+	}
+	.exec-actions {
+		display: flex;
+		gap: 0.5rem;
+		flex-shrink: 0;
+	}
+	.btn {
+		padding: 0.35rem 0.85rem;
+		border-radius: var(--radius-sm, 4px);
+		border: 1px solid transparent;
+		font-size: 0.8rem;
+		font-weight: 500;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.btn-call {
+		background: var(--color-primary, #6366f1);
+		color: #fff;
+		border-color: var(--color-primary, #6366f1);
+	}
+	.btn-call:not(:disabled):hover {
+		background: var(--color-primary-hover, #4f46e5);
+		border-color: var(--color-primary-hover, #4f46e5);
+	}
+	.btn-cancel {
+		background: transparent;
+		color: var(--color-text-muted);
+		border-color: var(--color-border);
+	}
+	.btn-cancel:not(:disabled):hover {
+		color: #d14343;
+		border-color: #d14343;
 	}
 </style>
