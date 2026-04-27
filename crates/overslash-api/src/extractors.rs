@@ -287,6 +287,19 @@ impl FromRequestParts<AppState> for AuthContext {
                     ));
                 }
 
+                // ACL cap: prevent privilege escalation via impersonation.
+                // The key's own identity cannot impersonate an identity whose
+                // effective access level exceeds its own.
+                let caller_access =
+                    resolve_identity_access(&tmp_scope, key_row.identity_id).await?;
+                let target_access = resolve_identity_access(&tmp_scope, target_id).await?;
+                if target_access > caller_access {
+                    return Err(AppError::Forbidden(
+                        "impersonation target has higher access level than the key's identity"
+                            .into(),
+                    ));
+                }
+
                 (Some(target_id), Some(key_row.identity_id))
             }
             Some(_) => {
@@ -394,6 +407,42 @@ impl FromRequestParts<AppState> for SessionAuth {
 // overslash service and reject if insufficient.
 
 use overslash_core::permissions::AccessLevel;
+
+/// Resolves the effective overslash `AccessLevel` for `identity_id` within
+/// `scope`, without going through Axum's extractor machinery.
+///
+/// Used by the impersonation path to compare caller vs. target ACL levels so
+/// that an impersonation key cannot be used to gain access beyond the key's
+/// own identity's permissions.
+async fn resolve_identity_access(
+    scope: &OrgScope,
+    identity_id: Uuid,
+) -> Result<AccessLevel, AppError> {
+    if let Some(ident) = scope
+        .get_identity(identity_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+    {
+        if ident.is_org_admin {
+            return Ok(AccessLevel::Admin);
+        }
+    }
+    let ceiling_user_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id)
+            .await
+            .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+    let ceiling = scope
+        .get_ceiling_for_user(ceiling_user_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+    Ok(ceiling
+        .grants
+        .iter()
+        .filter(|g| g.template_key == "overslash")
+        .filter_map(|g| AccessLevel::parse(&g.access_level))
+        .max()
+        .unwrap_or(AccessLevel::Read))
+}
 
 /// Resolved ACL level for the overslash platform service.
 #[derive(Debug, Clone)]

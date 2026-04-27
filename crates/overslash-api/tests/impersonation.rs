@@ -502,3 +502,34 @@ async fn impersonation_rejects_non_uuid_header() {
         "malformed UUID in header should yield 400"
     );
 }
+
+// ── ACL cap: no privilege escalation via impersonation ────────────────────────
+
+/// An impersonation key issued to a lower-privilege identity cannot be used to
+/// impersonate an admin. Without the ACL cap a write/read-level key with the
+/// "impersonate" scope could escalate to admin by pointing at an org admin.
+#[tokio::test]
+async fn impersonation_cannot_escalate_to_higher_acl() {
+    let (base, client, _pool, org_id, admin_key, sa_id, target_user_id, _) = setup().await;
+
+    // Admin creates an impersonation key FOR the low-privilege target_user
+    // (target_user has Read level — no group grants).
+    let low_priv_imp_key =
+        create_impersonation_key(&base, &client, &admin_key, org_id, target_user_id).await;
+
+    // Try to use that low-privilege key to impersonate the admin service account.
+    // sa_id has Admin level (bootstrap identity), target_user has Read level.
+    // target (Admin) > caller (Read) → must be rejected.
+    let resp = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {low_priv_imp_key}"))
+        .header("X-Overslash-As", sa_id.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "low-privilege impersonation key must not be able to impersonate an admin"
+    );
+}
