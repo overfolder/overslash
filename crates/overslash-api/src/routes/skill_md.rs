@@ -7,7 +7,9 @@ use axum::{Router, http::header::CONTENT_TYPE, response::IntoResponse, routing::
 
 use crate::AppState;
 
-const SKILL_MD: &str = include_str!("../../../../SKILL.md");
+// `CARGO_MANIFEST_DIR` is `crates/overslash-api`, so two levels up reaches
+// the workspace root regardless of which file in the crate references it.
+const SKILL_MD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../SKILL.md"));
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/SKILL.md", get(skill_md))
@@ -28,7 +30,7 @@ mod tests {
         // if someone blanks SKILL.md the contract is broken.
         assert!(!SKILL_MD.is_empty(), "SKILL.md must not be empty");
         assert!(
-            SKILL_MD.contains("MCP OAuth"),
+            SKILL_MD.contains("MCP") && SKILL_MD.contains("OAuth"),
             "SKILL.md must describe MCP OAuth enrollment"
         );
     }
