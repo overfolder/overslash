@@ -27,6 +27,9 @@ struct AuditEntry {
     ip_address: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
+    /// Set when the request was made via `X-Overslash-As` impersonation.
+    impersonated_by_identity_id: Option<Uuid>,
+    impersonated_by_name: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -86,18 +89,19 @@ async fn query_audit(
 
     let rows = scope.query_audit_log(filter).await?;
 
-    // Batch-resolve identity names
-    let identity_ids: Vec<Uuid> = rows
+    // Batch-resolve identity names for both actor and impersonator in one shot.
+    let all_ids: Vec<Uuid> = rows
         .iter()
-        .filter_map(|r| r.identity_id)
+        .flat_map(|r| [r.identity_id, r.impersonated_by_identity_id])
+        .flatten()
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let name_map: HashMap<Uuid, String> = if identity_ids.is_empty() {
+    let name_map: HashMap<Uuid, String> = if all_ids.is_empty() {
         HashMap::new()
     } else {
         scope
-            .get_identity_names_by_ids(&identity_ids)
+            .get_identity_names_by_ids(&all_ids)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("failed to resolve identity names for audit response: {e}");
@@ -111,6 +115,9 @@ async fn query_audit(
         rows.into_iter()
             .map(|r| {
                 let identity_name = r.identity_id.and_then(|id| name_map.get(&id).cloned());
+                let impersonated_by_name = r
+                    .impersonated_by_identity_id
+                    .and_then(|id| name_map.get(&id).cloned());
                 // Fall back to detail.description for pre-migration entries
                 let description = r.description.or_else(|| {
                     r.detail
@@ -129,6 +136,8 @@ async fn query_audit(
                     detail: r.detail,
                     ip_address: r.ip_address,
                     created_at: r.created_at,
+                    impersonated_by_identity_id: r.impersonated_by_identity_id,
+                    impersonated_by_name,
                 }
             })
             .collect(),

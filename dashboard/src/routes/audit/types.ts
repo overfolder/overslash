@@ -10,6 +10,8 @@ export interface AuditEntry {
 	detail: Record<string, unknown>;
 	ip_address: string | null;
 	created_at: string;
+	impersonated_by_identity_id: string | null;
+	impersonated_by_name: string | null;
 }
 
 export interface AuditFilters {

@@ -28,6 +28,16 @@
 		return m;
 	});
 
+	const hasImpersonateKeyByUser = $derived.by(() => {
+		const m = new Map<string, boolean>();
+		for (const k of data.apiKeys) {
+			if (k.identity_id && !k.revoked_at && k.scopes?.includes('impersonate')) {
+				m.set(k.identity_id, true);
+			}
+		}
+		return m;
+	});
+
 	const filtered = $derived.by(() => {
 		const q = query.trim().toLowerCase();
 		if (!q) return users;
@@ -200,7 +210,12 @@
 			<dd>{agentCountByUser.get(selected.id) ?? 0}</dd>
 
 			<dt>API keys</dt>
-			<dd>{apiKeyCountByUser.get(selected.id) ?? 0}</dd>
+			<dd>
+				{apiKeyCountByUser.get(selected.id) ?? 0}
+				{#if hasImpersonateKeyByUser.get(selected.id)}
+					<span class="imp-badge" title="This identity has at least one key with the 'impersonate' scope">impersonate</span>
+				{/if}
+			</dd>
 
 			<dt>Created</dt>
 			<dd>{fmtDateTime(selected.created_at)}</dd>
@@ -444,5 +459,17 @@
 	.small {
 		font-size: 12px;
 		word-break: break-all;
+	}
+	.imp-badge {
+		display: inline-block;
+		margin-left: var(--space-2);
+		padding: 1px var(--space-2);
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, var(--warning-500, #f59e0b) 15%, transparent);
+		color: var(--warning-600, #b45309);
+		font: var(--text-label-sm);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		cursor: help;
 	}
 </style>
