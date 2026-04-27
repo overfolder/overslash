@@ -48,5 +48,5 @@ either:
 
 ## After enrollment
 
-Call MCP tools, `POST /v1/actions/execute`, etc. See `SPEC.md` for actions,
+Call MCP tools, `POST /v1/actions/call`, etc. See `SPEC.md` for actions,
 approvals, and the permission model.

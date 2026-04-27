@@ -1,6 +1,6 @@
 //! Server-side jq filter applied to upstream HTTP response bodies.
 //!
-//! Callers attach `filter: { lang: "jq", expr: "..." }` to an execute
+//! Callers attach `filter: { lang: "jq", expr: "..." }` to a call
 //! request and the gateway returns the filter's output alongside the
 //! original body (never replacing it).
 

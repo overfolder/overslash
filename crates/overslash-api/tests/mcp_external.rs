@@ -10,7 +10,7 @@ use std::sync::Once;
 
 /// Opt tests out of the SSRF guard that otherwise blocks every loopback
 /// outbound in `services::ssrf_guard`. Called from `start_stub()` before
-/// any test hits `/v1/actions/execute` or `/mcp/resync`. The production
+/// any test hits `/v1/actions/call` or `/mcp/resync`. The production
 /// binary never sets this env var; the knob exists solely so integration
 /// tests can point at loopback stubs without widening the guard.
 fn allow_loopback_ssrf() {
@@ -273,7 +273,7 @@ async fn setup_template_and_grants(ctx: SetupCtx<'_>) -> uuid::Uuid {
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn mcp_none_auth_executes_and_audits_with_mcp_runtime() {
+async fn mcp_none_auth_calls_and_audits_with_mcp_runtime() {
     let pool = common::test_pool().await;
     let (addr, stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
@@ -296,7 +296,7 @@ async fn mcp_none_auth_executes_and_audits_with_mcp_runtime() {
     .await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "stub_mcp_none",
@@ -308,7 +308,7 @@ async fn mcp_none_auth_executes_and_audits_with_mcp_runtime() {
         .unwrap();
     assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
 
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["runtime"], "mcp");
@@ -363,7 +363,7 @@ async fn mcp_bearer_auth_forwards_secret() {
     .await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "stub_mcp_bearer",
@@ -406,7 +406,7 @@ async fn mcp_is_error_surfaces_in_envelope_not_http() {
     .await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "stub_mcp_err",
@@ -419,7 +419,7 @@ async fn mcp_is_error_surfaces_in_envelope_not_http() {
 
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["is_error"], true);
     assert_eq!(envelope["content"][0]["text"], "tool blew up");
@@ -468,7 +468,7 @@ async fn mcp_missing_secret_returns_400_before_upstream_call() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "stub_mcp_nosecret",
@@ -669,7 +669,7 @@ async fn mcp_agent_without_permission_triggers_approval() {
 
     // Agent without permission → force-gated to approval even with kind:none.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "stub_mcp_noperm",
@@ -711,7 +711,7 @@ async fn mcp_agent_without_permission_triggers_approval() {
 /// `is_error`, and the tool arguments. Regression for vet findings
 /// "audit omits is_error" and "audit + approval detail omit tool arguments".
 #[tokio::test]
-async fn mcp_execute_audit_contains_tool_arguments_and_is_error_success() {
+async fn mcp_call_audit_contains_tool_arguments_and_is_error_success() {
     let pool = common::test_pool().await;
     let (addr, _stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
@@ -734,7 +734,7 @@ async fn mcp_execute_audit_contains_tool_arguments_and_is_error_success() {
     .await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({
             "service": "stub_mcp_audit",
@@ -769,7 +769,7 @@ async fn mcp_execute_audit_contains_tool_arguments_and_is_error_success() {
 
 /// Tool-level isError must flip `is_error: true` on the audit row too.
 #[tokio::test]
-async fn mcp_execute_audit_is_error_true_on_tool_failure() {
+async fn mcp_call_audit_is_error_true_on_tool_failure() {
     let pool = common::test_pool().await;
     let (addr, stub) = start_stub().await;
     stub.force_error(vec![json!({ "type": "text", "text": "nope" })]);
@@ -793,7 +793,7 @@ async fn mcp_execute_audit_is_error_true_on_tool_failure() {
     .await;
 
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({"service": "stub_mcp_fail", "action": "echo", "params": {"x": "a"}}))
         .send()

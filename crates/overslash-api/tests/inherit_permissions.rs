@@ -9,10 +9,10 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Execute an action as the given identity. Returns HTTP status code.
-async fn execute(base: &str, api_key: &str, mock_addr: std::net::SocketAddr) -> u16 {
+async fn call_action(base: &str, api_key: &str, mock_addr: std::net::SocketAddr) -> u16 {
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "POST",
@@ -56,7 +56,7 @@ async fn inherit_from_parent_allows() {
     assert_eq!(resp.status(), 200);
 
     // Execute as agent — should inherit parent's rule → 200
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 200);
+    assert_eq!(call_action(&base, &agent_key, mock_addr).await, 200);
 }
 
 // ── Test 2: No inheritance → needs approval ─────────────────────────
@@ -84,7 +84,7 @@ async fn no_inherit_needs_approval() {
         .unwrap();
 
     // Execute as agent — no own rules, no inherit → 202
-    assert_eq!(execute(&base, &agent_key, mock_addr).await, 202);
+    assert_eq!(call_action(&base, &agent_key, mock_addr).await, 202);
 }
 
 // ── Test 3: Dynamic — agent gains rule, sub-agent picks it up ───────
@@ -105,7 +105,7 @@ async fn dynamic_parent_rule_addition() {
         .unwrap();
 
     // No rules anywhere → sub passes via inherit, agent has gap → 202
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 202);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 202);
 
     // Now add a rule to the agent
     client
@@ -121,7 +121,7 @@ async fn dynamic_parent_rule_addition() {
         .unwrap();
 
     // Execute again — sub inherits, agent now has rule → 200
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 200);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 200);
 }
 
 // ── Test 4: Revocation — parent agent's rule deleted → sub denied ───
@@ -156,7 +156,7 @@ async fn revocation_removes_inherited_access() {
     let rule_id = resp["id"].as_str().unwrap();
 
     // Allowed
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 200);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 200);
 
     // Delete the parent agent's rule
     client
@@ -167,7 +167,7 @@ async fn revocation_removes_inherited_access() {
         .unwrap();
 
     // Now needs approval — inherited rule is gone
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 202);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 202);
 }
 
 // ── Test 5: Chain inheritance (user → agent → sub_agent) ────────────
@@ -228,7 +228,7 @@ async fn chain_inheritance_through_multiple_levels() {
         .unwrap();
 
     // Sub-agent should inherit through agent → user → 200
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 200);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 200);
 }
 
 // ── Test 6: Chain break — middle identity has inherit=false ─────────
@@ -286,7 +286,7 @@ async fn chain_break_stops_inheritance() {
         .unwrap();
 
     // Sub-agent inherits from agent (empty) but NOT from user → 202
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 202);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 202);
 }
 
 // ── Test 7: Deny rule on a chain ancestor blocks the sub-agent ──────
@@ -319,7 +319,7 @@ async fn inherited_deny_rule_blocks() {
         .unwrap();
 
     // Sub auto-passes (inherit), parent agent denies → 403
-    assert_eq!(execute(&base, &sub_key, mock_addr).await, 403);
+    assert_eq!(call_action(&base, &sub_key, mock_addr).await, 403);
 }
 
 /// Helper: create a sub_agent under the given agent and return (id, api_key).

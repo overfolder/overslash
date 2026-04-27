@@ -14,7 +14,7 @@ The prior `feat/mcp-hosting` branch tried to bundle this with *hosting* (subproc
 ## Scope
 
 - A service template can declare `x-overslash-runtime: mcp` with an `x-overslash-mcp` block.
-- Agents invoke its tools through `/v1/actions/execute` exactly as they would an HTTP action.
+- Agents invoke its tools through `/v1/actions/call` exactly as they would an HTTP action.
 - Permission chain, approval bubbling, and audit semantics are unchanged.
 - Auth supported: `none`, `bearer` (via the org secret vault).
 - Streamable HTTP transport only (MCP 2025-06-18). No stdio, no subprocess, no hosting.
@@ -50,7 +50,7 @@ x-overslash-mcp:
 ## Dispatch
 
 ```
-/v1/actions/execute
+/v1/actions/call
   → resolve_request  ── svc.runtime == Mcp? ──► ResolvedMeta.mcp_target
                        │                        (skip HTTP URL, secrets, streaming)
                        └── Mode A / Mode C HTTP (unchanged)
@@ -90,7 +90,7 @@ Tool-level errors (`isError: true`) return HTTP 200 with `is_error: true` in the
 - Audited as `template.mcp_resync`.
 - On network/auth failure returns `502` with a descriptive message; the template row is left unchanged.
 
-No discovery runs on `/v1/actions/execute` — the resync is the only code path that contacts the upstream for metadata.
+No discovery runs on `/v1/actions/call` — the resync is the only code path that contacts the upstream for metadata.
 
 ## Dashboard
 
@@ -109,7 +109,7 @@ No separate "Add MCP server" wizard — admins paste the YAML in the template ed
 - stdio/subprocess MCP servers.
 - Hosted MCP runtime.
 - SSE streaming of partial tool results (the client accepts SSE frames but only decodes the first data event).
-- Dynamic discovery at execute time.
+- Dynamic discovery at call time.
 
 ## Example
 

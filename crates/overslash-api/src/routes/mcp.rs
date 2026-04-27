@@ -6,8 +6,8 @@
 //! response.
 //!
 //! Dispatch is intentionally small: the three tools (`overslash_search`,
-//! `overslash_execute`, `overslash_auth`) are the whole catalog. The MCP
-//! surface is execute-only — it lets an agent discover and run already-
+//! `overslash_call`, `overslash_auth`) are the whole catalog. The MCP
+//! surface is call-only — it lets an agent discover and run already-
 //! configured services, plus introspect its own identity. Self-management
 //! (creating services, minting subagents, resolving approvals, listing
 //! secrets) lives in the dashboard; see
@@ -191,7 +191,7 @@ fn initialize_response(id: Value) -> Response {
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "instructions": "Overslash MCP server. Use overslash_search to discover \
-        services, overslash_execute to run actions, and overslash_auth for \
+        services, overslash_call to run actions, and overslash_auth for \
         identity introspection (whoami, service_status).",
         }),
     )
@@ -214,8 +214,8 @@ fn tools_list_response(id: Value) -> Response {
                     }
                 },
                 {
-                    "name": "overslash_execute",
-                    "description": "Execute an Overslash action. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it.",
+                    "name": "overslash_call",
+                    "description": "Call an Overslash action. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -274,9 +274,9 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
     };
 
     let outcome = match params.name.as_str() {
-        "overslash_search" => call_search(state, bearer, &params.arguments).await,
-        "overslash_execute" => call_execute(state, bearer, &params.arguments).await,
-        "overslash_auth" => call_auth(state, bearer, &params.arguments).await,
+        "overslash_search" => dispatch_search(state, bearer, &params.arguments).await,
+        "overslash_call" => dispatch_call(state, bearer, &params.arguments).await,
+        "overslash_auth" => dispatch_auth(state, bearer, &params.arguments).await,
         other => {
             return rpc_error_response(req.id, METHOD_NOT_FOUND, format!("unknown tool `{other}`"));
         }
@@ -293,7 +293,7 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
     }
 }
 
-async fn call_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
     if q.is_empty() {
         return Err(
@@ -306,18 +306,18 @@ async fn call_search(state: &AppState, bearer: &str, args: &Value) -> Result<Val
     forward(state, bearer, Method::GET, &path, None).await
 }
 
-async fn call_execute(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     // Resume-mode: caller is triggering the replay of a previously-approved
-    // action. Forwards to POST /v1/approvals/{id}/execute.
+    // action. Forwards to POST /v1/approvals/{id}/call.
     if let Some(approval_id) = args.get("approval_id").and_then(|v| v.as_str()) {
         if args.get("service").is_some() || args.get("action").is_some() {
             return Err("approval_id is mutually exclusive with service/action/params".into());
         }
-        let path = format!("/v1/approvals/{}/execute", urlencoding::encode(approval_id));
+        let path = format!("/v1/approvals/{}/call", urlencoding::encode(approval_id));
         return forward(state, bearer, Method::POST, &path, None).await;
     }
 
-    // Fresh-execute mode: service + action required.
+    // Fresh-call mode: service + action required.
     let service = args
         .get("service")
         .and_then(|v| v.as_str())
@@ -333,17 +333,10 @@ async fn call_execute(state: &AppState, bearer: &str, args: &Value) -> Result<Va
         "action": action,
         "params": args.get("params").cloned().unwrap_or(Value::Null),
     });
-    forward(
-        state,
-        bearer,
-        Method::POST,
-        "/v1/actions/execute",
-        Some(body),
-    )
-    .await
+    forward(state, bearer, Method::POST, "/v1/actions/call", Some(body)).await
 }
 
-async fn call_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     let action = args
         .get("action")
         .and_then(|v| v.as_str())
@@ -353,7 +346,7 @@ async fn call_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value
     // Self-management sub-actions (list_secrets, request_secret,
     // create_subagent, create_service_from_template) have been removed from
     // the MCP surface intentionally. Agents should use already-configured
-    // services via overslash_execute; creation and credential plumbing live
+    // services via overslash_call; creation and credential plumbing live
     // in the dashboard until the work in
     // docs/design/agent-self-management.md lands.
     let (method, path, body) = match action {

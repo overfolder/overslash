@@ -20,8 +20,8 @@ use crate::{
     error::AppError,
     extractors::{AuthContext, ClientIp},
     services::{
-        action_executor::StoredExecuteRequest,
-        disclosure, group_ceiling, http_executor, mcp_executor,
+        action_caller::StoredCallRequest,
+        disclosure, group_ceiling, http_caller, mcp_caller,
         response_filter::{self, ResponseFilter},
     },
 };
@@ -36,12 +36,12 @@ use overslash_core::{
 };
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/actions/execute", post(execute_action))
+    Router::new().route("/v1/actions/call", post(call_action))
 }
 
-/// Unified execute request: supports Mode A (raw HTTP) and Mode C (service + action).
+/// Unified call request: supports Mode A (raw HTTP) and Mode C (service + action).
 #[derive(Debug, Deserialize)]
-struct ExecuteRequest {
+struct CallRequest {
     // Mode A fields
     method: Option<String>,
     url: Option<String>,
@@ -73,9 +73,9 @@ struct ExecuteRequest {
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
-enum ExecuteResponse {
-    #[serde(rename = "executed")]
-    Executed {
+enum CallResponse {
+    #[serde(rename = "called")]
+    Called {
         result: ActionResult,
         action_description: Option<String>,
     },
@@ -112,7 +112,7 @@ struct ResolvedMeta {
     /// disclosure runs.
     params: HashMap<String, serde_json::Value>,
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
-    /// executor and goes through `mcp_executor::invoke` with this payload.
+    /// executor and goes through `mcp_caller::invoke` with this payload.
     mcp_target: Option<McpTarget>,
 }
 
@@ -128,12 +128,12 @@ struct ServiceScope {
     scope_param: Option<String>,
 }
 
-async fn execute_action(
+async fn call_action(
     State(state): State<AppState>,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
-    Json(req): Json<ExecuteRequest>,
+    Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
@@ -205,11 +205,10 @@ async fn execute_action(
         if ceiling.has_groups {
             match group_ceiling::check_ceiling(&ceiling, &ceiling_service, ceiling_risk) {
                 GroupCeilingResult::ExceedsCeiling(reason) => {
-                    return Ok((
-                        StatusCode::FORBIDDEN,
-                        Json(ExecuteResponse::Denied { reason }),
-                    )
-                        .into_response());
+                    return Ok(
+                        (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason }))
+                            .into_response(),
+                    );
                 }
                 GroupCeilingResult::WithinCeilingAutoApprove if identity.kind != "user" => {
                     // Auto-create permission rules for the agent
@@ -277,7 +276,7 @@ async fn execute_action(
 
                 // Raw replay payload (full ActionRequest + side-channel fields)
                 // stored separately from action_detail so the replay at
-                // POST /v1/approvals/{id}/execute reproduces the agent's
+                // POST /v1/approvals/{id}/call reproduces the agent's
                 // original request faithfully — including jq `filter` and
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
@@ -285,7 +284,7 @@ async fn execute_action(
                 let replay_payload = if meta.mcp_target.is_some() {
                     None
                 } else {
-                    serde_json::to_value(StoredExecuteRequest::new(
+                    serde_json::to_value(StoredCallRequest::new(
                         action_req.clone(),
                         req.filter.clone(),
                         req.prefer_stream.unwrap_or(false),
@@ -390,7 +389,7 @@ async fn execute_action(
 
                 return Ok((
                     StatusCode::ACCEPTED,
-                    Json(ExecuteResponse::PendingApproval {
+                    Json(CallResponse::PendingApproval {
                         approval_id: approval.id,
                         approval_url,
                         action_description: summary,
@@ -400,11 +399,9 @@ async fn execute_action(
                     .into_response());
             }
             crate::services::permission_chain::ChainWalkResult::Denied(reason) => {
-                return Ok((
-                    StatusCode::FORBIDDEN,
-                    Json(ExecuteResponse::Denied { reason }),
-                )
-                    .into_response());
+                return Ok(
+                    (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason })).into_response(),
+                );
             }
         }
     }
@@ -414,7 +411,7 @@ async fn execute_action(
     // secret injection into headers, no streaming path. The executor owns
     // header resolution through mcp_auth::resolve_headers.
     if let Some(mcp_target) = meta.mcp_target.as_ref() {
-        let result = mcp_executor::invoke(
+        let result = mcp_caller::invoke(
             &state,
             &scope,
             &mcp_target.spec,
@@ -478,7 +475,7 @@ async fn execute_action(
 
         return Ok((
             StatusCode::OK,
-            Json(ExecuteResponse::Executed {
+            Json(CallResponse::Called {
                 result,
                 action_description: meta.description,
             }),
@@ -507,7 +504,7 @@ async fn execute_action(
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {
-        let upstream = http_executor::execute_streaming(
+        let upstream = http_caller::call_streaming(
             &state.http_client,
             &action_req.method,
             &resolved_url,
@@ -585,8 +582,8 @@ async fn execute_action(
         return Ok(response.body(body).unwrap());
     }
 
-    // Buffered execution path (default)
-    let mut result = http_executor::execute(
+    // Buffered call path (default)
+    let mut result = http_caller::call(
         &state.http_client,
         &action_req.method,
         &resolved_url,
@@ -596,7 +593,7 @@ async fn execute_action(
     )
     .await
     .map_err(|e| match e {
-        http_executor::ExecuteError::ResponseTooLarge {
+        http_caller::CallError::ResponseTooLarge {
             content_length,
             content_type,
             limit_bytes,
@@ -605,7 +602,7 @@ async fn execute_action(
             content_type,
             limit_bytes,
         },
-        http_executor::ExecuteError::Request(e) => AppError::Request(e),
+        http_caller::CallError::Request(e) => AppError::Request(e),
     })?;
 
     // Apply the optional response filter (jq today). The original body is
@@ -637,19 +634,19 @@ async fn execute_action(
             .expect("audit_detail is a json object")
             .insert("filter".to_string(), filter_audit);
     }
-    let executed_disclosed = compute_disclosure(
+    let called_disclosed = compute_disclosure(
         &meta,
         &action_req,
         std::time::Duration::from_millis(state.config.filter_timeout_ms),
     )
     .await;
-    if !executed_disclosed.is_empty() {
+    if !called_disclosed.is_empty() {
         audit_detail
             .as_object_mut()
             .expect("audit_detail is a json object")
             .insert(
                 "disclosed".into(),
-                serde_json::to_value(&executed_disclosed).unwrap_or_default(),
+                serde_json::to_value(&called_disclosed).unwrap_or_default(),
             );
     }
 
@@ -668,7 +665,7 @@ async fn execute_action(
 
     Ok((
         StatusCode::OK,
-        Json(ExecuteResponse::Executed {
+        Json(CallResponse::Called {
             result,
             action_description: meta.description,
         }),
@@ -676,7 +673,7 @@ async fn execute_action(
         .into_response())
 }
 
-/// Resolve an ExecuteRequest into a concrete ActionRequest + metadata.
+/// Resolve a CallRequest into a concrete ActionRequest + metadata.
 /// Handles Mode A (raw HTTP), Mode B (connection-based), and Mode C (service+action).
 async fn resolve_request(
     state: &AppState,
@@ -684,7 +681,7 @@ async fn resolve_request(
     scope: &OrgScope,
     identity_id: Uuid,
     ceiling_user_id: Uuid,
-    req: &ExecuteRequest,
+    req: &CallRequest,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
     if let Some(conn_id) = req.connection {

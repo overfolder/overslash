@@ -3,7 +3,7 @@
 //! validated IP via reqwest's `resolve` override to close the DNS-rebinding
 //! window between validation and dial.
 //!
-//! Shared by template OpenAPI import and MCP dispatch (`/actions/execute` +
+//! Shared by template OpenAPI import and MCP dispatch (`/actions/call` +
 //! `/templates/:key/mcp/resync`) so every user-controllable outbound URL
 //! goes through the same gate.
 

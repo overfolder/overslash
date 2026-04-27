@@ -388,7 +388,7 @@ export interface SecretRef {
   prefix?: string;
 }
 
-export interface ExecuteRequest {
+export interface CallRequest {
   // Mode A: Raw HTTP
   method?: string;
   url?: string;
@@ -430,8 +430,8 @@ export type FilteredBody =
       original_bytes: number;
     };
 
-export type ExecuteResponse =
-  | { status: 'executed'; result: ActionResult; action_description: string | null }
+export type CallResponse =
+  | { status: 'called'; result: ActionResult; action_description: string | null }
   | {
       status: 'pending_approval';
       approval_id: string;

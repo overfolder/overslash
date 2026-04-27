@@ -32,7 +32,7 @@ Overslash extracts all of this into a single service with a clean REST API. Over
 ```
 Any Caller (Overfolder agent-runner, CI, human, other agent platform)
   │
-  │  POST /v1/actions/execute
+  │  POST /v1/actions/call
   │  Authorization: Bearer ovs_acme_agent-henry_k8x9...
   │
   ▼
@@ -491,8 +491,8 @@ Agent:
   -- User receives a prompt (via Telegram/web) with a secure input field --
   -- User submits the key → encrypted → stored at user level in Overslash --
 
-  3. overslash_execute({ service: "stripe", action: "list_charges", params: { limit: 10 } })
-     → { status: "executed", result: { ... } }
+  3. overslash_call({ service: "stripe", action: "list_charges", params: { limit: 10 } })
+     → { status: "called", result: { ... } }
 ```
 
 The key never enters the LLM context. The `request_secret` flow shows the user a secure input (Overslash hosts a simple web page, or the caller's platform renders an inline input card).
@@ -518,9 +518,9 @@ Agent:
   -- User clicks, completes OAuth consent, callback stores token in Overslash --
   -- Overslash sends webhook: connection.completed --
 
-  4. overslash_execute({ service: "google-calendar", action: "list_events",
+  4. overslash_call({ service: "google-calendar", action: "list_events",
        params: { date: "2026-03-23" } })
-     → { status: "executed", result: { ... } }
+     → { status: "called", result: { ... } }
 ```
 
 ### Path 3: Unknown API (Ad-Hoc)
@@ -539,7 +539,7 @@ Agent:
 
   -- User provides key --
 
-  3. overslash_execute({
+  3. overslash_call({
        raw_http: {
          method: "POST",
          url: "https://api.acme-internal.com/v1/updates",
@@ -550,7 +550,7 @@ Agent:
                    header_name: "Authorization", prefix: "Bearer " }]
      })
      → pending approval (first time, has secrets) → user approves
-     → { status: "executed", result: { status_code: 201, body: ... } }
+     → { status: "called", result: { status_code: 201, body: ... } }
 ```
 
 No service registration needed. If the agent uses this API repeatedly, it can register it as a service for better UX (human-readable descriptions, auto-resolve auth).
@@ -559,7 +559,7 @@ No service registration needed. If the agent uses this API repeatedly, it can re
 
 ## Action Execution
 
-### `POST /v1/actions/execute`
+### `POST /v1/actions/call`
 
 The single most important endpoint. Three modes:
 
@@ -632,7 +632,7 @@ Mode C also supports explicit auth override:
 ```json
 // Immediate execution (auto-approved or no gate)
 {
-  "status": "executed",
+  "status": "called",
   "result": { "status_code": 201, "headers": {...}, "body": "..." },
   "audit_id": "aud_...",
   "action_description": "Create pull request 'Fix bug' on acme/app"
@@ -656,17 +656,17 @@ Mode C also supports explicit auth override:
 action arrives with secrets or connection referenced
   │
   ├─ No secrets AND no connection AND no service auth
-  │   └─ Unauthenticated request → execute directly (no gate)
+  │   └─ Unauthenticated request → call directly (no gate)
   │
   └─ Auth involved (secrets, connection, or service auth)
       │
       ├─ Walk permission chain (subagent → agent → user)
-      │   ├─ All levels pass → auto-approve → inject auth → execute
+      │   ├─ All levels pass → auto-approve → inject auth → call
       │   └─ Gap found → create approval → return pending_approval
       │
       └─ On approval resolution:
-          ├─ allow → inject auth → execute → return result via webhook
-          ├─ allow_remember → create permission rule + execute
+          ├─ allow → inject auth → call → return result via webhook
+          ├─ allow_remember → create permission rule + call
           └─ deny → notify caller
 ```
 
@@ -707,14 +707,14 @@ Discover services and actions. Always call first.
 
 Returns services, actions, param schemas, and `auth_status` ("connected" / "needs_setup") so the agent knows whether to set up auth first.
 
-### `overslash_execute`
+### `overslash_call`
 
-Execute any action. Covers all three modes.
+Call any action. Covers all three modes.
 
 ```json
 {
-  "name": "overslash_execute",
-  "description": "Execute an action on an external service. Supports three modes: service+action (preferred), raw HTTP, or connection-based.",
+  "name": "overslash_call",
+  "description": "Call an action on an external service. Supports three modes: service+action (preferred), raw HTTP, or connection-based.",
   "input_schema": {
     "properties": {
       "service": { "type": "string", "description": "Service key from search results" },
@@ -838,7 +838,7 @@ Three access levels: **org-admin**, **user**, **agent**.
 | POST | `/v1/connections` | Initiate OAuth |
 | GET | `/v1/connections` | List own connections |
 | DELETE | `/v1/connections/:id` | Revoke connection |
-| POST | `/v1/actions/execute` | Execute as self |
+| POST | `/v1/actions/call` | Execute as self |
 | GET | `/v1/approvals` | Own + descendant approvals |
 | POST | `/v1/approvals/:id/resolve` | Resolve own or descendant approvals |
 | DELETE | `/v1/approvals/:id` | Cancel pending |
@@ -855,7 +855,7 @@ Three access levels: **org-admin**, **user**, **agent**.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/v1/actions/execute` | Execute as self |
+| POST | `/v1/actions/call` | Execute as self |
 | GET | `/v1/secrets` | List own secret names (never values) |
 | PUT | `/v1/secrets/:name` | Store a secret (`on_behalf_of` owner for integrations) |
 | POST | `/v1/secrets/:name/request` | Ask owner-user to provide a secret |
@@ -1065,7 +1065,7 @@ CREATE INDEX idx_audit_identity ON audit_log(identity_id, created_at DESC);
 | Current Overfolder Code | Replaced By |
 |------------------------|-------------|
 | `agent-runner/src/tools/secrets.rs` | Overslash secrets API |
-| `agent-runner/src/tools/curl.rs` (secret injection, gating) | Overslash `actions/execute` |
+| `agent-runner/src/tools/curl.rs` (secret injection, gating) | Overslash `actions/call` |
 | `agent-runner/src/tools/connectors/permissions.rs` | Overslash permissions + approvals |
 | `agent-runner/src/tools/connectors/oauth.rs` | Overslash connections API |
 | `backend/src/routes/integration.rs` (OAuth flows) | Overslash OAuth engine |
@@ -1115,7 +1115,7 @@ Overslash can be released as a standalone open-source project (Apache 2.0 or sim
 1. Overslash backend scaffold (Rust/Axum, single binary)
 2. Orgs + identities + API keys
 3. Secret vault with versioning
-4. `POST /v1/actions/execute` (Mode A: raw HTTP only)
+4. `POST /v1/actions/call` (Mode A: raw HTTP only)
 5. Permission rules + basic gating (flat, no hierarchy yet)
 6. Approval workflow (API-only)
 7. Audit trail
@@ -1145,7 +1145,7 @@ Overslash can be released as a standalone open-source project (Apache 2.0 or sim
 
 ### Phase 4: Polish
 
-1. Meta tools (overslash_search, overslash_execute, overslash_auth)
+1. Meta tools (overslash_search, overslash_call, overslash_auth)
 2. Rate limiting per identity
 3. Org billing / usage metering
 4. Dashboard: org settings, webhook management, bulk permission operations

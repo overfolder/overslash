@@ -650,7 +650,7 @@ async fn test_audit_api_response_shape() {
     let mock_addr = start_mock().await;
 
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
         .send()
@@ -689,7 +689,7 @@ async fn test_audit_api_pagination() {
 
     for _ in 0..3 {
         client
-            .post(format!("{base}/v1/actions/execute"))
+            .post(format!("{base}/v1/actions/call"))
             .header(auth(&key).0, auth(&key).1)
             .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
             .send()
@@ -778,7 +778,7 @@ async fn test_audit_api_org_isolation() {
 
     let mock_addr = start_mock().await;
 
-    // Grant permission + execute action only on org A
+    // Grant permission + call action only on org A
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&admin_key_a).0, auth(&admin_key_a).1)
@@ -788,7 +788,7 @@ async fn test_audit_api_org_isolation() {
         .unwrap();
 
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key_a).0, auth(&key_a).1)
         .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
         .send()
@@ -807,13 +807,13 @@ async fn test_audit_api_org_isolation() {
 // ===========================================================================
 
 #[tokio::test]
-async fn test_audit_action_executed() {
+async fn test_audit_action_called() {
     let pool = common::test_pool().await;
     let (base, key, _org_id, ident_id, client) = setup_with_perm(pool, "http:**").await;
     let mock_addr = start_mock().await;
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "POST",
@@ -880,7 +880,7 @@ async fn test_audit_approval_created() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -932,7 +932,7 @@ async fn test_audit_approval_resolved() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "method": "GET",
@@ -1284,7 +1284,7 @@ async fn test_audit_mixed_events() {
         .await
         .unwrap();
 
-    // Permission + execute
+    // Permission + call
     client
         .post(format!("{base}/v1/permissions"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -1294,7 +1294,7 @@ async fn test_audit_mixed_events() {
         .unwrap();
 
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
         .send()

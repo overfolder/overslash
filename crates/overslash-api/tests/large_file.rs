@@ -16,7 +16,7 @@ async fn test_response_too_large() {
 
     // Request a 10 KB file — should exceed 1 KB limit
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",
@@ -49,7 +49,7 @@ async fn test_prefer_stream_large_file() {
 
     // Request 100 KB with prefer_stream — should succeed even though limit is 1 KB
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",
@@ -105,7 +105,7 @@ async fn test_prefer_stream_with_auth() {
 
     // Execute with streaming and secret injection
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",
@@ -167,7 +167,7 @@ async fn test_google_drive_redirect_stream() {
 
     // Simulate Google Drive download: hits /drive/files/download which 302s to /drive/files/content
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
             "method": "GET",

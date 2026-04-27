@@ -24,7 +24,7 @@ use overslash_db::scopes::{OrgScope, SystemScope};
 use crate::error::AppError;
 
 pub enum ChainWalkResult {
-    /// Every level authorized -- proceed to execute.
+    /// Every level authorized -- proceed to call.
     Allowed,
     /// A gap was found in the chain.
     Gap {

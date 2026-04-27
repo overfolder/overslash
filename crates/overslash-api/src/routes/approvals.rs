@@ -19,9 +19,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, WriteAcl},
-    services::action_executor::{
-        self, AuditSource, ExecuteContext, ExecuteOutcome, StoredExecuteRequest,
-    },
+    services::action_caller::{self, AuditSource, CallContext, CallOutcome, StoredCallRequest},
 };
 
 /// Maximum bytes of `action_detail` returned on approval responses. The raw
@@ -41,7 +39,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/approvals", get(list_approvals))
         .route("/v1/approvals/{id}", get(get_approval))
         .route("/v1/approvals/{id}/resolve", post(resolve_approval))
-        .route("/v1/approvals/{id}/execute", post(execute_approval))
+        .route("/v1/approvals/{id}/call", post(call_approval))
         .route("/v1/approvals/{id}/cancel", post(cancel_approval_execution))
         .route("/v1/approvals/{id}/execution", get(get_execution))
 }
@@ -49,9 +47,9 @@ pub fn router() -> Router<AppState> {
 #[derive(Serialize)]
 struct ExecutionSummary {
     id: Uuid,
-    /// One of: `pending`, `executing`, `executed`, `failed`, `cancelled`, `expired`.
+    /// One of: `pending`, `calling`, `called`, `failed`, `cancelled`, `expired`.
     status: String,
-    /// Populated when `status='executed'`. Truncated at `MAX_EXECUTION_RESULT_BYTES`.
+    /// Populated when `status='called'`. Truncated at `MAX_EXECUTION_RESULT_BYTES`.
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -441,7 +439,7 @@ async fn resolve_approval(
     };
 
     // ── Validate + normalise remember_keys / ttl (actual rule creation moves
-    // to /execute on success).
+    // to /call on success).
     let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
     let mut remember_keys_to_store: Option<Vec<String>> = None;
     if remember {
@@ -528,7 +526,7 @@ async fn resolve_approval(
         })?;
 
     // On allow/allow_remember, create the pending execution row. The actual
-    // replay is triggered later by POST /v1/approvals/{id}/execute.
+    // replay is triggered later by POST /v1/approvals/{id}/call.
     let execution = if status == "allowed" {
         let ttl_secs = state.config.execution_pending_ttl_secs as i64;
         let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(ttl_secs);
@@ -615,7 +613,7 @@ async fn resolve_approval(
     )))
 }
 
-async fn execute_approval(
+async fn call_approval(
     State(state): State<AppState>,
     auth: OrgAcl,
     scope: OrgScope,
@@ -634,7 +632,7 @@ async fn execute_approval(
         )));
     }
 
-    // Auth: the requesting agent may execute directly (even without write
+    // Auth: the requesting agent may call directly (even without write
     // ACL). Otherwise we require the same resolver-auth as /resolve — write
     // ACL + must be the current resolver or an ancestor, and never the
     // requester (caught by the is_self check above).
@@ -657,7 +655,7 @@ async fn execute_approval(
             .await?;
             if !allowed {
                 return Err(AppError::Forbidden(
-                    "caller is not authorized to execute this approval".into(),
+                    "caller is not authorized to call this approval".into(),
                 ));
             }
         }
@@ -710,7 +708,7 @@ async fn execute_approval(
         }
     };
     // MCP-runtime approvals have a different shape (runtime, tool,
-    // arguments) that this HTTP-replay path can't execute. Clean 409 until
+    // arguments) that this HTTP-replay path can't call. Clean 409 until
     // a dedicated MCP-replay path lands.
     if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("mcp") {
         return fail_and_return(
@@ -721,7 +719,7 @@ async fn execute_approval(
         )
         .await;
     }
-    let stored = match StoredExecuteRequest::from_stored_detail(&replay_value) {
+    let stored = match StoredCallRequest::from_stored_detail(&replay_value) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("replay payload parse error: {e}");
@@ -730,7 +728,7 @@ async fn execute_approval(
                 execution_id,
                 &msg,
                 AppError::Internal(format!(
-                    "approval replay payload is not a valid ExecuteRequest: {e}"
+                    "approval replay payload is not a valid CallRequest: {e}"
                 )),
             )
             .await;
@@ -739,7 +737,7 @@ async fn execute_approval(
 
     // ── Replay with timeout. Streaming is forced off — the reviewer's
     // connection isn't the original caller's.
-    let exec_ctx = ExecuteContext {
+    let call_ctx = CallContext {
         state: &state,
         scope: &scope,
         identity_id: approval.identity_id, // requester identity for audit/rate-limit
@@ -758,12 +756,12 @@ async fn execute_approval(
     let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
     let outcome = tokio::time::timeout(
         replay_timeout,
-        action_executor::execute_action_request(exec_ctx, &stored.action),
+        action_caller::call_action_request(call_ctx, &stored.action),
     )
     .await;
 
     let (finalised, succeeded, result_summary) = match outcome {
-        Ok(Ok(ExecuteOutcome::Buffered { result, .. })) => {
+        Ok(Ok(CallOutcome::Buffered { result, .. })) => {
             let mut result_json = serde_json::to_value(&result)
                 .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
             if stored.prefer_stream {
@@ -781,7 +779,7 @@ async fn execute_approval(
                 .unwrap_or(claimed);
             (finalised, true, Some(summary))
         }
-        Ok(Ok(ExecuteOutcome::Streamed(_))) => {
+        Ok(Ok(CallOutcome::Streamed(_))) => {
             // Defensive: replay forces prefer_stream=false so this variant is
             // unreachable in practice. Record as failed rather than silently
             // dropping the response.

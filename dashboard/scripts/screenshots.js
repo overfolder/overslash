@@ -71,8 +71,8 @@ const MOCK_CONNECTIONS = [
   { id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901', provider_key: 'slack', account_email: 'team@example.com', is_default: false, created_at: '2026-03-29T14:30:00Z' }
 ];
 
-const MOCK_EXECUTE_RESPONSE = {
-  status: 'executed',
+const MOCK_CALL_RESPONSE = {
+  status: 'called',
   result: {
     status_code: 200,
     headers: {
@@ -171,12 +171,12 @@ async function main() {
         if (urlStr.includes('/v1/connections')) {
           return new Response(JSON.stringify(data.connections), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
-        if (urlStr.includes('/v1/actions/execute')) {
+        if (urlStr.includes('/v1/actions/call')) {
           return new Response(JSON.stringify(data.executeResponse), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
         return origFetch(url, opts);
       };
-    }, { services: MOCK_SERVICES, detail: MOCK_GITHUB_DETAIL, connections: MOCK_CONNECTIONS, executeResponse: MOCK_EXECUTE_RESPONSE });
+    }, { services: MOCK_SERVICES, detail: MOCK_GITHUB_DETAIL, connections: MOCK_CONNECTIONS, executeResponse: MOCK_CALL_RESPONSE });
 
     // Clear the API key and re-enter to trigger fetch with mocked data
     await page.fill('input[placeholder="osk_..."]', '');
@@ -217,7 +217,7 @@ async function main() {
     await page.waitForTimeout(500);
 
     // Click execute
-    await page.click('button:has-text("Execute")');
+    await page.click('button:has-text("Call")');
     await page.waitForTimeout(1500);
 
     await page.screenshot({ path: `${screenshotDir}/dev-tool-response.png`, fullPage: false });

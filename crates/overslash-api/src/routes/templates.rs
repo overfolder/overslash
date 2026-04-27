@@ -193,7 +193,7 @@ pub(crate) struct ActionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_schema: Option<serde_json::Value>,
     /// Admin-hidden tool. Dashboard shows these with a "hidden" pill and
-    /// `/v1/actions/execute` rejects invocation at resolve time.
+    /// `/v1/actions/call` rejects invocation at resolve time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     disabled: bool,
 }

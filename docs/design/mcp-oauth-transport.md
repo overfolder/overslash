@@ -151,7 +151,7 @@ This is what `overslash mcp setup` was always supposed to be. The previous helpe
 
 Both OAuth and agent-key modes resolve to an agent identity, so the approval surface is uniform:
 
-- `POST /v1/actions/execute` returns `pending_approval` with an approval URL when the agent's permission chain has a gap.
+- `POST /v1/actions/call` returns `pending_approval` with an approval URL when the agent's permission chain has a gap.
 - The MCP tool returns the approval URL in its response; the owning user resolves it via dashboard, webhook handler, or direct REST call.
 - SSE / webhooks / polling continue to work as documented in SPEC §10 *Async Event Delivery*.
 
@@ -172,7 +172,7 @@ Surfaces kept:
 
 - `overslash mcp` subcommand (rebuilt as a stdio↔HTTP shim).
 - `crates/overslash-mcp/src/server.rs` — the JSON-RPC dispatcher and tool implementations. Moved behind the `POST /mcp` handler in `overslash-api`.
-- `overslash_search`, `overslash_execute`, `overslash_auth` — unchanged.
+- `overslash_search`, `overslash_call`, `overslash_auth` — unchanged.
 - `overslash_approve` — kept, no longer "MCP only".
 
 ## Migration / compatibility

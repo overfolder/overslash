@@ -12,7 +12,7 @@ pub struct Config {
     /// before the sweeper marks it `expired`. Default 900 (15 minutes).
     pub execution_pending_ttl_secs: u64,
     /// Upper bound on how long the synchronous replay inside
-    /// `POST /v1/approvals/{id}/execute` may wait for the upstream call.
+    /// `POST /v1/approvals/{id}/call` may wait for the upstream call.
     /// Beyond this the row is finalised as `failed` with `error='replay_timeout'`.
     pub execution_replay_timeout_secs: u64,
     pub services_dir: String,

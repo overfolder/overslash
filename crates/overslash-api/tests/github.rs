@@ -73,7 +73,7 @@ async fn test_github_e2e() {
     // ===== TEST 1: get_authenticated_user (Mode C) =====
     eprintln!("  [1/4] get_authenticated_user ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "github",
@@ -85,7 +85,7 @@ async fn test_github_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let user: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(
         user["login"].is_string(),
@@ -101,7 +101,7 @@ async fn test_github_e2e() {
     // ===== TEST 2: list_repos (Mode C) =====
     eprintln!("  [2/4] list_repos ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "github",
@@ -113,7 +113,7 @@ async fn test_github_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let repos: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let repos_arr = repos.as_array().expect("list_repos should return an array");
     assert!(
@@ -126,7 +126,7 @@ async fn test_github_e2e() {
     // ===== TEST 3: list_issues (Mode C) =====
     eprintln!("  [3/4] list_issues ({test_repo}) ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "github",
@@ -138,7 +138,7 @@ async fn test_github_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let issues: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let issues_arr = issues
         .as_array()
@@ -156,7 +156,7 @@ async fn test_github_e2e() {
     // ===== TEST 4: get_repo (Mode C) =====
     eprintln!("  [4/4] get_repo ({test_repo}) ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "github",
@@ -168,7 +168,7 @@ async fn test_github_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let repo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let full_name = repo["full_name"]
         .as_str()

@@ -98,7 +98,7 @@ async fn test_eventbrite_e2e() {
     // ===== TEST 1: get_me (Mode C) =====
     eprintln!("  [1/5] get_me ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
@@ -110,7 +110,7 @@ async fn test_eventbrite_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let me: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(
         me["id"].is_string(),
@@ -122,7 +122,7 @@ async fn test_eventbrite_e2e() {
     // ===== TEST 2: list_my_orders (Mode C) =====
     eprintln!("  [2/5] list_my_orders ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
@@ -134,7 +134,7 @@ async fn test_eventbrite_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let orders_resp: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let orders = orders_resp["orders"]
@@ -157,7 +157,7 @@ async fn test_eventbrite_e2e() {
     // ===== TEST 3: get_event (Mode C) =====
     eprintln!("  [3/5] get_event ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
@@ -171,7 +171,7 @@ async fn test_eventbrite_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let event: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let event_name = event["name"]["text"].as_str().unwrap_or("unnamed");
     eprintln!("  get_event: '{event_name}' (id={event_id})");
@@ -179,7 +179,7 @@ async fn test_eventbrite_e2e() {
     // ===== TEST 4: list_ticket_classes (Mode C) =====
     eprintln!("  [4/5] list_ticket_classes ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
@@ -193,7 +193,7 @@ async fn test_eventbrite_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let tickets: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let ticket_classes = tickets["ticket_classes"]
         .as_array()
@@ -207,7 +207,7 @@ async fn test_eventbrite_e2e() {
     // This only works if the user is the organizer of the event.
     eprintln!("  [5/5] list_event_attendees ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "eventbrite",
@@ -221,7 +221,7 @@ async fn test_eventbrite_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let upstream_status = body["result"]["status_code"].as_u64().unwrap();
     if upstream_status == 200 {
         let attendees: Value =

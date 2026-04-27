@@ -4,13 +4,13 @@
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
 	import { listServices, listConnections, getServiceActions } from '$lib/api/services';
-	import { executeAction, getTemplateActionDetail } from '$lib/api/actions';
+	import { callAction, getTemplateActionDetail } from '$lib/api/actions';
 	import type {
 		ActionDetail,
 		ActionSummary,
 		ConnectionSummary,
-		ExecuteRequest,
-		ExecuteResponse,
+		CallRequest,
+		CallResponse,
 		SecretRef,
 		ServiceInstanceSummary
 	} from '$lib/types';
@@ -57,7 +57,7 @@
 	let filterExpr = $state('');
 
 	let running = $state(false);
-	let response = $state<ExecuteResponse | null>(null);
+	let response = $state<CallResponse | null>(null);
 	let runError = $state<string | null>(null);
 	let elapsedMs = $state<number | null>(null);
 
@@ -191,13 +191,13 @@
 		return raw;
 	}
 
-	function attachFilter(req: ExecuteRequest): ExecuteRequest {
+	function attachFilter(req: CallRequest): CallRequest {
 		const expr = filterExpr.trim();
 		if (!expr) return req;
 		return { ...req, filter: { lang: 'jq', expr } };
 	}
 
-	function buildServiceActionRequest(): ExecuteRequest | null {
+	function buildServiceActionRequest(): CallRequest | null {
 		if (!selectedService || !selectedAction || !actionDetail) return null;
 		const params: Record<string, unknown> = {};
 		for (const [name, p] of Object.entries(actionDetail.params)) {
@@ -212,7 +212,7 @@
 		});
 	}
 
-	function buildRawHttpRequest(): ExecuteRequest | null {
+	function buildRawHttpRequest(): CallRequest | null {
 		if (!rawUrl.trim()) return null;
 		const { literal, secrets: parsedSecrets } = parseHeaders(rawHeaders);
 		return attachFilter({
@@ -238,7 +238,7 @@
 		running = true;
 		const start = performance.now();
 		try {
-			response = await executeAction(req);
+			response = await callAction(req);
 		} catch (e) {
 			runError = e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
 		} finally {
@@ -329,7 +329,7 @@
 
 			<div class="actions">
 				<button type="button" class="btn primary" disabled={!canRun} onclick={run}>
-					{running ? 'Executing…' : 'Execute'}
+					{running ? 'Calling…' : 'Call'}
 				</button>
 			</div>
 		</section>

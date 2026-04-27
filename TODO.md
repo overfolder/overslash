@@ -13,11 +13,11 @@ All resolved via PRs #29–#40 — see Done section for detail.
 Existing dashboard code predates the unified permission model and template/service split.
 
 **High priority:**
-- [ ] Types: remove Mode A/B/C execution variants, unify into single `ExecuteRequest` with service + action
+- [ ] Types: remove Mode A/B/C execution variants, unify into single `CallRequest` with service + action
 - [x] Types: `risk` is now a `Risk` enum (`read|write|delete`) — aligned with spec
 - [ ] Types: add template/service instance split (`ServiceTemplate` + `ServiceInstance`)
 - [ ] Types: add permission key types (`{service}:{action}:{arg}`)
-- [ ] Types: remove `approval_url` from `ExecuteResponse` (no self-auth approval URLs)
+- [ ] Types: remove `approval_url` from `CallResponse` (no self-auth approval URLs)
 - [ ] Login: extract from profile page to standalone `/login` page with logo, multi-IdP buttons (uses `GET /auth/providers`), redirect-back-after-auth
 - [ ] IdP config: **edit** UI for existing configs — create/delete/toggle shipped; dashboard lacks a form to update client_id/secret or flip `use_org_credentials` (backend `PUT /v1/org-idp-configs/{id}` already supports it — see TECH_DEBT.md §3)
 - [ ] Stores: remove `executionMode` (A/B/C), `connections` store; update to unified model
@@ -74,7 +74,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 - [x] Identities CRUD (users + agents, flat — no hierarchy yet)
 - [x] API key issuance + authentication middleware
 - [x] Secret vault with versioning (PUT, GET metadata, restore, soft-delete)
-- [x] `POST /v1/actions/execute` — raw HTTP with secret injection (`http` pseudo-service)
+- [x] `POST /v1/actions/call` — raw HTTP with secret injection (`http` pseudo-service)
 - [x] Permission rules (flat per-identity, no chain yet)
 - [x] Approval workflow — create, resolve (allow/deny/allow_remember), expire
 - [x] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority). Follow-ups: backend `deny` endpoint + audit event; wire `overslash_auth.request_secret` and `create_service_from_template` to mint requests.
@@ -107,7 +107,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 - [x] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
 - [ ] Agents view (default landing) — tree visualization with inline identity management
 - [ ] Services view — template catalog, service instances, create/manage/connect
-- [x] Developer connection tool — interactive API explorer (execute via Mode A/B/C, like Swagger UI for Overslash)
+- [x] Developer connection tool — interactive API explorer (call via Mode A/B/C, like Swagger UI for Overslash)
 - [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
 
 ### Agent Enrollment
@@ -132,7 +132,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 
 ## Phase 4: Polish + Meta Tools
 
-- [ ] Meta tool definitions (overslash_search, overslash_execute, overslash_auth)
+- [ ] Meta tool definitions (overslash_search, overslash_call, overslash_auth)
 - [x] Semantic search for service/action discovery — `GET /v1/search` with keyword + fuzzy + local pgvector embeddings (PR pending)
 - [x] Rate limiting per identity — two-tier model (User bucket + identity caps), Redis/Valkey or in-memory
 - [ ] Org billing / usage metering
