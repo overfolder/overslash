@@ -5,48 +5,105 @@ description: Overslash is a multi-tenant actions and authentication gateway for 
 
 # Enrolling with app.overslash.com
 
-Overslash enrollment is **MCP OAuth 2.1** (MCP spec 2025-06-18 — RFC 8414 +
-RFC 7591 + PKCE). There is no paste-token flow and no API-key exchange. Point
-your MCP client at `https://app.overslash.com/mcp`.
+Point your MCP client at `https://app.overslash.com/mcp`.
 
 ## MCP clients that speak OAuth (Claude Code, Cursor, Windsurf)
 
-Register the server — nothing else:
+Add the server — nothing else:
 
 ```json
 { "url": "https://app.overslash.com/mcp" }
 ```
 
-On first call your client will:
-
-1. `POST /mcp` → receive `401 WWW-Authenticate`.
-2. Discover `/.well-known/oauth-authorization-server`.
-3. Register itself at `POST /oauth/register` (RFC 7591, public client + PKCE).
-4. Open a browser to `/oauth/authorize` — the user signs in, confirms the
-   agent name + parent on the consent screen, and lands back at the client.
-5. Exchange the auth code at `POST /oauth/token` for an access token (1h JWT,
-   `aud=mcp`) + single-use-rotating refresh token.
-
-The tokens are bound to a new agent identity owned by the signed-in user.
-Subsequent runs reuse that binding — no consent prompt.
+On first use a browser window opens, the user signs in and picks an agent
+identity, and the client stores tokens automatically. Subsequent runs skip
+that step entirely.
 
 ## MCP clients that only take a static Bearer header (e.g. OpenClaw)
-
-Mint tokens once on the command line:
 
 ```bash
 overslash mcp login --server https://app.overslash.com
 ```
 
-This runs PKCE in your browser and writes `~/.config/overslash/mcp.json`. Then
-either:
+This opens a browser, signs in, and writes `~/.config/overslash/mcp.json`.
 
-- **Stdio shim (preferred)** — client config
-  `{ "command": "overslash", "args": ["mcp"] }`. The shim refreshes on 401.
-- **Paste the access token** into the client's `headers` config. Re-run
-  `overslash mcp login` every hour when it expires.
+Configure the client to use the stdio shim — it auto-refreshes tokens:
+
+```json
+{ "command": "overslash", "args": ["mcp"] }
+```
 
 ## After enrollment
 
-Call MCP tools, `POST /v1/actions/call`, etc. See `SPEC.md` for actions,
-approvals, and the permission model.
+You have three MCP tools:
+
+| Tool | Purpose |
+|---|---|
+| `overslash_search` | Discover services and actions available to you |
+| `overslash_call` | Call an action, resume a pending approval, or invoke a platform action |
+| `overslash_auth` | `whoami` · `service_status` |
+
+See `SPEC.md` for the full API reference.
+
+## Handling pending approvals
+
+When `overslash_call` hits a permission gap it does not execute — it returns:
+
+```json
+{
+  "status": "pending_approval",
+  "approval_id": "abc-123",
+  "approval_url": "https://app.overslash.com/approvals/abc-123",
+  "expires_at": "…"
+}
+```
+
+**Step 1 — show the user `approval_url`** so they can allow or deny in the dashboard.
+
+**Step 2 — wait for resolution.**
+
+If the `overslash` CLI is available ([install](https://github.com/overfolder/overslash#installation)), use it — works in any harness:
+
+```bash
+overslash watch abc-123          # --timeout 15m --poll 3s by default
+```
+
+Exit codes: **0** allowed · **1** denied / expired / timed out · **2** error.
+On exit 0, stdout is the resolved JSON; `execution.result` will be present if
+the action was auto-executed on approval.
+
+If the CLI is not installed, poll with a bare shell loop:
+
+```bash
+TOKEN="$(jq -r .token ~/.config/overslash/mcp.json)"
+until [ "$(curl -sf -H "Authorization: Bearer $TOKEN" \
+  https://app.overslash.com/v1/approvals/abc-123 \
+  | jq -r '.status')" != "pending" ]; do sleep 3; done
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  https://app.overslash.com/v1/approvals/abc-123
+```
+
+**Step 3 — execute.** If `execution.result` is not in the resolved JSON, call:
+
+```
+overslash_call { "approval_id": "abc-123" }
+```
+
+**Never re-submit the original parameters once an approval exists** — that
+creates a second approval instead of resuming the first.
+
+## Pending executions
+
+An approved action sits as a pending execution (15-minute TTL) until the agent
+triggers it. Use the built-in `overslash` platform service — handy at session
+start to catch work that survived an interrupted session:
+
+| Action | Effect |
+|---|---|
+| `list_pending` | Lists your approved-but-unexecuted actions |
+| `call_pending` | Executes one — `params: { "approval_id": "…" }` |
+| `cancel_pending` | Discards one — `params: { "approval_id": "…" }` |
+
+```
+overslash_call { "service": "overslash", "action": "list_pending" }
+```
