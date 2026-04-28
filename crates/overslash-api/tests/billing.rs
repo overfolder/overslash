@@ -47,6 +47,8 @@ struct MockStripeState {
     subscriptions: Arc<Mutex<std::collections::HashMap<String, Value>>>,
     /// Session IDs that have been expired via `/checkout/sessions/{id}/expire`.
     expired_sessions: Arc<Mutex<Vec<String>>>,
+    /// Customer IDs that have been deleted via `DELETE /customers/{id}`.
+    deleted_customers: Arc<Mutex<Vec<String>>>,
 }
 
 async fn start_mock_stripe(
@@ -133,6 +135,14 @@ async fn start_mock_stripe(
         Json(json!({ "id": session_id, "status": "expired" }))
     }
 
+    async fn delete_customer(
+        State(s): State<S>,
+        axum::extract::Path(customer_id): axum::extract::Path<String>,
+    ) -> Json<Value> {
+        s.deleted_customers.lock().await.push(customer_id.clone());
+        Json(json!({ "id": customer_id, "deleted": true, "object": "customer" }))
+    }
+
     async fn list_prices(
         axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
     ) -> Json<Value> {
@@ -157,6 +167,7 @@ async fn start_mock_stripe(
 
     let app = Router::new()
         .route("/customers", post(create_customer))
+        .route("/customers/{id}", axum::routing::delete(delete_customer))
         .route("/checkout/sessions", post(create_checkout_session))
         .route("/checkout/sessions/{id}/expire", post(expire_session))
         .route("/billing_portal/sessions", post(create_portal_session))
@@ -616,6 +627,69 @@ async fn test_create_checkout_expires_stripe_session_on_db_failure() {
         expired.len(),
         1,
         "expire-session compensation must run when DB insert fails"
+    );
+}
+
+#[tokio::test]
+async fn test_create_checkout_deletes_orphan_stripe_customer_on_db_failure() {
+    // If `set_stripe_customer` fails after `stripe_create_customer` succeeded,
+    // the new Stripe customer is orphaned — and a retry would create a second
+    // one, breaking the "one Stripe Customer per user" invariant. Verify the
+    // handler issues DELETE /customers/{id} to compensate.
+    let pool = common::test_pool().await;
+    let (stripe_addr, stripe_state) = start_mock_stripe(vec![]).await;
+    let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
+    let base = format!("http://{addr}");
+
+    let user_id = create_test_user(&pool).await;
+    let org_id = create_test_org(&pool).await;
+    let identity =
+        overslash_db::repos::identity::create(&pool, org_id, "test-orphan", "user", None)
+            .await
+            .unwrap();
+    let cookie = mint_session(org_id, identity.id, user_id);
+
+    // Force `set_stripe_customer` to fail. Drop the unique index on
+    // stripe_customer_id and re-add it as a CHECK constraint that always
+    // fails — this lets the SELECT in get_stripe_customer succeed (returns
+    // None) but the UPDATE in set_stripe_customer fails.
+    sqlx::query(
+        "ALTER TABLE users ADD CONSTRAINT block_stripe_writes
+         CHECK (stripe_customer_id IS NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/billing/checkout"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .json(&json!({
+            "org_name": "Orphan",
+            "org_slug": format!("orphan-{}", Uuid::new_v4().simple()),
+            "seats": 2,
+            "currency": "usd"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        !resp.status().is_success(),
+        "checkout should fail when set_stripe_customer fails (got {})",
+        resp.status()
+    );
+
+    // Mock should have created a customer...
+    let created = stripe_state.customers.lock().await.len();
+    assert_eq!(created, 1, "Stripe customer should have been created");
+
+    // ...and then immediately deleted by the compensation path.
+    let deleted = stripe_state.deleted_customers.lock().await;
+    assert_eq!(
+        deleted.len(),
+        1,
+        "delete-customer compensation must run when set_stripe_customer fails"
     );
 }
 

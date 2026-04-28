@@ -178,7 +178,33 @@ async fn create_checkout(
                 &state.config.stripe_api_base,
             )
             .await?;
-            billing::set_stripe_customer(&state.db, user_id, &cid).await?;
+            // If we can't persist the customer ID locally, the Stripe customer
+            // would be orphaned — and on retry we'd create a second one,
+            // breaking the "one Stripe Customer per user" invariant. Delete
+            // the just-created customer (best-effort) and surface the error.
+            if let Err(e) = billing::set_stripe_customer(&state.db, user_id, &cid).await {
+                tracing::error!(
+                    user_id = %user_id,
+                    customer_id = %cid,
+                    error = %e,
+                    "set_stripe_customer failed after Stripe customer create; deleting orphan"
+                );
+                if let Err(del_err) = stripe_delete_customer(
+                    &state.http_client,
+                    stripe_key,
+                    &cid,
+                    &state.config.stripe_api_base,
+                )
+                .await
+                {
+                    tracing::error!(
+                        customer_id = %cid,
+                        error = %del_err,
+                        "stripe delete-customer compensation failed; orphan customer may exist"
+                    );
+                }
+                return Err(e.into());
+            }
             cid
         }
     };
@@ -769,6 +795,31 @@ pub async fn resolve_stripe_price_by_lookup_key(
         ))
     })?;
     Ok(id.to_string())
+}
+
+/// Delete a Stripe Customer — used to compensate when the local
+/// `set_stripe_customer` insert fails after the customer has been created.
+/// Without this, retrying the checkout would create a second orphan customer
+/// in Stripe.
+async fn stripe_delete_customer(
+    client: &reqwest::Client,
+    secret_key: &str,
+    customer_id: &str,
+    api_base: &str,
+) -> Result<()> {
+    let resp = client
+        .delete(format!("{api_base}/customers/{customer_id}"))
+        .basic_auth(secret_key, Option::<&str>::None)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("stripe delete customer: {e}")))?;
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "stripe delete customer error: {body}"
+        )));
+    }
+    Ok(())
 }
 
 /// Expire a Stripe Checkout Session — used to compensate when the local
