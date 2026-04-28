@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v[0-9]+.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string — must end in -test (e.g. v0.1.0-test)'
+        required: true
+        default: 'v0.0.0-test'
 
 permissions:
   contents: write
@@ -12,6 +18,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   SQLX_OFFLINE: "true"
+  VERSION: ${{ inputs.version || github.ref_name }}
 
 jobs:
   build-dashboard:
@@ -19,6 +26,13 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
+      - name: Enforce -test suffix on dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "${{ inputs.version }}" != *-test ]]; then
+            echo "::error::Dispatch version must end in -test (got: ${{ inputs.version }})"
+            exit 1
+          fi
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -30,7 +44,7 @@ jobs:
       - name: Build static SPA
         working-directory: dashboard
         run: npm run build:strict:static
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dashboard-build
           path: dashboard/build/
@@ -66,7 +80,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
           cache-on-failure: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dashboard-build
           path: dashboard/build
@@ -83,18 +97,18 @@ jobs:
         if: runner.os != 'Windows'
         run: >-
           tar czf
-          "overslash-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          "overslash-${{ env.VERSION }}-${{ matrix.target }}.tar.gz"
           -C target/release overslash
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           cp target/release/overslash.exe overslash.exe
-          7z a "overslash-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" overslash.exe
-      - uses: actions/upload-artifact@v4
+          7z a "overslash-${{ env.VERSION }}-${{ matrix.target }}.zip" overslash.exe
+      - uses: actions/upload-artifact@v7
         with:
           name: artifacts-${{ matrix.target }}
-          path: overslash-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+          path: overslash-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_ext }}
           if-no-files-found: error
           retention-days: 1
 
@@ -103,13 +117,13 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           merge-multiple: true
       - name: Generate SHA256SUMS.txt
         run: sha256sum overslash-* | sort > SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: checksums
           path: SHA256SUMS.txt
@@ -118,18 +132,20 @@ jobs:
   release:
     name: Publish release
     needs: [build, checksums]
+    # Dispatch runs validate the build but don't publish — download artifacts from the run instead.
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           merge-multiple: true
           path: dist/
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: checksums
           path: dist/
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/**
           generate_release_notes: true
