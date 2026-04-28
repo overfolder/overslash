@@ -45,6 +45,8 @@ struct MockStripeState {
     checkout_sessions: Arc<Mutex<Vec<Value>>>,
     portal_sessions: Arc<Mutex<Vec<Value>>>,
     subscriptions: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    /// Session IDs that have been expired via `/checkout/sessions/{id}/expire`.
+    expired_sessions: Arc<Mutex<Vec<String>>>,
 }
 
 async fn start_mock_stripe(
@@ -123,6 +125,31 @@ async fn start_mock_stripe(
         }
     }
 
+    async fn expire_session(
+        State(s): State<S>,
+        axum::extract::Path(session_id): axum::extract::Path<String>,
+    ) -> Json<Value> {
+        s.expired_sessions.lock().await.push(session_id.clone());
+        Json(json!({ "id": session_id, "status": "expired" }))
+    }
+
+    async fn list_prices(
+        axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+    ) -> Json<Value> {
+        // Look up by the FIRST `lookup_keys[]` parameter and return a fixed
+        // mock price id derived from it. Real Stripe is more elaborate but
+        // this is enough for the resolver test.
+        let key = q
+            .get("lookup_keys[]")
+            .cloned()
+            .unwrap_or_else(|| "missing".into());
+        Json(json!({
+            "object": "list",
+            "data": [{ "id": format!("price_for_{key}"), "lookup_key": key, "active": true }],
+            "has_more": false,
+        }))
+    }
+
     let state = MockStripeState::default();
     for (id, sub) in preset_subscriptions {
         state.subscriptions.lock().await.insert(id, sub);
@@ -131,8 +158,10 @@ async fn start_mock_stripe(
     let app = Router::new()
         .route("/customers", post(create_customer))
         .route("/checkout/sessions", post(create_checkout_session))
+        .route("/checkout/sessions/{id}/expire", post(expire_session))
         .route("/billing_portal/sessions", post(create_portal_session))
         .route("/subscriptions/{id}", axum::routing::get(get_subscription))
+        .route("/prices", axum::routing::get(list_prices))
         .with_state(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -167,6 +196,11 @@ async fn start_billing_api(
         c.cloud_billing = true;
         c.stripe_secret_key = Some("sk_test_secret".into());
         c.stripe_webhook_secret = Some("whsec_test".into());
+        // Tests pre-resolve the price IDs (skipping the Stripe lookup-key
+        // round-trip that happens at server startup in production). The
+        // resolver itself is exercised in `test_resolve_stripe_price_by_lookup_key`.
+        c.stripe_eur_lookup_key = "overslash_seat_eur".into();
+        c.stripe_usd_lookup_key = "overslash_seat_usd".into();
         c.stripe_eur_price_id = Some("price_eur".into());
         c.stripe_usd_price_id = Some("price_usd".into());
         c.stripe_api_base = stripe_base.clone();
@@ -518,6 +552,89 @@ async fn test_create_checkout_returns_stripe_url() {
     let sessions = stripe_state.checkout_sessions.lock().await;
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["mode"], "subscription");
+}
+
+#[tokio::test]
+async fn test_create_checkout_expires_stripe_session_on_db_failure() {
+    // If insert_pending_checkout fails AFTER Stripe has created the session,
+    // the user's payment URL is still live — they could pay and we'd have
+    // no record (webhook would silently warn). Verify the handler calls
+    // Stripe's "expire session" endpoint to revoke the URL.
+    let pool = common::test_pool().await;
+    let (stripe_addr, stripe_state) = start_mock_stripe(vec![]).await;
+    let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
+    let base = format!("http://{addr}");
+
+    // Set up a valid session for user A.
+    let user_id = create_test_user(&pool).await;
+    let org_id = create_test_org(&pool).await;
+    let identity = overslash_db::repos::identity::create(&pool, org_id, "test-fail", "user", None)
+        .await
+        .unwrap();
+    let cookie = mint_session(org_id, identity.id, user_id);
+
+    // Force an insert_pending_checkout failure: pre-create a row whose ID
+    // matches what Stripe will assign. We can't predict Stripe's session ID
+    // up front, so instead break the FK on user_id by deleting the user
+    // AFTER the auth check passed but BEFORE the insert. Hard to time.
+    //
+    // Easier path: monkey with the pool. Drop the pending_checkouts table —
+    // the auth path doesn't touch it, but insert_pending_checkout will fail
+    // with a "relation does not exist" error.
+    sqlx::query("DROP TABLE pending_checkouts CASCADE")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/billing/checkout"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .json(&json!({
+            "org_name": "Will Fail",
+            "org_slug": format!("fail-{}", Uuid::new_v4().simple()),
+            "seats": 2,
+            "currency": "usd"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // The endpoint surfaces the error to the caller (5xx).
+    assert!(
+        !resp.status().is_success(),
+        "checkout should fail when DB insert fails (got {})",
+        resp.status()
+    );
+
+    // Stripe mock must have created a session...
+    let sessions_seen = stripe_state.checkout_sessions.lock().await.len();
+    assert_eq!(sessions_seen, 1, "Stripe session should have been created");
+
+    // ...and then immediately expired by the compensation path.
+    let expired = stripe_state.expired_sessions.lock().await;
+    assert_eq!(
+        expired.len(),
+        1,
+        "expire-session compensation must run when DB insert fails"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_stripe_price_by_lookup_key() {
+    // Direct unit-style test of the lookup-key resolver against the mock.
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let stripe_base = format!("http://{stripe_addr}");
+    let http = reqwest::Client::new();
+    let price_id = overslash_api::routes::billing::resolve_stripe_price_by_lookup_key(
+        &http,
+        "sk_test",
+        "overslash_seat_eur",
+        &stripe_base,
+    )
+    .await
+    .unwrap();
+    // Mock fabricates `price_for_<key>` from the lookup key.
+    assert_eq!(price_id, "price_for_overslash_seat_eur");
 }
 
 // ---------------------------------------------------------------------------
@@ -964,6 +1081,15 @@ async fn test_webhook_idempotent_after_partial_provisioning() {
     .unwrap();
     assert_eq!(count, 1, "no duplicate membership row was created");
 }
+
+// Concurrent-delivery race (two simultaneous webhooks for the same checkout
+// session both passing the `find_by_org_and_user` pre-provision check) is
+// hard to reproduce deterministically — the window is between
+// `identity::create_with_email` and `set_user_id` inside
+// `provision_new_org_contents`, sub-millisecond in practice. The defensive
+// `is_unique_violation` catch on the provision call covers it as
+// belt-and-suspenders; integration testing it would require pausing one
+// transaction mid-flight, which the test harness can't do.
 
 #[tokio::test]
 async fn test_webhook_subscription_updated() {

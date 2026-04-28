@@ -53,6 +53,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
@@ -1285,6 +1287,8 @@ async fn test_service_registry_api() {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
@@ -2250,6 +2254,8 @@ async fn start_api_with_registry(
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 

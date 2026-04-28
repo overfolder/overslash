@@ -203,14 +203,14 @@ variable "cloud_billing" {
   default     = false
 }
 
-variable "stripe_eur_price_id" {
-  description = "Stripe price ID for the €15/seat/month EUR plan (used when cloud_billing=true)."
+variable "stripe_eur_lookup_key" {
+  description = "Stripe lookup key for the EUR seat price. The literal price_… ID is resolved at server startup. Default: overslash_seat_eur."
   type        = string
-  default     = ""
+  default     = "overslash_seat_eur"
 }
 
-variable "stripe_usd_price_id" {
-  description = "Stripe price ID for the $20/seat/month USD plan (used when cloud_billing=true)."
+variable "stripe_usd_lookup_key" {
+  description = "Stripe lookup key for the USD seat price. Default: overslash_seat_usd."
   type        = string
-  default     = ""
+  default     = "overslash_seat_usd"
 }

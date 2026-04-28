@@ -44,9 +44,17 @@ pub struct Config {
     pub cloud_billing: bool,
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
-    /// Stripe price ID for the €15/seat/month EUR plan.
+    /// Stripe lookup key for the EUR seat price. Default `overslash_seat_eur`.
+    /// Resolved to a literal `price_…` ID at startup when billing is enabled
+    /// (see `stripe_eur_price_id`). Lookup keys are stable Stripe Dashboard
+    /// handles, so rotating the underlying price doesn't require a redeploy.
+    pub stripe_eur_lookup_key: String,
+    /// Stripe lookup key for the USD seat price. Default `overslash_seat_usd`.
+    pub stripe_usd_lookup_key: String,
+    /// Resolved EUR price ID. Populated at startup from the lookup key — this
+    /// is what we pass to Checkout Session create. `None` until resolution.
     pub stripe_eur_price_id: Option<String>,
-    /// Stripe price ID for the $20/seat/month USD plan.
+    /// Resolved USD price ID. Populated at startup from the lookup key.
     pub stripe_usd_price_id: Option<String>,
     /// Base URL for the Stripe API. Overridden in tests to point to a mock
     /// server; in production this is always "https://api.stripe.com/v1".
@@ -156,12 +164,19 @@ impl Config {
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            stripe_eur_price_id: env::var("STRIPE_EUR_PRICE_ID")
+            stripe_eur_lookup_key: env::var("STRIPE_EUR_LOOKUP_KEY")
                 .ok()
-                .filter(|s| !s.is_empty()),
-            stripe_usd_price_id: env::var("STRIPE_USD_PRICE_ID")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "overslash_seat_eur".into()),
+            stripe_usd_lookup_key: env::var("STRIPE_USD_LOOKUP_KEY")
                 .ok()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "overslash_seat_usd".into()),
+            // Populated at startup by `resolve_stripe_prices` when billing
+            // is enabled — left None here so a misconfigured deploy fails
+            // fast at startup instead of at first checkout.
+            stripe_eur_price_id: None,
+            stripe_usd_price_id: None,
             stripe_api_base: env::var("STRIPE_API_BASE")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -175,13 +190,10 @@ impl Config {
         let cloud_billing_enabled = env::var("CLOUD_BILLING")
             .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
             .unwrap_or(false);
+        // Lookup keys default to overslash_seat_{eur,usd} so they're not
+        // listed here. Operators only need to set the secrets.
         let billing_required: &[&str] = if cloud_billing_enabled {
-            &[
-                "STRIPE_SECRET_KEY",
-                "STRIPE_WEBHOOK_SECRET",
-                "STRIPE_EUR_PRICE_ID",
-                "STRIPE_USD_PRICE_ID",
-            ]
+            &["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
         } else {
             &[]
         };

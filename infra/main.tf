@@ -124,8 +124,8 @@ module "cloud_run" {
 
   # Billing
   cloud_billing                   = var.cloud_billing
-  stripe_eur_price_id             = var.stripe_eur_price_id
-  stripe_usd_price_id             = var.stripe_usd_price_id
+  stripe_eur_lookup_key           = var.stripe_eur_lookup_key
+  stripe_usd_lookup_key           = var.stripe_usd_lookup_key
   stripe_secret_key_secret_id     = module.secret_manager.stripe_secret_key_secret_id
   stripe_webhook_secret_secret_id = module.secret_manager.stripe_webhook_secret_secret_id
 

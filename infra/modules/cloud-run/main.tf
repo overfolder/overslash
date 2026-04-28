@@ -127,14 +127,14 @@ variable "cloud_billing" {
   default = false
 }
 
-variable "stripe_eur_price_id" {
+variable "stripe_eur_lookup_key" {
   type    = string
-  default = ""
+  default = "overslash_seat_eur"
 }
 
-variable "stripe_usd_price_id" {
+variable "stripe_usd_lookup_key" {
   type    = string
-  default = ""
+  default = "overslash_seat_usd"
 }
 
 variable "stripe_secret_key_secret_id" {
@@ -171,9 +171,9 @@ locals {
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
     var.cloud_billing ? {
-      CLOUD_BILLING       = "true"
-      STRIPE_EUR_PRICE_ID = var.stripe_eur_price_id
-      STRIPE_USD_PRICE_ID = var.stripe_usd_price_id
+      CLOUD_BILLING          = "true"
+      STRIPE_EUR_LOOKUP_KEY  = var.stripe_eur_lookup_key
+      STRIPE_USD_LOOKUP_KEY  = var.stripe_usd_lookup_key
     } : {},
   )
 

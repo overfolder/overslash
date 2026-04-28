@@ -37,5 +37,6 @@ enable_dns    = false
 
 # Billing — disabled in dev; enable for billing testing
 cloud_billing = false
-# stripe_eur_price_id = "price_..."
-# stripe_usd_price_id = "price_..."
+# Lookup keys default to overslash_seat_eur / overslash_seat_usd
+# stripe_eur_lookup_key = "overslash_seat_eur"
+# stripe_usd_lookup_key = "overslash_seat_usd"

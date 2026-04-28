@@ -42,10 +42,13 @@ shortener_base_url          = "https://oversla.sh"
 shortener_domain            = "oversla.sh"
 shortener_root_redirect_url = "https://www.overslash.com"
 
-# Billing — populate Stripe price IDs after creating products in Stripe Dashboard.
+# Billing — Stripe lookup keys default to overslash_seat_eur / overslash_seat_usd.
+# Set the same `lookup_key` on the corresponding Price in Stripe Dashboard so the
+# server can resolve the literal price_… ID at startup. Override here only if you
+# pick different lookup-key names.
 # Secrets (sk_live_... and whsec_...) are populated via:
 #   gcloud secrets versions add overslash-prod-stripe-secret-key --data-file=-
 #   gcloud secrets versions add overslash-prod-stripe-webhook-secret --data-file=-
-cloud_billing       = true
-stripe_eur_price_id = "price_REPLACE_ME_EUR"
-stripe_usd_price_id = "price_REPLACE_ME_USD"
+cloud_billing = true
+# stripe_eur_lookup_key = "overslash_seat_eur"
+# stripe_usd_lookup_key = "overslash_seat_usd"

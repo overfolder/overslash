@@ -205,8 +205,14 @@ async fn create_checkout(
     )
     .await?;
 
-    // Store the pending checkout so the webhook can provision the org.
-    billing::insert_pending_checkout(
+    // Store the pending checkout so the webhook can provision the org. If
+    // the DB insert fails (transient connectivity glitch, etc.) the Stripe
+    // session is already live — if the user paid, the webhook would find no
+    // matching pending_checkout and the customer would be charged with
+    // nothing provisioned. Compensate by expiring the Stripe session on
+    // failure so the user can't pay it. Best-effort: if the expire call
+    // also fails we still surface the original error to the user.
+    if let Err(e) = billing::insert_pending_checkout(
         &state.db,
         &session_id,
         user_id,
@@ -215,7 +221,29 @@ async fn create_checkout(
         req.seats as i32,
         currency,
     )
-    .await?;
+    .await
+    {
+        tracing::error!(
+            session_id,
+            error = %e,
+            "insert_pending_checkout failed after Stripe session created; expiring session"
+        );
+        if let Err(expire_err) = stripe_expire_checkout_session(
+            &state.http_client,
+            stripe_key,
+            &session_id,
+            &state.config.stripe_api_base,
+        )
+        .await
+        {
+            tracing::error!(
+                session_id,
+                error = %expire_err,
+                "stripe expire-session compensation failed; orphan session may exist"
+            );
+        }
+        return Err(e.into());
+    }
 
     Ok(Json(CheckoutResponse { url: checkout_url }))
 }
@@ -501,11 +529,26 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     // idempotent (identity::create_with_email + membership::create both
     // collide on uniqueness on retry), so on a Stripe re-delivery we must
     // skip it. The (org_id, user_id) identity row is the ground-truth marker.
+    //
+    // Concurrent-delivery race: two webhook deliveries for the same event can
+    // both pass this check before either inserts. The second `provision_new_org_contents`
+    // call would 23505. Catch the unique-violation and treat it as success —
+    // a sibling invocation already provisioned us.
     if overslash_db::repos::identity::find_by_org_and_user(&state.db, org.id, checkout.user_id)
         .await?
         .is_none()
     {
-        provision_new_org_contents(state, org.id, Some(checkout.user_id)).await?;
+        match provision_new_org_contents(state, org.id, Some(checkout.user_id)).await {
+            Ok(_) => {}
+            Err(AppError::Database(sqlx::Error::Database(ref de))) if de.is_unique_violation() => {
+                tracing::info!(
+                    session_id,
+                    org_id = %org.id,
+                    "concurrent webhook delivery already provisioned org; continuing"
+                );
+            }
+            Err(e) => return Err(e),
+        }
     } else {
         tracing::info!(
             session_id,
@@ -688,6 +731,69 @@ async fn stripe_create_checkout_session(
         .ok_or_else(|| AppError::Internal("stripe checkout: no url".into()))?
         .to_string();
     Ok((id, url))
+}
+
+/// Resolve a Stripe lookup key to a literal price ID. Called at startup when
+/// `cloud_billing` is enabled so a misconfigured deploy (typo in lookup key,
+/// price not yet created in Stripe Dashboard, etc.) fails fast instead of at
+/// first checkout. Returns the single matching active price's ID.
+pub async fn resolve_stripe_price_by_lookup_key(
+    client: &reqwest::Client,
+    secret_key: &str,
+    lookup_key: &str,
+    api_base: &str,
+) -> Result<String> {
+    // Stripe wants `lookup_keys[]=<key>` as a repeated query param. URL-encode
+    // the lookup key (it can contain characters like `_` which are safe, but
+    // be defensive in case future operators pick something with reserved
+    // characters).
+    let encoded = urlencoding::encode(lookup_key);
+    let url = format!("{api_base}/prices?lookup_keys[]={encoded}&active=true&limit=1");
+    let resp = client
+        .get(url)
+        .basic_auth(secret_key, Option::<&str>::None)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("stripe price lookup: {e}")))?;
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!("stripe price lookup: {body}")));
+    }
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("stripe price parse: {e}")))?;
+    let id = json["data"][0]["id"].as_str().ok_or_else(|| {
+        AppError::Internal(format!(
+            "no active Stripe price for lookup_key={lookup_key}"
+        ))
+    })?;
+    Ok(id.to_string())
+}
+
+/// Expire a Stripe Checkout Session — used to compensate when the local
+/// pending_checkouts insert fails after the session has been created. After
+/// expiry the user's payment URL stops working, preventing a charge with no
+/// matching local record.
+async fn stripe_expire_checkout_session(
+    client: &reqwest::Client,
+    secret_key: &str,
+    session_id: &str,
+    api_base: &str,
+) -> Result<()> {
+    let resp = client
+        .post(format!("{api_base}/checkout/sessions/{session_id}/expire"))
+        .basic_auth(secret_key, Option::<&str>::None)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("stripe expire session: {e}")))?;
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "stripe expire session error: {body}"
+        )));
+    }
+    Ok(())
 }
 
 async fn stripe_create_portal_session(

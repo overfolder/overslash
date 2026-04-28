@@ -52,11 +52,56 @@ pub struct AppState {
 }
 
 /// Create the application router with all routes and middleware.
-pub async fn create_app(config: Config) -> anyhow::Result<Router> {
+pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let db = PgPool::connect(&config.database_url).await?;
 
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
+
+    // Resolve Stripe price IDs from lookup keys at startup so a misconfigured
+    // billing deploy fails fast (not at first checkout). Skip when billing is
+    // disabled or the secret key isn't set — the validation in `from_env`
+    // already enforces that pairing.
+    if config.cloud_billing {
+        if let Some(secret_key) = config.stripe_secret_key.as_deref() {
+            let http = reqwest::Client::new();
+            config.stripe_eur_price_id = Some(
+                routes::billing::resolve_stripe_price_by_lookup_key(
+                    &http,
+                    secret_key,
+                    &config.stripe_eur_lookup_key,
+                    &config.stripe_api_base,
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to resolve EUR Stripe price (lookup_key={}): {e}",
+                        config.stripe_eur_lookup_key
+                    )
+                })?,
+            );
+            config.stripe_usd_price_id = Some(
+                routes::billing::resolve_stripe_price_by_lookup_key(
+                    &http,
+                    secret_key,
+                    &config.stripe_usd_lookup_key,
+                    &config.stripe_api_base,
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to resolve USD Stripe price (lookup_key={}): {e}",
+                        config.stripe_usd_lookup_key
+                    )
+                })?,
+            );
+            tracing::info!(
+                eur_lookup = %config.stripe_eur_lookup_key,
+                usd_lookup = %config.stripe_usd_lookup_key,
+                "Resolved Stripe price IDs from lookup keys"
+            );
+        }
+    }
 
     // Load service registry
     let registry = ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir))

@@ -588,6 +588,8 @@ where
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
     customize(&mut config);
@@ -702,6 +704,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
@@ -801,6 +805,8 @@ pub async fn start_api_with_auth_providers(
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
@@ -1271,6 +1277,8 @@ pub async fn start_api_with_registry(
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
@@ -1380,6 +1388,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
@@ -1461,6 +1471,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
