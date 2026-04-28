@@ -1986,6 +1986,13 @@ async fn resync_mcp_tools(
         )
     })?;
 
+    // Guard: bearer with no secret_name → 400 before any network call.
+    if let McpAuth::Bearer { secret_name: None } = &mcp.auth {
+        return Err(AppError::BadRequest(
+            "template has no default MCP secret_name; resync requires a secret_name in the template".into(),
+        ));
+    }
+
     // Resolve auth and call tools/list against the upstream.
     let scope = OrgScope::new(acl.org_id, state.db.clone());
     let headers = match &mcp.auth {
