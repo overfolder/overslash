@@ -482,9 +482,9 @@
 				{#if isMcp && !isSystem}
 					<label class="field">
 						<span class="label">MCP server URL</span>
-						<input type="url" bind:value={editUrl} placeholder={template?.mcp?.url ?? 'http://host:8081/mcp'} />
+						<input type="text" bind:value={editUrl} placeholder={template?.mcp?.url ?? 'http://host:8081/mcp'} />
 						{#if template?.mcp?.url}
-							<small>Override the template default ({template.mcp.url}). Leave blank to use the default.</small>
+							<small>Leave blank to use the template's default.</small>
 						{:else}
 							<small>The URL of the MCP server endpoint.</small>
 						{/if}
