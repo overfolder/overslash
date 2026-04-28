@@ -71,6 +71,7 @@
   - API key management with localStorage persistence
 - 2026-04-10 review corrections applied — doc-level (PR #96) and dashboard-level (PR #99)
 - Build/quality — zero-warning vite builds enforced (PR #125); Inter + Roboto Mono self-hosted via `@fontsource-variable` (PR #129)
+- **Secrets dashboard view** — `/secrets` list (filtered by subtree per SPEC §6 — non-admins see only their own subtree, admins see the whole org) and `/secrets/{name}` detail (versions table, used-by, reveal modal, update-value, restore-version). Backend: `GET /v1/secrets` + `GET /v1/secrets/{name}` extended with `owner_identity_id` (slot creator = version 1's `created_by`), `created_at`/`updated_at`, `versions[]`, `used_by[]`. New endpoints `POST /v1/secrets/{name}/versions/{v}/reveal` (audit-logged as `secret.revealed`) and `.../restore` (audit-logged as `secret.restored`). All dashboard-only (`SessionAuth`); agents still cannot read secret values via API key.
 
 ### Phase 3 — Identity Hierarchy + Hierarchical Permissions
 

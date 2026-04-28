@@ -39,13 +39,15 @@ async fn test_get_secret_with_session_cookie_works() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, org_admin_key) =
+    let (org_id, ident_id, agent_key, _org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // PUT the secret via the org-admin API key (PUT still uses key auth).
+    // PUT via the agent's identity-bound key so the secret has a real
+    // creator (not NULL) — non-admin visibility (SPEC §6) needs a slot
+    // owner to compare against the session's ceiling user.
     let put = client
         .put(format!("{base}/v1/secrets/db_password"))
-        .header("Authorization", format!("Bearer {org_admin_key}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({"value": "hunter2"}))
         .send()
         .await
@@ -71,13 +73,13 @@ async fn test_list_secrets_with_session_cookie_works() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, org_admin_key) =
+    let (org_id, ident_id, agent_key, _org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // Seed one secret via API key.
+    // PUT via the identity-bound key for the same reason as above.
     let put = client
         .put(format!("{base}/v1/secrets/api_token"))
-        .header("Authorization", format!("Bearer {org_admin_key}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({"value": "abc"}))
         .send()
         .await

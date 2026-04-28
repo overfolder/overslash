@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by, sv.provisioned_by_user_id\n         FROM secret_versions sv\n         JOIN secrets s ON sv.secret_id = s.id\n         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL AND sv.version = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "secret_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "encrypted_value",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "provisioned_by_user_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "b2a7d8f3d4be2f61c787ad012516f70fc60fcbffaacc2d0ea591e2897e16ac2e"
+}

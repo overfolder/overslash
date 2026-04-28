@@ -833,16 +833,16 @@ See SPEC §11 *Standalone Pages → User Signed Mode* for the full policy spec a
 
 ## Secrets view
 
-A dedicated nav item. Manages secrets owned by the user and their agents. Users see only secrets in their own subtree. Org admins see all secrets across the org.
+A dedicated nav item at `/secrets`. Manages secrets owned by the user and their agents. Users see only secrets in their own subtree. Org admins see all secrets across the org.
 
 Pending secret requests do NOT appear here — they are surfaced in the agent detail panel and as notifications.
 
-### Secret list
+### Secret list (`/secrets`)
 
 Uses the **Search Bar** (see Design System). Filterable by name, owner.
 
 ```
-Secret Name          Owner          Versions    Last Used
+Secret Name          Owner          Versions    Updated
 ────────────────────────────────────────────────────────────────
 github_token         alice (you)    3           2m ago
 stripe_api_key       alice (you)    1           1h ago
@@ -850,22 +850,22 @@ openai_key           agent:henry    2           5m ago
 ```
 
 - **Name** — the secret identifier used for injection
-- **Owner** — which identity in the subtree owns this secret
-- **Versions** — count
-- **Last used** — last time any version was injected during action execution
+- **Owner** — which identity in the subtree owns this secret. Resolved as the `created_by` of **version 1** — the original creator owns the slot, even if later versions were written by other agents under that user.
+- **Versions** — count (equal to `current_version` since versions are dense and 1-indexed)
+- **Updated** — `updated_at` timestamp of the most recent write (new version, restore). *Last used* (most recent injection at action time) is intentionally omitted — there is no per-secret access log; agents proving rotation should rely on the audit trail.
 
-`[+ New Secret]` button — name + value input. Value in a password-type field during creation.
+`[+ New Secret]` button opens an inline dialog: **Name** + **Value** (password-type) inputs. Submission calls `PUT /v1/secrets/{name}` with the typed value, then navigates to the new secret's detail page.
 
-### Secret detail
+### Secret detail (`/secrets/{name}`)
 
-Clicking a secret row opens the detail view:
+Clicking a secret row navigates to the full-screen detail page (push, not modal — versions and used-by lists need room):
 
-- **Secret name**
-- **Owner** — which identity owns this secret
-- **Last used** timestamp
-- **Used by** — list of services (and agents, if direct) that reference this secret. Each row links to the service detail. Empty state: "No services use this secret yet."
-- **`[Update Value]`** — creates a new version. Password-type input.
-- **`[Delete]`** — removes the secret entirely (all versions). Confirmation dialog warns which agents/services reference it.
+- **Secret name** — page title
+- **Owner** — identity that owns this secret (see *Owner* above)
+- **Created / Updated** — timestamps
+- **Used by** — list of service instances whose `secret_name` matches this secret. Each row links to `/services/{name}`. Empty state: "No services use this secret yet."
+- **`[Update value]`** — opens a small dialog with a password-type input. Submission creates a new version (`PUT /v1/secrets/{name}`).
+- **`[Delete]`** — soft-deletes the secret entirely (all versions). Confirmation dialog warns which services reference it.
 
 #### Version list
 
@@ -885,9 +885,9 @@ v1        2026-03-10 09:00     user:alice         ○ previous
 Clicking a version row (or `[Reveal]` button) opens a modal showing:
 
 - Version number, created timestamp, created by
-- **Secret value** — masked by default. A `[Reveal]` button shows the value inline (click-to-reveal pattern). This is the **only way** to view secret values in the dashboard — agents never receive values via API.
+- **Secret value** — masked by default. A `[Reveal]` button calls `POST /v1/secrets/{name}/versions/{version}/reveal` and shows the value inline (click-to-reveal pattern). The reveal is audit-logged as `secret.revealed`. This is the **only way** to view secret values in the dashboard — agents never receive values via API.
 - `[Copy]` button to copy the revealed value
-- `[Restore this version]` if not the current version
+- `[Restore this version]` if not the current version — calls `POST /v1/secrets/{name}/versions/{version}/restore`, which creates a new version pointing to the old value. Audit-logged as `secret.restored`.
 
 This modal is the dashboard-only privilege for viewing secret values.
 

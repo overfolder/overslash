@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 AS exists FROM secrets s\n         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL\n         AND EXISTS (\n           SELECT 1 FROM secret_versions sv\n           JOIN identities i ON i.id = sv.created_by\n           WHERE sv.secret_id = s.id AND sv.version = 1\n           AND (\n             (i.kind = 'user' AND i.id = $3)\n             OR (i.kind IN ('agent','sub_agent') AND i.owner_id = $3)\n           )\n         )\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "468c6f7a5a4f800a72360fb6f78de2a8a66336b2aa5f54b3e9dc614a9bd9d9b6"
+}
