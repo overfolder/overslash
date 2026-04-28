@@ -53,6 +53,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     // Build the app with the test pool directly
@@ -1284,6 +1285,7 @@ async fn test_service_registry_api() {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -2248,6 +2250,7 @@ async fn start_api_with_registry(
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {

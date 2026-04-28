@@ -26,8 +26,6 @@ const EU_COUNTRIES: &[&str] = &[
     "LT", "LU", "LV", "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK",
 ];
 
-const STRIPE_API: &str = "https://api.stripe.com/v1";
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/billing/geo", get(get_geo))
@@ -158,6 +156,7 @@ async fn create_checkout(
                 user.email.as_deref(),
                 user.display_name.as_deref(),
                 user_id,
+                &state.config.stripe_api_base,
             )
             .await?;
             billing::set_stripe_customer(&state.db, user_id, &cid).await?;
@@ -175,7 +174,7 @@ async fn create_checkout(
         state.config.dashboard_url.trim_end_matches('/')
     );
 
-    let session_id = stripe_create_checkout_session(
+    let (session_id, checkout_url) = stripe_create_checkout_session(
         &state.http_client,
         stripe_key,
         &customer_id,
@@ -183,6 +182,7 @@ async fn create_checkout(
         req.seats,
         &success_url,
         &cancel_url,
+        &state.config.stripe_api_base,
     )
     .await?;
 
@@ -198,8 +198,7 @@ async fn create_checkout(
     )
     .await?;
 
-    let url = stripe_checkout_url(&session_id);
-    Ok(Json(CheckoutResponse { url }))
+    Ok(Json(CheckoutResponse { url: checkout_url }))
 }
 
 // ---------------------------------------------------------------------------
@@ -299,9 +298,14 @@ async fn create_portal(
     }
 
     let return_url = format!("{}/org", state.config.dashboard_url.trim_end_matches('/'));
-    let url =
-        stripe_create_portal_session(&state.http_client, stripe_key, &customer_id, &return_url)
-            .await?;
+    let url = stripe_create_portal_session(
+        &state.http_client,
+        stripe_key,
+        &customer_id,
+        &return_url,
+        &state.config.stripe_api_base,
+    )
+    .await?;
 
     Ok(Json(PortalResponse { url }))
 }
@@ -454,8 +458,13 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
 
     // Fetch subscription details from Stripe for seats/period info.
     let stripe_key = state.config.stripe_secret_key.as_deref().unwrap_or("");
-    let sub_details =
-        fetch_stripe_subscription(&state.http_client, stripe_key, subscription_id).await?;
+    let sub_details = fetch_stripe_subscription(
+        &state.http_client,
+        stripe_key,
+        subscription_id,
+        &state.config.stripe_api_base,
+    )
+    .await?;
 
     let seats = sub_details
         .get("items")
@@ -540,6 +549,7 @@ async fn stripe_create_customer(
     email: Option<&str>,
     name: Option<&str>,
     user_id: Uuid,
+    api_base: &str,
 ) -> Result<String> {
     let mut params = vec![("metadata[user_id]", user_id.to_string())];
     if let Some(e) = email {
@@ -550,7 +560,7 @@ async fn stripe_create_customer(
     }
 
     let resp = client
-        .post(format!("{STRIPE_API}/customers"))
+        .post(format!("{api_base}/customers"))
         .basic_auth(secret_key, Option::<&str>::None)
         .form(&params)
         .send()
@@ -572,6 +582,7 @@ async fn stripe_create_customer(
         .ok_or_else(|| AppError::Internal("stripe customer: no id".into()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stripe_create_checkout_session(
     client: &reqwest::Client,
     secret_key: &str,
@@ -580,7 +591,8 @@ async fn stripe_create_checkout_session(
     seats: u32,
     success_url: &str,
     cancel_url: &str,
-) -> Result<String> {
+    api_base: &str,
+) -> Result<(String, String)> {
     let seats_str = seats.to_string();
     let params = [
         ("mode", "subscription"),
@@ -593,7 +605,7 @@ async fn stripe_create_checkout_session(
     ];
 
     let resp = client
-        .post(format!("{STRIPE_API}/checkout/sessions"))
+        .post(format!("{api_base}/checkout/sessions"))
         .basic_auth(secret_key, Option::<&str>::None)
         .form(&params)
         .send()
@@ -609,14 +621,15 @@ async fn stripe_create_checkout_session(
         .json()
         .await
         .map_err(|e| AppError::Internal(format!("stripe checkout parse: {e}")))?;
-    json["id"]
+    let id = json["id"]
         .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| AppError::Internal("stripe checkout: no id".into()))
-}
-
-fn stripe_checkout_url(session_id: &str) -> String {
-    format!("https://checkout.stripe.com/c/pay/{session_id}")
+        .ok_or_else(|| AppError::Internal("stripe checkout: no id".into()))?
+        .to_string();
+    let url = json["url"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal("stripe checkout: no url".into()))?
+        .to_string();
+    Ok((id, url))
 }
 
 async fn stripe_create_portal_session(
@@ -624,11 +637,12 @@ async fn stripe_create_portal_session(
     secret_key: &str,
     customer_id: &str,
     return_url: &str,
+    api_base: &str,
 ) -> Result<String> {
     let params = [("customer", customer_id), ("return_url", return_url)];
 
     let resp = client
-        .post(format!("{STRIPE_API}/billing_portal/sessions"))
+        .post(format!("{api_base}/billing_portal/sessions"))
         .basic_auth(secret_key, Option::<&str>::None)
         .form(&params)
         .send()
@@ -654,9 +668,10 @@ async fn fetch_stripe_subscription(
     client: &reqwest::Client,
     secret_key: &str,
     subscription_id: &str,
+    api_base: &str,
 ) -> Result<serde_json::Value> {
     let resp = client
-        .get(format!("{STRIPE_API}/subscriptions/{subscription_id}"))
+        .get(format!("{api_base}/subscriptions/{subscription_id}"))
         .basic_auth(secret_key, Option::<&str>::None)
         .send()
         .await

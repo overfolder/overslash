@@ -588,6 +588,7 @@ where
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
     customize(&mut config);
 
@@ -690,6 +691,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -788,6 +790,7 @@ pub async fn start_api_with_auth_providers(
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -1257,6 +1260,7 @@ pub async fn start_api_with_registry(
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -1365,6 +1369,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -1445,6 +1450,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         stripe_webhook_secret: None,
         stripe_eur_price_id: None,
         stripe_usd_price_id: None,
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {

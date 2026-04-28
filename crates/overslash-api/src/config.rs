@@ -48,6 +48,9 @@ pub struct Config {
     pub stripe_eur_price_id: Option<String>,
     /// Stripe price ID for the $20/seat/month USD plan.
     pub stripe_usd_price_id: Option<String>,
+    /// Base URL for the Stripe API. Overridden in tests to point to a mock
+    /// server; in production this is always "https://api.stripe.com/v1".
+    pub stripe_api_base: String,
     /// Optional apex used to resolve `<slug>.<apex>` subdomains into an org.
     /// e.g. `app.overslash.com`. When unset, subdomain routing is disabled
     /// (helpful for self-hosted single-host deploys). Leave unset in local
@@ -159,6 +162,10 @@ impl Config {
             stripe_usd_price_id: env::var("STRIPE_USD_PRICE_ID")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            stripe_api_base: env::var("STRIPE_API_BASE")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://api.stripe.com/v1".into()),
         }
     }
 
@@ -181,7 +188,7 @@ impl Config {
         always_required
             .iter()
             .chain(billing_required.iter())
-            .filter(|k| env::var(k).is_err())
+            .filter(|k| env::var(k).map(|v| v.is_empty()).unwrap_or(true))
             .copied()
             .collect()
     }
