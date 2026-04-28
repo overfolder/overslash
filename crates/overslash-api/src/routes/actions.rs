@@ -30,7 +30,7 @@ use overslash_core::{
     permissions::{AccessLevel, GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
     types::{
-        ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpSpec, Runtime,
+        ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpAuth, Runtime,
         SecretRef, service::Risk,
     },
 };
@@ -120,7 +120,10 @@ struct ResolvedMeta {
 }
 
 struct McpTarget {
-    spec: McpSpec,
+    /// Resolved MCP server URL (instance.url ?? template mcp.url).
+    url: String,
+    /// Resolved auth — for Bearer, secret_name is always Some at this point.
+    auth: McpAuth,
     tool: String,
     arguments: serde_json::Value,
 }
@@ -423,7 +426,8 @@ async fn call_action(
         let result = mcp_caller::invoke(
             &state,
             &scope,
-            &mcp_target.spec,
+            &mcp_target.url,
+            &mcp_target.auth,
             &mcp_target.tool,
             &mcp_target.arguments,
         )
@@ -453,7 +457,7 @@ async fn call_action(
             "runtime": "mcp",
             "tool": mcp_target.tool,
             "arguments": mcp_target.arguments,
-            "url": mcp_target.spec.url,
+            "url": mcp_target.url,
             "duration_ms": result.duration_ms,
             "is_error": is_error,
             "service": req.service,
@@ -880,6 +884,42 @@ async fn resolve_request(
                     "service '{service_key}' has runtime=mcp but no mcp block"
                 ))
             })?;
+
+            // Resolve URL: instance wins, template is fallback.
+            let resolved_url = instance
+                .as_ref()
+                .and_then(|i| i.url.as_deref().map(str::to_string))
+                .or(mcp_spec.url.clone())
+                .ok_or_else(|| {
+                    AppError::BadRequest(
+                        "MCP service has no URL configured; set `url` when creating the service instance".into(),
+                    )
+                })?;
+
+            // Resolve bearer secret_name: instance wins, template is fallback.
+            let resolved_auth = match &mcp_spec.auth {
+                McpAuth::None => McpAuth::None,
+                McpAuth::Bearer {
+                    secret_name: Some(sn),
+                } => McpAuth::Bearer {
+                    secret_name: Some(sn.clone()),
+                },
+                McpAuth::Bearer { secret_name: None } => {
+                    let sn = instance
+                        .as_ref()
+                        .and_then(|i| i.secret_name.as_deref())
+                        .ok_or_else(|| {
+                            AppError::BadRequest(
+                                "MCP bearer service has no secret_name configured; set it when creating the service instance".into(),
+                            )
+                        })?
+                        .to_string();
+                    McpAuth::Bearer {
+                        secret_name: Some(sn),
+                    }
+                }
+            };
+
             let tool = action
                 .mcp_tool
                 .clone()
@@ -901,7 +941,7 @@ async fn resolve_request(
             return Ok((
                 ActionRequest {
                     method: String::new(),
-                    url: mcp_spec.url.clone(),
+                    url: resolved_url.clone(),
                     headers: HashMap::new(),
                     body: None,
                     secrets: Vec::new(),
@@ -920,7 +960,8 @@ async fn resolve_request(
                     redact: action.redact.clone(),
                     params: req.params.clone(),
                     mcp_target: Some(McpTarget {
-                        spec: mcp_spec,
+                        url: resolved_url,
+                        auth: resolved_auth,
                         tool,
                         arguments,
                     }),

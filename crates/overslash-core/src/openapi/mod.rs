@@ -469,7 +469,7 @@ mod tests {
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
         assert_eq!(svc.runtime, Runtime::Mcp);
         let mcp = svc.mcp.expect("mcp present");
-        assert_eq!(mcp.url, "https://mcp.deepwiki.com/mcp");
+        assert_eq!(mcp.url.as_deref(), Some("https://mcp.deepwiki.com/mcp"));
         assert_eq!(mcp.auth, McpAuth::None);
         assert!(!mcp.autodiscover);
 
@@ -560,7 +560,8 @@ mod tests {
     }
 
     #[test]
-    fn compile_mcp_rejects_missing_url() {
+    fn compile_mcp_without_url_is_valid() {
+        // url is optional — absent means the service instance must supply one.
         let v = json!({
             "openapi": "3.1.0",
             "info": {"title": "T", "x-overslash-key": "t_mcp"},
@@ -568,8 +569,8 @@ mod tests {
             "paths": {},
             "x-overslash-mcp": { "auth": {"kind": "none"} }
         });
-        let err = compile_service(&v).unwrap_err();
-        assert!(err.iter().any(|e| e.code == "mcp_invalid"), "{err:?}");
+        let (svc, _warnings) = compile_service(&v).expect("missing url is valid");
+        assert!(svc.mcp.expect("mcp present").url.is_none());
     }
 
     #[test]

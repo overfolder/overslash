@@ -95,7 +95,10 @@ pub struct ServiceDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpSpec {
     /// Streamable HTTP endpoint (MCP 2025-06-18). JSON-RPC 2.0 POST target.
-    pub url: String,
+    /// `None` means the template has no default URL; the service instance must
+    /// supply one via its `url` field at creation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// How to authenticate to the MCP server.
     pub auth: McpAuth,
     /// When `true` (default), saving the template triggers `tools/list` and
@@ -118,7 +121,12 @@ pub enum McpAuth {
     None,
     /// `Authorization: Bearer <secret>`. The secret is resolved at call time
     /// from the Overslash vault by name (org or user scope, versioned).
-    Bearer { secret_name: String },
+    /// `secret_name: None` means the template has no default; the service
+    /// instance must supply one via its `secret_name` field at creation time.
+    Bearer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret_name: Option<String>,
+    },
 }
 
 /// Alias: a service template is the same as a service definition.
@@ -372,13 +380,22 @@ mod tests {
     #[test]
     fn mcp_auth_bearer_serde() {
         let a = McpAuth::Bearer {
-            secret_name: "linear_token".into(),
+            secret_name: Some("linear_token".into()),
         };
         let j = serde_json::to_value(&a).unwrap();
         assert_eq!(
             j,
             serde_json::json!({ "kind": "bearer", "secret_name": "linear_token" })
         );
+        let back: McpAuth = serde_json::from_value(j).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn mcp_auth_bearer_without_secret_name_serde() {
+        let a = McpAuth::Bearer { secret_name: None };
+        let j = serde_json::to_value(&a).unwrap();
+        assert_eq!(j, serde_json::json!({ "kind": "bearer" }));
         let back: McpAuth = serde_json::from_value(j).unwrap();
         assert_eq!(back, a);
     }
@@ -400,7 +417,7 @@ mod tests {
         });
         let spec: McpSpec = serde_json::from_value(v).unwrap();
         assert!(spec.autodiscover);
-        assert_eq!(spec.url, "https://mcp.example.com/mcp");
+        assert_eq!(spec.url.as_deref(), Some("https://mcp.example.com/mcp"));
         assert_eq!(spec.auth, McpAuth::None);
     }
 
@@ -458,9 +475,9 @@ mod tests {
             actions,
             runtime: Runtime::Mcp,
             mcp: Some(McpSpec {
-                url: "https://mcp.linear.app/mcp".into(),
+                url: Some("https://mcp.linear.app/mcp".into()),
                 auth: McpAuth::Bearer {
-                    secret_name: "linear_api_token".into(),
+                    secret_name: Some("linear_api_token".into()),
                 },
                 autodiscover: true,
             }),
@@ -476,7 +493,7 @@ mod tests {
         assert_eq!(
             mcp.auth,
             McpAuth::Bearer {
-                secret_name: "linear_api_token".into()
+                secret_name: Some("linear_api_token".into())
             }
         );
         let a = &back.actions["search_issues"];

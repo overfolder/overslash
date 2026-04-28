@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use overslash_core::types::{ActionResult, McpSpec};
+use overslash_core::types::{ActionResult, McpAuth};
 use overslash_db::scopes::OrgScope;
 use serde_json::{Value, json};
 
@@ -42,17 +42,18 @@ const MCP_TIMEOUT: Duration = Duration::from_secs(30);
 pub async fn invoke(
     state: &AppState,
     scope: &OrgScope,
-    mcp: &McpSpec,
+    url: &str,
+    auth: &McpAuth,
     tool: &str,
     arguments: &Value,
 ) -> Result<ActionResult, AppError> {
-    let headers = mcp_auth::resolve_headers(state, scope, &mcp.auth).await?;
+    let headers = mcp_auth::resolve_headers(state, scope, auth).await?;
 
-    // SSRF guard: validate mcp.url's host resolves to a public IP and pin
+    // SSRF guard: validate url's host resolves to a public IP and pin
     // the reqwest client to that IP so a compromised resolver cannot rebind
     // to an internal target between validation and connect. Timeouts live
     // on this client too — state.http_client has no per-request deadline.
-    let (http, base) = ssrf_guard::build_pinned_client(&mcp.url, MCP_TIMEOUT).await?;
+    let (http, base) = ssrf_guard::build_pinned_client(url, MCP_TIMEOUT).await?;
     let client = McpClient::with_client_and_base(http, base, DEFAULT_MAX_BODY_BYTES);
 
     let start = Instant::now();

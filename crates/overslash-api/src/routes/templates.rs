@@ -150,9 +150,15 @@ struct TemplateDetail {
 
 #[derive(Serialize)]
 struct McpDetail {
-    url: String,
+    /// The template's default MCP server URL. `null` means the service instance
+    /// must supply a URL at creation time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
     /// `none` or `bearer`. The dashboard uses this to gate the secret-name UI.
     auth_kind: String,
+    /// `true` when the template has a hard-coded `secret_name`; `false` when
+    /// the operator must supply one at instance creation time.
+    has_default_secret_name: bool,
     autodiscover: bool,
     /// ISO-8601 timestamp of the most recent tools/list sync. `None` if never.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -325,9 +331,9 @@ fn runtime_string(def: &ServiceDefinition) -> String {
 fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
     use overslash_core::types::McpAuth;
     let spec = def.mcp.as_ref()?;
-    let auth_kind = match &spec.auth {
-        McpAuth::None => "none".to_string(),
-        McpAuth::Bearer { .. } => "bearer".to_string(),
+    let (auth_kind, has_default_secret_name) = match &spec.auth {
+        McpAuth::None => ("none".to_string(), false),
+        McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some()),
     };
     let discovered_at = openapi
         .get("x-overslash-mcp")
@@ -337,6 +343,7 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
     Some(McpDetail {
         url: spec.url.clone(),
         auth_kind,
+        has_default_secret_name,
         autodiscover: spec.autodiscover,
         discovered_at,
     })
@@ -1980,10 +1987,16 @@ async fn resync_mcp_tools(
         }
     };
 
+    let resync_url = mcp.url.as_deref().ok_or_else(|| {
+        AppError::BadRequest(
+            "template has no default MCP URL; resync requires a URL in the template".into(),
+        )
+    })?;
+
     // SSRF guard: resolve-once and pin the validated IP on the outbound
     // reqwest client. See services::ssrf_guard for the full rationale.
     let (http, base) = crate::services::ssrf_guard::build_pinned_client(
-        &mcp.url,
+        resync_url,
         std::time::Duration::from_secs(30),
     )
     .await?;

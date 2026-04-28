@@ -560,19 +560,25 @@ pub(super) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
         return Err(errors);
     };
 
+    // url is optional — absent means the service instance must supply one.
+    // When present, validate it has an http/https scheme.
     let url = match mcp_obj.get("url").and_then(Value::as_str) {
-        Some(u) if !u.is_empty() => u.to_string(),
-        _ => {
-            errors.push(ValidationIssue::new(
-                "mcp_invalid",
-                "x-overslash-mcp.url is required and must be a non-empty string",
-                "x-overslash-mcp.url",
-            ));
-            return Err(errors);
+        Some(u) if !u.is_empty() => {
+            if !u.starts_with("http://") && !u.starts_with("https://") {
+                errors.push(ValidationIssue::new(
+                    "mcp_invalid",
+                    "x-overslash-mcp.url must start with http:// or https://",
+                    "x-overslash-mcp.url",
+                ));
+                return Err(errors);
+            }
+            Some(u.to_string())
         }
+        _ => None,
     };
 
     // auth: object with a `kind` discriminator. Defaults to {kind: none} when absent.
+    // secret_name is optional — absent means the service instance must supply one.
     let auth = match mcp_obj.get("auth") {
         None => McpAuth::None,
         Some(Value::Object(a)) => match a.get("kind").and_then(Value::as_str) {
@@ -581,16 +587,8 @@ pub(super) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
                 let secret_name = a
                     .get("secret_name")
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if secret_name.is_empty() {
-                    errors.push(ValidationIssue::new(
-                        "mcp_invalid",
-                        "x-overslash-mcp.auth.secret_name is required when kind=bearer",
-                        "x-overslash-mcp.auth.secret_name",
-                    ));
-                    return Err(errors);
-                }
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 McpAuth::Bearer { secret_name }
             }
             Some(other) => {

@@ -223,24 +223,21 @@ fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
                 );
                 return;
             };
-            if mcp.url.trim().is_empty() {
-                issues.err("mcp_invalid", "mcp.url must be non-empty", "mcp.url");
-            } else if !mcp.url.starts_with("https://") && !mcp.url.starts_with("http://") {
-                issues.err(
-                    "mcp_invalid",
-                    "mcp.url must begin with http:// or https://",
-                    "mcp.url",
-                );
-            }
-            match &mcp.auth {
-                McpAuth::None => {}
-                McpAuth::Bearer { secret_name } if secret_name.trim().is_empty() => {
+            // url is optional — absent means the service instance must supply one.
+            // When present, validate scheme (format already checked in extract.rs;
+            // this guard catches templates loaded from DB that may have bypassed it).
+            if let Some(url) = &mcp.url {
+                if !url.starts_with("https://") && !url.starts_with("http://") {
                     issues.err(
                         "mcp_invalid",
-                        "mcp.auth.secret_name must be non-empty for kind=bearer",
-                        "mcp.auth.secret_name",
+                        "mcp.url must begin with http:// or https://",
+                        "mcp.url",
                     );
                 }
+            }
+            // secret_name is optional — absent means the service instance must supply one.
+            match &mcp.auth {
+                McpAuth::None => {}
                 McpAuth::Bearer { .. } => {}
             }
             if !def.hosts.is_empty() {
@@ -1025,7 +1022,7 @@ mod tests {
             actions,
             runtime: Runtime::Mcp,
             mcp: Some(McpSpec {
-                url: "https://mcp.linear.app/mcp".into(),
+                url: Some("https://mcp.linear.app/mcp".into()),
                 auth,
                 autodiscover: true,
             }),
@@ -1035,8 +1032,25 @@ mod tests {
     #[test]
     fn mcp_happy_path_valid() {
         let d = minimal_mcp(McpAuth::Bearer {
-            secret_name: "tok".into(),
+            secret_name: Some("tok".into()),
         });
+        let r = run(&d);
+        assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn mcp_bearer_without_secret_name_is_valid() {
+        // secret_name absent means the service instance must supply one.
+        let d = minimal_mcp(McpAuth::Bearer { secret_name: None });
+        let r = run(&d);
+        assert!(r.valid, "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn mcp_without_url_is_valid() {
+        // url absent means the service instance must supply one.
+        let mut d = minimal_mcp(McpAuth::None);
+        d.mcp.as_mut().unwrap().url = None;
         let r = run(&d);
         assert!(r.valid, "errors: {:?}", r.errors);
     }
@@ -1133,16 +1147,7 @@ mod tests {
     #[test]
     fn mcp_invalid_url_scheme_rejected() {
         let mut d = minimal_mcp(McpAuth::None);
-        d.mcp.as_mut().unwrap().url = "mcp.example.com".into();
-        let r = run(&d);
-        assert!(r.errors.iter().any(|e| e.code == "mcp_invalid"));
-    }
-
-    #[test]
-    fn mcp_bearer_empty_secret_rejected() {
-        let d = minimal_mcp(McpAuth::Bearer {
-            secret_name: "   ".into(),
-        });
+        d.mcp.as_mut().unwrap().url = Some("mcp.example.com".into());
         let r = run(&d);
         assert!(r.errors.iter().any(|e| e.code == "mcp_invalid"));
     }
@@ -1152,7 +1157,7 @@ mod tests {
         use crate::types::McpSpec;
         let mut d = minimal_valid();
         d.mcp = Some(McpSpec {
-            url: "https://x".into(),
+            url: Some("https://x".into()),
             auth: McpAuth::None,
             autodiscover: true,
         });

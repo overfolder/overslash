@@ -27,10 +27,15 @@ pub async fn resolve_headers(
     match auth {
         McpAuth::None => {}
         McpAuth::Bearer { secret_name } => {
-            let value = fetch_secret(state, scope, secret_name).await?;
+            // secret_name must be resolved to Some before invocation; None here
+            // is an internal bug (resolution should have caught it in actions.rs).
+            let name = secret_name.as_deref().ok_or_else(|| {
+                AppError::Internal("mcp bearer secret_name not resolved before invocation".into())
+            })?;
+            let value = fetch_secret(state, scope, name).await?;
             let header_value = HeaderValue::from_str(&format!("Bearer {value}")).map_err(|_| {
                 AppError::BadRequest(format!(
-                    "secret `{secret_name}` contains characters not allowed in an HTTP header"
+                    "secret `{name}` contains characters not allowed in an HTTP header"
                 ))
             })?;
             headers.insert(AUTHORIZATION, header_value);
