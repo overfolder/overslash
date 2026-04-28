@@ -286,3 +286,52 @@ async fn non_admin_cannot_see_other_users_secrets() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+#[tokio::test]
+async fn flag_only_admin_sees_all_secrets() {
+    // Regression for the Sentry/Seer review on PR #186: admin status must
+    // honour the `is_org_admin` flag, not just Admins-group membership.
+    // A user flagged as org admin without the corresponding group grant
+    // (e.g. fresh corp-org creator before any user-defined groups exist)
+    // must still see every secret in the org.
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    // Admin seeds a secret. Owner = admin user.
+    let r = client
+        .put(format!("{base}/v1/secrets/admin_only"))
+        .header("Authorization", format!("Bearer {}", fx.admin_key))
+        .json(&json!({"value": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Flip on `is_org_admin` for write-user without adding them to any
+    // group. The bootstrap fixture only places admin-user in Admins, so
+    // before this flip write-user has neither route to admin status.
+    sqlx::query!(
+        "UPDATE identities SET is_org_admin = true WHERE id = $1",
+        fx.user_ids[1],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Listing as write-user must now include the admin's secret.
+    let cookie = mint_session_cookie(fx.org_id, fx.user_ids[1]);
+    let resp = client
+        .get(format!("{base}/v1/secrets"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = body.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        names.contains(&"admin_only"),
+        "is_org_admin=true must grant the admin view of all secrets, got: {names:?}"
+    );
+}

@@ -160,6 +160,18 @@ async fn caller_user_id(scope: &OrgScope, session: &SessionAuth) -> Result<uuid:
 
 async fn is_admin(scope: &OrgScope, identity_id: uuid::Uuid) -> Result<bool> {
     use overslash_core::permissions::AccessLevel;
+
+    // Fast path matching `OrgAcl::from_request_parts`: the `is_org_admin`
+    // flag is the canonical signal for admin status on user identities and
+    // is kept in sync with Admins-group membership. Skipping this check
+    // would return a non-admin view to a flag-only admin (e.g. the org
+    // creator before any group grants are wired up).
+    if let Some(ident) = scope.get_identity(identity_id).await?
+        && ident.is_org_admin
+    {
+        return Ok(true);
+    }
+
     let ceiling_user_id =
         crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?;
     let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
