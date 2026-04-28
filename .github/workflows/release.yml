@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  SQLX_OFFLINE: "true"
+
+jobs:
+  build-dashboard:
+    name: Build dashboard
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dependencies
+        working-directory: dashboard
+        run: npm ci
+      - name: Build static SPA
+        working-directory: dashboard
+        run: npm run build:strict:static
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-build
+          path: dashboard/build/
+          retention-days: 1
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: build-dashboard
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            archive_ext: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive_ext: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive_ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive_ext: zip
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          cache-on-failure: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dashboard-build
+          path: dashboard/build
+      - name: Set static CRT
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> $GITHUB_ENV
+      - name: Build
+        run: cargo build --release --package overslash-cli --features embed-dashboard --locked
+      - name: Strip binary
+        if: runner.os != 'Windows'
+        run: strip target/release/overslash
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: >-
+          tar czf
+          "overslash-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          -C target/release overslash
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cp target/release/overslash.exe overslash.exe
+          7z a "overslash-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" overslash.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: overslash-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+          retention-days: 1
+
+  checksums:
+    name: Checksums
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          merge-multiple: true
+      - name: Generate SHA256SUMS.txt
+        run: sha256sum overslash-* | sort > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: SHA256SUMS.txt
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: [build, checksums]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          merge-multiple: true
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: checksums
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true
+          fail_on_unmatched_files: true
