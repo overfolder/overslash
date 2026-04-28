@@ -183,7 +183,7 @@ mod tests {
                 },
             }],
             actions: HashMap::new(),
-            runtime: Default::default(),
+            runtime: crate::types::Runtime::Http,
             mcp: None,
         }
     }
@@ -198,6 +198,7 @@ mod tests {
             params: HashMap::new(),
             scope_param: None,
             required_scopes: vec![],
+            permission: None,
             disclose: vec![],
             redact: vec![],
             mcp_tool: None,

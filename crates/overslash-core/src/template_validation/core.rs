@@ -26,7 +26,9 @@ pub fn validate_service_definition(
     let mut issues = Issues::default();
 
     check_service_shape(def, &mut issues);
-    check_auth(&def.auth, &mut issues);
+    if def.runtime != Runtime::Platform {
+        check_auth(&def.auth, &mut issues);
+    }
     check_mcp(def, &mut issues);
     check_duplicate_action_keys(raw_action_keys, &mut issues);
 
@@ -36,7 +38,11 @@ pub fn validate_service_definition(
     action_keys.sort();
     for key in action_keys {
         let action = &def.actions[key];
-        check_action(key, action, &mut issues);
+        if def.runtime == Runtime::Platform {
+            check_platform_action(key, action, &mut issues);
+        } else {
+            check_action(key, action, &mut issues);
+        }
     }
 
     issues.finish()
@@ -53,6 +59,11 @@ fn check_service_shape(def: &ServiceDefinition, issues: &mut Issues) {
 
     if def.display_name.trim().is_empty() {
         issues.err("missing_field", "display_name is required", "display_name");
+    }
+
+    // Platform services have no hosts — they dispatch in-process.
+    if def.runtime == Runtime::Platform {
+        return;
     }
 
     for (i, host) in def.hosts.iter().enumerate() {
@@ -263,6 +274,9 @@ fn check_mcp(def: &ServiceDefinition, issues: &mut Issues) {
                 }
             }
         }
+        // Platform runtime has no mcp block — check_platform_action enforces
+        // platform-specific invariants; nothing to do here.
+        Runtime::Platform => {}
     }
 }
 
@@ -353,6 +367,55 @@ fn check_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
                 format!("{action_path}.response_type"),
             );
         }
+    }
+}
+
+fn check_platform_action(key: &str, action: &ServiceAction, issues: &mut Issues) {
+    let action_path = format!("actions.{key}");
+
+    if !is_valid_action_key(key) {
+        issues.err(
+            "invalid_action_key",
+            "action key must match ^[a-z][a-z0-9_]*$",
+            action_path.clone(),
+        );
+    }
+
+    if !action.method.is_empty() {
+        issues.err(
+            "platform_has_method",
+            "platform actions must not declare a method",
+            format!("{action_path}.method"),
+        );
+    }
+    if !action.path.is_empty() {
+        issues.err(
+            "platform_has_path",
+            "platform actions must not declare a path",
+            format!("{action_path}.path"),
+        );
+    }
+
+    if action.description.trim().is_empty() {
+        issues.err(
+            "missing_description",
+            "description is required",
+            format!("{action_path}.description"),
+        );
+    }
+
+    if let Some(ref perm) = action.permission {
+        if !is_valid_action_key(perm) {
+            issues.err(
+                "invalid_permission_key",
+                format!("permission {perm:?} must match ^[a-z][a-z0-9_]*$"),
+                format!("{action_path}.permission"),
+            );
+        }
+    }
+
+    for (name, param) in &action.params {
+        check_param(name, param, &action.params, &action_path, issues);
     }
 }
 
@@ -576,7 +639,7 @@ fn has_unclosed_brace(s: &str) -> bool {
 mod tests {
     use super::*;
     use crate::types::{
-        ActionParam, ParamResolver, Risk, ServiceAction, ServiceAuth, ServiceDefinition,
+        ActionParam, ParamResolver, Risk, Runtime, ServiceAction, ServiceAuth, ServiceDefinition,
         TokenInjection,
     };
     use std::collections::HashMap;
@@ -610,6 +673,7 @@ mod tests {
                         params: HashMap::new(),
                         scope_param: None,
                         required_scopes: Vec::new(),
+                        permission: None,
                         disclose: Vec::new(),
                         redact: Vec::new(),
                         mcp_tool: None,
@@ -619,7 +683,7 @@ mod tests {
                 );
                 m
             },
-            runtime: Default::default(),
+            runtime: Runtime::Http,
             mcp: None,
         }
     }
@@ -887,7 +951,7 @@ mod tests {
             category: Some("platform".into()),
             auth: vec![],
             actions: HashMap::new(),
-            runtime: Default::default(),
+            runtime: Runtime::Platform,
             mcp: None,
         };
         d.actions.insert(
@@ -901,6 +965,7 @@ mod tests {
                 params: HashMap::new(),
                 scope_param: None,
                 required_scopes: Vec::new(),
+                permission: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
                 mcp_tool: None,
@@ -942,6 +1007,7 @@ mod tests {
                 },
                 scope_param: Some("team".into()),
                 required_scopes: vec![],
+                permission: None,
                 disclose: vec![],
                 redact: vec![],
                 mcp_tool: Some("search".into()),

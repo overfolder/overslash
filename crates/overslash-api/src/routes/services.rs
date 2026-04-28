@@ -802,6 +802,7 @@ mod classify_scopes_tests {
                     params: HashMap::new(),
                     scope_param: None,
                     required_scopes: required.iter().map(|s| s.to_string()).collect(),
+                    permission: None,
                     disclose: Vec::new(),
                     redact: Vec::new(),
                     mcp_tool: None,
@@ -827,7 +828,7 @@ mod classify_scopes_tests {
                 },
             }],
             actions: map,
-            runtime: Default::default(),
+            runtime: overslash_core::types::Runtime::Http,
             mcp: None,
         }
     }
@@ -846,7 +847,7 @@ mod classify_scopes_tests {
             category: None,
             auth: vec![],
             actions: HashMap::new(),
-            runtime: Default::default(),
+            runtime: overslash_core::types::Runtime::Http,
             mcp: None,
         };
         assert!(classify_scopes(&scopes(&["x"]), &tpl).is_none());

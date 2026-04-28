@@ -737,6 +737,15 @@ async fn call_approval(
         )
         .await;
     }
+    if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("platform") {
+        return fail_and_return(
+            &scope,
+            execution_id,
+            "platform_replay_not_supported",
+            AppError::Conflict("replay of platform-runtime approvals is not yet supported".into()),
+        )
+        .await;
+    }
     let stored = match StoredCallRequest::from_stored_detail(&replay_value) {
         Ok(s) => s,
         Err(e) => {

@@ -350,6 +350,7 @@ pub(super) fn extract_http_action(
             params,
             scope_param,
             required_scopes,
+            permission: None,
             disclose,
             redact,
             mcp_tool: None,
@@ -387,18 +388,30 @@ pub(super) fn extract_platform_action(
         }
     };
 
+    let params = op
+        .get("params")
+        .and_then(Value::as_object)
+        .map(|m| parse_platform_params(m, &base))
+        .unwrap_or_default();
+
+    let permission = op
+        .get("permission")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
     Ok(ServiceAction {
         method: String::new(),
         path: String::new(),
         description,
         risk,
         response_type: None,
-        params: HashMap::new(),
+        params,
         scope_param: op
             .get("x-overslash-scope_param")
             .and_then(Value::as_str)
             .map(str::to_string),
         required_scopes: Vec::new(),
+        permission,
         // Platform actions don't have outbound HTTP payloads — disclosure
         // and redaction are no-ops for them.
         disclose: Vec::new(),
@@ -407,6 +420,41 @@ pub(super) fn extract_platform_action(
         output_schema: None,
         disabled: false,
     })
+}
+
+/// Parse a flat `{name: {type, required, description}}` map (the platform_actions
+/// params format) into the same `HashMap<String, ActionParam>` used by HTTP actions.
+fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<String, ActionParam> {
+    raw.iter()
+        .filter_map(|(name, spec)| {
+            let obj = spec.as_object()?;
+            let param_type = obj
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("string")
+                .to_string();
+            let required = obj
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let description = obj
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some((
+                name.clone(),
+                ActionParam {
+                    param_type,
+                    required,
+                    description,
+                    enum_values: None,
+                    default: None,
+                    resolve: None,
+                },
+            ))
+        })
+        .collect()
 }
 
 // ── x-overslash-disclose / x-overslash-redact ─────────────────────────
@@ -735,6 +783,7 @@ pub(super) fn extract_mcp_actions(
                 params,
                 scope_param,
                 required_scopes: Vec::new(),
+                permission: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
                 mcp_tool: Some(name),

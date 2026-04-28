@@ -1,4 +1,5 @@
 openapi: 3.1.0
+x-overslash-runtime: platform
 info:
   title: Overslash Platform
   description: Administrative access to the Overslash platform
@@ -71,3 +72,27 @@ platform_actions:
       Cancel a pending execution. Requires params.approval_id (string). The
       requesting agent or any resolver with write access may cancel.
     risk: write
+
+  ping:
+    description: "Ping the platform runtime (no-op health check)"
+    risk: read
+
+  list_templates:
+    description: "List all service templates visible to the caller"
+    risk: read
+    permission: manage_templates
+
+  get_template:
+    description: "Get a service template by key"
+    risk: read
+    permission: manage_templates
+    params:
+      key: { type: string, required: true }
+
+  create_template:
+    description: "Create a new service template (atomic — succeeds or returns validation errors)"
+    risk: write
+    permission: manage_templates
+    params:
+      openapi: { type: string, required: true }
+      user_level: { type: boolean, required: false }

@@ -318,6 +318,7 @@ fn runtime_string(def: &ServiceDefinition) -> String {
     match def.runtime {
         Runtime::Http => "http".into(),
         Runtime::Mcp => "mcp".into(),
+        Runtime::Platform => "platform".into(),
     }
 }
 

@@ -27,7 +27,7 @@ use crate::{
 };
 use overslash_core::{
     crypto, disclosure as core_disclosure,
-    permissions::{GroupCeilingResult, PermissionKey},
+    permissions::{AccessLevel, GroupCeilingResult, PermissionKey},
     secret_injection::inject_secrets,
     types::{
         ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpSpec, Runtime,
@@ -114,12 +114,20 @@ struct ResolvedMeta {
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
     /// executor and goes through `mcp_caller::invoke` with this payload.
     mcp_target: Option<McpTarget>,
+    /// When the resolved service has `runtime: Platform`, dispatch calls the
+    /// in-process handler registry instead of making any outgoing call.
+    platform_target: Option<PlatformTarget>,
 }
 
 struct McpTarget {
     spec: McpSpec,
     tool: String,
     arguments: serde_json::Value,
+}
+
+struct PlatformTarget {
+    action_key: String,
+    params: serde_json::Map<String, serde_json::Value>,
 }
 
 struct ServiceScope {
@@ -280,8 +288,9 @@ async fn call_action(
                 // original request faithfully — including jq `filter` and
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
-                // None for MCP-runtime approvals (different execution path).
-                let replay_payload = if meta.mcp_target.is_some() {
+                // None for MCP-runtime and platform-runtime approvals (different execution paths).
+                let replay_payload = if meta.mcp_target.is_some() || meta.platform_target.is_some()
+                {
                     None
                 } else {
                     serde_json::to_value(StoredCallRequest::new(
@@ -473,6 +482,74 @@ async fn call_action(
             })
             .await;
 
+        return Ok((
+            StatusCode::OK,
+            Json(CallResponse::Called {
+                result,
+                action_description: meta.description,
+            }),
+        )
+            .into_response());
+    }
+
+    // ── Platform dispatch fork ───────────────────────────────────────
+    // Platform-runtime services are dispatched in-process to the handler
+    // registry. No HTTP call, no secret injection, no streaming path.
+    if let Some(pt) = meta.platform_target.as_ref() {
+        let handler = state.platform_registry.get(&pt.action_key).ok_or_else(|| {
+            AppError::Internal(format!(
+                "platform handler '{}' not registered",
+                pt.action_key
+            ))
+        })?;
+
+        let platform_access_level = {
+            let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
+            ceiling
+                .grants
+                .iter()
+                .filter(|g| g.template_key == "overslash")
+                .filter_map(|g| AccessLevel::parse(&g.access_level))
+                .max()
+                .unwrap_or(AccessLevel::Read)
+        };
+        let ctx = crate::services::platform_caller::PlatformCallContext {
+            org_id: auth.org_id,
+            identity_id,
+            access_level: platform_access_level,
+            db: state.db.clone(),
+            registry: std::sync::Arc::clone(&state.registry),
+        };
+        let params: std::collections::HashMap<String, serde_json::Value> =
+            pt.params.clone().into_iter().collect();
+
+        let value = handler.call(ctx, params).await?;
+
+        let audit_detail = serde_json::json!({
+            "runtime": "platform",
+            "action": req.action,
+            "service": req.service,
+        });
+        let _ = OrgScope::new(auth.org_id, state.db.clone())
+            .log_audit(AuditEntry {
+                org_id: auth.org_id,
+                identity_id: Some(identity_id),
+                action: "action.executed",
+                resource_type: req.service.as_deref(),
+                resource_id: None,
+                detail: audit_detail,
+                description: meta.description.as_deref(),
+                ip_address: None,
+            })
+            .await;
+
+        let result = overslash_core::types::ActionResult {
+            status_code: 200,
+            body: serde_json::to_string(&value).unwrap_or_default(),
+            headers: std::collections::HashMap::new(),
+            duration_ms: 0,
+            filtered_body: None,
+        };
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
@@ -740,6 +817,7 @@ async fn resolve_request(
                 redact: Vec::new(),
                 params: HashMap::new(),
                 mcp_target: None,
+                platform_target: None,
             },
         ));
     }
@@ -845,6 +923,54 @@ async fn resolve_request(
                         spec: mcp_spec,
                         tool,
                         arguments,
+                    }),
+                    platform_target: None,
+                },
+            ));
+        }
+
+        // ── Platform runtime fork ─────────────────────────────────────
+        // Platform-runtime services route to the in-process handler registry.
+        // They have no HTTP method/path, no secret injection. `auth_injected`
+        // is set to true so the permission chain is always evaluated.
+        if svc.runtime == Runtime::Platform {
+            // Use the permission field as the action_key for PermissionKey derivation
+            // so `list_templates`/`get_template`/`create_template` all resolve to
+            // the `overslash:manage_templates:*` permission anchor.
+            let perm_action_key = action
+                .permission
+                .as_deref()
+                .unwrap_or(action_key)
+                .to_string();
+            let description = format!("{} ({})", action.description, svc.display_name);
+            let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
+            let params_map: serde_json::Map<String, serde_json::Value> =
+                req.params.clone().into_iter().collect();
+            return Ok((
+                ActionRequest {
+                    method: String::new(),
+                    url: String::new(),
+                    headers: HashMap::new(),
+                    body: None,
+                    secrets: Vec::new(),
+                },
+                ResolvedMeta {
+                    description: Some(description),
+                    auth_injected: true,
+                    service_scope: Some(ServiceScope {
+                        service_key: service_key.clone(),
+                        action_key: perm_action_key,
+                        scope_param: action.scope_param.clone(),
+                    }),
+                    risk: Some(action.risk),
+                    service_instance_owner: instance_owner,
+                    disclose: Vec::new(),
+                    redact: Vec::new(),
+                    params: HashMap::new(),
+                    mcp_target: None,
+                    platform_target: Some(PlatformTarget {
+                        action_key: action_key.clone(),
+                        params: params_map,
                     }),
                 },
             ));
@@ -979,6 +1105,7 @@ async fn resolve_request(
                 redact: action.redact.clone(),
                 params: req.params.clone(),
                 mcp_target: None,
+                platform_target: None,
             },
         ));
     }
@@ -1018,6 +1145,7 @@ async fn resolve_request(
             redact: Vec::new(),
             params: HashMap::new(),
             mcp_target: None,
+            platform_target: None,
         },
     ))
 }
@@ -1414,6 +1542,16 @@ async fn compute_approval_detail(
             core_disclosure::apply_redactions(&mut redacted, &meta.redact);
         }
         return (disclosed, Some(redacted));
+    }
+
+    if let Some(pt) = meta.platform_target.as_ref() {
+        let projection = serde_json::json!({
+            "runtime": "platform",
+            "action": &pt.action_key,
+            "params": &pt.params,
+            "service": meta.service_scope.as_ref().map(|s| &s.service_key),
+        });
+        return (Vec::new(), Some(projection));
     }
 
     if meta.disclose.is_empty() && meta.redact.is_empty() {
