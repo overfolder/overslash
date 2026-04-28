@@ -171,9 +171,9 @@ locals {
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
     var.cloud_billing ? {
-      CLOUD_BILLING          = "true"
-      STRIPE_EUR_LOOKUP_KEY  = var.stripe_eur_lookup_key
-      STRIPE_USD_LOOKUP_KEY  = var.stripe_usd_lookup_key
+      CLOUD_BILLING         = "true"
+      STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
+      STRIPE_USD_LOOKUP_KEY = var.stripe_usd_lookup_key
     } : {},
   )
 
