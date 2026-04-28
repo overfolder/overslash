@@ -410,23 +410,23 @@ pub async fn cascade_resolve(
             }
         };
 
+        // Try to create the pending execution. If it fails, the approval is
+        // already in `allowed` state — we still emit audit + webhook so
+        // observers see the cascade event, just with `execution_id=null`.
+        // The requester's natural retry path (re-issue the action; permission
+        // check now passes against the new rule) is unaffected.
         let exec_expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(ttl_secs);
         let execution = match scope
             .create_pending_execution(approval.id, false, None, None, exec_expires_at)
             .await
         {
-            Ok(row) => row,
+            Ok(row) => Some(row),
             Err(e) => {
                 tracing::warn!(
                     approval_id = %approval.id,
                     "cascade create_pending_execution failed: {e}"
                 );
-                // The approval is already resolved at this point; surface in
-                // the returned list so the caller can report it. The
-                // requester will re-issue the action and pass permission
-                // check directly — same recovery path the dashboard relies on.
-                resolved_ids.push(approval.id);
-                continue;
+                None
             }
         };
 
@@ -440,7 +440,7 @@ pub async fn cascade_resolve(
                 detail: serde_json::json!({
                     "triggering_approval_id": triggering_approval_id,
                     "rule_placement_id": placement_id,
-                    "execution_id": execution.id,
+                    "execution_id": execution.as_ref().map(|e| e.id),
                     "permission_keys": &approval.permission_keys,
                 }),
                 description: None,
@@ -453,21 +453,28 @@ pub async fn cascade_resolve(
         let org_id = scope.org_id();
         let approval_id = approval.id;
         let summary = approval.action_summary.clone();
-        let exec_for_webhook = serde_json::json!({
-            "id": execution.id,
-            "status": execution.status,
-            "expires_at": execution.expires_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
+        let exec_for_webhook = execution.as_ref().map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "status": e.status,
+                "expires_at": e.expires_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
+            })
         });
         tokio::spawn(async move {
-            let payload = serde_json::json!({
+            let mut payload = serde_json::json!({
                 "approval_id": approval_id,
                 "status": "allowed",
                 "action_summary": summary,
                 "resolved_by": "cascade",
-                "execution": exec_for_webhook,
             });
+            if let Some(exec) = exec_for_webhook {
+                payload
+                    .as_object_mut()
+                    .expect("payload is a json object")
+                    .insert("execution".into(), exec);
+            }
             crate::services::webhook_dispatcher::dispatch(
                 &db,
                 &client,
