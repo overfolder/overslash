@@ -482,3 +482,44 @@ export interface ActionResult {
   duration_ms: number;
   filtered_body?: FilteredBody;
 }
+
+// -- Secrets dashboard --
+
+/** GET /v1/secrets item — flattened metadata for the list view. */
+export interface SecretSummary {
+  name: string;
+  current_version: number;
+  /** Identity that wrote v1 — the slot owner (SPEC §6). */
+  owner_identity_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SecretVersionView {
+  version: number;
+  created_at: string;
+  /** Identity that wrote this version. May differ from `owner_identity_id`
+   *  on slots where another agent under the same user rotated the value. */
+  created_by: string | null;
+  /** Human who pasted the value on the standalone provide page (User
+   *  Signed Mode); usually null. */
+  provisioned_by_user_id: string | null;
+}
+
+export interface SecretUsedByView {
+  id: string;
+  name: string;
+  status: 'active' | 'draft' | 'archived' | string;
+}
+
+/** GET /v1/secrets/{name} — detail with versions and used-by. */
+export interface SecretDetail extends SecretSummary {
+  versions: SecretVersionView[];
+  used_by: SecretUsedByView[];
+}
+
+/** POST /v1/secrets/{name}/versions/{v}/reveal */
+export interface SecretReveal {
+  version: number;
+  value: string;
+}
