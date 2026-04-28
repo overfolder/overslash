@@ -1323,11 +1323,33 @@ async fn provision_root_contents(
                     "race: user row vanished between unique-violation and re-read".into(),
                 )
             })?;
-            let personal_org_id = winner.personal_org_id.ok_or_else(|| {
-                AppError::Internal(
-                    "race: winner's users row has no personal_org_id yet; retry after the other request commits".into(),
-                )
-            })?;
+            // personal_org_id is set by the winner after user insert, so it
+            // may be NULL if we read the row before the winner's transaction
+            // commits. Retry with exponential backoff (50ms → ~1.5s total).
+            let personal_org_id = {
+                let mut maybe = winner.personal_org_id;
+                let mut attempts = 0u32;
+                while maybe.is_none() && attempts < 5 {
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * 2u64.pow(attempts)))
+                        .await;
+                    attempts += 1;
+                    if let Ok(Some(refreshed)) = user_repo::find_by_overslash_idp(
+                        &state.db,
+                        &userinfo.provider_key,
+                        &userinfo.external_id,
+                    )
+                    .await
+                    {
+                        maybe = refreshed.personal_org_id;
+                    }
+                }
+                maybe.ok_or_else(|| {
+                    AppError::Internal(
+                        "race: winner's users row still has no personal_org_id after retries"
+                            .into(),
+                    )
+                })?
+            };
             let identity = overslash_db::repos::identity::find_by_org_and_user(
                 &state.db,
                 personal_org_id,
