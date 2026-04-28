@@ -900,14 +900,12 @@ async fn resolve_request(
             let resolved_auth = match &mcp_spec.auth {
                 McpAuth::None => McpAuth::None,
                 McpAuth::Bearer {
-                    secret_name: Some(sn),
-                } => McpAuth::Bearer {
-                    secret_name: Some(sn.clone()),
-                },
-                McpAuth::Bearer { secret_name: None } => {
+                    secret_name: tpl_sn,
+                } => {
                     let sn = instance
                         .as_ref()
                         .and_then(|i| i.secret_name.as_deref())
+                        .or(tpl_sn.as_deref())
                         .ok_or_else(|| {
                             AppError::BadRequest(
                                 "MCP bearer service has no secret_name configured; set it when creating the service instance".into(),

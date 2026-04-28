@@ -1978,6 +1978,14 @@ async fn resync_mcp_tools(
         ));
     }
 
+    // URL check before auth: gives the caller a clear 400 instead of a
+    // potential 500 from resolving a missing bearer secret_name.
+    let resync_url = mcp.url.as_deref().ok_or_else(|| {
+        AppError::BadRequest(
+            "template has no default MCP URL; resync requires a URL in the template".into(),
+        )
+    })?;
+
     // Resolve auth and call tools/list against the upstream.
     let scope = OrgScope::new(acl.org_id, state.db.clone());
     let headers = match &mcp.auth {
@@ -1986,12 +1994,6 @@ async fn resync_mcp_tools(
             crate::services::mcp_auth::resolve_headers(&state, &scope, &mcp.auth).await?
         }
     };
-
-    let resync_url = mcp.url.as_deref().ok_or_else(|| {
-        AppError::BadRequest(
-            "template has no default MCP URL; resync requires a URL in the template".into(),
-        )
-    })?;
 
     // SSRF guard: resolve-once and pin the validated IP on the outbound
     // reqwest client. See services::ssrf_guard for the full rationale.

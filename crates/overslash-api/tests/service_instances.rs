@@ -498,7 +498,7 @@ async fn test_secret_name_rejected_on_oauth_template() {
         body["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("does not use api key auth"),
+            .contains("does not use api key or MCP bearer auth"),
         "expected api-key-auth error, got: {body}"
     );
 
