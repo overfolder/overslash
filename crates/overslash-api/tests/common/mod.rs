@@ -47,15 +47,28 @@ pub async fn test_pool() -> PgPool {
 
     ensure_template(&base_url).await;
 
-    // Clone template for this test.
+    // Clone template for this test. CREATE DATABASE … TEMPLATE fails with
+    // "source database is being accessed by other users" if a prior session
+    // hasn't fully closed yet (the cleanup is async). Retry briefly — the
+    // bootstrapped pool below uses the same pattern.
     let test_db = format!("test_{}", Uuid::new_v4().simple());
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
-    sqlx::query(&format!(
-        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-    ))
-    .execute(&admin_pool)
-    .await
-    .unwrap();
+    let mut retries = 0u32;
+    loop {
+        match sqlx::query(&format!(
+            "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
+        ))
+        .execute(&admin_pool)
+        .await
+        {
+            Ok(_) => break,
+            Err(e) if retries < 20 && format!("{e}").contains("being accessed") => {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("clone template: {e}"),
+        }
+    }
     admin_pool.close().await;
 
     register_for_cleanup(base_url.clone(), test_db.clone());
