@@ -446,31 +446,55 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
         return Ok(());
     }
 
-    // Create the org. A unique violation means a previous retry already created it
-    // (e.g. partial failure after org::create but before fulfill). Look up by slug so
-    // we can continue provisioning idempotently.
-    let org =
-        match overslash_db::repos::org::create(&state.db, &checkout.org_name, &checkout.org_slug)
-            .await
-        {
-            Ok(o) => o,
-            Err(sqlx::Error::Database(ref de)) if de.is_unique_violation() => {
-                match overslash_db::repos::org::get_by_slug(&state.db, &checkout.org_slug).await? {
-                    Some(o) => {
-                        tracing::info!(
-                            session_id,
-                            org_slug = %checkout.org_slug,
-                            "checkout retry: org already exists, continuing idempotent provision"
-                        );
-                        o
-                    }
-                    None => {
-                        return Err(AppError::Internal("slug conflict but org not found".into()));
-                    }
-                }
+    // Create the org. A unique violation has two possible causes:
+    //   (a) A retry of THIS webhook (same checkout, same user) — proceed
+    //       with idempotent provisioning.
+    //   (b) A slug collision with a DIFFERENT user's already-provisioned org
+    //       — must NOT provision this user there or they'd become admin of
+    //       someone else's org. Stripe already charged them; ACK the event,
+    //       leave the pending checkout unfulfilled, and log loudly so an
+    //       operator can refund.
+    // Distinguished by checking whether the existing org has any identity
+    // owned by this checkout's user_id.
+    let org = match overslash_db::repos::org::create(
+        &state.db,
+        &checkout.org_name,
+        &checkout.org_slug,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(sqlx::Error::Database(ref de)) if de.is_unique_violation() => {
+            let existing = overslash_db::repos::org::get_by_slug(&state.db, &checkout.org_slug)
+                .await?
+                .ok_or_else(|| AppError::Internal("slug conflict but org not found".into()))?;
+            let owns_existing = overslash_db::repos::identity::find_by_org_and_user(
+                &state.db,
+                existing.id,
+                checkout.user_id,
+            )
+            .await?
+            .is_some();
+            if !owns_existing {
+                tracing::error!(
+                    session_id,
+                    org_slug = %checkout.org_slug,
+                    existing_org_id = %existing.id,
+                    user_id = %checkout.user_id,
+                    "slug collision: org exists for a different user; \
+                     leaving checkout unfulfilled — operator must refund the charge"
+                );
+                return Ok(());
             }
-            Err(e) => return Err(AppError::from(e)),
-        };
+            tracing::info!(
+                session_id,
+                org_slug = %checkout.org_slug,
+                "checkout retry: org already exists for this user, continuing idempotent provision"
+            );
+            existing
+        }
+        Err(e) => return Err(AppError::from(e)),
+    };
 
     // Provision identity, bootstrap, membership — but only if this org isn't
     // already provisioned for the user. `provision_new_org_contents` is NOT

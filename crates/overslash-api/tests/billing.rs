@@ -715,6 +715,107 @@ async fn test_webhook_bad_signature_rejected() {
 }
 
 #[tokio::test]
+async fn test_webhook_slug_collision_does_not_provision_attacker() {
+    // Race scenario: user A's webhook already provisioned org "acme". User B
+    // then completes checkout for the same slug (the at-checkout slug guard
+    // is best-effort — it can race). On B's webhook, org::create fails with
+    // unique violation. The handler MUST detect that the existing org is
+    // owned by A (no identity for user_b in it) and refuse to provision B
+    // there. Otherwise B becomes admin of A's org and billing gets pointed
+    // at B's customer.
+    let pool = common::test_pool().await;
+    let sub_id = format!("sub_{}", Uuid::new_v4().simple());
+    let sub_fixture = json!({
+        "id": sub_id, "object": "subscription", "status": "active",
+        "items": { "data": [{ "quantity": 2 }] },
+        "current_period_start": 1700000000_i64, "current_period_end": 1702592000_i64,
+        "cancel_at_period_end": false, "customer": "cus_b"
+    });
+    let (stripe_addr, _) = start_mock_stripe(vec![(sub_id.clone(), sub_fixture)]).await;
+    let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
+    let base = format!("http://{addr}");
+
+    // Set up: user A already owns org "acme-collide-N" (provisioned).
+    let user_a = create_test_user(&pool).await;
+    let user_b = create_test_user(&pool).await;
+    let collision_slug = format!("acme-collide-{}", Uuid::new_v4().simple());
+    let org_a = overslash_db::repos::org::create(&pool, "Acme A", &collision_slug)
+        .await
+        .unwrap();
+    let identity_a = overslash_db::repos::identity::create(&pool, org_a.id, "A", "user", None)
+        .await
+        .unwrap();
+    overslash_db::repos::identity::set_user_id(&pool, org_a.id, identity_a.id, Some(user_a))
+        .await
+        .unwrap();
+
+    // User B's pending_checkout for the same slug.
+    let session_b = format!("cs_collide_{}", Uuid::new_v4().simple());
+    overslash_db::repos::billing::insert_pending_checkout(
+        &pool,
+        &session_b,
+        user_b,
+        "Acme B",
+        &collision_slug,
+        2,
+        "usd",
+    )
+    .await
+    .unwrap();
+
+    let payload = serde_json::to_vec(&json!({
+        "type": "checkout.session.completed",
+        "data": { "object": {
+            "id": session_b, "object": "checkout.session", "status": "complete",
+            "subscription": sub_id, "customer": "cus_b",
+            "metadata": { "pending_checkout_id": session_b }
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = client
+        .post(format!("{base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    // ACK with 200 so Stripe doesn't retry forever — but DON'T provision.
+    assert_eq!(resp.status(), 200);
+
+    // User B must NOT have an identity in org A.
+    let b_in_a = overslash_db::repos::identity::find_by_org_and_user(&pool, org_a.id, user_b)
+        .await
+        .unwrap();
+    assert!(
+        b_in_a.is_none(),
+        "user B must NOT be provisioned into user A's org on slug collision"
+    );
+
+    // Subscription on org A must NOT be overwritten with user B's customer.
+    let sub_on_a = overslash_db::repos::billing::get_org_subscription(&pool, org_a.id)
+        .await
+        .unwrap();
+    assert!(
+        sub_on_a.is_none(),
+        "org A's subscription must not be created/overwritten by user B's webhook"
+    );
+
+    // User B's checkout must remain unfulfilled (operator will refund).
+    let pc = overslash_db::repos::billing::get_pending_checkout_any(&pool, &session_b)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        pc.fulfilled_org_id.is_none(),
+        "user B's checkout must stay unfulfilled — payment must be manually refunded"
+    );
+}
+
+#[tokio::test]
 async fn test_webhook_old_timestamp_rejected() {
     // Replay attack defense: an event signed with a timestamp older than
     // STRIPE_TIMESTAMP_TOLERANCE_SECS (5 min) must be rejected even when the
