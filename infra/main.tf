@@ -132,10 +132,13 @@ module "cloud_run" {
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain           = var.domain
-  dashboard_origin = var.dashboard_origin
-  dashboard_url    = var.dashboard_url
-  enable_dev_auth  = var.enable_dev_auth
+  domain                = var.domain
+  app_host_suffix       = var.app_host_suffix
+  api_host_suffix       = var.api_host_suffix
+  session_cookie_domain = var.session_cookie_domain
+  dashboard_origin      = var.dashboard_origin
+  dashboard_url         = var.dashboard_url
+  enable_dev_auth       = var.enable_dev_auth
 
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
@@ -144,6 +147,30 @@ module "cloud_run" {
     module.cloud_sql,
     module.secret_manager,
     module.artifact_registry,
+  ]
+}
+
+# --- API Load Balancer (global HTTPS LB with wildcard managed cert) ---
+#
+# Required for `*.api.<apex>` routing — Cloud Run's native domain mapping
+# is single-domain and DNS-TXT-validated, which doesn't scale to per-org
+# subdomains. When `enable_api_lb=true` this module replaces the
+# `google_cloud_run_domain_mapping` path inside the cloud-run module
+# (operators should set `domain=""` on cloud-run when using the LB).
+module "api_lb" {
+  count = var.enable_api_lb ? 1 : 0
+
+  source      = "./modules/api-lb"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  cloud_run_service = module.cloud_run.service_name
+  api_apex          = var.api_host_suffix
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
   ]
 }
 

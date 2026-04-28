@@ -7,6 +7,7 @@ interface Provider {
 	key: string;
 	display_name: string;
 	source: string;
+	is_default?: boolean;
 }
 
 export const load: PageLoad = async ({ url, fetch }) => {
@@ -22,9 +23,14 @@ export const load: PageLoad = async ({ url, fetch }) => {
 			scope = body.scope === 'org' ? 'org' : 'root';
 		}
 	} catch {}
+	// `next` is what `/oauth/authorize` passes when bouncing through login;
+	// preserve it on the underlying provider redirect so the AS flow resumes
+	// after the IdP round-trip.
+	const next = url.searchParams.get('next');
 	return {
 		providers,
 		scope,
+		next,
 		returnTo: url.searchParams.get('return_to') ?? '/agents',
 		reason: url.searchParams.get('reason')
 	};

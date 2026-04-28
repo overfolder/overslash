@@ -97,6 +97,24 @@ variable "domain" {
   default = ""
 }
 
+variable "app_host_suffix" {
+  type        = string
+  default     = ""
+  description = "Apex for the dashboard subdomain surface, e.g. `app.overslash.com`. Empty disables wildcard routing on this surface."
+}
+
+variable "api_host_suffix" {
+  type        = string
+  default     = ""
+  description = "Apex for the programmatic (MCP / OAuth-AS / REST) subdomain surface, e.g. `api.overslash.com`. Empty disables wildcard routing on this surface."
+}
+
+variable "session_cookie_domain" {
+  type        = string
+  default     = ""
+  description = "Domain attribute for the session cookie (typically `.app.overslash.com` so subdomains share the cookie). Empty leaves cookies origin-scoped."
+}
+
 variable "dashboard_origin" {
   type    = string
   default = "*localhost*"
@@ -175,6 +193,9 @@ locals {
       STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
       STRIPE_USD_LOOKUP_KEY = var.stripe_usd_lookup_key
     } : {},
+    var.app_host_suffix != "" ? { APP_HOST_SUFFIX = var.app_host_suffix } : {},
+    var.api_host_suffix != "" ? { API_HOST_SUFFIX = var.api_host_suffix } : {},
+    var.session_cookie_domain != "" ? { SESSION_COOKIE_DOMAIN = var.session_cookie_domain } : {},
   )
 
   env_secrets = merge(

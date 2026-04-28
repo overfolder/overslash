@@ -14,6 +14,9 @@ pub struct OrgIdpConfigRow {
     pub encrypted_client_secret: Option<Vec<u8>>,
     pub enabled: bool,
     pub allowed_email_domains: Vec<String>,
+    /// Designated default IdP for the org's `/oauth/authorize` bounce. At
+    /// most one row per org has `is_default = true` (partial unique index).
+    pub is_default: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -31,7 +34,7 @@ pub(crate) async fn create(
         OrgIdpConfigRow,
         "INSERT INTO org_idp_configs (org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at",
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
         org_id,
         provider_key,
         encrypted_client_id,
@@ -50,7 +53,7 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
          FROM org_idp_configs WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -71,7 +74,7 @@ pub async fn get_by_org_and_provider(
 ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
          FROM org_idp_configs WHERE org_id = $1 AND provider_key = $2",
         org_id,
         provider_key,
@@ -86,7 +89,7 @@ pub(crate) async fn list_by_org(
 ) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
          FROM org_idp_configs WHERE org_id = $1 ORDER BY created_at",
         org_id,
     )
@@ -94,17 +97,38 @@ pub(crate) async fn list_by_org(
     .await
 }
 
-pub(crate) async fn list_enabled_by_org(
+/// List enabled IdP configs for an org. Public because `/oauth/authorize`
+/// (in the API crate) needs to fall back to the login picker when no
+/// default IdP is set, and that runs before there's any session/scope.
+pub async fn list_enabled_by_org(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
          FROM org_idp_configs WHERE org_id = $1 AND enabled = true ORDER BY created_at",
         org_id,
     )
     .fetch_all(pool)
+    .await
+}
+
+/// Fetch the org's designated default IdP, if one is set and enabled.
+/// `/oauth/authorize` on a corp subdomain uses this to pick the IdP for the
+/// unauthenticated bounce. Public because that lookup happens before
+/// session/`OrgScope` is established.
+pub async fn get_default_by_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
+    sqlx::query_as!(
+        OrgIdpConfigRow,
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
+         FROM org_idp_configs WHERE org_id = $1 AND is_default = true AND enabled = true",
+        org_id,
+    )
+    .fetch_optional(pool)
     .await
 }
 
@@ -115,7 +139,7 @@ pub(crate) async fn find_by_email_domain(
 ) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
          FROM org_idp_configs WHERE $1 = ANY(allowed_email_domains) AND enabled = true
          ORDER BY created_at",
         domain,
@@ -170,7 +194,7 @@ pub(crate) async fn update(
             allowed_email_domains = COALESCE($7, allowed_email_domains),
             updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at",
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
         id,
         org_id,
         force_set,
@@ -178,6 +202,55 @@ pub(crate) async fn update(
         new_secret,
         enabled,
         allowed_email_domains,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Mark `id` as the org's default IdP, clearing any prior default in the
+/// same transaction so the partial unique index never blocks the swap.
+/// Returns the new default row, or `None` if `id` doesn't belong to `org_id`.
+pub(crate) async fn set_default(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query!(
+        "UPDATE org_idp_configs SET is_default = false, updated_at = now()
+         WHERE org_id = $1 AND is_default = true AND id <> $2",
+        org_id,
+        id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query_as!(
+        OrgIdpConfigRow,
+        "UPDATE org_idp_configs SET is_default = true, updated_at = now()
+         WHERE id = $1 AND org_id = $2
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+        id,
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// Clear the default flag on `id`. No-op if `id` wasn't the default.
+pub(crate) async fn clear_default(
+    pool: &PgPool,
+    id: Uuid,
+    org_id: Uuid,
+) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
+    sqlx::query_as!(
+        OrgIdpConfigRow,
+        "UPDATE org_idp_configs SET is_default = false, updated_at = now()
+         WHERE id = $1 AND org_id = $2
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+        id,
+        org_id,
     )
     .fetch_optional(pool)
     .await

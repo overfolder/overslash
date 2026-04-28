@@ -129,6 +129,19 @@
 - Fail-open on Redis errors; health endpoint exempt from rate limiting
 - Fixed window counter algorithm with configurable window size
 
+### Org Slug Subdomains (`<org>.app|api.overslash.com`)
+
+- **Dual subdomain surface**: `*.app.overslash.com` (browser dashboard via Vercel wildcard) and `*.api.overslash.com` (programmatic / MCP / OAuth-AS via Cloud Run + GCLB). MCP clients hit `<slug>.api.overslash.com/mcp` directly, browsers hit `<slug>.app.overslash.com` and call the API cross-origin. The subdomain middleware accepts either suffix and dispatches the same way; `.well-known/oauth-authorization-server` and the MCP `WWW-Authenticate` challenge return per-subdomain issuer URLs so RFC 8414 discovery works on every org subdomain.
+- **GCLB stack** (`infra/modules/api-lb/`): one global IP + wildcard managed cert (`api.overslash.com` + `*.api.overslash.com`) + serverless NEG → Cloud Run. URL map is a single catch-all — `subdomain_middleware` does the per-org dispatch in-process. Replaces the old `google_cloud_run_domain_mapping` (single-domain only). Toggled via `enable_api_lb=true` in tfvars.
+- **Per-org default IdP** (migration 049, `org_idp_configs.is_default` + partial unique index): each org designates one enabled IdP as the default. `/oauth/authorize` on a corp subdomain bounces unauthenticated callers straight through the default; with no default but multiple IdPs, redirects to `/login` for the picker. Surfaced via `is_default` on `/auth/providers` and the create/update payload.
+- **Strict trust-domain isolation on corp subdomains** (DECISIONS.md D12): `resolve_auth_credentials` no longer falls through to env-var creds when an org is in scope — only `org_idp_configs` for that org grant admission. Env-var-managed Overslash login keeps working at the root apex for personal-org sign-up / org-creator bootstrap.
+- **Return-host preservation** across the apex-bound OAuth callback: when login originates on `<slug>.app.overslash.com` but the OAuth provider's pre-registered redirect_uri lands at the API apex, the callback reads `oss_auth_org` + `app_host_suffix` to build an absolute redirect back to the original subdomain so users don't get stranded on the apex.
+- **`X-Forwarded-Host` trust**: subdomain middleware reads XFH first, falls back to `Host`. GCLB forwards Host unchanged but XFH support keeps Vercel rewrites and any future proxy chain working with one code path.
+- **Wildcard CORS**: `DASHBOARD_ORIGIN` accepts `https://*.app.overslash.com` syntax (single-DNS-label predicate match — `evil.attacker.app.overslash.com` doesn't squeak through).
+- **Dashboard**: org settings IdP card adds a "Default" column and "Set default" / "Unset default" actions. Login page on a corp subdomain auto-redirects when a single default IdP is set, preserving the `next=` query param so MCP-driven OAuth bounces resume cleanly.
+- **Vercel**: `dashboard/vercel.json` adds wildcard host matchers for `*.app.overslash.com` (and `*.app.dev.overslash.com`), forwarding REST/auth paths to `api.overslash.com`. `/.well-known/*` and `/mcp` on `app.*` redirect to the matching `api.*` so programmatic clients always land on the canonical issuer.
+- New env vars: `API_HOST_SUFFIX` (alongside the existing `APP_HOST_SUFFIX`); `SESSION_COOKIE_DOMAIN` typically `.app.overslash.com` for cross-subdomain cookie sharing.
+
 ### Multi-Org Auth
 
 - Data model (`users`, `user_org_memberships`, `orgs.is_personal`, `identities.user_id`) live (migration 040). Design: [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md). Trust-domain rule codified in DECISIONS.md D12.
