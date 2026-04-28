@@ -561,19 +561,16 @@
 
 			{#if isMcp}
 				<label class="field">
-					<span class="label">
-						MCP server URL{mcpNeedsUrl ? '' : ' (optional override)'}
-					</span>
+					<span class="label">MCP server URL</span>
 					<input
-						type="url"
+						type="text"
 						bind:value={urlInput}
-						placeholder="http://host:8081/mcp"
-						required={mcpNeedsUrl}
+						placeholder={selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
 					/>
 					{#if mcpNeedsUrl}
 						<small>Required — this template has no default URL.</small>
 					{:else}
-						<small>Leave blank to use the template's default: {selectedDetail?.mcp?.url}</small>
+						<small>Leave blank to use the template's default.</small>
 					{/if}
 				</label>
 			{/if}
@@ -583,13 +580,9 @@
 					<span class="label">
 						{mcpNeedsSecret ? 'Bearer token secret name' : 'API key secret name'}
 					</span>
-					<input
-						type="text"
-						bind:value={secretName}
-						placeholder="my-api-key"
-					/>
+					<input type="text" bind:value={secretName} placeholder="my-api-key" />
 					{#if mcpNeedsSecret}
-						<small>The vault key that holds the MCP server's bearer token. Required — this template has no default.</small>
+						<small>Vault key holding the MCP server's bearer token. Required — this template has no default.</small>
 					{:else}
 						<small>The name of a secret previously stored in the vault.</small>
 					{/if}
