@@ -260,7 +260,7 @@ struct ToolCallParams {
 }
 
 async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>) -> Response {
-    let params: ToolCallParams = match serde_json::from_value(req.params.clone()) {
+    let mut params: ToolCallParams = match serde_json::from_value(req.params.clone()) {
         Ok(p) => p,
         Err(e) => {
             return rpc_error_response(req.id, INVALID_PARAMS, format!("bad params: {e}"));
@@ -272,6 +272,8 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
             return rpc_error_response(req.id, INTERNAL_ERROR, "bearer missing after auth");
         }
     };
+
+    normalize_stringified_params(&mut params.arguments);
 
     let outcome = match params.name.as_str() {
         "overslash_search" => dispatch_search(state, bearer, &params.arguments).await,
@@ -290,6 +292,43 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
             }),
         ),
         Err(msg) => rpc_error_response(req.id, INTERNAL_ERROR, msg),
+    }
+}
+
+// Workaround for claude.ai / Claude Desktop connectors that stringify
+// object-typed tool arguments (anthropics/claude-code#5504, #24599, #26094):
+// if `params` arrives as a JSON-encoded string, decode it in place. Scoped to
+// the top-level field — recursing would double-decode payloads that
+// legitimately arrive as JSON strings (e.g. Mode A request bodies).
+fn normalize_stringified_params(args: &mut Value) {
+    let Some(obj) = args.as_object_mut() else {
+        return;
+    };
+    let Some(p) = obj.get_mut("params") else {
+        return;
+    };
+    let Some(s) = p.as_str() else {
+        return;
+    };
+
+    if s.is_empty() {
+        *p = Value::Null;
+        tracing::warn!(
+            client_quirk = "stringified_params",
+            "rewrote empty-string params to null"
+        );
+        return;
+    }
+
+    match serde_json::from_str::<Value>(s) {
+        Ok(parsed) if parsed.is_object() || parsed.is_null() => {
+            *p = parsed;
+            tracing::warn!(
+                client_quirk = "stringified_params",
+                "rewrote stringified JSON params to object"
+            );
+        }
+        _ => {}
     }
 }
 
@@ -455,4 +494,84 @@ async fn forward(
         return Ok(Value::Null);
     }
     Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stringified_empty_object_becomes_object() {
+        let mut args = json!({"service": "x", "action": "y", "params": "{}"});
+        normalize_stringified_params(&mut args);
+        assert_eq!(args["params"], json!({}));
+    }
+
+    #[test]
+    fn stringified_object_with_content_is_decoded() {
+        let mut args = json!({
+            "service": "x",
+            "action": "y",
+            "params": "{\"approval_id\":\"abc\",\"n\":3}"
+        });
+        normalize_stringified_params(&mut args);
+        assert_eq!(args["params"], json!({"approval_id": "abc", "n": 3}));
+    }
+
+    #[test]
+    fn empty_string_params_becomes_null() {
+        let mut args = json!({"service": "x", "action": "y", "params": ""});
+        normalize_stringified_params(&mut args);
+        assert!(args["params"].is_null());
+    }
+
+    #[test]
+    fn real_object_params_unchanged() {
+        let original = json!({"service": "x", "action": "y", "params": {"k": "v"}});
+        let mut args = original.clone();
+        normalize_stringified_params(&mut args);
+        assert_eq!(args, original);
+    }
+
+    #[test]
+    fn missing_params_is_noop() {
+        let original = json!({"service": "x", "action": "y"});
+        let mut args = original.clone();
+        normalize_stringified_params(&mut args);
+        assert_eq!(args, original);
+    }
+
+    #[test]
+    fn null_params_unchanged() {
+        let original = json!({"service": "x", "action": "y", "params": null});
+        let mut args = original.clone();
+        normalize_stringified_params(&mut args);
+        assert_eq!(args, original);
+    }
+
+    #[test]
+    fn non_json_string_passes_through() {
+        // We don't try to "rescue" arbitrary strings: leave them in place
+        // so the downstream typed deserializer surfaces a clear error.
+        let original = json!({"service": "x", "action": "y", "params": "not json"});
+        let mut args = original.clone();
+        normalize_stringified_params(&mut args);
+        assert_eq!(args, original);
+    }
+
+    #[test]
+    fn stringified_non_object_passes_through() {
+        // A stringified array or number is not the bug we're fixing — leave it.
+        let original = json!({"service": "x", "action": "y", "params": "[1,2,3]"});
+        let mut args = original.clone();
+        normalize_stringified_params(&mut args);
+        assert_eq!(args, original);
+    }
+
+    #[test]
+    fn non_object_args_is_noop() {
+        let mut args = Value::Null;
+        normalize_stringified_params(&mut args);
+        assert_eq!(args, Value::Null);
+    }
 }

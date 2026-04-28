@@ -3072,6 +3072,90 @@ async fn test_mcp_overslash_cancel_pending() {
 }
 
 #[tokio::test]
+async fn test_mcp_stringified_params_object_is_decoded() {
+    // The claude.ai connector (and some Claude Desktop builds) sometimes
+    // ships the `params` argument as a JSON-encoded string instead of an
+    // object — see anthropics/claude-code#5504, #24599, #26094. Without the
+    // normalize_stringified_params workaround, `dispatch_overslash_platform`
+    // sees `params` as a string, `.get("approval_id")` returns None, and the
+    // call fails with "call_pending requires params.approval_id". With the
+    // workaround the string is parsed and the call succeeds.
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+    let stringified = format!("{{\"approval_id\":\"{approval_id}\"}}");
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "call_pending",
+                    "params": stringified
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "executed");
+}
+
+#[tokio::test]
+async fn test_mcp_stringified_empty_params_object_succeeds() {
+    // Variant that exercises the most common shape claude.ai sends:
+    // `"params": "{}"`. Routed to `list_pending` which doesn't read params
+    // at all — the bug surface here is purely "does the dispatcher choke on
+    // a string-typed `params` field on the way through?".
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let _ = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "list_pending",
+                    "params": "{}"
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let items: Vec<Value> = serde_json::from_str(text).unwrap();
+    assert_eq!(items.len(), 1);
+}
+
+#[tokio::test]
 async fn test_mcp_overslash_unknown_platform_action_returns_error() {
     let pool = common::test_pool().await;
     let (base, key, ..) = setup(pool).await;
