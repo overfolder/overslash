@@ -583,6 +583,11 @@ where
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
     customize(&mut config);
 
@@ -680,6 +685,11 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let state = overslash_api::AppState {
@@ -773,6 +783,11 @@ pub async fn start_api_with_auth_providers(
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let state = overslash_api::AppState {
@@ -1237,6 +1252,11 @@ pub async fn start_api_with_registry(
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let state = overslash_api::AppState {
@@ -1340,6 +1360,11 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let state = overslash_api::AppState {
@@ -1415,6 +1440,11 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let state = overslash_api::AppState {

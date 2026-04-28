@@ -38,6 +38,16 @@ pub struct Config {
     /// want the old single-org experience set this to their org's slug.
     /// Default unset (multi-org cloud mode).
     pub single_org_mode: Option<String>,
+    /// When true, Team org creation is gated behind a Stripe subscription.
+    /// Personal orgs (created at signup) remain free. Requires the
+    /// STRIPE_* vars to be set. Default false (self-hosted: no billing).
+    pub cloud_billing: bool,
+    pub stripe_secret_key: Option<String>,
+    pub stripe_webhook_secret: Option<String>,
+    /// Stripe price ID for the €15/seat/month EUR plan.
+    pub stripe_eur_price_id: Option<String>,
+    /// Stripe price ID for the $20/seat/month USD plan.
+    pub stripe_usd_price_id: Option<String>,
     /// Optional apex used to resolve `<slug>.<apex>` subdomains into an org.
     /// e.g. `app.overslash.com`. When unset, subdomain routing is disabled
     /// (helpful for self-hosted single-host deploys). Leave unset in local
@@ -135,14 +145,42 @@ impl Config {
             session_cookie_domain: env::var("SESSION_COOKIE_DOMAIN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            cloud_billing: env::var("CLOUD_BILLING")
+                .ok()
+                .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+                .unwrap_or(false),
+            stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok().filter(|s| !s.is_empty()),
+            stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            stripe_eur_price_id: env::var("STRIPE_EUR_PRICE_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            stripe_usd_price_id: env::var("STRIPE_USD_PRICE_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
     /// Check for required env vars and return list of missing ones.
     pub fn validate_env() -> Vec<&'static str> {
-        let required = ["DATABASE_URL", "SECRETS_ENCRYPTION_KEY", "SIGNING_KEY"];
-        required
+        let always_required = ["DATABASE_URL", "SECRETS_ENCRYPTION_KEY", "SIGNING_KEY"];
+        let cloud_billing_enabled = env::var("CLOUD_BILLING")
+            .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false);
+        let billing_required: &[&str] = if cloud_billing_enabled {
+            &[
+                "STRIPE_SECRET_KEY",
+                "STRIPE_WEBHOOK_SECRET",
+                "STRIPE_EUR_PRICE_ID",
+                "STRIPE_USD_PRICE_ID",
+            ]
+        } else {
+            &[]
+        };
+        always_required
             .iter()
+            .chain(billing_required.iter())
             .filter(|k| env::var(k).is_err())
             .copied()
             .collect()

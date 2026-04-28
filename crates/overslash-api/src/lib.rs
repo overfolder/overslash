@@ -168,6 +168,20 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         }
     }
 
+    let billing_api_routes = if state.config.cloud_billing {
+        routes::billing::router()
+    } else {
+        Router::new()
+    };
+
+    // Stripe webhook lives outside rate limiting so bursts of Stripe retries
+    // are never rejected, and the raw body is available for sig verification.
+    let stripe_webhook_routes = if state.config.cloud_billing {
+        routes::billing::webhook_router()
+    } else {
+        Router::new()
+    };
+
     let rate_limited_routes = Router::new()
         .merge(routes::orgs::router())
         .merge(routes::identities::router())
@@ -192,6 +206,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::org_oauth_credentials::router())
         .merge(routes::groups::router())
         .merge(routes::rate_limits::router())
+        .merge(billing_api_routes)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::rate_limit::rate_limit_middleware,
@@ -248,6 +263,7 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::oauth_as::router())
         .merge(routes::oauth::router())
         .merge(routes::mcp::router())
+        .merge(stripe_webhook_routes)
         .merge(rate_limited_routes)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

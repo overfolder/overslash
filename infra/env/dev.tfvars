@@ -34,3 +34,8 @@ infra_scheduler_start_cron = "0 7 * * *"
 # Optional
 enable_valkey = false
 enable_dns    = false
+
+# Billing — disabled in dev; enable for billing testing
+cloud_billing = false
+# stripe_eur_price_id = "price_..."
+# stripe_usd_price_id = "price_..."

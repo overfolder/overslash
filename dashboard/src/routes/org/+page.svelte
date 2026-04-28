@@ -10,7 +10,7 @@
 		WebhookCreated,
 		WebhookDelivery
 	} from '$lib/types';
-	import type { OrgPageData } from './+page';
+	import type { OrgPageData, OrgSubscription } from './+page';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import { absoluteTime } from '$lib/utils/time';
@@ -28,6 +28,7 @@
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
 	let secretRequestError = $state<string | null>(null);
+	let subscription = $state<OrgSubscription | null>(null);
 	$effect(() => {
 		org = data.org;
 		idpConfigs = data.idpConfigs;
@@ -35,6 +36,7 @@
 		mcpClients = data.mcpClients;
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
+		subscription = data.subscription;
 	});
 
 	// Personal orgs are single-member and always authenticate via the
@@ -963,6 +965,50 @@
 			{/if}
 		</section>
 	{/if}
+
+	{#if !isPersonalOrg && subscription}
+		<section class="card" id="billing">
+			<h2>Billing</h2>
+			<div class="billing-row">
+				<div class="billing-info">
+					<div class="billing-stat">
+						<span class="billing-label">Plan</span>
+						<span class="billing-value">{subscription.plan.charAt(0).toUpperCase() + subscription.plan.slice(1)}</span>
+					</div>
+					<div class="billing-stat">
+						<span class="billing-label">Seats</span>
+						<span class="billing-value">{subscription.seats}</span>
+					</div>
+					<div class="billing-stat">
+						<span class="billing-label">Status</span>
+						<span class="billing-value billing-status" class:ok={subscription.status === 'active' || subscription.status === 'trialing'} class:warn={subscription.status === 'past_due'} class:muted={subscription.status === 'canceled'}>
+							{subscription.status}
+						</span>
+					</div>
+					{#if subscription.current_period_end}
+						<div class="billing-stat">
+							<span class="billing-label">{subscription.cancel_at_period_end ? 'Cancels' : 'Renews'}</span>
+							<span class="billing-value">
+								{new Date(subscription.current_period_end * 1000).toLocaleDateString()}
+							</span>
+						</div>
+					{/if}
+				</div>
+				<a
+					href={`/billing/portal?org_id=${org?.id}`}
+					class="btn btn-secondary"
+				>
+					Manage subscription
+				</a>
+			</div>
+			{#if subscription.cancel_at_period_end}
+				<p class="billing-cancel-notice">
+					⚠ This subscription will cancel at the end of the current period.
+					<a href={`/billing/portal?org_id=${org?.id}`}>Reactivate</a> to keep access.
+				</p>
+			{/if}
+		</section>
+	{/if}
 </div>
 
 <ConfirmModal
@@ -1272,5 +1318,53 @@
 		color: var(--color-text-muted);
 		font-size: 0.82rem;
 		line-height: 1.45;
+	}
+
+	.billing-row {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1.5rem;
+		flex-wrap: wrap;
+	}
+
+	.billing-info {
+		display: flex;
+		gap: 2rem;
+		flex-wrap: wrap;
+	}
+
+	.billing-stat {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+
+	.billing-label {
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+	}
+
+	.billing-value {
+		font-size: 0.95rem;
+		font-weight: 500;
+	}
+
+	.billing-status.ok { color: var(--color-success, #1b8a3a); }
+	.billing-status.warn { color: var(--color-warning, #b45309); }
+	.billing-status.muted { color: var(--color-text-muted); }
+
+	.billing-cancel-notice {
+		margin: 0.75rem 0 0;
+		font-size: 0.85rem;
+		color: var(--color-warning, #b45309);
+	}
+
+	.billing-cancel-notice a {
+		color: inherit;
+		text-decoration: underline;
 	}
 </style>

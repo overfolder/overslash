@@ -194,3 +194,23 @@ variable "shortener_root_redirect_url" {
   type        = string
   default     = ""
 }
+
+# --- Billing ---
+
+variable "cloud_billing" {
+  description = "Enable Stripe billing gate for Team org creation. Requires Stripe secrets in Secret Manager."
+  type        = bool
+  default     = false
+}
+
+variable "stripe_eur_price_id" {
+  description = "Stripe price ID for the €15/seat/month EUR plan (used when cloud_billing=true)."
+  type        = string
+  default     = ""
+}
+
+variable "stripe_usd_price_id" {
+  description = "Stripe price ID for the $20/seat/month USD plan (used when cloud_billing=true)."
+  type        = string
+  default     = ""
+}

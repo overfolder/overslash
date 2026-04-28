@@ -167,6 +167,51 @@ resource "google_secret_manager_secret_version" "shortener_api_key" {
   }
 }
 
+# --- Stripe billing secrets (only populated when cloud_billing=true).
+#     Values populated manually via `gcloud secrets versions add` after apply.
+
+resource "google_secret_manager_secret" "stripe_secret_key" {
+  secret_id = "${var.base_prefix}-stripe-secret-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "stripe_secret_key" {
+  secret      = google_secret_manager_secret.stripe_secret_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret" "stripe_webhook_secret" {
+  secret_id = "${var.base_prefix}-stripe-webhook-secret"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "stripe_webhook_secret" {
+  secret      = google_secret_manager_secret.stripe_webhook_secret.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+output "stripe_secret_key_secret_id" {
+  value = google_secret_manager_secret.stripe_secret_key.secret_id
+}
+
+output "stripe_webhook_secret_secret_id" {
+  value = google_secret_manager_secret.stripe_webhook_secret.secret_id
+}
+
 output "db_password_secret_id" {
   value = google_secret_manager_secret.db_password.secret_id
 }

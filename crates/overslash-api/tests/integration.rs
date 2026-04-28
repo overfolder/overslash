@@ -48,6 +48,11 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     // Build the app with the test pool directly
@@ -1274,6 +1279,11 @@ async fn test_service_registry_api() {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -2233,6 +2243,11 @@ async fn start_api_with_registry(
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let state = overslash_api::AppState {

@@ -186,6 +186,9 @@
 				createError = describeSlugReason(code);
 			} else if (code === 'org_creation_disabled') {
 				createError = 'Org creation is disabled on this deployment.';
+			} else if (code === 'team_org_requires_subscription') {
+				window.location.href = '/billing/new-team';
+				return;
 			} else if (code.startsWith('http_')) {
 				createError = `Could not create org (${code.slice(5)}). Try again.`;
 			} else {

@@ -97,6 +97,12 @@ const RESERVED_SLUGS: &[&str] = &[
 
 /// Validate slug format without touching the DB. Mirrors DNS-label rules and
 /// the dashboard's client-side check.
+/// Public wrapper used by the billing route to validate a slug before Stripe
+/// round-trips. Returns the rejection code as a static str on error.
+pub(crate) fn validate_slug_format_pub(slug: &str) -> std::result::Result<(), &'static str> {
+    validate_slug_format(slug).map_err(|r| r.code())
+}
+
 fn validate_slug_format(slug: &str) -> std::result::Result<(), SlugReject> {
     if slug.len() < SLUG_MIN {
         return Err(SlugReject::TooShort);
@@ -173,6 +179,13 @@ async fn create_org(
 ) -> Result<axum::response::Response> {
     if !state.config.allow_org_creation {
         return Err(AppError::Forbidden("org_creation_disabled".into()));
+    }
+
+    // In cloud billing mode, Team org creation goes through Stripe Checkout.
+    // Personal orgs are provisioned by the auth login flow — not via this
+    // route — so this gate only fires for explicit manual calls.
+    if state.config.cloud_billing {
+        return Err(AppError::Forbidden("team_org_requires_subscription".into()));
     }
 
     let name = req.name.trim();
@@ -340,7 +353,7 @@ fn extract_optional_session_user(
     claims.user_id
 }
 
-async fn provision_new_org_contents(
+pub(crate) async fn provision_new_org_contents(
     state: &AppState,
     org_id: Uuid,
     session_user_id: Option<Uuid>,
@@ -383,7 +396,7 @@ async fn provision_new_org_contents(
     }
 }
 
-fn redirect_for_org(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {
+pub(crate) fn redirect_for_org(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {
     let scheme = if state.config.public_url.starts_with("https://") {
         "https"
     } else {

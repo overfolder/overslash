@@ -361,6 +361,11 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -590,6 +595,11 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -637,6 +647,11 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
     overslash_api::AppState {
         db: pool,
@@ -1051,6 +1066,11 @@ async fn test_cache_invalidation_user_budget() {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     // Prime the cache
@@ -1195,6 +1215,11 @@ async fn test_cache_invalidation_org_flushes_all() {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
     };
 
     let r1 = cache
