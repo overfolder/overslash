@@ -210,9 +210,12 @@ export interface ActionSummary {
 export type ServiceRuntime = 'http' | 'mcp';
 
 export interface McpDetail {
-  url: string;
+  /** Absent when the template has no default URL (operator must supply one at instance creation). */
+  url?: string;
   /** v1: `none` | `bearer`. */
   auth_kind: 'none' | 'bearer';
+  /** `true` when the template has a hard-coded `secret_name`; `false` means the operator must supply one at instance creation. */
+  has_default_secret_name: boolean;
   autodiscover: boolean;
   /** ISO-8601 of the most recent `tools/list` sync; absent until first resync. */
   discovered_at?: string;
@@ -257,6 +260,8 @@ export interface ServiceInstanceSummary {
   owner_identity_id?: string;
   connection_id?: string;
   secret_name?: string;
+  /** Per-instance MCP server URL override. Present only for MCP runtime services. */
+  url?: string;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
 }
@@ -273,6 +278,7 @@ export interface CreateServiceRequest {
   name?: string;
   connection_id?: string;
   secret_name?: string;
+  url?: string;
   status?: ServiceStatus;
   user_level?: boolean;
 }
@@ -281,6 +287,7 @@ export interface UpdateServiceRequest {
   name?: string;
   connection_id?: string | null;
   secret_name?: string | null;
+  url?: string | null;
 }
 
 // -- OAuth --

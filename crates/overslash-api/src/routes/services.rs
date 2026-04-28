@@ -51,6 +51,9 @@ struct ServiceInstanceSummary {
     connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_name: Option<String>,
+    /// Per-instance MCP server URL override. Overrides the template's `mcp.url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
     /// Groups that grant access to this service instance. Empty when the
     /// service is not assigned to any group.
     #[serde(default)]
@@ -97,6 +100,9 @@ struct ServiceInstanceDetail {
     connection_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_name: Option<String>,
+    /// Per-instance MCP server URL override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
     status: String,
     is_system: bool,
     created_at: String,
@@ -136,6 +142,9 @@ struct CreateServiceRequest {
     name: Option<String>,
     connection_id: Option<Uuid>,
     secret_name: Option<String>,
+    /// Per-instance MCP server URL. Required when the template declares no
+    /// default `mcp.url`; optional otherwise (overrides the template default).
+    url: Option<String>,
     /// Defaults to "active".
     #[serde(default = "default_status")]
     status: String,
@@ -157,6 +166,8 @@ struct UpdateServiceRequest {
     name: Option<String>,
     connection_id: Option<Option<Uuid>>,
     secret_name: Option<Option<String>>,
+    /// Update the per-instance MCP URL. `null` clears it (falls back to template default).
+    url: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -435,11 +446,9 @@ async fn create_service(
         }
     }
 
-    // `secret_name` is only meaningful when the template declares ApiKey auth.
-    // OAuth-only templates must not carry one — accepting it would create a
-    // dead value the resolver ignores, yet the dashboard would surface the
-    // instance as "connected" based on `secret_name` alone.
-    if req.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
+    // Validate secret_name and url against template requirements.
+    // We fetch the template definition once here for all checks.
+    {
         let template_def = crate::routes::templates::resolve_template_definition(
             &state,
             auth.org_id,
@@ -447,15 +456,70 @@ async fn create_service(
             &req.template_key,
         )
         .await?;
-        let has_api_key = template_def
-            .auth
-            .iter()
-            .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
-        if !has_api_key {
-            return Err(AppError::BadRequest(format!(
-                "template '{}' does not use api key auth",
-                req.template_key
-            )));
+
+        let is_mcp = template_def.runtime == overslash_core::types::Runtime::Mcp;
+        let mcp_auth = template_def.mcp.as_ref().map(|m| &m.auth);
+        let is_mcp_bearer = matches!(
+            mcp_auth,
+            Some(overslash_core::types::McpAuth::Bearer { .. })
+        );
+        let mcp_bearer_has_default_secret = matches!(
+            mcp_auth,
+            Some(overslash_core::types::McpAuth::Bearer {
+                secret_name: Some(_)
+            })
+        );
+        let mcp_has_default_url = template_def
+            .mcp
+            .as_ref()
+            .and_then(|m| m.url.as_ref())
+            .is_some();
+
+        // `secret_name` is valid when: (1) template declares ApiKey auth, OR
+        // (2) template is MCP with bearer auth. For OAuth-only HTTP templates
+        // a secret_name would silently create a dead value — reject it.
+        if req.secret_name.as_deref().is_some_and(|s| !s.is_empty()) {
+            let has_api_key = template_def
+                .auth
+                .iter()
+                .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
+            if !has_api_key && !is_mcp_bearer {
+                return Err(AppError::BadRequest(format!(
+                    "template '{}' does not use api key or MCP bearer auth",
+                    req.template_key
+                )));
+            }
+        }
+
+        // MCP templates with no default URL require one from the request.
+        if is_mcp && !mcp_has_default_url {
+            let provided = req.url.as_deref().is_some_and(|u| !u.is_empty());
+            if !provided {
+                return Err(AppError::BadRequest(format!(
+                    "template '{}' has no default MCP URL; provide `url` in the request",
+                    req.template_key
+                )));
+            }
+        }
+
+        // MCP bearer templates with no default secret_name require one from the request.
+        if is_mcp && is_mcp_bearer && !mcp_bearer_has_default_secret {
+            let provided = req.secret_name.as_deref().is_some_and(|s| !s.is_empty());
+            if !provided {
+                return Err(AppError::BadRequest(format!(
+                    "template '{}' MCP bearer auth has no default secret_name; provide `secret_name` in the request",
+                    req.template_key
+                )));
+            }
+        }
+
+        // Validate URL format when provided.
+        if let Some(url) = req.url.as_deref() {
+            if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::BadRequest(
+                    "`url` must start with http:// or https://".into(),
+                ));
+            }
         }
     }
 
@@ -468,6 +532,7 @@ async fn create_service(
         template_id,
         connection_id: req.connection_id,
         secret_name: req.secret_name.as_deref(),
+        url: req.url.as_deref(),
         status: &req.status,
     };
 
@@ -507,8 +572,8 @@ async fn update_service(
         return Err(AppError::BadRequest("cannot modify system service".into()));
     }
 
-    // Block setting a non-empty `secret_name` on templates without ApiKey auth
-    // (clearing it via Some(None) or Some("") is always allowed).
+    // Block setting a non-empty `secret_name` on templates without ApiKey or MCP bearer auth.
+    // Clearing via Some(None) or Some("") is always allowed.
     if let Some(Some(ref new_secret)) = req.secret_name {
         if !new_secret.is_empty() {
             let template_lookup_identity = existing.owner_identity_id.or(auth.identity_id);
@@ -523,12 +588,25 @@ async fn update_service(
                 .auth
                 .iter()
                 .any(|a| matches!(a, overslash_core::types::ServiceAuth::ApiKey { .. }));
-            if !has_api_key {
+            let is_mcp_bearer = matches!(
+                template_def.mcp.as_ref().map(|m| &m.auth),
+                Some(overslash_core::types::McpAuth::Bearer { .. })
+            );
+            if !has_api_key && !is_mcp_bearer {
                 return Err(AppError::BadRequest(format!(
-                    "template '{}' does not use api key auth",
+                    "template '{}' does not use api key or MCP bearer auth",
                     existing.template_key
                 )));
             }
+        }
+    }
+
+    // Validate URL format when provided.
+    if let Some(Some(ref url)) = req.url {
+        if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(AppError::BadRequest(
+                "`url` must start with http:// or https://".into(),
+            ));
         }
     }
 
@@ -536,6 +614,7 @@ async fn update_service(
         name: req.name.as_deref(),
         connection_id: req.connection_id,
         secret_name: req.secret_name.as_ref().map(|o| o.as_deref()),
+        url: req.url.as_ref().map(|o| o.as_deref()),
     };
 
     let row = scope
@@ -648,6 +727,7 @@ fn row_to_summary(row: ServiceInstanceRow, groups: Vec<ServiceGroupRef>) -> Serv
         owner_identity_id: row.owner_identity_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        url: row.url,
         groups,
         credentials_status: None,
     }
@@ -664,6 +744,7 @@ fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         template_id: row.template_id,
         connection_id: row.connection_id,
         secret_name: row.secret_name,
+        url: row.url,
         status: row.status,
         is_system: row.is_system,
         created_at: fmt_time(row.created_at),

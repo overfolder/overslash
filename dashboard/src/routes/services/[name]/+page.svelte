@@ -46,6 +46,7 @@
 	let editName = $state('');
 	let editConnection = $state('');
 	let editSecret = $state('');
+	let editUrl = $state('');
 	let saving = $state(false);
 	let connecting = $state(false);
 	let reconnectAbort: AbortController | null = null;
@@ -90,6 +91,7 @@
 	const usesApiKey = $derived(
 		(template?.auth ?? []).some((a: any) => a?.type === 'api_key')
 	);
+	const isMcp = $derived(template?.runtime === 'mcp');
 	const isSystem = $derived(!!svc?.is_system);
 	const ownerDisplay = $derived.by(() => {
 		const s = svc;
@@ -147,6 +149,7 @@
 			editName = fresh.name;
 			editConnection = fresh.connection_id ?? '';
 			editSecret = fresh.secret_name ?? '';
+			editUrl = fresh.url ?? '';
 			const [tpl, acts, conns, ids, sGroups, gs] = await Promise.all([
 				getTemplate(fresh.template_key, ctrl.signal).catch(() => null),
 				// Use svc.id (not name) so user-shadows-org can't return actions
@@ -193,7 +196,9 @@
 						? editConnection || null
 						: undefined,
 				secret_name:
-					editSecret !== (svc.secret_name ?? '') ? editSecret || null : undefined
+					editSecret !== (svc.secret_name ?? '') ? editSecret || null : undefined,
+				url:
+					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined
 			});
 			svc = updated;
 			if (updated.name !== name) {
@@ -474,9 +479,20 @@
 					<span class="label">Name</span>
 					<input type="text" bind:value={editName} required minlength="1" disabled={isSystem} />
 				</label>
-				{#if usesApiKey && !usesOAuth && !isSystem}
+				{#if isMcp && !isSystem}
 					<label class="field">
-						<span class="label">API key secret name</span>
+						<span class="label">MCP server URL</span>
+						<input type="url" bind:value={editUrl} placeholder={template?.mcp?.url ?? 'http://host:8081/mcp'} />
+						{#if template?.mcp?.url}
+							<small>Override the template default ({template.mcp.url}). Leave blank to use the default.</small>
+						{:else}
+							<small>The URL of the MCP server endpoint.</small>
+						{/if}
+					</label>
+				{/if}
+				{#if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
+					<label class="field">
+						<span class="label">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</span>
 						<input type="text" bind:value={editSecret} placeholder="my-api-key" />
 					</label>
 				{/if}
@@ -649,9 +665,9 @@
 							{saving ? 'Saving…' : 'Save'}
 						</button>
 					</div>
-				{:else if usesApiKey}
+				{:else if usesApiKey || (isMcp && template?.mcp?.auth_kind === 'bearer')}
 					<label class="field">
-						<span class="label">API key secret name</span>
+						<span class="label">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</span>
 						<input type="text" bind:value={editSecret} />
 					</label>
 					<div class="actions">
@@ -668,7 +684,7 @@
 				{#if template?.runtime === 'mcp'}
 					<div class="mcp-header">
 						<div class="mcp-meta">
-							<span class="mono">MCP · {template.mcp?.url ?? ''}</span>
+							<span class="mono">MCP · {svc?.url ?? template.mcp?.url ?? ''}</span>
 							<span class="muted">
 								{#if template.mcp?.autodiscover === false}
 									discovery disabled

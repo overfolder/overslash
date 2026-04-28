@@ -46,10 +46,20 @@
 	let nameInput = $state('');
 	let connectionId = $state<string>('');
 	let secretName = $state('');
+	let urlInput = $state('');
 	let userLevel = $state(true);
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
 	let oauthAbort: AbortController | null = null;
+
+	// MCP-derived helpers
+	const isMcp = $derived(selectedDetail?.runtime === 'mcp');
+	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url);
+	const mcpNeedsSecret = $derived(
+		isMcp &&
+		selectedDetail?.mcp?.auth_kind === 'bearer' &&
+		!selectedDetail?.mcp?.has_default_secret_name
+	);
 
 	const searchKeys = $derived<SearchKey[]>([
 		{
@@ -337,6 +347,7 @@
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
 				secret_name: secretName.trim() || undefined,
+				url: urlInput.trim() || undefined,
 				status: 'active',
 				user_level: userLevel
 			});
@@ -548,15 +559,40 @@
 				</div>
 			{/if}
 
-			{#if usesApiKey && !usesOAuth}
+			{#if isMcp}
 				<label class="field">
-					<span class="label">API key secret name</span>
+					<span class="label">
+						MCP server URL{mcpNeedsUrl ? '' : ' (optional override)'}
+					</span>
+					<input
+						type="url"
+						bind:value={urlInput}
+						placeholder="http://host:8081/mcp"
+						required={mcpNeedsUrl}
+					/>
+					{#if mcpNeedsUrl}
+						<small>Required — this template has no default URL.</small>
+					{:else}
+						<small>Leave blank to use the template's default: {selectedDetail?.mcp?.url}</small>
+					{/if}
+				</label>
+			{/if}
+
+			{#if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
+				<label class="field">
+					<span class="label">
+						{mcpNeedsSecret ? 'Bearer token secret name' : 'API key secret name'}
+					</span>
 					<input
 						type="text"
 						bind:value={secretName}
 						placeholder="my-api-key"
 					/>
-					<small>The name of a secret previously stored in the vault.</small>
+					{#if mcpNeedsSecret}
+						<small>The vault key that holds the MCP server's bearer token. Required — this template has no default.</small>
+					{:else}
+						<small>The name of a secret previously stored in the vault.</small>
+					{/if}
 				</label>
 			{/if}
 

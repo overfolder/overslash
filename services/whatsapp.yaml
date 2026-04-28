@@ -14,16 +14,12 @@ x-overslash-runtime: mcp
 servers: []
 paths: {}
 x-overslash-mcp:
-  # Placeholder. Override this URL with your hosted whatsapp-mcp container
-  # (e.g. via an org/user template overlay) before enabling the service —
-  # the container speaks Streamable HTTP MCP on `:PORT/mcp` (default 8081).
-  url: https://whatsapp-mcp.example.com/mcp
+  # url and secret_name are not set here — operators must provide both when
+  # creating a service instance from this template:
+  #   url        — the hosted whatsapp-mcp-docker endpoint (e.g. http://host:8081/mcp)
+  #   secret_name — vault key that holds the container's AUTH_TOKEN bearer token
   auth:
     kind: bearer
-    # Token configured on the container via its `AUTH_TOKEN` env var.
-    # Stored in the org vault under this name; injected at call time and
-    # never returned to agents.
-    secret_name: whatsapp_mcp_token
   # Tools are authored inline because globals are not resync-able (see
   # `resync_mcp_tools` in routes/templates.rs — globals ship their tool
   # list in-repo). When an operator promotes this template to org/user
