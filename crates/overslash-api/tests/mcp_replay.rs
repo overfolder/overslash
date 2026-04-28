@@ -404,6 +404,38 @@ async fn mcp_replay_transport_error_does_not_create_rule() {
     assert_eq!(n, 0, "no rule should be created when replay fails");
 }
 
+/// Legacy MCP approvals were created before this feature with
+/// `replay_payload = NULL`; their `action_detail` is the redacted
+/// projection (`{ runtime: "mcp", tool, arguments, ... }`) and lacks
+/// `url`/`auth`, so they cannot be replayed. Pre-feature behavior was
+/// to return 409; we preserve that instead of letting the deserializer
+/// fail with a 500. Simulated by creating a fresh MCP approval and
+/// then nulling `replay_payload` directly in the database.
+#[tokio::test]
+async fn mcp_legacy_approval_returns_409_not_500() {
+    let ctx = setup_pending_mcp_approval("stub_replay_legacy").await;
+    let approval_id = trigger_pending_approval(&ctx, "legacy").await;
+    resolve(&ctx, &approval_id, json!({"resolution": "allow"})).await;
+
+    sqlx::query("UPDATE approvals SET replay_payload = NULL WHERE id = $1")
+        .bind(approval_id.parse::<Uuid>().unwrap())
+        .execute(&ctx.pool)
+        .await
+        .unwrap();
+
+    let resp = ctx
+        .client
+        .post(format!("{}/v1/approvals/{approval_id}/call", ctx.base))
+        .header(
+            common::auth(&ctx.agent_key).0,
+            common::auth(&ctx.agent_key).1,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409, "/call: {:?}", resp.text().await);
+}
+
 /// Tool-level failure (`isError: true` in the MCP envelope) is in-band per
 /// the MCP spec. From the approval's perspective the replay *executed*: the
 /// policy decision was honored, the call ran. The execution row finalizes

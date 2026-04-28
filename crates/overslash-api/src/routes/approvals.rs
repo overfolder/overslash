@@ -702,27 +702,64 @@ async fn call_approval(
     }
 
     // Prefer the raw `replay_payload` column — it carries the full
-    // ActionRequest plus `filter`/`prefer_stream`, unaffected by
-    // x-overslash-redact which only reshapes the UI-facing `action_detail`.
-    // Fall back to `action_detail` for legacy / pre-feature approvals.
-    let replay_value = match approval
-        .replay_payload
-        .clone()
-        .or_else(|| approval.action_detail.clone())
-    {
+    // ActionRequest (HTTP) or full MCP call (url/auth/tool/arguments),
+    // unaffected by x-overslash-redact which only reshapes the UI-facing
+    // `action_detail`.
+    //
+    // The `action_detail` fallback is for legacy HTTP rows (pre-feature,
+    // when replay_payload didn't exist and action_detail was the bare
+    // ActionRequest). Legacy MCP / platform approvals have an action_detail
+    // *projection* (`{ runtime, tool, arguments, ... }` or `{ runtime,
+    // action, params, ... }`) — not enough to actually replay, since
+    // url/auth were never persisted. For those we preserve the pre-feature
+    // 409 instead of attempting a doomed parse that would land as 500.
+    let replay_value = match approval.replay_payload.clone() {
         Some(v) => v,
-        None => {
-            return fail_and_return(
-                &scope,
-                execution_id,
-                "no_replay_payload",
-                AppError::Internal("approval has no stored replay payload — cannot replay".into()),
-            )
-            .await;
-        }
+        None => match approval.action_detail.clone() {
+            Some(detail) => {
+                let runtime = detail.get("runtime").and_then(|v| v.as_str());
+                if runtime == Some("mcp") || detail.get("tool").is_some() {
+                    return fail_and_return(
+                        &scope,
+                        execution_id,
+                        "mcp_replay_not_supported_legacy",
+                        AppError::Conflict(
+                            "replay of MCP-runtime approvals created before this feature \
+                             is not supported"
+                                .into(),
+                        ),
+                    )
+                    .await;
+                }
+                if runtime == Some("platform") {
+                    return fail_and_return(
+                        &scope,
+                        execution_id,
+                        "platform_replay_not_supported",
+                        AppError::Conflict(
+                            "replay of platform-runtime approvals is not yet supported".into(),
+                        ),
+                    )
+                    .await;
+                }
+                detail
+            }
+            None => {
+                return fail_and_return(
+                    &scope,
+                    execution_id,
+                    "no_replay_payload",
+                    AppError::Internal(
+                        "approval has no stored replay payload — cannot replay".into(),
+                    ),
+                )
+                .await;
+            }
+        },
     };
-    // Platform-runtime approvals don't have a replay path yet. MCP and HTTP
-    // are handled by the dispatch below.
+    // Platform-runtime approvals (with replay_payload set) — still no
+    // replay path. The legacy fallback above handles the action_detail-only
+    // case; this guard catches future replay_payload variants if any.
     if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("platform") {
         return fail_and_return(
             &scope,
