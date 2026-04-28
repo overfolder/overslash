@@ -472,8 +472,23 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
             Err(e) => return Err(AppError::from(e)),
         };
 
-    // Provision identity, bootstrap, membership (idempotent — duplicate inserts are skipped).
-    provision_new_org_contents(state, org.id, Some(checkout.user_id)).await?;
+    // Provision identity, bootstrap, membership — but only if this org isn't
+    // already provisioned for the user. `provision_new_org_contents` is NOT
+    // idempotent (identity::create_with_email + membership::create both
+    // collide on uniqueness on retry), so on a Stripe re-delivery we must
+    // skip it. The (org_id, user_id) identity row is the ground-truth marker.
+    if overslash_db::repos::identity::find_by_org_and_user(&state.db, org.id, checkout.user_id)
+        .await?
+        .is_none()
+    {
+        provision_new_org_contents(state, org.id, Some(checkout.user_id)).await?;
+    } else {
+        tracing::info!(
+            session_id,
+            org_id = %org.id,
+            "checkout retry: org already provisioned for user, skipping bootstrap"
+        );
+    }
 
     // Fetch subscription details from Stripe for seats/period info.
     let stripe_key = state.config.stripe_secret_key.as_deref().unwrap_or("");
@@ -710,10 +725,30 @@ async fn fetch_stripe_subscription(
 // Webhook signature verification
 // ---------------------------------------------------------------------------
 
+/// Stripe's recommended replay-attack tolerance: reject events whose `t=`
+/// timestamp is more than this many seconds away from server time. Matches
+/// the default in the official Stripe libraries.
+const STRIPE_TIMESTAMP_TOLERANCE_SECS: i64 = 5 * 60;
+
 fn verify_stripe_signature(
     secret: &str,
     payload: &[u8],
     sig_header: &str,
+) -> std::result::Result<(), ()> {
+    verify_stripe_signature_at(
+        secret,
+        payload,
+        sig_header,
+        OffsetDateTime::now_utc().unix_timestamp(),
+    )
+}
+
+/// Same as `verify_stripe_signature` but with an injectable "now" for tests.
+fn verify_stripe_signature_at(
+    secret: &str,
+    payload: &[u8],
+    sig_header: &str,
+    now_unix: i64,
 ) -> std::result::Result<(), ()> {
     // Parse `t=...` and `v1=...` from the header (comma-separated key=value pairs).
     let mut timestamp: Option<&str> = None;
@@ -729,6 +764,14 @@ fn verify_stripe_signature(
 
     let t = timestamp.ok_or(())?;
     if signatures.is_empty() {
+        return Err(());
+    }
+
+    // Reject events whose timestamp is too far from now in either direction.
+    // This blocks replay attacks where an attacker captures a valid (signed)
+    // payload and re-sends it later.
+    let t_secs: i64 = t.parse().map_err(|_| ())?;
+    if (now_unix - t_secs).abs() > STRIPE_TIMESTAMP_TOLERANCE_SECS {
         return Err(());
     }
 

@@ -577,7 +577,7 @@ async fn test_webhook_checkout_completed_provisions_org() {
     }))
     .unwrap();
 
-    let ts = 1_700_000_000_i64;
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
     let sig = stripe_sig("whsec_test", ts, &payload);
 
     let resp = client
@@ -655,7 +655,7 @@ async fn test_webhook_checkout_completed_idempotent() {
     }))
     .unwrap();
 
-    let ts = 1_700_000_001_i64;
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
     let sig = stripe_sig("whsec_test", ts, &payload);
 
     // First delivery.
@@ -715,6 +715,156 @@ async fn test_webhook_bad_signature_rejected() {
 }
 
 #[tokio::test]
+async fn test_webhook_old_timestamp_rejected() {
+    // Replay attack defense: an event signed with a timestamp older than
+    // STRIPE_TIMESTAMP_TOLERANCE_SECS (5 min) must be rejected even when the
+    // HMAC is valid.
+    let pool = common::test_pool().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (addr, client) = start_billing_api(pool, stripe_addr).await;
+    let base = format!("http://{addr}");
+
+    let payload = b"{\"type\":\"checkout.session.completed\"}";
+    // 10 minutes ago — well outside the 5-minute tolerance.
+    let stale_ts = OffsetDateTime::now_utc().unix_timestamp() - 600;
+    let sig = stripe_sig("whsec_test", stale_ts, payload);
+
+    let resp = client
+        .post(format!("{base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload.as_ref())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "stale-timestamp event must be rejected (replay attack defense)"
+    );
+}
+
+#[tokio::test]
+async fn test_webhook_idempotent_after_partial_provisioning() {
+    // Scenario: first delivery created the org + identity + membership but
+    // crashed before fulfill_pending_checkout ran. Stripe retries. The handler
+    // must detect that the org is already provisioned and skip the bootstrap
+    // (which would 23505 on identity + membership PK), then proceed to upsert
+    // the subscription and fulfill the checkout. End state: 200, single org,
+    // single membership, fulfilled_org_id set.
+    let pool = common::test_pool().await;
+    let sub_id = format!("sub_{}", Uuid::new_v4().simple());
+    let sub_fixture = json!({
+        "id": sub_id, "object": "subscription", "status": "active",
+        "items": { "data": [{ "quantity": 3 }] },
+        "current_period_start": 1700000000_i64, "current_period_end": 1702592000_i64,
+        "cancel_at_period_end": false, "customer": "cus_partial"
+    });
+    let (stripe_addr, _) = start_mock_stripe(vec![(sub_id.clone(), sub_fixture)]).await;
+    let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
+    let base = format!("http://{addr}");
+
+    // Pre-state simulating "crashed before fulfill": user, org, identity,
+    // membership all exist; pending_checkout exists with no fulfilled_org_id;
+    // no subscription row yet.
+    let user_id = create_test_user(&pool).await;
+    let org_id = create_test_org(&pool).await;
+    let session_id = format!("cs_partial_{}", Uuid::new_v4().simple());
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let identity = overslash_db::repos::identity::create_with_email(
+        &pool,
+        org_id,
+        "Pre-existing",
+        "user",
+        None,
+        Some("partial@example.com"),
+        json!({ "bootstrap": true }),
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::identity::set_user_id(&pool, org_id, identity.id, Some(user_id))
+        .await
+        .unwrap();
+    overslash_db::repos::membership::create(
+        &pool,
+        user_id,
+        org_id,
+        overslash_db::repos::membership::ROLE_ADMIN,
+    )
+    .await
+    .unwrap();
+    overslash_db::repos::billing::insert_pending_checkout(
+        &pool,
+        &session_id,
+        user_id,
+        "Partial Org",
+        &org_slug,
+        3,
+        "usd",
+    )
+    .await
+    .unwrap();
+
+    // Stripe retries the webhook.
+    let payload = serde_json::to_vec(&json!({
+        "type": "checkout.session.completed",
+        "data": { "object": {
+            "id": session_id, "object": "checkout.session", "status": "complete",
+            "subscription": sub_id, "customer": "cus_partial",
+            "metadata": { "pending_checkout_id": session_id }
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = client
+        .post(format!("{base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "retry after partial-provisioning must succeed (no PK violation panic)"
+    );
+
+    // Pending checkout fulfilled.
+    let pc = overslash_db::repos::billing::get_pending_checkout_any(&pool, &session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pc.fulfilled_org_id, Some(org_id));
+
+    // Subscription created.
+    let sub = overslash_db::repos::billing::get_org_subscription(&pool, org_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sub.seats, 3);
+
+    // No duplicate membership.
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM user_org_memberships WHERE user_id = $1 AND org_id = $2",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "no duplicate membership row was created");
+}
+
+#[tokio::test]
 async fn test_webhook_subscription_updated() {
     let pool = common::test_pool().await;
     let org_id = create_test_org(&pool).await;
@@ -757,7 +907,7 @@ async fn test_webhook_subscription_updated() {
     }))
     .unwrap();
 
-    let ts = 1_700_000_002_i64;
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
     let sig = stripe_sig("whsec_test", ts, &payload);
 
     let resp = billing_client
@@ -822,7 +972,7 @@ async fn test_webhook_subscription_deleted() {
     }))
     .unwrap();
 
-    let ts = 1_700_000_003_i64;
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
     let sig = stripe_sig("whsec_test", ts, &payload);
 
     let resp = billing_client
