@@ -7,3 +7,14 @@ pub fn record_pool(active: u32, idle: u32) {
     gauge!("overslash_db_pool_connections", "state" => "active").set(f64::from(active));
     gauge!("overslash_db_pool_connections", "state" => "idle").set(f64::from(idle));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_pool_does_not_panic() {
+        record_pool(0, 0);
+        record_pool(5, 3);
+    }
+}

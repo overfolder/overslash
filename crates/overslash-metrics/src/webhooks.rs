@@ -24,3 +24,17 @@ pub fn record_attempts(event_type: &str, outcome: &str, attempts: u32) {
     )
     .record(f64::from(attempts));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_helpers_do_not_panic() {
+        record_delivery("approval.created", "success", true);
+        record_delivery("approval.resolved", "retry", false);
+        record_delivery("approval.resolved", "failed", true);
+        record_attempts("approval.created", "success", 1);
+        record_attempts("approval.resolved", "exhausted", 5);
+    }
+}

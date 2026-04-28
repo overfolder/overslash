@@ -51,3 +51,28 @@ pub fn status_class(code: u16) -> &'static str {
         _ => "other",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_class_covers_each_band() {
+        assert_eq!(status_class(200), "2xx");
+        assert_eq!(status_class(204), "2xx");
+        assert_eq!(status_class(301), "3xx");
+        assert_eq!(status_class(404), "4xx");
+        assert_eq!(status_class(503), "5xx");
+        assert_eq!(status_class(99), "other");
+        assert_eq!(status_class(700), "other");
+    }
+
+    #[test]
+    fn record_helpers_do_not_panic_without_recorder() {
+        // Helpers must be safe to call before the recorder is installed —
+        // tests in other modules exercise the same callsites without
+        // necessarily having installed the global recorder first.
+        record_execution("svc", "a", "called", std::time::Duration::from_millis(1));
+        record_outbound("svc", "2xx", std::time::Duration::from_millis(1));
+    }
+}

@@ -37,3 +37,16 @@ pub fn set_last_success(task: &str) {
     )
     .set(now);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_helpers_do_not_panic() {
+        record_tick("test_task", "ok", Duration::from_millis(2));
+        record_tick("test_task", "noop", Duration::from_micros(50));
+        record_tick("test_task", "err", Duration::from_secs(1));
+        set_last_success("test_task");
+    }
+}

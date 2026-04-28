@@ -12,3 +12,14 @@ pub fn record_decision(scope: &str, decision: &str) {
     )
     .increment(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_decision_does_not_panic() {
+        record_decision("user", "allow");
+        record_decision("identity_cap", "deny");
+    }
+}

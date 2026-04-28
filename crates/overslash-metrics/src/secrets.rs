@@ -12,3 +12,15 @@ pub fn record_op(op: &str, status: &str) {
     )
     .increment(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_op_does_not_panic() {
+        record_op("write", "ok");
+        record_op("reveal", "ok");
+        record_op("delete", "not_found");
+    }
+}

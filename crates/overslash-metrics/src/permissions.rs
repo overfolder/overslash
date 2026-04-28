@@ -13,3 +13,15 @@ pub fn record_check(decision: &str, layer: &str) {
     )
     .increment(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_check_does_not_panic() {
+        record_check("allow", "group_ceiling");
+        record_check("deny", "identity_rule");
+        record_check("bubble", "inherited");
+    }
+}

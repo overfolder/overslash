@@ -24,3 +24,15 @@ pub fn record_token_refresh(provider: &str, status: &str, elapsed: Duration) {
     )
     .record(elapsed.as_secs_f64());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_helpers_do_not_panic() {
+        record_event("google", "authorize", "success");
+        record_event("github", "callback", "failure");
+        record_token_refresh("google", "success", Duration::from_millis(50));
+    }
+}
