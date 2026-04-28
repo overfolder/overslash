@@ -182,13 +182,32 @@ async fn create_checkout(
             // would be orphaned — and on retry we'd create a second one,
             // breaking the "one Stripe Customer per user" invariant. Delete
             // the just-created customer (best-effort) and surface the error.
-            if let Err(e) = billing::set_stripe_customer(&state.db, user_id, &cid).await {
-                tracing::error!(
-                    user_id = %user_id,
-                    customer_id = %cid,
-                    error = %e,
-                    "set_stripe_customer failed after Stripe customer create; deleting orphan"
-                );
+            //
+            // Two failure modes: (a) Err from sqlx (transient DB issue,
+            // constraint violation), and (b) Ok(false) — the UPDATE matched
+            // zero rows because the user was deleted between auth and now.
+            let persist_result = billing::set_stripe_customer(&state.db, user_id, &cid).await;
+            let persist_failed = match &persist_result {
+                Ok(true) => false,
+                Ok(false) => {
+                    tracing::error!(
+                        user_id = %user_id,
+                        customer_id = %cid,
+                        "set_stripe_customer matched 0 rows (user vanished); deleting orphan"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(
+                        user_id = %user_id,
+                        customer_id = %cid,
+                        error = %e,
+                        "set_stripe_customer failed after Stripe customer create; deleting orphan"
+                    );
+                    true
+                }
+            };
+            if persist_failed {
                 if let Err(del_err) = stripe_delete_customer(
                     &state.http_client,
                     stripe_key,
@@ -203,7 +222,10 @@ async fn create_checkout(
                         "stripe delete-customer compensation failed; orphan customer may exist"
                     );
                 }
-                return Err(e.into());
+                return Err(match persist_result {
+                    Err(e) => e.into(),
+                    Ok(_) => AppError::NotFound("user not found".into()),
+                });
             }
             cid
         }
