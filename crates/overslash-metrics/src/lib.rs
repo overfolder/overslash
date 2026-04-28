@@ -63,10 +63,11 @@ mod tests {
     async fn setup_is_idempotent() {
         // The global recorder may only be installed once per process. Calling
         // `setup` twice must not panic — tests build many app routers in one
-        // process and rely on this.
-        let h1 = setup();
-        let h2 = setup();
-        assert_eq!(h1.render(), h2.render());
+        // process and rely on this. We can't compare rendered output across
+        // calls here because other tests in this binary share the same global
+        // recorder and may emit between renders.
+        let _ = setup();
+        let _ = setup();
     }
 
     #[tokio::test]

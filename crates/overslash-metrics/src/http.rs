@@ -23,7 +23,10 @@ pub async fn middleware(
     let method = req.method().to_string();
     let path = matched_path.map_or_else(|| "_unmatched".to_string(), |mp| mp.as_str().to_string());
 
-    gauge!("overslash_http_requests_in_flight").increment(1);
+    // RAII guard: decrement the in-flight gauge on Drop. If the downstream
+    // handler panics, the gauge still gets decremented as the future unwinds —
+    // otherwise a single panic would permanently inflate the gauge.
+    let _in_flight = InFlightGuard::new();
     let start = Instant::now();
 
     let response = next.run(req).await;
@@ -44,7 +47,21 @@ pub async fn middleware(
         "path" => path,
     )
     .record(duration);
-    gauge!("overslash_http_requests_in_flight").decrement(1);
 
     response
+}
+
+struct InFlightGuard;
+
+impl InFlightGuard {
+    fn new() -> Self {
+        gauge!("overslash_http_requests_in_flight").increment(1);
+        Self
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        gauge!("overslash_http_requests_in_flight").decrement(1);
+    }
 }
