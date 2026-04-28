@@ -6,11 +6,19 @@ use tracing_subscriber::EnvFilter;
 
 fn init_tracing(to_stderr: bool) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Prod (Cloud Run) sets `LOG_FORMAT=json` so logs land in Cloud Logging
+    // as structured JSON; locally we default to the human-readable text
+    // formatter so `make local` stays grep-friendly.
+    let json_logs = std::env::var("LOG_FORMAT")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    if to_stderr {
-        builder.with_writer(std::io::stderr).init();
-    } else {
-        builder.init();
+    match (to_stderr, json_logs) {
+        (true, true) => builder.with_writer(std::io::stderr).json().init(),
+        (true, false) => builder.with_writer(std::io::stderr).init(),
+        (false, true) => builder.json().init(),
+        (false, false) => builder.init(),
     }
 }
 

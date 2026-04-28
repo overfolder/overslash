@@ -133,6 +133,7 @@ async fn search(
         collect_visible_templates(&state, &auth, &scope).await?;
 
     if q.is_empty() {
+        overslash_metrics::search::record_query("browse", "ok");
         // Browse mode: list every visible service template with no actions.
         // The catalog is bounded (~dozens), so we deliberately skip the
         // limit clamp — truncating "show me everything available" defeats
@@ -268,6 +269,12 @@ async fn search(
     });
     scored.truncate(limit);
 
+    let mode = if !emb_scores.is_empty() {
+        "hybrid"
+    } else {
+        "keyword"
+    };
+    overslash_metrics::search::record_query(mode, "ok");
     Ok(Json(SearchResponse {
         query: q.to_string(),
         results: scored,

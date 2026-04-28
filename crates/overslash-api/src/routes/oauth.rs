@@ -913,7 +913,12 @@ struct TokenRequest {
 }
 
 async fn token(State(state): State<AppState>, Form(req): Form<TokenRequest>) -> Response {
-    match req.grant_type.as_str() {
+    let flow = match req.grant_type.as_str() {
+        "authorization_code" => "token",
+        "refresh_token" => "refresh",
+        _ => "unknown_grant",
+    };
+    let response = match req.grant_type.as_str() {
         "authorization_code" => exchange_authorization_code(&state, req).await,
         "refresh_token" => exchange_refresh_token(&state, req).await,
         other => oauth_error(
@@ -921,7 +926,14 @@ async fn token(State(state): State<AppState>, Form(req): Form<TokenRequest>) -> 
             "unsupported_grant_type",
             format!("unsupported grant_type: {other}"),
         ),
-    }
+    };
+    let status = if response.status().is_success() {
+        "success"
+    } else {
+        "failure"
+    };
+    overslash_metrics::oauth::record_event("overslash", flow, status);
+    response
 }
 
 async fn exchange_authorization_code(state: &AppState, req: TokenRequest) -> Response {

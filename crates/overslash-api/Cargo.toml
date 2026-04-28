@@ -14,6 +14,8 @@ embeddings = ["overslash-core/embeddings"]
 [dependencies]
 overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }
 overslash-db = { path = "../overslash-db" }
+overslash-metrics = { path = "../overslash-metrics" }
+metrics = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true }

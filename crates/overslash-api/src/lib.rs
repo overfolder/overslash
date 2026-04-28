@@ -53,6 +53,8 @@ pub struct AppState {
 
 /// Create the application router with all routes and middleware.
 pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
+    let metrics_handle = overslash_metrics::setup();
+
     let db = PgPool::connect(&config.database_url).await?;
 
     // Run migrations
@@ -141,46 +143,41 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                match system.expire_stale_approvals().await {
-                    Ok(n) if n > 0 => tracing::info!("Expired {n} stale approvals"),
-                    Err(e) => tracing::error!("Approval expiry error: {e}"),
-                    _ => {}
-                }
-                match system.expire_stale_executions().await {
-                    Ok(n) if n > 0 => tracing::info!("Expired {n} pending executions"),
-                    Err(e) => tracing::error!("Execution expiry error: {e}"),
-                    _ => {}
-                }
+                instrumented_step("approval_expiry", system.expire_stale_approvals(), |n| {
+                    tracing::info!("Expired {n} stale approvals");
+                    for _ in 0..n {
+                        overslash_metrics::approvals::record_event("expired", "system");
+                    }
+                })
+                .await;
+                instrumented_step("execution_expiry", system.expire_stale_executions(), |n| {
+                    tracing::info!("Expired {n} pending executions")
+                })
+                .await;
                 // Orphaned `executing` rows — API crashed mid-replay. Grace
                 // window is the replay timeout plus a minute of slack.
                 let orphan_grace =
                     (state.config.execution_replay_timeout_secs as i64).saturating_add(60);
-                match system.expire_orphaned_executions(orphan_grace).await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("Reaped {n} orphaned executing executions")
-                    }
-                    Err(e) => tracing::error!("Orphan executing reap error: {e}"),
-                    _ => {}
-                }
-                match system.archive_idle_subagents().await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("Archived {n} idle sub-agent identities")
-                    }
-                    Err(e) => tracing::error!("Sub-agent archive error: {e}"),
-                    _ => {}
-                }
-                match system.purge_archived_subagents().await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("Purged {n} archived sub-agent identities")
-                    }
-                    Err(e) => tracing::error!("Sub-agent purge error: {e}"),
-                    _ => {}
-                }
-                match services::permission_chain::process_auto_bubble(&system).await {
-                    Ok(n) if n > 0 => tracing::info!("Auto-bubbled {n} approvals"),
-                    Err(e) => tracing::error!("Auto-bubble error: {e}"),
-                    _ => {}
-                }
+                instrumented_step(
+                    "orphan_execution_reap",
+                    system.expire_orphaned_executions(orphan_grace),
+                    |n| tracing::info!("Reaped {n} orphaned executing executions"),
+                )
+                .await;
+                instrumented_step("subagent_archive", system.archive_idle_subagents(), |n| {
+                    tracing::info!("Archived {n} idle sub-agent identities")
+                })
+                .await;
+                instrumented_step("subagent_purge", system.purge_archived_subagents(), |n| {
+                    tracing::info!("Purged {n} archived sub-agent identities")
+                })
+                .await;
+                instrumented_step(
+                    "auto_bubble",
+                    services::permission_chain::process_auto_bubble(&system),
+                    |n| tracing::info!("Auto-bubbled {n} approvals"),
+                )
+                .await;
             }
         });
 
@@ -195,7 +192,36 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let start = std::time::Instant::now();
                     store.evict_expired();
+                    overslash_metrics::background::record_tick(
+                        "rate_limit_evict",
+                        "ok",
+                        start.elapsed(),
+                    );
+                    overslash_metrics::background::set_last_success("rate_limit_evict");
+                }
+            });
+        }
+
+        // DB pool stats poller — emits gauge every 30s.
+        {
+            let db = state.db.clone();
+            tokio::spawn(async move {
+                let interval = std::time::Duration::from_secs(30);
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let start = std::time::Instant::now();
+                    let active = db.size();
+                    let idle = db.num_idle() as u32;
+                    let active_only = active.saturating_sub(idle);
+                    overslash_metrics::db::record_pool(active_only, idle);
+                    overslash_metrics::background::record_tick(
+                        "db_pool_poller",
+                        "ok",
+                        start.elapsed(),
+                    );
+                    overslash_metrics::background::set_last_success("db_pool_poller");
                 }
             });
         }
@@ -315,11 +341,44 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             middleware::subdomain::subdomain_middleware,
         ))
         .with_state(state)
+        // /internal/metrics is mounted outside subdomain + rate-limit middleware
+        // so the GMP / OTel sidecar can scrape it over loopback unconditionally.
+        .merge(overslash_metrics::metrics_router(metrics_handle))
         .layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn(
+            overslash_metrics::http::middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
     Ok(app)
+}
+
+/// Run one background-loop step and emit the matching metrics. `task` becomes
+/// the metric label and the silent-hang alert key, so it must stay stable.
+/// `on_change` only runs when the step did real work (`Ok(n)` with `n > 0`)
+/// — keeping the existing log behavior identical to the pre-instrumented loop.
+async fn instrumented_step<E: std::fmt::Display>(
+    task: &'static str,
+    fut: impl std::future::Future<Output = Result<u64, E>>,
+    on_change: impl FnOnce(u64),
+) {
+    let start = std::time::Instant::now();
+    let result = fut.await;
+    let status = match &result {
+        Ok(0) => "noop",
+        Ok(_) => "ok",
+        Err(_) => "err",
+    };
+    overslash_metrics::background::record_tick(task, status, start.elapsed());
+    if result.is_ok() {
+        overslash_metrics::background::set_last_success(task);
+    }
+    match result {
+        Ok(n) if n > 0 => on_change(n),
+        Ok(_) => {}
+        Err(e) => tracing::error!("{task} error: {e}"),
+    }
 }
 
 /// Construct the embedding backend for this process lifetime.

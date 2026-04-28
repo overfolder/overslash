@@ -52,12 +52,14 @@ pub async fn rate_limit_middleware(
             .await;
         (format!("rl:{org_id}:org"), budget)
     };
+    let user_scope_label = if user_id.is_some() { "user" } else { "org" };
     let user_budget = {
         let result = state
             .rate_limiter
             .check_and_increment(&bucket_key, budget.max_requests, budget.window_seconds)
             .await;
         if !result.allowed {
+            overslash_metrics::rate_limit::record_decision(user_scope_label, "deny");
             let now = now_unix();
             let retry_after = result.reset_at.saturating_sub(now);
             return AppError::RateLimited {
@@ -67,6 +69,7 @@ pub async fn rate_limit_middleware(
             }
             .into_response();
         }
+        overslash_metrics::rate_limit::record_decision(user_scope_label, "allow");
         Some(result)
     };
 
@@ -83,6 +86,7 @@ pub async fn rate_limit_middleware(
                 .check_and_increment(&key, cap.max_requests, cap.window_seconds)
                 .await;
             if !result.allowed {
+                overslash_metrics::rate_limit::record_decision("identity_cap", "deny");
                 let now = now_unix();
                 let retry_after = result.reset_at.saturating_sub(now);
                 return AppError::RateLimited {
@@ -92,6 +96,7 @@ pub async fn rate_limit_middleware(
                 }
                 .into_response();
             }
+            overslash_metrics::rate_limit::record_decision("identity_cap", "allow");
         }
     }
 

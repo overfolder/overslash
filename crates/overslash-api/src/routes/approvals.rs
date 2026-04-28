@@ -575,6 +575,17 @@ async fn resolve_approval(
         })
         .await;
 
+    let event_label = match row.status.as_str() {
+        "allowed" => "approved",
+        "denied" => "denied",
+        other => other,
+    };
+    overslash_metrics::approvals::record_event(event_label, "user");
+    let age = overslash_metrics::approvals::duration_since(
+        time::OffsetDateTime::now_utc() - row.created_at,
+    );
+    overslash_metrics::approvals::record_resolution(event_label, age);
+
     // Dispatch webhook (fire-and-forget)
     {
         let db = state.db.clone();
@@ -687,6 +698,7 @@ async fn call_approval(
         return Err(execution_conflict_error(current));
     };
     let execution_id = claimed.id;
+    overslash_metrics::approvals::record_event("called", triggered_by);
 
     // Validator: if any step fails, finalize the row and surface the error.
     // We own the row (unique claim) so this is race-free.
