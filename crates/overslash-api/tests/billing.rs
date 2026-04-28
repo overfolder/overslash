@@ -8,13 +8,32 @@ mod common;
 
 use axum::{Json, Router, extract::Form, routing::post};
 use hmac::{Hmac, KeyInit, Mac};
+use overslash_api::services::jwt;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use sqlx::PgPool;
 use std::sync::Arc;
+use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+/// Mint a session JWT carrying user_id (required by /v1/billing/checkout).
+fn mint_session(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> String {
+    let signing_key_hex = "cd".repeat(32);
+    let secret = hex::decode(&signing_key_hex).expect("valid hex");
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let claims = jwt::Claims {
+        sub: identity_id,
+        org: org_id,
+        email: "billing-test@example.com".into(),
+        aud: jwt::AUD_SESSION.into(),
+        iat: now,
+        exp: now + 3600,
+        user_id: Some(user_id),
+    };
+    jwt::mint(&secret, &claims).expect("mint jwt")
+}
 
 // ---------------------------------------------------------------------------
 // Mock Stripe server
@@ -113,7 +132,7 @@ async fn start_mock_stripe(
         .route("/customers", post(create_customer))
         .route("/checkout/sessions", post(create_checkout_session))
         .route("/billing_portal/sessions", post(create_portal_session))
-        .route("/subscriptions/:id", axum::routing::get(get_subscription))
+        .route("/subscriptions/{id}", axum::routing::get(get_subscription))
         .with_state(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -228,15 +247,14 @@ async fn test_geo_no_header_returns_usd() {
 async fn test_org_gate_blocks_team_org_when_billing_enabled() {
     let pool = common::test_pool().await;
     let (stripe_addr, _) = start_mock_stripe(vec![]).await;
-    let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
+    let (addr, client) = start_billing_api(pool, stripe_addr).await;
     let base = format!("http://{addr}");
 
-    let (org_id, _, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
-
+    // POST /v1/orgs is unauthenticated (legacy bootstrap path).
+    let slug = format!("team-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "name": "Team Org", "slug": "team-org-slug" }))
+        .json(&json!({ "name": "Team Org", "slug": slug }))
         .send()
         .await
         .unwrap();
@@ -244,45 +262,43 @@ async fn test_org_gate_blocks_team_org_when_billing_enabled() {
     assert_eq!(resp.status(), 403);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "team_org_requires_subscription");
-
-    let _ = org_id;
 }
 
 #[tokio::test]
-async fn test_org_gate_allows_personal_org_when_billing_enabled() {
+async fn test_org_gate_blocks_with_is_personal_too() {
+    // Even with is_personal: true in the request, the gate fires. Personal
+    // orgs are only created by the auth signup flow (DB layer, not HTTP),
+    // so allowing a request flag would let attackers bypass billing.
     let pool = common::test_pool().await;
     let (stripe_addr, _) = start_mock_stripe(vec![]).await;
-    let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
+    let (addr, client) = start_billing_api(pool, stripe_addr).await;
     let base = format!("http://{addr}");
 
-    let (_, _, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
-
-    let slug = format!("personal-{}", Uuid::new_v4().simple());
+    let slug = format!("attacker-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&json!({ "name": "My Personal Org", "slug": slug, "is_personal": true }))
+        .json(&json!({ "name": "Free Org", "slug": slug, "is_personal": true }))
         .send()
         .await
         .unwrap();
 
-    // Personal orgs bypass the billing gate.
-    assert_eq!(resp.status(), 200, "personal org should be allowed");
+    assert_eq!(
+        resp.status(),
+        403,
+        "is_personal flag in HTTP body must NOT bypass billing — gate fires unconditionally"
+    );
 }
 
 #[tokio::test]
 async fn test_org_gate_absent_when_billing_disabled() {
     // Default config: cloud_billing=false — team orgs allowed freely.
     let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool.clone()).await;
+    let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-
-    let (_, _, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
     let slug = format!("team-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({ "name": "Team Org", "slug": slug }))
         .send()
         .await
@@ -299,14 +315,35 @@ async fn test_org_gate_absent_when_billing_disabled() {
 // Tests: billing DB repos
 // ---------------------------------------------------------------------------
 
+/// Create a real user row in the `users` table for DB-level tests.
+async fn create_test_user(pool: &PgPool) -> Uuid {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let user = overslash_db::repos::user::create_overslash_backed(
+        pool,
+        Some(&format!("billing-test-{suffix}@example.com")),
+        Some("Billing Test"),
+        "test",
+        &format!("subject-{suffix}"),
+    )
+    .await
+    .unwrap();
+    user.id
+}
+
+/// Create a real org row for DB-level tests.
+async fn create_test_org(pool: &PgPool) -> Uuid {
+    let slug = format!("test-org-{}", Uuid::new_v4().simple());
+    let org = overslash_db::repos::org::create(pool, "Test Org", &slug)
+        .await
+        .unwrap();
+    org.id
+}
+
 #[tokio::test]
 async fn test_billing_db_pending_checkout_lifecycle() {
     let pool = common::test_pool().await;
-
-    // We need a real user_id — bootstrap one.
-    let (addr, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{addr}");
-    let (org_id, user_id, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let user_id = create_test_user(&pool).await;
+    let org_id = create_test_org(&pool).await;
 
     let session_id = format!("cs_{}", Uuid::new_v4().simple());
 
@@ -357,9 +394,7 @@ async fn test_billing_db_pending_checkout_lifecycle() {
 #[tokio::test]
 async fn test_billing_db_stripe_customer_roundtrip() {
     let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{addr}");
-    let (_, user_id, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let user_id = create_test_user(&pool).await;
 
     // Initially none.
     let cid = overslash_db::repos::billing::get_stripe_customer(&pool, user_id)
@@ -382,9 +417,7 @@ async fn test_billing_db_stripe_customer_roundtrip() {
 #[tokio::test]
 async fn test_billing_db_org_subscription_upsert_and_update() {
     let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{addr}");
-    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_id = create_test_org(&pool).await;
 
     // Initially none.
     let sub = overslash_db::repos::billing::get_org_subscription(&pool, org_id)
@@ -446,15 +479,21 @@ async fn test_create_checkout_returns_stripe_url() {
     let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
     let base = format!("http://{addr}");
 
-    // Bootstrap org + admin session.
-    let (_, _, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    // Set up: real user + org + identity in DB, then mint a session JWT.
+    let user_id = create_test_user(&pool).await;
+    let org_id = create_test_org(&pool).await;
+    let identity = overslash_db::repos::identity::create(&pool, org_id, "test-admin", "user", None)
+        .await
+        .unwrap();
+    let cookie = mint_session(org_id, identity.id, user_id);
 
     let resp = client
         .post(format!("{base}/v1/billing/checkout"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .header("host", format!("{addr}")) // ensure no subdomain mismatch
         .json(&json!({
             "org_name": "My Team",
-            "org_slug": "my-team-slug",
+            "org_slug": format!("my-team-{}", Uuid::new_v4().simple()),
             "seats": 3,
             "currency": "usd"
         }))
@@ -504,8 +543,8 @@ async fn test_webhook_checkout_completed_provisions_org() {
     let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
     let base = format!("http://{addr}");
 
-    // Bootstrap a user to own the pending checkout.
-    let (_, user_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    // Create a user for the pending checkout.
+    let user_id = create_test_user(&pool).await;
 
     // Insert a pending checkout directly in the DB.
     let session_id = format!("cs_wh_{}", Uuid::new_v4().simple());
@@ -573,8 +612,6 @@ async fn test_webhook_checkout_completed_provisions_org() {
         .expect("subscription should be created");
     assert_eq!(sub.status, "active");
     assert_eq!(sub.seats, 4);
-
-    drop(api_key);
 }
 
 #[tokio::test]
@@ -592,7 +629,7 @@ async fn test_webhook_checkout_completed_idempotent() {
     let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
     let base = format!("http://{addr}");
 
-    let (_, user_id, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let user_id = create_test_user(&pool).await;
 
     let session_id = format!("cs_idem_{}", Uuid::new_v4().simple());
     let org_slug = format!("idem-org-{}", Uuid::new_v4().simple());
@@ -680,11 +717,7 @@ async fn test_webhook_bad_signature_rejected() {
 #[tokio::test]
 async fn test_webhook_subscription_updated() {
     let pool = common::test_pool().await;
-
-    // First create an org and a subscription record.
-    let (addr, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{addr}");
-    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_id = create_test_org(&pool).await;
 
     let sub_id = format!("sub_{}", Uuid::new_v4().simple());
     overslash_db::repos::billing::upsert_org_subscription(
@@ -750,10 +783,7 @@ async fn test_webhook_subscription_updated() {
 #[tokio::test]
 async fn test_webhook_subscription_deleted() {
     let pool = common::test_pool().await;
-
-    let (addr, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{addr}");
-    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_id = create_test_org(&pool).await;
 
     let sub_id = format!("sub_{}", Uuid::new_v4().simple());
     overslash_db::repos::billing::upsert_org_subscription(
@@ -823,15 +853,22 @@ async fn test_checkout_status_pending_then_fulfilled() {
     let (addr, client) = start_billing_api(pool.clone(), stripe_addr).await;
     let base = format!("http://{addr}");
 
-    let (org_id, user_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let user_id = create_test_user(&pool).await;
+    let org_id = create_test_org(&pool).await;
+    let identity =
+        overslash_db::repos::identity::create(&pool, org_id, "test-status", "user", None)
+            .await
+            .unwrap();
+    let cookie = mint_session(org_id, identity.id, user_id);
 
     let session_id = format!("cs_status_{}", Uuid::new_v4().simple());
+    let org_slug = format!("status-org-{}", Uuid::new_v4().simple());
     overslash_db::repos::billing::insert_pending_checkout(
         &pool,
         &session_id,
         user_id,
         "Status Org",
-        "status-org-slug",
+        &org_slug,
         2,
         "usd",
     )
@@ -841,7 +878,7 @@ async fn test_checkout_status_pending_then_fulfilled() {
     // Before fulfillment: status = "pending".
     let resp: Value = client
         .get(format!("{base}/v1/billing/checkout/{session_id}/status"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("cookie", format!("oss_session={cookie}"))
         .send()
         .await
         .unwrap()
@@ -859,7 +896,7 @@ async fn test_checkout_status_pending_then_fulfilled() {
     // After fulfillment: status = "fulfilled" with redirect_to.
     let resp: Value = client
         .get(format!("{base}/v1/billing/checkout/{session_id}/status"))
-        .header("Authorization", format!("Bearer {api_key}"))
+        .header("cookie", format!("oss_session={cookie}"))
         .send()
         .await
         .unwrap()
@@ -878,15 +915,15 @@ async fn test_checkout_status_pending_then_fulfilled() {
 fn test_config_validate_env_catches_empty_string() {
     // Simulate CLOUD_BILLING=true with STRIPE_SECRET_KEY="" (empty string).
     // The validator must treat this the same as missing.
+    //
+    // We only touch CLOUD_BILLING and STRIPE_* vars — never DATABASE_URL or
+    // other always-required vars, which other tests in the same process rely on.
     unsafe {
         std::env::set_var("CLOUD_BILLING", "true");
         std::env::set_var("STRIPE_SECRET_KEY", "");
         std::env::set_var("STRIPE_WEBHOOK_SECRET", "");
         std::env::set_var("STRIPE_EUR_PRICE_ID", "price_eur");
         std::env::set_var("STRIPE_USD_PRICE_ID", "price_usd");
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("SECRETS_ENCRYPTION_KEY", "a".repeat(64));
-        std::env::set_var("SIGNING_KEY", "b".repeat(64));
     }
 
     let missing = overslash_api::config::Config::validate_env();
@@ -923,9 +960,6 @@ fn test_config_validate_env_passes_when_all_set() {
         std::env::set_var("STRIPE_WEBHOOK_SECRET", "whsec_test");
         std::env::set_var("STRIPE_EUR_PRICE_ID", "price_eur");
         std::env::set_var("STRIPE_USD_PRICE_ID", "price_usd");
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("SECRETS_ENCRYPTION_KEY", "a".repeat(64));
-        std::env::set_var("SIGNING_KEY", "b".repeat(64));
     }
 
     let missing = overslash_api::config::Config::validate_env();

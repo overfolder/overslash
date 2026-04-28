@@ -21,6 +21,20 @@
 	let switching = $state(false);
 	let error: string | null = $state(null);
 
+	// Whether this deployment requires payment for Team org creation.
+	// Probed once on mount via `/v1/billing/config` (returns 404 when off).
+	let cloudBilling = $state(false);
+	$effect(() => {
+		session
+			.get<{ cloud_billing?: boolean }>('/v1/billing/config')
+			.then((r) => {
+				cloudBilling = !!r?.cloud_billing;
+			})
+			.catch(() => {
+				cloudBilling = false;
+			});
+	});
+
 	let createOpen = $state(false);
 	let createName = $state('');
 	let createSlug = $state('');
@@ -141,6 +155,14 @@
 
 	function openCreate() {
 		open = false;
+		// On billing-enabled deploys, skip the "create org" form entirely and
+		// drop the user into the Stripe-gated checkout flow. The HTTP gate
+		// would 403 a normal POST anyway, so the modal would only collect
+		// data we'd throw away.
+		if (cloudBilling) {
+			window.location.href = '/billing/new-team';
+			return;
+		}
 		createName = '';
 		createSlug = '';
 		createSlugTouched = false;

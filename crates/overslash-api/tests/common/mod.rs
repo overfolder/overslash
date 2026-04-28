@@ -641,7 +641,18 @@ where
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
         .merge(overslash_api::routes::mcp::router())
-        .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router());
+
+    // Billing routes are gated on cloud_billing — test fixtures that flip the
+    // flag get the routes; default-config tests don't see them.
+    let app = if state.config.cloud_billing {
+        app.merge(overslash_api::routes::billing::router())
+            .merge(overslash_api::routes::billing::webhook_router())
+    } else {
+        app
+    };
+
+    let app = app
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             overslash_api::middleware::subdomain::subdomain_middleware,

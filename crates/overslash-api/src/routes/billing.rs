@@ -28,6 +28,7 @@ const EU_COUNTRIES: &[&str] = &[
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v1/billing/config", get(get_billing_config))
         .route("/v1/billing/geo", get(get_geo))
         .route("/v1/billing/checkout", post(create_checkout))
         .route(
@@ -40,6 +41,24 @@ pub fn router() -> Router<AppState> {
 
 pub fn webhook_router() -> Router<AppState> {
     Router::new().route("/v1/webhooks/stripe", post(stripe_webhook))
+}
+
+// ---------------------------------------------------------------------------
+// Public config — exposed to the dashboard so it can render the right CTA
+// ("Add org" goes to `/billing/new-team` when billing is on).
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct BillingConfigResponse {
+    cloud_billing: bool,
+}
+
+/// GET /v1/billing/config — unauthenticated; the only field is the public
+/// flag. Always returns true here (route is only mounted when billing is on).
+async fn get_billing_config() -> Json<BillingConfigResponse> {
+    Json(BillingConfigResponse {
+        cloud_billing: true,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +392,7 @@ pub async fn stripe_webhook(
         .ok_or_else(|| AppError::BadRequest("missing Stripe-Signature".into()))?;
 
     verify_stripe_signature(webhook_secret, &body, sig_header)
-        .map_err(|_| AppError::Forbidden("invalid webhook signature".into()))?;
+        .map_err(|_| AppError::BadRequest("invalid webhook signature".into()))?;
 
     let event: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| AppError::BadRequest("invalid JSON".into()))?;

@@ -50,11 +50,6 @@ const MAX_RETENTION_DAYS: i32 = 60;
 struct CreateOrgRequest {
     name: String,
     slug: String,
-    /// When true, this is a personal org (e.g. created at signup via a
-    /// bootstrap script or test harness). Personal orgs are not gated by
-    /// the billing requirement even when CLOUD_BILLING=true.
-    #[serde(default)]
-    is_personal: bool,
 }
 
 /// Slug rejection reason, kept as a stable string so the dashboard can render
@@ -186,10 +181,13 @@ async fn create_org(
         return Err(AppError::Forbidden("org_creation_disabled".into()));
     }
 
-    // In cloud billing mode, Team org creation goes through Stripe Checkout.
-    // Personal orgs (is_personal=true) bypass this gate so that signup flows
-    // and test harnesses can still create them when CLOUD_BILLING=true.
-    if state.config.cloud_billing && !req.is_personal {
+    // In cloud billing mode, all org creation through this HTTP route is
+    // blocked: Team orgs go through Stripe Checkout, personal orgs are
+    // auto-provisioned during the auth signup flow (which calls the DB
+    // layer directly, not this route). There is intentionally no escape
+    // hatch here — letting the request flag personal would let attackers
+    // bypass billing.
+    if state.config.cloud_billing {
         return Err(AppError::Forbidden("team_org_requires_subscription".into()));
     }
 
