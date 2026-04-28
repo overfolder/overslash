@@ -52,21 +52,30 @@ async fn call_action(
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     let start = std::time::Instant::now();
-    let mode = if req.service.is_some() {
-        "c"
-    } else if req.connection.is_some() {
+    // Mode resolution mirrors `resolve_request` exactly: `connection` wins
+    // over `service+action` when both are present, so the metric label
+    // matches the execution path that actually runs downstream.
+    let mode = if req.connection.is_some() {
         "b"
+    } else if req.service.is_some() {
+        "c"
     } else {
         "a"
     };
     // Bound the `template_key` label to keys that actually exist in the
     // registry. A client could otherwise submit `service: "<arbitrary>"`
     // and explode Prometheus cardinality even on requests that fail
-    // validation inside the inner handler.
-    let template_key = match req.service.as_deref() {
-        Some(key) if state.registry.get(key).is_some() => key.to_string(),
-        Some(_) => "_unknown".to_string(),
-        None => "_raw".to_string(),
+    // validation inside the inner handler. When `connection` wins (mode b),
+    // any `service` field is ignored downstream — emit `_raw` so labels
+    // don't lie about which template was used.
+    let template_key = if req.connection.is_some() {
+        "_raw".to_string()
+    } else {
+        match req.service.as_deref() {
+            Some(key) if state.registry.get(key).is_some() => key.to_string(),
+            Some(_) => "_unknown".to_string(),
+            None => "_raw".to_string(),
+        }
     };
 
     let result = call_action_impl(State(state), auth, scope, ip, Json(req)).await;
