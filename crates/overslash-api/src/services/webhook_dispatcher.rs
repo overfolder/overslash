@@ -99,7 +99,8 @@ async fn deliver(
                     .mark_webhook_failed(delivery_id, Some(status), &body)
                     .await;
                 let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
-                overslash_metrics::webhooks::record_delivery(event_type, "failed", exhausted);
+                let status_label = if exhausted { "failed" } else { "retry" };
+                overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
                 if exhausted {
                     overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
                 }
@@ -110,7 +111,8 @@ async fn deliver(
                 .mark_webhook_failed(delivery_id, None, &e.to_string())
                 .await;
             let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
-            overslash_metrics::webhooks::record_delivery(event_type, "failed", exhausted);
+            let status_label = if exhausted { "failed" } else { "retry" };
+            overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
             if exhausted {
                 overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
             }
