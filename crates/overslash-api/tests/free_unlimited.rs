@@ -47,6 +47,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         allow_org_creation: true,
         single_org_mode: None,
         app_host_suffix: None,
+        api_host_suffix: None,
         session_cookie_domain: None,
         cloud_billing: false,
         stripe_secret_key: None,

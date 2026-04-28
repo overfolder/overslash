@@ -30,6 +30,10 @@ export interface IdpConfig {
   enabled?: boolean;
   allowed_email_domains?: string[];
   uses_org_credentials?: boolean;
+  /** Designated default IdP for the org's OAuth authorize flow. The login
+   * page on a corp subdomain auto-redirects to the default; only one row
+   * per org may be true. */
+  is_default?: boolean;
   created_at?: string;
   updated_at?: string;
 }

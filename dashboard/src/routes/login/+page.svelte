@@ -1,17 +1,24 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 
 	let { data } = $props();
 
 	const providers = $derived(
-		data.providers as Array<{ key: string; display_name: string; source: string }>
+		data.providers as Array<{ key: string; display_name: string; source: string; is_default?: boolean }>
 	);
 	const scope = $derived((data.scope as 'root' | 'org') ?? 'root');
+	const next = $derived(data.next as string | null);
 	const returnTo = $derived(data.returnTo as string);
 	const reason = $derived(data.reason as string | null);
 
 	function loginUrl(key: string): string {
-		return `/auth/login/${encodeURIComponent(key)}`;
+		const target = `/auth/login/${encodeURIComponent(key)}`;
+		// Forward `next` so the OAuth-AS resumption path survives the IdP
+		// bounce. Without this, `/oauth/authorize` redirects here, the user
+		// signs in, and the callback dumps them at the dashboard root —
+		// breaking MCP onboarding.
+		return next ? `${target}?next=${encodeURIComponent(next)}` : target;
 	}
 
 	let devProfile = $state<'admin' | 'member' | 'readonly'>('admin');
@@ -21,7 +28,7 @@
 			credentials: 'include'
 		});
 		if (res.ok) {
-			await goto(returnTo);
+			await goto(next ?? returnTo);
 		}
 	}
 
@@ -31,6 +38,17 @@
 		if (key === 'dev') return 'btn-dev';
 		return 'btn-oidc';
 	}
+
+	// Auto-redirect when the org has designated a single default IdP.
+	// Skip the picker entirely so MCP-driven OAuth bounces don't show an
+	// extra click. Users can always go back from the IdP to pick another.
+	onMount(() => {
+		if (scope !== 'org') return;
+		const def = providers.find((p) => p.is_default);
+		if (def && def.key !== 'dev') {
+			window.location.replace(loginUrl(def.key));
+		}
+	});
 </script>
 
 <svelte:head>

@@ -93,8 +93,33 @@ variable "db_name" {
 }
 
 variable "domain" {
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
+  description = "Apex API hostname to expose via a Cloud Run domain mapping (e.g. `api.dev.overslash.com`). Empty disables the apex mapping. Used in the no-LB path; when fronted by `module.api_lb`, leave this empty so the LB owns the cert/route."
+}
+
+variable "extra_api_domain_mappings" {
+  type        = list(string)
+  default     = []
+  description = "Additional fully-qualified hostnames to expose via 1-1 `google_cloud_run_domain_mapping` resources. Used in the no-LB dev path to map a small set of per-org subdomains (e.g. `[\"acme.api.dev.overslash.com\"]`) without provisioning a global LB + wildcard cert. Each entry must already have a CNAME -> ghs.googlehosted.com (or A record to Cloud Run's regional IPs) and the dashboard operator must have verified the apex via Search Console."
+}
+
+variable "app_host_suffix" {
+  type        = string
+  default     = ""
+  description = "Apex for the dashboard subdomain surface, e.g. `app.overslash.com`. Empty disables wildcard routing on this surface."
+}
+
+variable "api_host_suffix" {
+  type        = string
+  default     = ""
+  description = "Apex for the programmatic (MCP / OAuth-AS / REST) subdomain surface, e.g. `api.overslash.com`. Empty disables wildcard routing on this surface."
+}
+
+variable "session_cookie_domain" {
+  type        = string
+  default     = ""
+  description = "Domain attribute for the session cookie (typically `.app.overslash.com` so subdomains share the cookie). Empty leaves cookies origin-scoped."
 }
 
 variable "dashboard_origin" {
@@ -203,6 +228,9 @@ locals {
       STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
       STRIPE_USD_LOOKUP_KEY = var.stripe_usd_lookup_key
     } : {},
+    var.app_host_suffix != "" ? { APP_HOST_SUFFIX = var.app_host_suffix } : {},
+    var.api_host_suffix != "" ? { API_HOST_SUFFIX = var.api_host_suffix } : {},
+    var.session_cookie_domain != "" ? { SESSION_COOKIE_DOMAIN = var.session_cookie_domain } : {},
   )
 
   env_secrets = merge(
@@ -427,6 +455,27 @@ resource "google_cloud_run_domain_mapping" "domain" {
   count    = var.domain != "" ? 1 : 0
   location = var.region
   name     = var.domain
+  project  = var.project_id
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.api.name
+  }
+}
+
+# 1-1 domain mappings for per-org API subdomains in the no-LB dev path.
+# When the global API LB is enabled (`module.api_lb`), leave
+# `extra_api_domain_mappings = []` so requests flow through the LB +
+# wildcard cert. When disabled, each entry here gets its own DNS-validated
+# Cloud Run domain mapping. Cloud Run's per-project mapping cap is the
+# practical ceiling here — keep the list short.
+resource "google_cloud_run_domain_mapping" "extra" {
+  for_each = toset(var.extra_api_domain_mappings)
+  location = var.region
+  name     = each.value
   project  = var.project_id
 
   metadata {

@@ -42,6 +42,12 @@ for (const k of [
 ]) {
 	if (!process.env[k] && envFromFile[k]) process.env[k] = envFromFile[k];
 }
+// Subdomain suffix env — needed by subdomains.spec.ts to construct
+// `<slug>.app.<suffix>` and `<slug>.api.<suffix>` X-Forwarded-Host headers.
+for (const k of ['APP_HOST_SUFFIX', 'API_HOST_SUFFIX']) {
+	const v = process.env[k] ?? envFromFile[k];
+	if (v) process.env[k] = v;
+}
 // Per-variant MCP URLs are emitted as `MCP_VARIANT_<NAME>_URL` env vars
 // by the harness (one entry per capability shape). They're already
 // shell-safe to `source`, so no additional unmarshalling here — just

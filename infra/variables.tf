@@ -21,8 +21,38 @@ variable "domain" {
   default     = ""
 }
 
+variable "app_host_suffix" {
+  description = "Apex for the dashboard subdomain surface (e.g. app.overslash.com). Empty disables wildcard routing on this surface."
+  type        = string
+  default     = ""
+}
+
+variable "api_host_suffix" {
+  description = "Apex for the programmatic / MCP / OAuth-AS subdomain surface (e.g. api.overslash.com). Empty disables wildcard routing here."
+  type        = string
+  default     = ""
+}
+
+variable "session_cookie_domain" {
+  description = "Domain attribute for the session cookie. Typically a leading dot + app_host_suffix (e.g. .app.overslash.com) so the cookie is shared across org subdomains."
+  type        = string
+  default     = ""
+}
+
+variable "enable_api_lb" {
+  description = "Provision a global HTTPS LB with wildcard managed cert in front of Cloud Run (required for *.api.<apex> routing at scale)."
+  type        = bool
+  default     = false
+}
+
+variable "extra_api_domain_mappings" {
+  description = "No-LB path: list of fully-qualified hostnames to expose via 1-1 google_cloud_run_domain_mapping (e.g. [\"acme.api.dev.overslash.com\"]). Used when enable_api_lb=false to map a small set of per-org subdomains without standing up a global LB. DNS for each entry must already point at Cloud Run (CNAME ghs.googlehosted.com) and the apex must be Search-Console verified."
+  type        = list(string)
+  default     = []
+}
+
 variable "dashboard_origin" {
-  description = "Comma-separated allowed CORS origins for the dashboard (e.g. https://app.overslash.com)"
+  description = "Comma-separated allowed CORS origins for the dashboard. Wildcards `https://*.app.overslash.com` allowed."
   type        = string
   default     = "*localhost*"
 }

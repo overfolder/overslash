@@ -302,7 +302,11 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     //       - "*localhost*" (default): any http localhost / 127.0.0.1
     //         origin on any port — needed because worktrees pick
     //         dynamic dashboard ports.
-    //       - a comma-separated list of explicit origins.
+    //       - a comma-separated list of explicit origins. Entries
+    //         beginning with `https://*.` (or `http://*.`) are treated
+    //         as single-label wildcard subdomain patterns
+    //         (e.g. `https://*.app.overslash.com`) so per-org dashboard
+    //         subdomains all match without enumerating every slug.
     //
     //   * `cors_mcp` — covers `/mcp` and the OAuth metadata / DCR /
     //     token endpoints. Allows the dashboard origin(s) PLUS any
@@ -375,17 +379,29 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
 /// Parse a comma-separated CORS origin spec into a tower-http `AllowOrigin`.
 ///
-/// Accepts either the `*localhost*` sentinel (any http localhost / 127.0.0.1
-/// origin on any port — used in local/worktree dev where the dashboard port
-/// is dynamic) or a list of explicit origins. The two forms can be mixed:
-/// `https://app.example.com,*localhost*` allows the explicit origin and any
-/// localhost origin.
+/// Accepts:
+///   - the `*localhost*` sentinel (any http localhost / 127.0.0.1 origin on
+///     any port — used in local/worktree dev where the dashboard port is
+///     dynamic);
+///   - explicit origins (e.g. `https://app.example.com`);
+///   - single-label wildcard subdomain patterns (e.g.
+///     `https://*.app.example.com`) — match any single DNS label between
+///     scheme and suffix, so per-org subdomains like
+///     `https://acme.app.example.com` are allowed without enumerating slugs,
+///     while `https://evil.attacker.app.example.com` is rejected.
+///
+/// All three forms can be mixed in one spec.
 fn build_allow_origin(raw: &str, env_var: &str) -> anyhow::Result<AllowOrigin> {
     let mut allow_localhost = false;
     let mut explicit: Vec<HeaderValue> = Vec::new();
+    let mut wild: Vec<(String, String)> = Vec::new();
     for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         if entry == "*localhost*" {
             allow_localhost = true;
+        } else if let Some(rest) = entry.strip_prefix("https://*.") {
+            wild.push(("https://".into(), format!(".{rest}")));
+        } else if let Some(rest) = entry.strip_prefix("http://*.") {
+            wild.push(("http://".into(), format!(".{rest}")));
         } else {
             explicit.push(
                 entry
@@ -398,18 +414,28 @@ fn build_allow_origin(raw: &str, env_var: &str) -> anyhow::Result<AllowOrigin> {
         if explicit.iter().any(|e| e == origin) {
             return true;
         }
-        if allow_localhost {
-            return origin
-                .to_str()
-                .map(|o| {
-                    o.starts_with("http://localhost:")
-                        || o.starts_with("http://127.0.0.1:")
-                        || o == "http://localhost"
-                        || o == "http://127.0.0.1"
-                })
-                .unwrap_or(false);
+        let Ok(o) = origin.to_str() else {
+            return false;
+        };
+        if allow_localhost
+            && (o.starts_with("http://localhost:")
+                || o.starts_with("http://127.0.0.1:")
+                || o == "http://localhost"
+                || o == "http://127.0.0.1")
+        {
+            return true;
         }
-        false
+        wild.iter().any(|(scheme, suffix)| {
+            let Some(rest) = o.strip_prefix(scheme.as_str()) else {
+                return false;
+            };
+            let Some(label_end) = rest.find(suffix.as_str()) else {
+                return false;
+            };
+            let label = &rest[..label_end];
+            let tail = &rest[label_end + suffix.len()..];
+            !label.is_empty() && !label.contains('.') && tail.is_empty()
+        })
     }))
 }
 
