@@ -276,6 +276,48 @@ pub(crate) async fn list_actionable_for_identity(
     .await
 }
 
+/// List pending approvals whose **requester** is `root_id` itself or any
+/// descendant of it. Used by the cascade resolver after a remembered rule is
+/// committed at `root_id` — those approvals are the only ones the new rule
+/// could possibly satisfy.
+///
+/// Caller is responsible for excluding the just-resolved approval id from
+/// the returned set.
+pub(crate) async fn list_pending_for_descendants(
+    pool: &PgPool,
+    org_id: Uuid,
+    root_id: Uuid,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        r#"WITH RECURSIVE descendants AS (
+            SELECT id FROM identities WHERE id = $2 AND org_id = $1
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN descendants d ON i.parent_id = d.id
+            WHERE i.org_id = $1
+        )
+        SELECT a.id as "id!", a.org_id as "org_id!", a.identity_id as "identity_id!",
+               a.current_resolver_identity_id as "current_resolver_identity_id!",
+               a.resolver_assigned_at as "resolver_assigned_at!",
+               a.action_summary as "action_summary!", a.action_detail,
+               a.disclosed_fields,
+               a.replay_payload,
+               a.permission_keys as "permission_keys!", a.status as "status!",
+               a.resolved_at, a.resolved_by, a.remember as "remember!",
+               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!"
+        FROM approvals a
+        WHERE a.org_id = $1
+          AND a.status = 'pending'
+          AND a.identity_id IN (SELECT id FROM descendants)
+        ORDER BY a.created_at ASC"#,
+        org_id,
+        root_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// List pending approvals whose current resolver has held them longer than
 /// their org's `approval_auto_bubble_secs` setting (and the setting is non-zero).
 /// Cross-org by design — exposed via `SystemScope` only.

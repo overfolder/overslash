@@ -141,4 +141,15 @@ impl OrgScope {
         crate::repos::approval::list_actionable_for_identity(self.db(), self.org_id(), identity_id)
             .await
     }
+
+    /// List pending approvals whose **requester** is `root_id` or any
+    /// descendant of it. Used by the cascade resolver to find candidates
+    /// after a remembered rule lands on `root_id`.
+    pub async fn list_pending_approvals_for_descendants(
+        &self,
+        root_id: Uuid,
+    ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+        crate::repos::approval::list_pending_for_descendants(self.db(), self.org_id(), root_id)
+            .await
+    }
 }

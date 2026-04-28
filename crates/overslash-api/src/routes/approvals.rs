@@ -138,6 +138,13 @@ struct ApprovalResponse {
     /// has created the pending execution row.
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<ExecutionSummary>,
+    /// Other pending approvals auto-resolved as a side effect of this call.
+    /// Populated only on `/v1/approvals/{id}/call` when an "Allow & Remember"
+    /// rule was committed and that rule structurally satisfied other pending
+    /// approvals under the same placement identity. Empty / omitted in all
+    /// other contexts.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    cascaded_approval_ids: Vec<Uuid>,
 }
 
 /// Truncate a UTF-8 string to at most `max` bytes, walking backward from the
@@ -196,6 +203,7 @@ impl ApprovalResponse {
             expires_at: fmt_time(r.expires_at),
             created_at: fmt_time(r.created_at),
             execution: execution.map(ExecutionSummary::from_row),
+            cascaded_approval_ids: Vec::new(),
         }
     }
 }
@@ -838,6 +846,7 @@ async fn call_approval(
     // ── Rule creation for Allow & Remember. Only on successful replay —
     // a failed replay leaves no rule so the reviewer can retry after fixing
     // the underlying issue.
+    let mut cascaded_approval_ids: Vec<Uuid> = Vec::new();
     if succeeded && finalised.remember {
         let placement_id =
             crate::services::permission_chain::rule_placement_for(&scope, approval.identity_id)
@@ -850,6 +859,29 @@ async fn call_approval(
             let _ = scope
                 .create_permission_rule(placement_id, key, "allow", finalised.remember_rule_ttl)
                 .await;
+        }
+
+        // Cascade: re-evaluate other pending approvals under placement_id
+        // that the new rules might now satisfy. Best-effort — never fail the
+        // /call request just because the cascade hit a snag.
+        if !keys_owned.is_empty() {
+            cascaded_approval_ids = match crate::services::permission_chain::cascade_resolve(
+                &state,
+                &scope,
+                placement_id,
+                id,
+            )
+            .await
+            {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!(
+                        approval_id = %id,
+                        "cascade_resolve failed: {e}"
+                    );
+                    Vec::new()
+                }
+            };
         }
     }
 
@@ -871,6 +903,7 @@ async fn call_approval(
                 "triggered_by": triggered_by,
                 "status": finalised.status,
                 "error": finalised.error,
+                "cascaded_approval_ids": &cascaded_approval_ids,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -910,11 +943,9 @@ async fn call_approval(
         crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
             .await
             .unwrap_or(None);
-    Ok(Json(ApprovalResponse::from_row(
-        approval,
-        identity_path,
-        Some(finalised),
-    )))
+    let mut response = ApprovalResponse::from_row(approval, identity_path, Some(finalised));
+    response.cascaded_approval_ids = cascaded_approval_ids;
+    Ok(Json(response))
 }
 
 async fn cancel_approval_execution(

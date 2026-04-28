@@ -330,6 +330,13 @@
 				Pending call expired before it ran.
 			{/if}
 		</div>
+		{#if execution.status === 'called' && (current.cascaded_approval_ids?.length ?? 0) > 0}
+			{@const n = current.cascaded_approval_ids!.length}
+			<div class="banner banner-cascade">
+				Also resolved {n} related {n === 1 ? 'approval' : 'approvals'} that the new
+				permission now covers.
+			</div>
+		{/if}
 		{#if execution.status === 'called' && execution.result}
 			<details class="raw-payload">
 				<summary>Result</summary>
@@ -660,6 +667,12 @@
 	}
 	.banner-cancelled,
 	.banner-expired {
+		border-color: var(--color-border);
+		color: var(--color-text-muted);
+		background: var(--color-bg);
+	}
+	.banner-cascade {
+		margin-top: 0.4rem;
 		border-color: var(--color-border);
 		color: var(--color-text-muted);
 		background: var(--color-bg);
