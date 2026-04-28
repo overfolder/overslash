@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -1182,6 +1182,21 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
 
 pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
+}
+
+/// Opt the test process out of the SSRF guard so MCP/HTTP stubs bound to
+/// 127.0.0.1 are reachable. The production binary never sets this env var;
+/// the knob exists solely so tests can use loopback stubs without widening
+/// the guard. Idempotent across calls.
+pub fn allow_loopback_ssrf() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: runs exactly once, before any thread that might read the
+        // env concurrently (Once provides the happens-before).
+        unsafe {
+            std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+        }
+    });
 }
 
 /// Submit the MCP OAuth consent JSON endpoint with mode=new to enroll a

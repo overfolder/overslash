@@ -12,9 +12,12 @@ pub struct ApprovalRow {
     pub action_summary: String,
     pub action_detail: Option<serde_json::Value>,
     pub disclosed_fields: Option<serde_json::Value>,
-    /// Raw replay payload (full ActionRequest + filter + prefer_stream).
-    /// Distinct from `action_detail` (which may be the UI-facing redacted
-    /// projection). NULL for MCP-runtime approvals and pre-feature rows.
+    /// Raw replay payload used by `POST /v1/approvals/{id}/call`. Carries
+    /// either an HTTP `StoredCallRequest` (`{ action, filter, prefer_stream }`)
+    /// or an MCP `StoredMcpCall` (`{ url, auth, tool, arguments }`),
+    /// disambiguated at parse time by the top-level `tool` key. Distinct
+    /// from `action_detail` (which may be the UI-facing redacted projection).
+    /// NULL for platform-runtime approvals and pre-feature rows.
     pub replay_payload: Option<serde_json::Value>,
     pub permission_keys: Vec<String>,
     pub status: String,

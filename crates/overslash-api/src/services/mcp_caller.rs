@@ -82,6 +82,36 @@ pub async fn invoke(
     })
 }
 
+/// Build the canonical `action.executed` audit detail for an MCP call,
+/// shared between the inline executor (`routes/actions.rs`) and the
+/// approval-replay path (`routes/approvals.rs`). Returns the in-band
+/// `is_error` flag so callers can branch on it (e.g. for response
+/// metadata) without parsing the envelope twice. Callers may then merge
+/// their own keys into the returned object (`service`/`action`/
+/// `disclosed` inline; `replayed_from_approval`/`execution_id` on replay).
+pub fn build_audit_detail(
+    result: &ActionResult,
+    tool: &str,
+    url: &str,
+    arguments: &Value,
+) -> (bool, Value) {
+    let envelope: Option<Value> = serde_json::from_str(&result.body).ok();
+    let is_error = envelope
+        .as_ref()
+        .and_then(|e| e.get("is_error"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let detail = json!({
+        "runtime": "mcp",
+        "tool": tool,
+        "arguments": arguments,
+        "url": url,
+        "duration_ms": result.duration_ms,
+        "is_error": is_error,
+    });
+    (is_error, detail)
+}
+
 fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppError {
     use crate::services::mcp_client::McpClientError::*;
     match err {

@@ -20,7 +20,7 @@ use crate::{
     error::AppError,
     extractors::{AuthContext, ClientIp},
     services::{
-        action_caller::StoredCallRequest,
+        action_caller::{StoredCallRequest, StoredMcpCall},
         disclosure, group_ceiling, http_caller, mcp_caller,
         response_filter::{self, ResponseFilter},
     },
@@ -291,10 +291,20 @@ async fn call_action(
                 // original request faithfully — including jq `filter` and
                 // `prefer_stream` — even when `action_detail` has been
                 // redacted via x-overslash-redact for reviewer display.
-                // None for MCP-runtime and platform-runtime approvals (different execution paths).
-                let replay_payload = if meta.mcp_target.is_some() || meta.platform_target.is_some()
-                {
+                //
+                // MCP-runtime approvals get a different shape (StoredMcpCall)
+                // disambiguated at parse time by the top-level `tool` key.
+                // Platform-runtime is still None (no replay path).
+                let replay_payload = if meta.platform_target.is_some() {
                     None
+                } else if let Some(target) = meta.mcp_target.as_ref() {
+                    serde_json::to_value(StoredMcpCall {
+                        url: target.url.clone(),
+                        auth: target.auth.clone(),
+                        tool: target.tool.clone(),
+                        arguments: target.arguments.clone(),
+                    })
+                    .ok()
                 } else {
                     serde_json::to_value(StoredCallRequest::new(
                         action_req.clone(),
@@ -433,17 +443,22 @@ async fn call_action(
         )
         .await?;
 
-        // Unpack the envelope so the audit row can carry tool-level
-        // success/failure — reviewers need is_error to distinguish "HTTP
-        // 200 but the tool failed" from real successes. The envelope is
-        // a valid JSON object we produced ourselves; if parsing ever
-        // fails we fall back to None rather than crash the audit row.
-        let envelope: Option<serde_json::Value> = serde_json::from_str(&result.body).ok();
-        let is_error = envelope
-            .as_ref()
-            .and_then(|e| e.get("is_error"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        // Build the shared MCP audit shape, then layer on inline-only
+        // fields (service/action/disclosed). Replay uses the same helper
+        // from approvals.rs to keep the two surfaces from drifting.
+        let (_is_error, mut audit_detail) = mcp_caller::build_audit_detail(
+            &result,
+            &mcp_target.tool,
+            &mcp_target.url,
+            &mcp_target.arguments,
+        );
+        {
+            let obj = audit_detail
+                .as_object_mut()
+                .expect("audit_detail is a json object");
+            obj.insert("service".into(), serde_json::json!(req.service));
+            obj.insert("action".into(), serde_json::json!(req.action));
+        }
 
         // Disclosure + redaction: MCP actions can declare the same
         // `disclose` / `redact` blocks HTTP actions do. compute_approval_detail
@@ -453,16 +468,6 @@ async fn call_action(
         let (disclosed_fields, _redacted_detail) =
             compute_approval_detail(&meta, &action_req, filter_timeout).await;
 
-        let mut audit_detail = serde_json::json!({
-            "runtime": "mcp",
-            "tool": mcp_target.tool,
-            "arguments": mcp_target.arguments,
-            "url": mcp_target.url,
-            "duration_ms": result.duration_ms,
-            "is_error": is_error,
-            "service": req.service,
-            "action": req.action,
-        });
         if !disclosed_fields.is_empty() {
             audit_detail
                 .as_object_mut()
