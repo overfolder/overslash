@@ -35,8 +35,9 @@ pub fn is_disallowed_ip(ip: &IpAddr) -> bool {
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
                 // link-local fe80::/10
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
-                // IPv4-mapped — recurse as v4
-                || v6.to_ipv4_mapped().map(|m| is_disallowed_ip(&IpAddr::V4(m))).unwrap_or(false)
+                // IPv4-mapped (::ffff:x.x.x.x) and IPv4-compatible (::x.x.x.x) — recurse as v4.
+                // to_ipv4() covers both formats; to_ipv4_mapped() only catches the ::ffff: variant.
+                || v6.to_ipv4().map(|m| is_disallowed_ip(&IpAddr::V4(m))).unwrap_or(false)
         }
     }
 }
@@ -165,6 +166,16 @@ mod tests {
     fn blocks_ipv4_mapped_private() {
         let mapped: Ipv6Addr = "::ffff:10.0.0.1".parse().unwrap();
         assert!(is_disallowed_ip(&IpAddr::V6(mapped)));
+    }
+
+    #[test]
+    fn blocks_ipv4_compatible_private() {
+        // Deprecated IPv4-compatible format ::x.x.x.x (no ::ffff: prefix).
+        // to_ipv4() catches this; to_ipv4_mapped() would miss it.
+        let compat: Ipv6Addr = "::10.0.0.1".parse().unwrap();
+        assert!(is_disallowed_ip(&IpAddr::V6(compat)));
+        let loopback_compat: Ipv6Addr = "::127.0.0.1".parse().unwrap();
+        assert!(is_disallowed_ip(&IpAddr::V6(loopback_compat)));
     }
 
     #[tokio::test]
