@@ -19,6 +19,7 @@ pub mod secrets;
 pub mod webhooks;
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use axum::{Router, extract::State, routing::get};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -28,14 +29,35 @@ static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 /// Install the global Prometheus recorder on first call; subsequent calls
 /// return the same handle. Idempotent so tests that build many app routers
 /// in one process don't fight over the global recorder.
+///
+/// Also spawns the upkeep task that drains histogram buckets every 5s.
+/// `install_recorder` does NOT do this on its own (unlike `install()`,
+/// which requires the builder to own its own runtime); without upkeep,
+/// histogram memory grows unboundedly under sustained traffic.
 pub fn setup() -> PrometheusHandle {
     HANDLE
         .get_or_init(|| {
-            PrometheusBuilder::new()
+            let handle = PrometheusBuilder::new()
                 .install_recorder()
-                .expect("failed to install Prometheus recorder")
+                .expect("failed to install Prometheus recorder");
+            spawn_upkeep(handle.clone(), Duration::from_secs(5));
+            handle
         })
         .clone()
+}
+
+fn spawn_upkeep(handle: PrometheusHandle, interval: Duration) {
+    // Best-effort: only spawn if a tokio runtime is present (always true in
+    // production paths; some unit tests build the recorder outside a runtime).
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            handle.run_upkeep();
+        }
+    });
 }
 
 /// Render the current metric snapshot as Prometheus text format.
