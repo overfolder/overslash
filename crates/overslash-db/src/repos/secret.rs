@@ -122,6 +122,67 @@ pub(crate) async fn list_by_org(
     .await
 }
 
+/// List secrets visible to a non-admin user — i.e. secrets whose original
+/// creator (version 1's `created_by`) sits in this user's subtree
+/// (the user themselves, or any agent/sub-agent whose `owner_id` is the
+/// user). SPEC §6.
+pub(crate) async fn list_visible_to_user(
+    pool: &PgPool,
+    org_id: Uuid,
+    user_id: Uuid,
+) -> Result<Vec<SecretRow>, sqlx::Error> {
+    sqlx::query_as!(
+        SecretRow,
+        "SELECT s.id, s.org_id, s.name, s.current_version, s.deleted_at, s.created_at, s.updated_at
+         FROM secrets s
+         WHERE s.org_id = $1 AND s.deleted_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM secret_versions sv
+           JOIN identities i ON i.id = sv.created_by
+           WHERE sv.secret_id = s.id AND sv.version = 1
+           AND (
+             (i.kind = 'user' AND i.id = $2)
+             OR (i.kind IN ('agent','sub_agent') AND i.owner_id = $2)
+           )
+         )
+         ORDER BY s.name",
+        org_id,
+        user_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// True if the secret's slot owner (version 1 creator's ceiling user) is
+/// `user_id`. Used to gate detail/reveal/restore/delete for non-admins.
+pub(crate) async fn is_visible_to_user(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT 1 AS exists FROM secrets s
+         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM secret_versions sv
+           JOIN identities i ON i.id = sv.created_by
+           WHERE sv.secret_id = s.id AND sv.version = 1
+           AND (
+             (i.kind = 'user' AND i.id = $3)
+             OR (i.kind IN ('agent','sub_agent') AND i.owner_id = $3)
+           )
+         )
+         LIMIT 1",
+        org_id,
+        name,
+        user_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub(crate) async fn soft_delete(
     pool: &PgPool,
     org_id: Uuid,
@@ -135,6 +196,110 @@ pub(crate) async fn soft_delete(
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// List every version of a secret, newest first. Returns metadata only —
+/// `encrypted_value` is omitted to avoid pulling ciphertext into list views.
+pub(crate) async fn list_versions(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+) -> Result<Vec<SecretVersionMeta>, sqlx::Error> {
+    sqlx::query_as!(
+        SecretVersionMeta,
+        "SELECT sv.version, sv.created_at, sv.created_by, sv.provisioned_by_user_id
+         FROM secret_versions sv
+         JOIN secrets s ON sv.secret_id = s.id
+         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL
+         ORDER BY sv.version DESC",
+        org_id,
+        name,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Fetch a specific version's encrypted value. Returns None if either the
+/// secret or the version is missing.
+pub(crate) async fn get_value_at_version(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+    version: i32,
+) -> Result<Option<SecretVersionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        SecretVersionRow,
+        "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by, sv.provisioned_by_user_id
+         FROM secret_versions sv
+         JOIN secrets s ON sv.secret_id = s.id
+         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL AND sv.version = $3",
+        org_id,
+        name,
+        version,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Return the `created_by` of the *first* version of a secret. The original
+/// creator owns the slot — later versions written by other agents under the
+/// same user don't transfer ownership.
+pub(crate) async fn first_version_creator(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT sv.created_by
+         FROM secret_versions sv
+         JOIN secrets s ON sv.secret_id = s.id
+         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL
+         ORDER BY sv.version ASC
+         LIMIT 1",
+        org_id,
+        name,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|r| r.created_by))
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct SecretVersionMeta {
+    pub version: i32,
+    pub created_at: OffsetDateTime,
+    pub created_by: Option<Uuid>,
+    pub provisioned_by_user_id: Option<Uuid>,
+}
+
+/// Service instances that reference this secret name. Archived rows are
+/// included with their status so the dashboard can render them as
+/// stale references rather than hiding them — flipping a service back to
+/// `active` is one click and keeping it in the list helps users notice
+/// that the rotation matters.
+pub(crate) async fn list_services_using_secret(
+    pool: &PgPool,
+    org_id: Uuid,
+    name: &str,
+) -> Result<Vec<ServiceUsingSecret>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceUsingSecret,
+        "SELECT id, name, status
+         FROM service_instances
+         WHERE org_id = $1 AND secret_name = $2
+         ORDER BY name",
+        org_id,
+        name,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct ServiceUsingSecret {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
 }
 
 /// Atomically put multiple secrets in one transaction. Each entry

@@ -5,7 +5,7 @@
 
 use uuid::Uuid;
 
-use crate::repos::secret::{SecretRow, SecretVersionRow};
+use crate::repos::secret::{SecretRow, SecretVersionMeta, SecretVersionRow, ServiceUsingSecret};
 use crate::scopes::OrgScope;
 
 impl OrgScope {
@@ -47,9 +47,31 @@ impl OrgScope {
         crate::repos::secret::get_current_value(self.db(), self.org_id(), name).await
     }
 
-    /// List all live secrets in this org.
+    /// List all live secrets in this org. Admin-only callers should use
+    /// this; non-admins must use `list_secrets_visible_to_user`.
     pub async fn list_secrets(&self) -> Result<Vec<SecretRow>, sqlx::Error> {
         crate::repos::secret::list_by_org(self.db(), self.org_id()).await
+    }
+
+    /// List secrets owned by a user's subtree. SPEC §6: a non-admin user
+    /// sees their own secrets and any secret created by an agent/sub-agent
+    /// whose ceiling user is them.
+    pub async fn list_secrets_visible_to_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<SecretRow>, sqlx::Error> {
+        crate::repos::secret::list_visible_to_user(self.db(), self.org_id(), user_id).await
+    }
+
+    /// True if the named secret's slot owner (version 1 creator's ceiling
+    /// user) is `user_id`. Detail / reveal / restore / delete must check
+    /// this before letting a non-admin see the secret.
+    pub async fn secret_visible_to_user(
+        &self,
+        name: &str,
+        user_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        crate::repos::secret::is_visible_to_user(self.db(), self.org_id(), name, user_id).await
     }
 
     /// Soft-delete a secret by name in this org. Returns true if a row was affected.
@@ -73,5 +95,39 @@ impl OrgScope {
         created_by: Option<Uuid>,
     ) -> Result<(), sqlx::Error> {
         crate::repos::secret::put_many(self.db(), self.org_id(), entries, created_by).await
+    }
+
+    /// List every version of a secret (newest first) without exposing
+    /// ciphertext. Used by the dashboard detail view.
+    pub async fn list_secret_versions(
+        &self,
+        name: &str,
+    ) -> Result<Vec<SecretVersionMeta>, sqlx::Error> {
+        crate::repos::secret::list_versions(self.db(), self.org_id(), name).await
+    }
+
+    /// Fetch a specific version (with encrypted value) for the reveal /
+    /// restore flows.
+    pub async fn get_secret_value_at_version(
+        &self,
+        name: &str,
+        version: i32,
+    ) -> Result<Option<SecretVersionRow>, sqlx::Error> {
+        crate::repos::secret::get_value_at_version(self.db(), self.org_id(), name, version).await
+    }
+
+    /// Identity that wrote version 1 of this secret — the slot owner per
+    /// SPEC §6. Returns None if the version 1 row's `created_by` was set to
+    /// NULL (e.g. the creator identity was later deleted).
+    pub async fn secret_owner_identity(&self, name: &str) -> Result<Option<Uuid>, sqlx::Error> {
+        crate::repos::secret::first_version_creator(self.db(), self.org_id(), name).await
+    }
+
+    /// Service instances that reference this secret by name (any status).
+    pub async fn list_services_using_secret(
+        &self,
+        name: &str,
+    ) -> Result<Vec<ServiceUsingSecret>, sqlx::Error> {
+        crate::repos::secret::list_services_using_secret(self.db(), self.org_id(), name).await
     }
 }
