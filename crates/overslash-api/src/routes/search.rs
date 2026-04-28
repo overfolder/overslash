@@ -77,12 +77,18 @@ struct SearchResult {
     /// `auth.instances[i].name` for instance-keyed mode.
     service: String,
     service_display_name: String,
-    action: String,
-    description: String,
-    risk: Risk,
+    /// Action fields and `score` are absent in browse mode (empty query),
+    /// where each result represents a service-level entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    risk: Option<Risk>,
     tier: String,
     auth: AuthStatus,
-    score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    score: Option<f32>,
 }
 
 #[derive(Serialize, Clone)]
@@ -122,106 +128,51 @@ async fn search(
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>> {
     let q = params.q.trim();
+
+    let (templates, instances_by_template) =
+        collect_visible_templates(&state, &auth, &scope).await?;
+
     if q.is_empty() {
-        return Err(AppError::BadRequest(
-            "query parameter `q` is required".into(),
-        ));
-    }
-    let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-
-    // --- Visibility: global-tier filter + group ceiling for instances ---
-    let global_filter = visible_global_filter(&state, auth.org_id).await?;
-    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
-        .await?
-        .unwrap_or(false);
-
-    // Replicates routes/services.rs:list_services so the "which services
-    // can this caller see?" story is identical between listing and search.
-    let (ceiling_user_id, visible_instance_ids) = if let Some(identity_id) = auth.identity_id {
-        let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
-        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
-        let has_user_groups = groups.iter().any(|g| !g.is_system);
-        let visible_ids = if !has_user_groups {
-            None
-        } else {
-            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
-        };
-        (Some(ceiling_user_id), visible_ids)
-    } else {
-        (None, None)
-    };
-
-    // --- Collect template definitions (global + org + user tiers) ---
-    let mut templates: Vec<TemplateCandidate> = Vec::new();
-
-    for svc in state.registry.all() {
-        if !is_global_visible(&global_filter, &svc.key) {
-            continue;
-        }
-        templates.push(TemplateCandidate {
-            tier: "global",
-            def: svc.clone(),
-        });
-    }
-
-    for t in service_template::list_available(&state.db, auth.org_id, auth.identity_id).await? {
-        let is_user_tier = t.owner_identity_id.is_some();
-        if is_user_tier && !user_templates_allowed {
-            continue;
-        }
-        let (def, _warnings) =
-            overslash_core::openapi::compile_service(&t.openapi).map_err(|errors| {
-                AppError::Internal(format!(
-                    "template '{}' failed to compile: {errors:?}",
-                    t.key
-                ))
-            })?;
-        templates.push(TemplateCandidate {
-            tier: if is_user_tier { "user" } else { "org" },
-            def,
-        });
-    }
-
-    // --- Active instances → connected/instances map, keyed by template_key ---
-    let instances = scope
-        .list_available_service_instances_with_groups(
-            auth.identity_id,
-            ceiling_user_id,
-            visible_instance_ids.as_deref(),
-        )
-        .await?;
-
-    // Preload owner_email per unique owner identity (batched to avoid N+1).
-    let owner_ids: Vec<Uuid> = instances
-        .iter()
-        .filter_map(|r| r.owner_identity_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let mut emails_by_owner: HashMap<Uuid, Option<String>> = HashMap::new();
-    for owner_id in owner_ids {
-        if let Some(row) = scope.get_identity(owner_id).await? {
-            emails_by_owner.insert(owner_id, row.email);
-        }
-    }
-
-    let mut instances_by_template: HashMap<String, Vec<InstanceRef>> = HashMap::new();
-    for r in instances {
-        if r.status != "active" {
-            continue;
-        }
-        let owner_email = r
-            .owner_identity_id
-            .and_then(|id| emails_by_owner.get(&id).cloned())
-            .flatten();
-        instances_by_template
-            .entry(r.template_key.clone())
-            .or_default()
-            .push(InstanceRef {
-                name: r.name,
-                owner_email,
+        // Browse mode: list every visible service template with no actions.
+        // The catalog is bounded (~dozens), so we deliberately skip the
+        // limit clamp — truncating "show me everything available" defeats
+        // the use case.
+        let mut results: Vec<SearchResult> = Vec::with_capacity(templates.len());
+        for t in &templates {
+            let connected_instances = instances_by_template
+                .get(&t.def.key)
+                .cloned()
+                .unwrap_or_default();
+            let connected = !connected_instances.is_empty();
+            let auth_status = build_auth_status(&t.def, connected, connected_instances);
+            results.push(SearchResult {
+                service: t.def.key.clone(),
+                service_display_name: t.def.display_name.clone(),
+                action: None,
+                description: None,
+                risk: None,
+                tier: t.tier.into(),
+                auth: auth_status,
+                score: None,
             });
+        }
+        // Connected-first, then alphabetical by display name. Mirrors the
+        // CONNECTED_BONUS intent in scored mode: things the caller can run
+        // right now should surface first.
+        results.sort_by(|a, b| {
+            b.auth.connected.cmp(&a.auth.connected).then_with(|| {
+                a.service_display_name
+                    .to_lowercase()
+                    .cmp(&b.service_display_name.to_lowercase())
+            })
+        });
+        return Ok(Json(SearchResponse {
+            query: q.to_string(),
+            results,
+        }));
     }
+
+    let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     // --- Embedding cosine retrieval (optional) ---
     // Keyed by (tier, template_key, action_key) so we can merge with the
@@ -300,12 +251,12 @@ async fn search(
             scored.push(SearchResult {
                 service: t.def.key.clone(),
                 service_display_name: t.def.display_name.clone(),
-                action: action_key.clone(),
-                description: action.description.clone(),
-                risk: action.risk,
+                action: Some(action_key.clone()),
+                description: Some(action.description.clone()),
+                risk: Some(action.risk),
                 tier: t.tier.into(),
                 auth: auth_status.clone(),
-                score: final_score,
+                score: Some(final_score),
             });
         }
     }
@@ -321,6 +272,105 @@ async fn search(
         query: q.to_string(),
         results: scored,
     }))
+}
+
+/// Resolves the set of visible service templates and active instances for
+/// the caller, applying the same global-tier filter and group-ceiling
+/// machinery as `routes/services.rs::list_services`.
+async fn collect_visible_templates(
+    state: &AppState,
+    auth: &AuthContext,
+    scope: &OrgScope,
+) -> Result<(Vec<TemplateCandidate>, HashMap<String, Vec<InstanceRef>>)> {
+    let global_filter = visible_global_filter(state, auth.org_id).await?;
+    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+        .await?
+        .unwrap_or(false);
+
+    let (ceiling_user_id, visible_instance_ids) = if let Some(identity_id) = auth.identity_id {
+        let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?;
+        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
+        let has_user_groups = groups.iter().any(|g| !g.is_system);
+        let visible_ids = if !has_user_groups {
+            None
+        } else {
+            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
+        };
+        (Some(ceiling_user_id), visible_ids)
+    } else {
+        (None, None)
+    };
+
+    let mut templates: Vec<TemplateCandidate> = Vec::new();
+
+    for svc in state.registry.all() {
+        if !is_global_visible(&global_filter, &svc.key) {
+            continue;
+        }
+        templates.push(TemplateCandidate {
+            tier: "global",
+            def: svc.clone(),
+        });
+    }
+
+    for t in service_template::list_available(&state.db, auth.org_id, auth.identity_id).await? {
+        let is_user_tier = t.owner_identity_id.is_some();
+        if is_user_tier && !user_templates_allowed {
+            continue;
+        }
+        let (def, _warnings) =
+            overslash_core::openapi::compile_service(&t.openapi).map_err(|errors| {
+                AppError::Internal(format!(
+                    "template '{}' failed to compile: {errors:?}",
+                    t.key
+                ))
+            })?;
+        templates.push(TemplateCandidate {
+            tier: if is_user_tier { "user" } else { "org" },
+            def,
+        });
+    }
+
+    let instances = scope
+        .list_available_service_instances_with_groups(
+            auth.identity_id,
+            ceiling_user_id,
+            visible_instance_ids.as_deref(),
+        )
+        .await?;
+
+    let owner_ids: Vec<Uuid> = instances
+        .iter()
+        .filter_map(|r| r.owner_identity_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut emails_by_owner: HashMap<Uuid, Option<String>> = HashMap::new();
+    for owner_id in owner_ids {
+        if let Some(row) = scope.get_identity(owner_id).await? {
+            emails_by_owner.insert(owner_id, row.email);
+        }
+    }
+
+    let mut instances_by_template: HashMap<String, Vec<InstanceRef>> = HashMap::new();
+    for r in instances {
+        if r.status != "active" {
+            continue;
+        }
+        let owner_email = r
+            .owner_identity_id
+            .and_then(|id| emails_by_owner.get(&id).cloned())
+            .flatten();
+        instances_by_template
+            .entry(r.template_key.clone())
+            .or_default()
+            .push(InstanceRef {
+                name: r.name,
+                owner_email,
+            });
+    }
+
+    Ok((templates, instances_by_template))
 }
 
 struct TemplateCandidate {

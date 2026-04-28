@@ -44,7 +44,10 @@ fn rank_of(results: &[Value], service: &str, action: &str) -> Option<usize> {
 }
 
 #[tokio::test]
-async fn empty_query_returns_400() {
+async fn empty_query_lists_all_services() {
+    // Browse mode: empty query returns every visible service template
+    // with no action data attached. Used by agents to catalog what's
+    // available before issuing a scoped query.
     let (base, client, _, admin_key, _) = bootstrap().await;
     let resp = client
         .get(format!("{base}/v1/search?q="))
@@ -52,7 +55,150 @@ async fn empty_query_returns_400() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let results = body["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "browse mode should surface services");
+
+    // Service-level entries: identifiers and auth must be present;
+    // action/description/risk/score must be absent (skip_serializing_if).
+    for r in results {
+        assert!(
+            r.get("service").and_then(|v| v.as_str()).is_some(),
+            "missing service: {r}"
+        );
+        assert!(
+            r.get("service_display_name")
+                .and_then(|v| v.as_str())
+                .is_some(),
+            "missing service_display_name: {r}"
+        );
+        assert!(
+            r.get("tier").and_then(|v| v.as_str()).is_some(),
+            "missing tier: {r}"
+        );
+        assert!(r.get("auth").is_some(), "missing auth: {r}");
+        assert!(r.get("action").is_none(), "browse leaked action: {r}");
+        assert!(
+            r.get("description").is_none(),
+            "browse leaked description: {r}"
+        );
+        assert!(r.get("risk").is_none(), "browse leaked risk: {r}");
+        assert!(r.get("score").is_none(), "browse leaked score: {r}");
+    }
+
+    // Sanity-check that the bootstrapped global registry is being walked.
+    assert!(
+        results.iter().any(|r| r["service"] == "gmail"),
+        "gmail missing from browse output: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn empty_query_respects_global_template_visibility() {
+    // Browse mode must apply the same global-tier visibility filter as
+    // scored search — disabling globals and enabling only gmail must hide
+    // every other global from the catalog.
+    let (base, client, org_id, admin_key, _) = bootstrap().await;
+
+    let resp = client
+        .patch(format!("{base}/v1/orgs/{org_id}/template-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "global_templates_enabled": false }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "toggle failed: {}",
+        resp.status()
+    );
+
+    let _ = client
+        .post(format!("{base}/v1/templates/enabled-globals"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "template_key": "gmail" }))
+        .send()
+        .await
+        .unwrap();
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q="))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+
+    assert!(
+        results.iter().any(|r| r["service"] == "gmail"),
+        "gmail (explicitly enabled) missing from browse: {results:?}"
+    );
+    assert!(
+        !results.iter().any(|r| r["service"] == "stripe"),
+        "stripe should be hidden in browse: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn empty_query_floats_connected_services_first() {
+    // Connected services lead alphabetical order in browse mode — mirrors
+    // the CONNECTED_BONUS intent in scored mode. Without this rule gmail
+    // (display name "Gmail") would precede resend ("Resend") alphabetically.
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let create: Value = client
+        .post(format!("{base}/v1/services"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "resend",
+            "name": "resend-work",
+            "secret_name": "resend_api_key",
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        create["name"], "resend-work",
+        "service creation failed: {create}"
+    );
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q="))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+
+    let resend_rank = results
+        .iter()
+        .position(|r| r["service"] == "resend")
+        .expect("resend missing from browse");
+    let gmail_rank = results
+        .iter()
+        .position(|r| r["service"] == "gmail")
+        .expect("gmail missing from browse");
+
+    assert!(
+        resend_rank < gmail_rank,
+        "expected connected resend (#{resend_rank}) ahead of non-connected gmail (#{gmail_rank}): {results:?}"
+    );
+    assert_eq!(
+        results[resend_rank]["auth"]["connected"], true,
+        "resend not marked connected: {}",
+        results[resend_rank]
+    );
 }
 
 #[tokio::test]

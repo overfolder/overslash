@@ -204,11 +204,14 @@ fn tools_list_response(id: Value) -> Response {
             "tools": [
                 {
                     "name": "overslash_search",
-                    "description": "Discover Overslash services and actions available to the caller.",
+                    "description": "Discover Overslash services and actions available to the caller. Pass an empty query to list all visible services without actions.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "query": { "type": "string", "description": "Free-text query" }
+                            "query": {
+                                "type": "string",
+                                "description": "Free-text query. Pass an empty string to list every visible service (no actions)."
+                            }
                         },
                         "additionalProperties": false
                     }
@@ -333,14 +336,10 @@ fn normalize_stringified_params(args: &mut Value) {
 }
 
 async fn dispatch_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+    // Empty query is supported: it triggers browse mode in the REST handler,
+    // returning every visible service (without actions) so an agent can
+    // catalog what's available before issuing a scoped query.
     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    if q.is_empty() {
-        return Err(
-            "overslash_search requires a non-empty `query` — pass the natural-language string \
-             describing what you want to do (e.g. \"send an email\")"
-                .into(),
-        );
-    }
     let path = format!("/v1/search?q={}", urlencoding::encode(q));
     forward(state, bearer, Method::GET, &path, None).await
 }
