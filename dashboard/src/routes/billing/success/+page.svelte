@@ -35,6 +35,9 @@
 					clearInterval(timer);
 					redirectTo = res.redirect_to ?? null;
 					view = 'ready';
+					// Return so a tick at the timeout boundary doesn't overwrite
+					// 'ready' with 'timeout' on the same callback run.
+					return;
 				}
 			} catch {
 				// Keep polling — transient errors are expected during provisioning.
