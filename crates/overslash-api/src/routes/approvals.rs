@@ -19,7 +19,8 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, WriteAcl},
-    services::action_caller::{self, AuditSource, CallContext, CallOutcome, StoredCallRequest},
+    services::action_caller::{self, AuditSource, CallContext, CallOutcome, ReplayPayload},
+    services::mcp_caller,
 };
 
 /// Maximum bytes of `action_detail` returned on approval responses. The raw
@@ -720,23 +721,8 @@ async fn call_approval(
             .await;
         }
     };
-    // MCP-runtime approvals have a different shape (runtime, tool,
-    // arguments) that this HTTP-replay path can't call. Clean 409 until
-    // a dedicated MCP-replay path lands.
-    // Also check for "tool" presence: apply_redactions keeps the key but
-    // replaces the value, so "runtime" may be "[REDACTED]" while "tool"
-    // (MCP-only) still signals the projection type unambiguously.
-    if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("mcp")
-        || replay_value.get("tool").is_some()
-    {
-        return fail_and_return(
-            &scope,
-            execution_id,
-            "mcp_replay_not_supported",
-            AppError::Conflict("replay of MCP-runtime approvals is not yet supported".into()),
-        )
-        .await;
-    }
+    // Platform-runtime approvals don't have a replay path yet. MCP and HTTP
+    // are handled by the dispatch below.
     if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("platform") {
         return fail_and_return(
             &scope,
@@ -746,8 +732,8 @@ async fn call_approval(
         )
         .await;
     }
-    let stored = match StoredCallRequest::from_stored_detail(&replay_value) {
-        Ok(s) => s,
+    let payload = match ReplayPayload::from_stored(&replay_value) {
+        Ok(p) => p,
         Err(e) => {
             let msg = format!("replay payload parse error: {e}");
             return fail_and_return(
@@ -755,83 +741,173 @@ async fn call_approval(
                 execution_id,
                 &msg,
                 AppError::Internal(format!(
-                    "approval replay payload is not a valid CallRequest: {e}"
+                    "approval replay payload is not a valid HTTP/MCP request: {e}"
                 )),
             )
             .await;
         }
     };
 
-    // ── Replay with timeout. Streaming is forced off — the reviewer's
-    // connection isn't the original caller's.
-    let call_ctx = CallContext {
-        state: &state,
-        scope: &scope,
-        identity_id: approval.identity_id, // requester identity for audit/rate-limit
-        ip: ip.0.as_deref(),
-        description: Some(approval.action_summary.as_str()),
-        service_key: None,
-        action_key: None,
-        filter: stored.filter.clone(),
-        prefer_stream: false,
-        audit_source: AuditSource::Replay {
-            approval_id: id,
-            execution_id,
-        },
-    };
-
     let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
-    let outcome = tokio::time::timeout(
-        replay_timeout,
-        action_caller::call_action_request(call_ctx, &stored.action),
-    )
-    .await;
 
-    let (finalised, succeeded, result_summary) = match outcome {
-        Ok(Ok(CallOutcome::Buffered { result, .. })) => {
-            let mut result_json = serde_json::to_value(&result)
-                .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
-            if stored.prefer_stream {
-                if let Some(obj) = result_json.as_object_mut() {
-                    obj.insert("streamed_originally".into(), serde_json::Value::Bool(true));
+    // Both branches produce (finalised, succeeded, result_summary) for the
+    // shared audit + webhook + rule-creation tail below.
+    let (finalised, succeeded, result_summary) = match payload {
+        ReplayPayload::Http(stored) => {
+            // ── Replay with timeout. Streaming is forced off — the reviewer's
+            // connection isn't the original caller's.
+            let call_ctx = CallContext {
+                state: &state,
+                scope: &scope,
+                identity_id: approval.identity_id, // requester identity for audit/rate-limit
+                ip: ip.0.as_deref(),
+                description: Some(approval.action_summary.as_str()),
+                service_key: None,
+                action_key: None,
+                filter: stored.filter.clone(),
+                prefer_stream: false,
+                audit_source: AuditSource::Replay {
+                    approval_id: id,
+                    execution_id,
+                },
+            };
+
+            let outcome = tokio::time::timeout(
+                replay_timeout,
+                action_caller::call_action_request(call_ctx, &stored.action),
+            )
+            .await;
+
+            match outcome {
+                Ok(Ok(CallOutcome::Buffered { result, .. })) => {
+                    let mut result_json = serde_json::to_value(&result)
+                        .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
+                    if stored.prefer_stream {
+                        if let Some(obj) = result_json.as_object_mut() {
+                            obj.insert("streamed_originally".into(), serde_json::Value::Bool(true));
+                        }
+                    }
+                    let summary = serde_json::json!({
+                        "status_code": result.status_code,
+                        "duration_ms": result.duration_ms,
+                    });
+                    let finalised = scope
+                        .finalize_execution_executed(execution_id, &result_json)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, true, Some(summary))
+                }
+                Ok(Ok(CallOutcome::Streamed(_))) => {
+                    // Defensive: replay forces prefer_stream=false so this variant is
+                    // unreachable in practice. Record as failed rather than silently
+                    // dropping the response.
+                    let msg = "replay unexpectedly produced a streaming response";
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, msg)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
+                }
+                Ok(Err(app_err)) => {
+                    let msg = app_err.to_string();
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, &msg)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
+                }
+                Err(_elapsed) => {
+                    let msg = "replay_timeout";
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, msg)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
                 }
             }
-            let summary = serde_json::json!({
-                "status_code": result.status_code,
-                "duration_ms": result.duration_ms,
-            });
-            let finalised = scope
-                .finalize_execution_executed(execution_id, &result_json)
-                .await?
-                .unwrap_or(claimed);
-            (finalised, true, Some(summary))
         }
-        Ok(Ok(CallOutcome::Streamed(_))) => {
-            // Defensive: replay forces prefer_stream=false so this variant is
-            // unreachable in practice. Record as failed rather than silently
-            // dropping the response.
-            let msg = "replay unexpectedly produced a streaming response";
-            let finalised = scope
-                .finalize_execution_failed(execution_id, msg)
-                .await?
-                .unwrap_or(claimed);
-            (finalised, false, None)
-        }
-        Ok(Err(app_err)) => {
-            let msg = app_err.to_string();
-            let finalised = scope
-                .finalize_execution_failed(execution_id, &msg)
-                .await?
-                .unwrap_or(claimed);
-            (finalised, false, None)
-        }
-        Err(_elapsed) => {
-            let msg = "replay_timeout";
-            let finalised = scope
-                .finalize_execution_failed(execution_id, msg)
-                .await?
-                .unwrap_or(claimed);
-            (finalised, false, None)
+        ReplayPayload::Mcp(call) => {
+            // MCP replays go through mcp_caller::invoke, which returns the
+            // same ActionResult envelope a fresh MCP call produces — keeping
+            // the dashboard's execution-result rendering identical to inline
+            // calls. Tool-level errors (`is_error: true`) live inside the
+            // envelope and still count as successful execution from the
+            // approval's perspective: the agent's call ran, the policy
+            // decision was honored. Rule creation should still happen.
+            let outcome = tokio::time::timeout(
+                replay_timeout,
+                mcp_caller::invoke(
+                    &state,
+                    &scope,
+                    &call.url,
+                    &call.auth,
+                    &call.tool,
+                    &call.arguments,
+                ),
+            )
+            .await;
+            match outcome {
+                Ok(Ok(result)) => {
+                    let result_json = serde_json::to_value(&result)
+                        .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
+                    // Mirror the inline MCP call's `action.executed` audit
+                    // shape so reviewers see runtime/tool/arguments/is_error
+                    // for replays too. The HTTP replay path emits its own
+                    // `action.executed` from action_caller; we do the
+                    // equivalent here. `build_audit_detail` is shared with
+                    // the inline executor so the two paths can't drift.
+                    let (_is_error, mut audit_detail) = mcp_caller::build_audit_detail(
+                        &result,
+                        &call.tool,
+                        &call.url,
+                        &call.arguments,
+                    );
+                    {
+                        let obj = audit_detail
+                            .as_object_mut()
+                            .expect("audit_detail is a json object");
+                        obj.insert("replayed_from_approval".into(), serde_json::json!(id));
+                        obj.insert("execution_id".into(), serde_json::json!(execution_id));
+                    }
+                    let _ = scope
+                        .log_audit(AuditEntry {
+                            org_id: auth.org_id,
+                            identity_id: Some(approval.identity_id),
+                            action: "action.executed",
+                            resource_type: Some("mcp"),
+                            resource_id: None,
+                            detail: audit_detail,
+                            description: Some(approval.action_summary.as_str()),
+                            ip_address: ip.0.as_deref(),
+                        })
+                        .await;
+                    let summary = serde_json::json!({
+                        "runtime": "mcp",
+                        "tool": call.tool,
+                        "duration_ms": result.duration_ms,
+                    });
+                    let finalised = scope
+                        .finalize_execution_executed(execution_id, &result_json)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, true, Some(summary))
+                }
+                Ok(Err(app_err)) => {
+                    let msg = app_err.to_string();
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, &msg)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
+                }
+                Err(_elapsed) => {
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, "replay_timeout")
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
+                }
+            }
         }
     };
 

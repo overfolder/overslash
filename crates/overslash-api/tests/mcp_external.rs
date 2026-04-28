@@ -6,24 +6,6 @@
 
 mod common;
 
-use std::sync::Once;
-
-/// Opt tests out of the SSRF guard that otherwise blocks every loopback
-/// outbound in `services::ssrf_guard`. Called from `start_stub()` before
-/// any test hits `/v1/actions/call` or `/mcp/resync`. The production
-/// binary never sets this env var; the knob exists solely so integration
-/// tests can point at loopback stubs without widening the guard.
-fn allow_loopback_ssrf() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        // SAFETY: runs exactly once, before any thread that might read the
-        // env concurrently (Once provides the happens-before).
-        unsafe {
-            std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
-        }
-    });
-}
-
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -132,7 +114,7 @@ async fn stub_handler(
 }
 
 async fn start_stub() -> (SocketAddr, Stub) {
-    allow_loopback_ssrf();
+    common::allow_loopback_ssrf();
     let stub = Stub::default();
     let app = Router::new()
         .route("/mcp", post(stub_handler))

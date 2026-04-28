@@ -20,7 +20,7 @@ use uuid::Uuid;
 use overslash_core::{
     crypto,
     secret_injection::inject_secrets,
-    types::{ActionRequest, ActionResult, FilteredBody},
+    types::{ActionRequest, ActionResult, FilteredBody, McpAuth},
 };
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
@@ -73,6 +73,37 @@ impl StoredCallRequest {
             filter: None,
             prefer_stream: false,
         })
+    }
+}
+
+/// Replay payload for an MCP-runtime approval. Stored on
+/// `approvals.replay_payload` and read back by the MCP branch of the replay
+/// handler at `POST /v1/approvals/{id}/call`. Top-level `tool` key is what
+/// distinguishes this shape from `StoredCallRequest` at parse time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredMcpCall {
+    pub url: String,
+    pub auth: McpAuth,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Either runtime's replay payload, disambiguated by JSON shape rather than a
+/// serde tag — older HTTP rows on disk have no `runtime` field, so a tagged
+/// enum would break them. HTTP and MCP shapes have disjoint top-level keys
+/// (`action`/`method` vs `tool`), so detection is unambiguous.
+pub enum ReplayPayload {
+    Http(StoredCallRequest),
+    Mcp(StoredMcpCall),
+}
+
+impl ReplayPayload {
+    pub fn from_stored(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
+        if value.get("tool").is_some() {
+            Ok(Self::Mcp(serde_json::from_value(value.clone())?))
+        } else {
+            Ok(Self::Http(StoredCallRequest::from_stored_detail(value)?))
+        }
     }
 }
 
