@@ -3,6 +3,7 @@ pub mod api_keys;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
+pub mod billing;
 pub mod byoc_credentials;
 pub mod connections;
 pub mod groups;

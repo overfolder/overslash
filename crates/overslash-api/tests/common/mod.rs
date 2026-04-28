@@ -47,15 +47,28 @@ pub async fn test_pool() -> PgPool {
 
     ensure_template(&base_url).await;
 
-    // Clone template for this test.
+    // Clone template for this test. CREATE DATABASE … TEMPLATE fails with
+    // "source database is being accessed by other users" if a prior session
+    // hasn't fully closed yet (the cleanup is async). Retry briefly — the
+    // bootstrapped pool below uses the same pattern.
     let test_db = format!("test_{}", Uuid::new_v4().simple());
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
-    sqlx::query(&format!(
-        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-    ))
-    .execute(&admin_pool)
-    .await
-    .unwrap();
+    let mut retries = 0u32;
+    loop {
+        match sqlx::query(&format!(
+            "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
+        ))
+        .execute(&admin_pool)
+        .await
+        {
+            Ok(_) => break,
+            Err(e) if retries < 20 && format!("{e}").contains("being accessed") => {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("clone template: {e}"),
+        }
+    }
     admin_pool.close().await;
 
     register_for_cleanup(base_url.clone(), test_db.clone());
@@ -583,6 +596,14 @@ where
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
     customize(&mut config);
 
@@ -635,7 +656,18 @@ where
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
         .merge(overslash_api::routes::mcp::router())
-        .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::oauth_mcp_clients::router());
+
+    // Billing routes are gated on cloud_billing — test fixtures that flip the
+    // flag get the routes; default-config tests don't see them.
+    let app = if state.config.cloud_billing {
+        app.merge(overslash_api::routes::billing::router())
+            .merge(overslash_api::routes::billing::webhook_router())
+    } else {
+        app
+    };
+
+    let app = app
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             overslash_api::middleware::subdomain::subdomain_middleware,
@@ -680,6 +712,14 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -773,6 +813,14 @@ pub async fn start_api_with_auth_providers(
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -1237,6 +1285,14 @@ pub async fn start_api_with_registry(
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -1340,6 +1396,14 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {
@@ -1415,6 +1479,14 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         single_org_mode: None,
         app_host_suffix: None,
         session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
     };
 
     let state = overslash_api::AppState {

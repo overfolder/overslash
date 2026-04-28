@@ -34,3 +34,9 @@ infra_scheduler_start_cron = "0 7 * * *"
 # Optional
 enable_valkey = false
 enable_dns    = false
+
+# Billing — disabled in dev; enable for billing testing
+cloud_billing = false
+# Lookup keys default to overslash_seat_eur / overslash_seat_usd
+# stripe_eur_lookup_key = "overslash_seat_eur"
+# stripe_usd_lookup_key = "overslash_seat_usd"

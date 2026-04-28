@@ -194,3 +194,23 @@ variable "shortener_root_redirect_url" {
   type        = string
   default     = ""
 }
+
+# --- Billing ---
+
+variable "cloud_billing" {
+  description = "Enable Stripe billing gate for Team org creation. Requires Stripe secrets in Secret Manager."
+  type        = bool
+  default     = false
+}
+
+variable "stripe_eur_lookup_key" {
+  description = "Stripe lookup key for the EUR seat price. The literal price_… ID is resolved at server startup. Default: overslash_seat_eur."
+  type        = string
+  default     = "overslash_seat_eur"
+}
+
+variable "stripe_usd_lookup_key" {
+  description = "Stripe lookup key for the USD seat price. Default: overslash_seat_usd."
+  type        = string
+  default     = "overslash_seat_usd"
+}

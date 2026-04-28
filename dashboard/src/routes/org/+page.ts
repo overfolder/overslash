@@ -19,6 +19,16 @@ export interface MeAcl {
 	acl_level: 'Admin' | 'Write' | 'Read' | null;
 }
 
+export interface OrgSubscription {
+	org_id: string;
+	plan: string;
+	seats: number;
+	status: string;
+	currency: string;
+	current_period_end: number | null;
+	cancel_at_period_end: boolean;
+}
+
 export interface OrgPageData {
 	me: MeAcl | null;
 	org: OrgInfo | null;
@@ -27,6 +37,7 @@ export interface OrgPageData {
 	mcpClients: McpClient[];
 	webhooks: Webhook[];
 	secretRequestSettings: SecretRequestSettings | null;
+	subscription: OrgSubscription | null;
 	error: { status: number; message: string } | null;
 }
 
@@ -49,6 +60,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				mcpClients: [],
 				webhooks: [],
 				secretRequestSettings: null,
+				subscription: null,
 				error: { status: 403, message: 'Admin access required to view org settings.' }
 			};
 		}
@@ -66,6 +78,17 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 					? session.get<SecretRequestSettings>(`/v1/orgs/${orgId}/secret-request-settings`)
 					: Promise.resolve(null)
 			]);
+
+		// Load subscription for non-personal Team orgs (404 = no subscription, silently null).
+		let subscription: OrgSubscription | null = null;
+		if (orgId && !org?.is_personal) {
+			try {
+				subscription = await session.get<OrgSubscription>(`/v1/orgs/${orgId}/subscription`);
+			} catch (e) {
+				if (!(e instanceof ApiError && e.status === 404)) throw e;
+			}
+		}
+
 		return {
 			me,
 			org,
@@ -74,6 +97,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			mcpClients: mcpClientsResp.clients,
 			webhooks,
 			secretRequestSettings,
+			subscription,
 			error: null
 		};
 	} catch (e) {
@@ -88,6 +112,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			mcpClients: [],
 			webhooks: [],
 			secretRequestSettings: null,
+			subscription: null,
 			error: { status, message }
 		};
 	}

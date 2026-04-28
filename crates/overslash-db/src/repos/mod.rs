@@ -18,6 +18,7 @@ pub(crate) use impl_org_owned;
 pub mod api_key;
 pub mod approval;
 pub mod audit;
+pub mod billing;
 pub mod byoc_credential;
 pub mod connection;
 pub mod enabled_global_template;

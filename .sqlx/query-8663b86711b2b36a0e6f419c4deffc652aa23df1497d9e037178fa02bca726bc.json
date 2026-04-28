@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_subscriptions (\n            org_id, stripe_subscription_id, stripe_customer_id, seats, status,\n            currency, current_period_start, current_period_end, cancel_at_period_end\n         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         ON CONFLICT (org_id) DO UPDATE SET\n            stripe_subscription_id = EXCLUDED.stripe_subscription_id,\n            stripe_customer_id = EXCLUDED.stripe_customer_id,\n            seats = EXCLUDED.seats,\n            status = EXCLUDED.status,\n            currency = EXCLUDED.currency,\n            current_period_start = EXCLUDED.current_period_start,\n            current_period_end = EXCLUDED.current_period_end,\n            cancel_at_period_end = EXCLUDED.cancel_at_period_end,\n            updated_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8663b86711b2b36a0e6f419c4deffc652aa23df1497d9e037178fa02bca726bc"
+}

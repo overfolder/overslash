@@ -122,6 +122,33 @@ variable "redis_port" {
   default = ""
 }
 
+variable "cloud_billing" {
+  type    = bool
+  default = false
+}
+
+variable "stripe_eur_lookup_key" {
+  type    = string
+  default = "overslash_seat_eur"
+}
+
+variable "stripe_usd_lookup_key" {
+  type    = string
+  default = "overslash_seat_usd"
+}
+
+variable "stripe_secret_key_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID for the Stripe secret key. Only used when cloud_billing=true."
+}
+
+variable "stripe_webhook_secret_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID for the Stripe webhook signing secret. Only used when cloud_billing=true."
+}
+
 locals {
   env_vars = merge(
     {
@@ -143,17 +170,28 @@ locals {
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
     var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
+    var.cloud_billing ? {
+      CLOUD_BILLING         = "true"
+      STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
+      STRIPE_USD_LOOKUP_KEY = var.stripe_usd_lookup_key
+    } : {},
   )
 
-  env_secrets = {
-    DB_PASSWORD                = var.db_password_secret_id
-    GOOGLE_AUTH_CLIENT_ID      = var.oauth_client_id_secret_id
-    GOOGLE_AUTH_CLIENT_SECRET  = var.oauth_client_secret_secret_id
-    OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id
-    OAUTH_GOOGLE_CLIENT_SECRET = var.google_services_client_secret_secret_id
-    SECRETS_ENCRYPTION_KEY     = var.encryption_key_secret_id
-    SIGNING_KEY                = var.signing_key_secret_id
-  }
+  env_secrets = merge(
+    {
+      DB_PASSWORD                = var.db_password_secret_id
+      GOOGLE_AUTH_CLIENT_ID      = var.oauth_client_id_secret_id
+      GOOGLE_AUTH_CLIENT_SECRET  = var.oauth_client_secret_secret_id
+      OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id
+      OAUTH_GOOGLE_CLIENT_SECRET = var.google_services_client_secret_secret_id
+      SECRETS_ENCRYPTION_KEY     = var.encryption_key_secret_id
+      SIGNING_KEY                = var.signing_key_secret_id
+    },
+    var.cloud_billing && var.stripe_secret_key_secret_id != "" ? {
+      STRIPE_SECRET_KEY     = var.stripe_secret_key_secret_id
+      STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret_secret_id
+    } : {},
+  )
 }
 
 resource "google_cloud_run_v2_service" "api" {
