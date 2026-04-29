@@ -58,15 +58,16 @@ variable "schedule_cron" {
 
 variable "cpu" {
   type    = string
-  default = "500m"
-  # The exporter is I/O bound (one parallel SQL sweep + one HTTPS POST,
-  # whole job finishes in ~1 s). Sub-1 vCPU also avoids the gen2
-  # "cpu always allocated" rule that forces memory ≥ 512Mi.
+  default = "1"
+  # Cloud Run v2 jobs run on the gen2 execution environment with CPU
+  # always allocated (unthrottled), which requires cpu >= 1 and pairs it
+  # with a memory floor of 512Mi. The exporter is I/O bound and finishes
+  # in ~1 s, so the practical cost of 1 vCPU * ~1s every 5 min is trivial.
 }
 
 variable "memory" {
   type    = string
-  default = "256Mi"
+  default = "512Mi"
 }
 
 variable "task_timeout" {
