@@ -69,6 +69,12 @@ async fn test_google_calendar_three_modes() {
         .await
         .unwrap();
 
+    // Mode C requires Layer-1 access to the `google_calendar` service instance.
+    // Create an org-level instance and grant Everyone admin access so the
+    // ceiling clears for every member of the org (including our test agent's
+    // owner-user).
+    common::grant_service_to_everyone(&base, &client, &admin_key, "google_calendar").await;
+
     // ===== MODE A: Raw HTTP with secret injection =====
     client
         .put(format!("{base}/v1/secrets/gcal_token"))

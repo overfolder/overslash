@@ -277,7 +277,7 @@ async fn member_assignment_users_only() {
 }
 
 #[tokio::test]
-async fn grants_require_org_level_service() {
+async fn grants_accept_owned_services_for_admin_sharing() {
     let (base, org_key, _user_id, user_key) = bootstrap().await;
     let client = reqwest::Client::new();
 
@@ -350,7 +350,10 @@ async fn grants_require_org_level_service() {
         .unwrap();
     let user_svc_id = user_svc_resp["id"].as_str().unwrap();
 
-    // Try to add grant for user-level service — should fail
+    // Granting a user-owned service to a regular org-level group is now allowed:
+    // admins can share alice's `user-svc` with the Engineering group so its
+    // members can use it. The Myself-group guard only kicks in when the target
+    // group is a `system_kind = 'self'` group of someone other than the owner.
     let resp = client
         .post(format!("{base}/v1/groups/{group_id}/grants"))
         .header("Authorization", format!("Bearer {org_key}"))
@@ -361,7 +364,7 @@ async fn grants_require_org_level_service() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.status(), 200);
 
     // Invalid access level
     let resp = client
@@ -396,8 +399,9 @@ async fn service_visibility_filtered_by_groups() {
     let svc1_id = create_org_service(&base, &client, &org_key, "svc-a").await;
     create_org_service(&base, &client, &org_key, "svc-b").await;
 
-    // User is only in system groups (Everyone) which don't trigger filtering.
-    // Permissive mode applies — user sees all services.
+    // After the Myself-group migration, Layer-1 always enforces. A user in
+    // only the system Everyone + Myself groups has no grant on either svc-a or
+    // svc-b, so neither shows up.
     let resp = client
         .get(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {user_key}"))
@@ -407,12 +411,12 @@ async fn service_visibility_filtered_by_groups() {
     let services: Vec<Value> = resp.json().await.unwrap();
     let before_names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
     assert!(
-        before_names.contains(&"svc-a"),
-        "permissive: should see svc-a when only in system groups"
+        !before_names.contains(&"svc-a"),
+        "system-only membership: svc-a must not be visible without a grant"
     );
     assert!(
-        before_names.contains(&"svc-b"),
-        "permissive: should see svc-b when only in system groups"
+        !before_names.contains(&"svc-b"),
+        "system-only membership: svc-b must not be visible without a grant"
     );
 
     // Create group with only svc-a granted

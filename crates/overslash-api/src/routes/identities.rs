@@ -398,9 +398,9 @@ async fn create_identity(
         }
     };
 
-    // Auto-join new users to the Everyone group
+    // Auto-join new users to the Everyone group + create their Myself group.
     if row.kind == "user" {
-        overslash_db::repos::org_bootstrap::add_to_everyone_group(&state.db, auth.org_id, row.id)
+        overslash_db::repos::org_bootstrap::bootstrap_user_in_org(&state.db, auth.org_id, row.id)
             .await?;
     }
 

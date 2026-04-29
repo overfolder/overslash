@@ -12,6 +12,12 @@ pub struct GroupRow {
     pub description: String,
     pub allow_raw_http: bool,
     pub is_system: bool,
+    /// `'everyone'`, `'admins'`, or `'self'` for system groups; `NULL` for
+    /// admin-created groups.
+    pub system_kind: Option<String>,
+    /// Set iff `system_kind = 'self'` — the user-identity this Myself group
+    /// belongs to.
+    pub owner_identity_id: Option<Uuid>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -86,7 +92,7 @@ pub(crate) async fn create(
         GroupRow,
         "INSERT INTO groups (org_id, name, description, allow_raw_http)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at",
+         RETURNING id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at",
         org_id,
         name,
         description,
@@ -103,7 +109,7 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
          FROM groups WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -115,7 +121,7 @@ pub(crate) async fn get_by_id(
 pub(crate) async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
          FROM groups WHERE org_id = $1 ORDER BY name",
         org_id,
     )
@@ -135,7 +141,7 @@ pub(crate) async fn update(
         GroupRow,
         "UPDATE groups SET name = $3, description = $4, allow_raw_http = $5, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at",
+         RETURNING id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at",
         id,
         org_id,
         name,
@@ -337,7 +343,7 @@ pub(crate) async fn list_groups_for_identity(
 ) -> Result<Vec<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.is_system, g.created_at, g.updated_at
+        "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.is_system, g.system_kind, g.owner_identity_id, g.created_at, g.updated_at
          FROM groups g
          JOIN identity_groups ig ON ig.group_id = g.id
          JOIN identities i ON i.id = ig.identity_id
@@ -398,8 +404,7 @@ pub(crate) async fn is_identity_in_admins(
          JOIN groups g ON g.id = ig.group_id
          WHERE ig.identity_id = $1
            AND g.org_id = $2
-           AND g.name = 'Admins'
-           AND g.is_system = true
+           AND g.system_kind = 'admins'
          LIMIT 1",
         identity_id,
         org_id,
@@ -409,19 +414,121 @@ pub(crate) async fn is_identity_in_admins(
     Ok(row.is_some())
 }
 
-/// Find the system group named "Everyone" for an org.
+/// Find the system "Everyone" group for an org.
 pub(crate) async fn find_everyone_group(
     pool: &PgPool,
     org_id: Uuid,
 ) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, created_at, updated_at
-         FROM groups WHERE org_id = $1 AND name = 'Everyone' AND is_system = true",
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
+         FROM groups WHERE org_id = $1 AND system_kind = 'everyone'",
         org_id,
     )
     .fetch_optional(pool)
     .await
+}
+
+/// Find the Myself group for a specific user-identity in an org, if one exists.
+pub(crate) async fn find_self_group(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<Option<GroupRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupRow,
+        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
+         FROM groups
+         WHERE org_id = $1 AND system_kind = 'self' AND owner_identity_id = $2",
+        org_id,
+        identity_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Ensure a Myself group exists for the given user-identity, creating it (and
+/// adding the user as the sole member) if missing. Returns the group id.
+///
+/// Idempotent: safe to call repeatedly. Caller is responsible for verifying
+/// that `identity_id` refers to a `kind = 'user'` identity in `org_id`.
+pub(crate) async fn ensure_self_group(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    label: &str,
+) -> Result<Uuid, sqlx::Error> {
+    if let Some(existing) = find_self_group(pool, org_id, identity_id).await? {
+        return Ok(existing.id);
+    }
+
+    let mut tx = pool.begin().await?;
+
+    let row = sqlx::query!(
+        "INSERT INTO groups (org_id, name, description, is_system, system_kind, owner_identity_id, allow_raw_http)
+         VALUES ($1, $2, 'Personal services and Layer-1 grants for this user', true, 'self', $3, true)
+         ON CONFLICT DO NOTHING
+         RETURNING id",
+        org_id,
+        format!("Myself: {label}"),
+        identity_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let group_id = match row {
+        Some(r) => r.id,
+        None => {
+            // A concurrent caller won the insert race — pick up theirs.
+            sqlx::query!(
+                "SELECT id FROM groups
+                 WHERE org_id = $1 AND system_kind = 'self' AND owner_identity_id = $2",
+                org_id,
+                identity_id,
+            )
+            .fetch_one(&mut *tx)
+            .await?
+            .id
+        }
+    };
+
+    sqlx::query!(
+        "INSERT INTO identity_groups (identity_id, group_id) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING",
+        identity_id,
+        group_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(group_id)
+}
+
+/// Insert a `group_grants` row pointing the given user's Myself group at the
+/// given service instance. Defaults: `access_level='admin'`, `auto_approve_reads=true`.
+/// Idempotent on the `(group_id, service_instance_id)` unique key.
+///
+/// Caller is responsible for ensuring `service_instance_id` belongs to the same
+/// `org_id` and is owned by `identity_id`.
+pub(crate) async fn grant_to_self_group(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    service_instance_id: Uuid,
+    label: &str,
+) -> Result<(), sqlx::Error> {
+    let group_id = ensure_self_group(pool, org_id, identity_id, label).await?;
+    sqlx::query!(
+        "INSERT INTO group_grants (group_id, service_instance_id, access_level, auto_approve_reads)
+         VALUES ($1, $2, 'admin', true)
+         ON CONFLICT (group_id, service_instance_id) DO NOTHING",
+        group_id,
+        service_instance_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // ── Ceiling queries (hot path) ───────────────────────────────────────

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM groups WHERE org_id = $1 AND name = 'Everyone' AND is_system = true",
+  "query": "SELECT id FROM groups\n                 WHERE org_id = $1 AND system_kind = 'self' AND owner_identity_id = $2",
   "describe": {
     "columns": [
       {
@@ -11,6 +11,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -18,5 +19,5 @@
       false
     ]
   },
-  "hash": "6e2b26d0aee483de54a229e1e0d69d7f48bf24017c8c6eb0ce0d5497ce20e009"
+  "hash": "ce54b4f17f5b98d74f190ff972cc9f6cd2867769da2f8fc371c00713f7907c20"
 }

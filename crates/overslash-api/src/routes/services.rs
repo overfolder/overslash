@@ -184,21 +184,14 @@ async fn list_services(
     scope: OrgScope,
 ) -> Result<Json<Vec<ServiceInstanceSummary>>> {
     // Org-level API keys (no identity) bypass group filtering — they see everything.
-    // Otherwise resolve the ceiling user (self for users, owner for agents) and apply
-    // group-based visibility.
+    // Identity-bound calls always go through group-based visibility now: every
+    // user has at least Everyone + Myself, and listing must match what
+    // `group_ceiling::load_ceiling` enforces at action time. Otherwise users
+    // would see services in the list but get denied when calling them.
     let (ceiling_user_id, visible_ids) = if let Some(identity_id) = auth.identity_id {
         let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
-
-        // System groups (Everyone, Admins) don't count for visibility filtering.
-        // Only user-created groups trigger filtering, matching group_ceiling::load_ceiling.
-        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
-        let has_user_groups = groups.iter().any(|g| !g.is_system);
-        let visible_ids = if !has_user_groups {
-            None // no user groups = permissive (backward compat)
-        } else {
-            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
-        };
-        (Some(ceiling_user_id), visible_ids)
+        let visible_ids = scope.get_visible_service_ids(ceiling_user_id).await?;
+        (Some(ceiling_user_id), Some(visible_ids))
     } else {
         (None, None) // org-level key — permissive
     };
@@ -353,16 +346,21 @@ async fn create_service(
 
     // Determine the owning identity:
     //   - on_behalf_of: validate against the caller's owner chain, use the user
-    //   - else: fall back to the legacy `user_level` flag (defaults true when
-    //     the key is identity-bound)
+    //   - user_level (default true for identity-bound keys): owner is the
+    //     caller's ceiling user (the caller itself for users; the owner-user
+    //     for agents). This matches the SPEC rule that agents create resources
+    //     at owner-user level so all sibling agents share them, and ensures the
+    //     auto-created Myself grant lands on the user whose ceiling actually
+    //     gates the action call.
     let owner_identity_id = if req.on_behalf_of.is_some() {
         group_ceiling::resolve_owner_identity(&scope, auth.identity_id, req.on_behalf_of).await?
     } else {
         let user_level = req.user_level.unwrap_or(auth.identity_id.is_some());
         if user_level {
-            Some(auth.identity_id.ok_or_else(|| {
+            let caller_id = auth.identity_id.ok_or_else(|| {
                 AppError::BadRequest("user-level services require an identity-bound API key".into())
-            })?)
+            })?;
+            Some(group_ceiling::resolve_ceiling_user_id(&scope, caller_id).await?)
         } else {
             None
         }
@@ -412,7 +410,13 @@ async fn create_service(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("connection '{connection_id}' not found")))?;
 
-        if connection.identity_id != expected_owner {
+        // Accept the connection if it belongs to the resolved owner (the user
+        // the service is being created for) or to the caller themselves
+        // (an agent pinning its own personal connection to a service it's
+        // creating for its owner-user).
+        let connection_acceptable = connection.identity_id == expected_owner
+            || Some(connection.identity_id) == auth.identity_id;
+        if !connection_acceptable {
             return Err(AppError::Forbidden(
                 "connection belongs to another identity".into(),
             ));
@@ -544,6 +548,18 @@ async fn create_service(
         }
         AppError::Database(e)
     })?;
+
+    // Auto-grant the new service to the owner's Myself group with admin access
+    // and `auto_approve_reads = true`. This is what makes the service reachable
+    // by the owner (and their agents, with read auto-approval) under the unified
+    // group-ceiling model. The Myself group is created on-demand if missing
+    // (defensive — user identities are normally bootstrapped with one).
+    if let Some(owner_id) = row.owner_identity_id {
+        let label = owner_id.to_string();
+        scope
+            .grant_service_to_self_group(owner_id, row.id, &label)
+            .await?;
+    }
 
     // Match get/list semantics: newly-created services also carry the
     // derived `credentials_status` so clients don't need a second round-trip

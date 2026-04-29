@@ -343,12 +343,13 @@ pub(crate) async fn list_available(
     .await
 }
 
-/// List services visible to a user, filtered by group membership.
+/// List services visible to a caller, filtered by group membership.
 ///
-/// Caller-owned and ceiling-user-owned services are always visible regardless of group
-/// grants (a user must always be able to reach the services they've defined). Org-level
-/// services are filtered by the `visible_service_ids` set (derived from group grants).
-/// If `visible_service_ids` is `None`, no group filtering is applied (backward compat).
+/// Visibility flows entirely through `visible_service_ids` (the set of service
+/// instance ids the caller's ceiling-user has access to via group grants — including
+/// the auto-managed Myself group, which carries grants on services the user owns).
+/// Pass `None` to skip group filtering — used for org-level API keys and the legacy
+/// no-identity path.
 pub(crate) async fn list_available_with_groups(
     pool: &PgPool,
     org_id: Uuid,
@@ -363,14 +364,9 @@ pub(crate) async fn list_available_with_groups(
                 "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
                  template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
                  FROM service_instances \
-                 WHERE org_id = $1 \
-                   AND (owner_identity_id = $2 \
-                        OR owner_identity_id = $3 \
-                        OR id = ANY($4)) \
+                 WHERE org_id = $1 AND id = ANY($2) \
                  ORDER BY name",
                 org_id,
-                identity_id,
-                ceiling_user_id,
                 ids,
             )
             .fetch_all(pool)

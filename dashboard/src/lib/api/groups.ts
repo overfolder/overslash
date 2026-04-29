@@ -10,6 +10,11 @@ export interface Group {
 	name: string;
 	description: string;
 	allow_raw_http: boolean;
+	is_system: boolean;
+	/** "everyone" | "admins" | "self" for system groups; absent otherwise. */
+	system_kind?: 'everyone' | 'admins' | 'self';
+	/** Set iff system_kind === 'self' — the user-identity this Myself group is for. */
+	owner_identity_id?: string;
 	created_at: string;
 	updated_at: string;
 }
@@ -63,6 +68,15 @@ export interface Identity {
 
 export const groupsApi = {
 	list: (signal?: AbortSignal) => session.get<Group[]>('/v1/groups', signal),
+	/**
+	 * Like `list`, but includes per-user "Myself" system groups
+	 * (`system_kind === 'self'`). The default listing hides them so the org
+	 * admin's group view doesn't get flooded by one row per user; the service
+	 * detail page calls this variant so an owner can see and manage their own
+	 * Myself grant inline.
+	 */
+	listIncludingSelf: (signal?: AbortSignal) =>
+		session.get<Group[]>('/v1/groups?include_self=true', signal),
 	get: (id: string) => session.get<Group>(`/v1/groups/${id}`),
 	create: (body: CreateGroupRequest) => session.post<Group>('/v1/groups', body),
 	update: (id: string, body: UpdateGroupRequest) => session.put<Group>(`/v1/groups/${id}`, body),

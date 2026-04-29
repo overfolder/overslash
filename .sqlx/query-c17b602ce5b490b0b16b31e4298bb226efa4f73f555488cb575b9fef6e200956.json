@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO groups (org_id, name, description, is_system, system_kind, owner_identity_id, allow_raw_http)\n         VALUES ($1, $2, 'Personal services and Layer-1 grants for this user', true, 'self', $3, true)\n         ON CONFLICT DO NOTHING\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c17b602ce5b490b0b16b31e4298bb226efa4f73f555488cb575b9fef6e200956"
+}
