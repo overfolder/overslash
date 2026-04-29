@@ -2,7 +2,7 @@
 
 # API down: uptime check fails 2 consecutive 60s probes.
 resource "google_monitoring_alert_policy" "api_down" {
-  count = var.api_domain != "" ? 1 : 0
+  count = local.alerts_enabled && var.api_domain != "" ? 1 : 0
 
   project      = var.project_id
   display_name = "[P0] ${var.base_prefix} API Down"
@@ -39,6 +39,8 @@ resource "google_monitoring_alert_policy" "api_down" {
 
 # 5xx ratio > 1% over 5 min.
 resource "google_monitoring_alert_policy" "api_high_5xx" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P0] ${var.base_prefix} API High 5xx Rate"
   combiner     = "OR"
@@ -83,6 +85,8 @@ resource "google_monitoring_alert_policy" "api_high_5xx" {
 
 # p99 latency > 5s over 5 min.
 resource "google_monitoring_alert_policy" "api_high_latency" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P0] ${var.base_prefix} API High P99 Latency"
   combiner     = "OR"

@@ -2,6 +2,8 @@
 # only added to P0 routing when an integration key is supplied.
 
 resource "google_monitoring_notification_channel" "email" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "${var.base_prefix} Email Alerts"
   type         = "email"
@@ -12,7 +14,7 @@ resource "google_monitoring_notification_channel" "email" {
 }
 
 resource "google_monitoring_notification_channel" "pagerduty" {
-  count = var.pagerduty_integration_key != "" ? 1 : 0
+  count = local.alerts_enabled && var.pagerduty_integration_key != "" ? 1 : 0
 
   project      = var.project_id
   display_name = "${var.base_prefix} PagerDuty"

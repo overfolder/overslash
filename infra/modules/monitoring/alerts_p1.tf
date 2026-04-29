@@ -2,6 +2,8 @@
 
 # Cloud Run CPU > 90% for 10 min.
 resource "google_monitoring_alert_policy" "api_high_cpu" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} API High CPU"
   combiner     = "OR"
@@ -37,6 +39,8 @@ resource "google_monitoring_alert_policy" "api_high_cpu" {
 
 # Cloud Run memory > 85% for 10 min.
 resource "google_monitoring_alert_policy" "api_high_memory" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} API High Memory"
   combiner     = "OR"
@@ -72,6 +76,8 @@ resource "google_monitoring_alert_policy" "api_high_memory" {
 
 # Cloud SQL CPU > 80% for 10 min.
 resource "google_monitoring_alert_policy" "db_high_cpu" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} Cloud SQL High CPU"
   combiner     = "OR"
@@ -105,6 +111,8 @@ resource "google_monitoring_alert_policy" "db_high_cpu" {
 
 # Cloud SQL disk > 80% for 5 min.
 resource "google_monitoring_alert_policy" "db_high_disk" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} Cloud SQL High Disk Usage"
   combiner     = "OR"
@@ -142,6 +150,8 @@ resource "google_monitoring_alert_policy" "db_high_disk" {
 # successful tick; if (now - max(last_success)) > 5 min sustained for 10 min,
 # something is stuck.
 resource "google_monitoring_alert_policy" "background_task_stale" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} Background Task Stale"
   combiner     = "OR"
@@ -173,6 +183,8 @@ resource "google_monitoring_alert_policy" "background_task_stale" {
 # OAuth refresh failure rate > 10% over 15 min. Refresh failures are the most
 # common reason connections silently stop working.
 resource "google_monitoring_alert_policy" "oauth_refresh_failure_rate" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} OAuth Refresh Failure Rate"
   combiner     = "OR"
@@ -201,6 +213,8 @@ resource "google_monitoring_alert_policy" "oauth_refresh_failure_rate" {
 
 # Webhook terminal-failure rate > 5% over 30 min.
 resource "google_monitoring_alert_policy" "webhook_failure_rate" {
+  count = local.alerts_enabled ? 1 : 0
+
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} Webhook Delivery Failure Rate"
   combiner     = "OR"

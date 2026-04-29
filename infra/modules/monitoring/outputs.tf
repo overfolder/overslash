@@ -1,9 +1,9 @@
 output "email_channel_id" {
-  value = google_monitoring_notification_channel.email.id
+  value = local.alerts_enabled ? google_monitoring_notification_channel.email[0].id : ""
 }
 
 output "pagerduty_channel_id" {
-  value = var.pagerduty_integration_key != "" ? google_monitoring_notification_channel.pagerduty[0].id : ""
+  value = local.alerts_enabled && var.pagerduty_integration_key != "" ? google_monitoring_notification_channel.pagerduty[0].id : ""
 }
 
 output "uptime_check_id" {
