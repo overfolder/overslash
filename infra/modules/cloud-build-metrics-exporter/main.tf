@@ -55,15 +55,21 @@ resource "google_cloudbuild_trigger" "deploy" {
     }
   }
 
-  # Path filter: only fire when the exporter sources or the workspace
-  # manifest change. Keeps the API-deploy trigger as the primary path for
-  # everything else.
+  # Path filter: only fire when something that actually goes into the
+  # exporter image changes. Mirrors the shortener trigger's pattern.
+  # - Cargo.toml / Cargo.lock / rust-toolchain.toml: workspace inputs the
+  #   Dockerfile COPYs at the top of the builder stage.
+  # - crates/overslash-metrics-exporter/**: the exporter sources + Dockerfile.
+  # - .sqlx/**: offline sqlx query metadata used by SQLX_OFFLINE=true.
+  # Sibling workspace crates (overslash-metrics, overslash-db, ...) are
+  # intentionally excluded: the exporter has no path deps on them, so
+  # their source changes don't affect the binary; any dep-graph impact
+  # flows through Cargo.lock.
   included_files = [
     "Cargo.toml",
     "Cargo.lock",
+    "rust-toolchain.toml",
     "crates/overslash-metrics-exporter/**",
-    "crates/overslash-metrics/**",
-    "crates/overslash-db/**",
     ".sqlx/**",
   ]
 
