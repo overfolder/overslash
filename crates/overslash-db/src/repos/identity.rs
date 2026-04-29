@@ -324,7 +324,7 @@ pub async fn set_is_org_admin(
         sqlx::query!(
             "INSERT INTO identity_groups (identity_id, group_id)
              SELECT $1, g.id FROM groups g
-             WHERE g.org_id = $2 AND g.name = 'Admins' AND g.is_system = true
+             WHERE g.org_id = $2 AND g.system_kind = 'admins'
              ON CONFLICT DO NOTHING",
             id,
             org_id,
@@ -337,7 +337,7 @@ pub async fn set_is_org_admin(
              WHERE identity_id = $1
                AND group_id IN (
                  SELECT id FROM groups
-                 WHERE org_id = $2 AND name = 'Admins' AND is_system = true
+                 WHERE org_id = $2 AND system_kind = 'admins'
                )",
             id,
             org_id,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.is_system, g.created_at, g.updated_at\n         FROM groups g\n         JOIN identity_groups ig ON ig.group_id = g.id\n         JOIN identities i ON i.id = ig.identity_id\n         WHERE ig.identity_id = $1 AND g.org_id = $2 AND i.org_id = $2\n         ORDER BY g.name",
+  "query": "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at\n         FROM groups\n         WHERE org_id = $1 AND system_kind = 'self' AND owner_identity_id = $2",
   "describe": {
     "columns": [
       {
@@ -35,11 +35,21 @@
       },
       {
         "ordinal": 6,
+        "name": "system_kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "owner_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -57,9 +67,11 @@
       false,
       false,
       false,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "e457af6f2d5d699d00e7a05e0c67fce4c1e831562f138d617cc460700efb13f5"
+  "hash": "8af7a82b0cea6bc463b1d0dc4cc0a1f29d96a068f98e1a6c3e67708bcb39ce68"
 }

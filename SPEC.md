@@ -286,22 +286,103 @@ Access levels map to the `Risk` enum:
 
 Raw HTTP access (Mode A) is gated by a separate `allow_raw_http` boolean on the group — it is not a service instance.
 
-User-owned service instances bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
+**Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`. The owner can downgrade these grants (cap at `read`, disable auto-approve) or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
 
-When a user has no group assignments, no ceiling is enforced (permissive). Orgs opt into enforcement by creating groups and assigning users.
+There is no separate "user-level service" tier in the permission model. `owner_identity_id` survives as a namespace marker (so alice's `github` shadows the org `github` in her own resolution — see §9 *Services (Instances)*) and as a provenance bit, but every permission decision flows through the same `group_grants` ceiling. Org admins can additionally grant any service — including ones owned by individual users — to other groups, making admin-driven sharing first-class.
 
-**Auto-approve reads:** Each service grant in a group can optionally enable `auto_approve_reads`. When set, non-mutating requests (actions where `risk: read`, or GET/HEAD/OPTIONS for raw HTTP) from agents automatically create permission keys without requiring user approval. Mutating requests (`risk: write` or `delete`) still go through normal approval flow. This is configured per-service per-group — org-admins decide which services have sensitive read operations (financial data, PII) vs ones where reads are safe (listing PRs, checking calendar events).
+There is no permissive default. After the Myself migration, every bootstrapped user identity belongs to at least the Everyone and Myself system groups, and Everyone always carries the `overslash:write` grant from org bootstrap, so `ceiling.grants` is never empty in practice and the ceiling is always enforced. The `NoGroups` permissive branch survives only as a safety net for org-level keys with no identity at all.
+
+**Auto-approve reads:** Each service grant can enable `auto_approve_reads`. When the matching grant has the flag set and the action is non-mutating (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP), **Layer 2 is bypassed entirely**: the agent's call runs immediately, no permission rule is created, no approval is filed. Mutating requests (`risk: write` or `delete`) always go through normal approval flow. The Myself grant defaults to `auto_approve_reads = true`, so an agent reading from one of its owner-user's own services skips approval without polluting the agent's permission-rule list. Org admins can also enable the flag on shared org grants for services where reads are safe (listing PRs, checking calendar events).
 
 **Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
 
 Within the group ceiling, agents require specific permission keys for each action. Keys are created when a user clicks "Allow & Remember" on an approval — they are never written by hand. Permission keys build up organically as agents are used and users approve their actions. Users acting through the dashboard or API Explorer are gated by groups only — they are their own approvers.
 
+### Action authorization flow
+
+Where grants come from for a given caller:
+
+```
+                       ┌─────────────────────────────┐
+                       │   ceiling_user_id (owner)   │
+                       │ user → self ; agent → owner │
+                       └──────────────┬──────────────┘
+                                      │ identity_groups
+                          ┌───────────┼─────────────────────┐
+                          ▼           ▼                     ▼
+                  ┌───────────┐  ┌────────────┐    ┌─────────────────┐
+                  │  Myself   │  │  Everyone  │    │   any number    │
+                  │  (system) │  │  (system)  │    │   of admin-     │
+                  │ owner=me  │  │ allow_raw  │    │   created       │
+                  │           │  │   _http    │    │   groups        │
+                  └─────┬─────┘  └─────┬──────┘    └────────┬────────┘
+                        │              │                     │
+                        │  group_grants (access_level + auto_approve_reads)
+                        ▼              ▼                     ▼
+                       ┌───────────────────────────────────────┐
+                       │  Union: CeilingGrant per service      │
+                       │  (most-permissive grant wins per svc) │
+                       └───────────────────────────────────────┘
+```
+
+How a single action call is authorized end-to-end:
+
+```
+   Action invoked
+        │
+        ▼
+   Resolve ceiling_user_id (user → self ; agent → owner)
+        │
+        ▼
+   load_ceiling(user)  ──►  union of grants from Myself + Everyone +
+        │                   any admin-created groups the user is in
+        ▼
+   check_ceiling(service, risk) → { result, read_bypass }
+        │
+        ├── ExceedsCeiling ───────────► [DENY]  (not approvable)
+        │
+        └── WithinCeiling
+                │
+                ▼
+        identity.kind == user ?
+                │
+        ┌───────┴────────┐
+        │                │
+       yes               no (agent)
+        │                │
+        ▼                ▼
+    [CALL now]     read_bypass ?
+                   (auto_approve_reads=true AND non-mutating risk)
+                        │
+                ┌───────┴────────┐
+                │                │
+               yes               no
+                │                │
+                ▼                ▼
+            [CALL now]     Layer 2: walk permission chain
+            (no rule        (sub-agent → agent → user)
+             written)              │
+                          ┌────────┴─────────┐
+                          │                  │
+                    all keys present       gap
+                          │                  │
+                          ▼                  ▼
+                      [CALL now]      Create approval at gap level
+                                       (resolver = first ancestor
+                                        with the keys, else the user)
+```
+
+The win this delivers compared to the previous "user-owned service bypass": an agent reading from one of its owner-user's services no longer has to wait for a human approval on the first call. The Myself grant's `auto_approve_reads = true` short-circuits Layer 2 for reads — no popup, no permission-rule clutter — while writes still flow through approval.
+
 ### Resolution Flow
 
+The flow above expanded as discrete steps:
+
 1. Agent makes a request → system derives permission keys from the request
-2. **Group check**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
-3. **Permission key check**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
-4. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
+2. **Group check (Layer 1)**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
+3. **Read bypass**: if the matching grant has `auto_approve_reads = true` and the action is non-mutating, skip Layer 2 and call immediately
+4. **Permission key check (Layer 2)**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
+5. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
 
 ### Hierarchical Resolution
 
@@ -773,8 +854,9 @@ Service: "client-calendar"          (OAuth token for alice@bigclient.org — use
 ```
 
 **Service ownership:**
-- **Org services** — created by org-admins, assigned to groups. All users in those groups can use them. Example: `github` (org's GitHub OAuth app, per-user tokens).
-- **User services** — created by users, private to the creator and their agents. Example: `my-scraper`.
+- Services have an optional `owner_identity_id` used purely as a namespace and provenance marker. `NULL` means the service lives in the org namespace (e.g., `github`); a non-null value puts the service in that user's private namespace (e.g., alice's `my-scraper`).
+- Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
+- Agents that create services with the default `user_level: true` create them under their owner-user's namespace (matching the SPEC rule that agents create resources at owner-user level so all sibling agents share them). Pass `user_level: false` to create an org-namespaced service or `on_behalf_of: <user>` to target a specific owner.
 
 **Naming and resolution:**
 
@@ -801,10 +883,10 @@ This lets users override org defaults with their own credentials (e.g., personal
 - `github:create_pull_request:overfolder/*` — resolves through the user's `github` if it shadows, else the org's
 - `google-calendar:list_events:*`
 
-**Groups grant access to org services (instances)**:
+**Groups grant access to service instances** (any service in the org, regardless of `owner_identity_id`):
 - Engineering group gets: github (write), slack (write)
-- Service discovery is group-gated: `GET /v1/services` returns org-level services only if the calling user (or agent's owner-user) belongs to a group that grants access to that service.
-- User-owned services are always visible to their creator and bypass the group ceiling, but their agents still need permission keys via approvals.
+- Service discovery is group-gated: `GET /v1/services` returns the union of services the caller's ceiling user has grants on — across the Myself group (owner-namespaced services), the Everyone group, and any admin-created groups they belong to.
+- Owner-created services are reachable through the owner's Myself grant. Org admins can layer additional grants on top to share an owner-namespaced service with other groups.
 
 **Service lifecycle:** see *Service Lifecycle States* below.
 

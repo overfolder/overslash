@@ -149,6 +149,29 @@ x-overslash-mcp:
     )
 }
 
+/// Look up the parent user-identity of the given agent by name. Used to mint
+/// a user-bound API key so the test can call owner-only group endpoints
+/// (e.g. delete-and-re-add of the Myself grant).
+async fn user_id_for_agent(base: &str, client: &Client, admin_key: &str, _agent_id: Uuid) -> Uuid {
+    let identities: Vec<Value> = client
+        .get(format!("{base}/v1/identities"))
+        .header(common::auth(admin_key).0, common::auth(admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    identities
+        .iter()
+        .find(|i| i["kind"] == "user" && i["name"] == "test-user")
+        .expect("test-user not found")["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
 /// Bootstrap an org with an admin user (resolver) and an agent (caller), and
 /// register an MCP-runtime template + service instance — but **do not** grant
 /// the agent any permissions, so calling the action triggers an approval.
@@ -170,7 +193,7 @@ async fn setup_pending_mcp_approval(template_key: &str) -> ReplayCtx {
 
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org, agent_ident, agent_key, admin_key) =
+    let (org_id, agent_ident, agent_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
     // Upload MCP template (org tier, kind:none — no secret needed).
@@ -208,6 +231,89 @@ async fn setup_pending_mcp_approval(template_key: &str) -> ReplayCtx {
         "instance create: {:?}",
         resp.text().await
     );
+    let svc: Value = resp.json().await.unwrap();
+    let svc_id = svc["id"].as_str().expect("instance id").to_string();
+
+    // The auto-created Myself grant defaults to `auto_approve_reads = true`,
+    // which would short-circuit Layer 2 for this read-risk action and return
+    // 200 instead of 202. This test is specifically about Layer 2 mechanics
+    // (approval → resolve → replay), so flip the bypass off via the public
+    // grants API: delete the auto-created grant and re-add it with the flag
+    // off. The user-bound test agent is the owner of the Myself group (since
+    // it's the calling identity-bound key), so it has authority to mutate.
+    // The agent's owner-user (test-user) is the owner of the service we just
+    // created (services default to `owner = ceiling_user_id`). Mint a
+    // user-bound key for that user so the test can mutate its Myself grant.
+    let test_user_id = user_id_for_agent(&base, &client, &admin_key, agent_ident).await;
+    let user_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "org_id": org_id,
+            "identity_id": test_user_id,
+            "name": "user-key-for-replay",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = user_key_resp["key"].as_str().unwrap();
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups?include_self=true"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let self_group = groups
+        .iter()
+        .find(|g| {
+            g["system_kind"] == "self"
+                && g["owner_identity_id"].as_str() == Some(&test_user_id.to_string())
+        })
+        .expect("Myself group should exist for the agent's owner-user");
+    let self_group_id = self_group["id"].as_str().unwrap();
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{self_group_id}/grants"))
+        .header(common::auth(user_key).0, common::auth(user_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grants
+        .iter()
+        .find(|g| g["service_instance_id"].as_str() == Some(&svc_id))
+        .expect("Myself grant for the new service")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{self_group_id}/grants/{grant_id}"
+        ))
+        .header(common::auth(user_key).0, common::auth(user_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resp = client
+        .post(format!("{base}/v1/groups/{self_group_id}/grants"))
+        .header(common::auth(user_key).0, common::auth(user_key).1)
+        .json(&json!({
+            "service_instance_id": svc_id,
+            "access_level": "admin",
+            "auto_approve_reads": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
 
     ReplayCtx {
         base,

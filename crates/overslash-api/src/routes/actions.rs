@@ -163,8 +163,6 @@ struct ResolvedMeta {
     service_scope: Option<ServiceScope>,
     /// Risk level of the action (Mode C only, from the action definition).
     risk: Option<Risk>,
-    /// Owner identity ID of the resolved service instance (for user-owned service bypass).
-    service_instance_owner: Option<Uuid>,
     /// Disclosure declarations from the action template (Mode C only, empty
     /// for Mode A/B). Runs at approval-create and audit-write time.
     disclose: Vec<DisclosureField>,
@@ -255,7 +253,11 @@ async fn call_action_impl(
     };
 
     // ── Layer 1: Group ceiling check ─────────────────────────────────
-    let mut auto_approved = false;
+    //
+    // Owner access to a service flows through the user's auto-managed Myself
+    // group grant (admin + auto_approve_reads = true by default), so every
+    // call runs through this same ceiling — including ones targeting a
+    // service owned by the caller's ceiling user.
 
     // Determine service name and risk for ceiling check
     let ceiling_service = if let Some(ref scope) = meta.service_scope {
@@ -269,39 +271,29 @@ async fn call_action_impl(
         Risk::from_http_method(&action_req.method)
     };
 
-    // User-owned service instances bypass the ceiling for the creator
-    // (matches if the service owner is the calling identity or the ceiling user)
-    let is_user_owned_service = meta.service_instance_owner.is_some()
-        && (meta.service_instance_owner == Some(ceiling_user_id)
-            || meta.service_instance_owner == Some(identity_id));
+    let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
 
-    if !is_user_owned_service {
-        let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
+    // `read_bypass = true` means the matching grant has `auto_approve_reads`
+    // and the action is non-mutating — Layer 2 is skipped entirely (no
+    // permission rule is written, no approval is filed).
+    let mut skip_layer2 = false;
 
-        if ceiling.has_groups {
-            match group_ceiling::check_ceiling(&ceiling, &ceiling_service, ceiling_risk) {
-                GroupCeilingResult::ExceedsCeiling(reason) => {
-                    return Ok(
-                        (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason }))
-                            .into_response(),
-                    );
-                }
-                GroupCeilingResult::WithinCeilingAutoApprove if identity.kind != "user" => {
-                    // Auto-create permission rules for the agent
-                    for key in &perm_keys {
-                        scope
-                            .create_permission_rule(identity_id, &key.0, "allow", None)
-                            .await?;
-                    }
-                    auto_approved = true;
-                }
-                GroupCeilingResult::WithinCeiling
-                | GroupCeilingResult::WithinCeilingAutoApprove
-                | GroupCeilingResult::NoGroups => {}
+    if ceiling.has_groups {
+        match group_ceiling::check_ceiling(&ceiling, &ceiling_service, ceiling_risk) {
+            GroupCeilingResult::ExceedsCeiling(reason) => {
+                return Ok(
+                    (StatusCode::FORBIDDEN, Json(CallResponse::Denied { reason })).into_response(),
+                );
             }
+            GroupCeilingResult::WithinCeiling { read_bypass } => {
+                if read_bypass && identity.kind != "user" {
+                    skip_layer2 = true;
+                }
+            }
+            GroupCeilingResult::NoGroups => {}
         }
-        // has_groups == false → NoGroups → permissive (no ceiling enforced)
     }
+    // has_groups == false → NoGroups → permissive (no ceiling enforced)
 
     // ── Layer 2: Hierarchical permission check (agents/sub-agents only) ──
     let needs_gate =
@@ -309,7 +301,9 @@ async fn call_action_impl(
 
     // Users are gated by groups only — they are their own approvers.
     // Agents walk the ancestor chain; first gap → approval at gap level.
-    if identity.kind != "user" && needs_gate && !auto_approved {
+    // Read bypass on a Myself / auto-approve-reads grant skips Layer 2 for
+    // non-mutating actions without writing a permission rule.
+    if identity.kind != "user" && needs_gate && !skip_layer2 {
         let bubble_secs =
             overslash_db::repos::org::get_approval_auto_bubble_secs(&state.db, auth.org_id)
                 .await?
@@ -886,7 +880,6 @@ async fn resolve_request(
                 auth_injected: true,
                 service_scope: None,
                 risk: None,
-                service_instance_owner: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
                 params: HashMap::new(),
@@ -1018,7 +1011,6 @@ async fn resolve_request(
                 &std::collections::HashMap::new(),
             );
             let description = format!("{interpolated} ({})", svc.display_name);
-            let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
             return Ok((
                 ActionRequest {
                     method: String::new(),
@@ -1036,7 +1028,6 @@ async fn resolve_request(
                         scope_param: action.scope_param.clone(),
                     }),
                     risk: Some(action.risk),
-                    service_instance_owner: instance_owner,
                     disclose: action.disclose.clone(),
                     redact: action.redact.clone(),
                     params: req.params.clone(),
@@ -1065,7 +1056,6 @@ async fn resolve_request(
                 .unwrap_or(action_key)
                 .to_string();
             let description = format!("{} ({})", action.description, svc.display_name);
-            let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
             let params_map: serde_json::Map<String, serde_json::Value> =
                 req.params.clone().into_iter().collect();
             return Ok((
@@ -1085,7 +1075,6 @@ async fn resolve_request(
                         scope_param: action.scope_param.clone(),
                     }),
                     risk: Some(action.risk),
-                    service_instance_owner: instance_owner,
                     disclose: Vec::new(),
                     redact: Vec::new(),
                     params: HashMap::new(),
@@ -1202,7 +1191,6 @@ async fn resolve_request(
         );
         let description = format!("{interpolated} ({})", svc.display_name);
 
-        let instance_owner = instance.as_ref().and_then(|i| i.owner_identity_id);
         let action_risk = action.risk;
 
         return Ok((
@@ -1222,7 +1210,6 @@ async fn resolve_request(
                     scope_param: action.scope_param.clone(),
                 }),
                 risk: Some(action_risk),
-                service_instance_owner: instance_owner,
                 disclose: action.disclose.clone(),
                 redact: action.redact.clone(),
                 params: req.params.clone(),
@@ -1262,7 +1249,6 @@ async fn resolve_request(
             auth_injected: false,
             service_scope: None,
             risk: None,
-            service_instance_owner: None,
             disclose: Vec::new(),
             redact: Vec::new(),
             params: HashMap::new(),

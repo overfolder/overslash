@@ -73,6 +73,42 @@ impl OrgScope {
         group::is_identity_in_admins(self.db(), self.org_id(), identity_id).await
     }
 
+    /// Find the Myself group for a user-identity in this org, if one exists.
+    pub async fn find_self_group(
+        &self,
+        identity_id: Uuid,
+    ) -> Result<Option<GroupRow>, sqlx::Error> {
+        group::find_self_group(self.db(), self.org_id(), identity_id).await
+    }
+
+    /// Ensure a Myself group exists for a user-identity in this org. Creates it
+    /// (and adds the identity as the sole member) if missing. Returns the group id.
+    pub async fn ensure_self_group(
+        &self,
+        identity_id: Uuid,
+        label: &str,
+    ) -> Result<Uuid, sqlx::Error> {
+        group::ensure_self_group(self.db(), self.org_id(), identity_id, label).await
+    }
+
+    /// Auto-grant a service instance to its owner's Myself group with admin
+    /// access and `auto_approve_reads = true`. Idempotent.
+    pub async fn grant_service_to_self_group(
+        &self,
+        owner_identity_id: Uuid,
+        service_instance_id: Uuid,
+        owner_label: &str,
+    ) -> Result<(), sqlx::Error> {
+        group::grant_to_self_group(
+            self.db(),
+            self.org_id(),
+            owner_identity_id,
+            service_instance_id,
+            owner_label,
+        )
+        .await
+    }
+
     // ── Grants ───────────────────────────────────────────────────────
 
     /// Add a grant to a group. The group and the service instance must both

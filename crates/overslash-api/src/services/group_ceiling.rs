@@ -126,16 +126,20 @@ pub async fn resolve_owner_identity(
 }
 
 /// Load and transform the group ceiling for a user identity.
-/// `has_groups` reflects user-created group membership only — system groups
-/// (Everyone, Admins) don't count for ceiling enforcement.
+///
+/// `has_groups` is true whenever the user has any service grants. Bootstrapped
+/// users always satisfy this (the Everyone group carries a write grant on the
+/// `overslash` service from migration 023, and the Myself group adds grants
+/// for anything the user owns), so for normal callers the ceiling is always
+/// enforced. The `NoGroups` permissive path remains only for org-level keys
+/// that have no identity at all and for theoretical edge cases where a
+/// user-identity exists without ever being bootstrapped.
 pub async fn load_ceiling(
     scope: &OrgScope,
     user_identity_id: Uuid,
 ) -> Result<ResolvedCeiling, crate::error::AppError> {
-    let groups = scope.list_groups_for_identity(user_identity_id).await?;
-    let has_groups = groups.iter().any(|g| !g.is_system);
-
     let ceiling = scope.get_ceiling_for_user(user_identity_id).await?;
+    let has_groups = !ceiling.grants.is_empty();
 
     let grants = ceiling
         .grants

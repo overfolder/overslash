@@ -1544,7 +1544,7 @@ async fn provision_org_subdomain(
         Some(user_id),
     )
     .await?;
-    overslash_db::repos::org_bootstrap::add_to_everyone_group(
+    overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
         &state.db,
         target_org.id,
         identity_row.id,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM groups WHERE org_id = $1 AND name = 'Admins' AND is_system = true",
+  "query": "SELECT id FROM groups WHERE org_id = $1 AND system_kind = 'everyone'",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "bcabb69db84471eac2e677c91838dbc06d5176bcffb661f20ab18dc37f56c36a"
+  "hash": "ca214908c0e5a0507131d3dd1180290be7993f32a171885b2eed526805e4124a"
 }

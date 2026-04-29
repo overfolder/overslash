@@ -81,6 +81,55 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
         "template register failed: {create:?}"
     );
 
+    // Create an org-level instance and grant it to Everyone so the agent's
+    // ceiling user (test-user) clears Layer 1. Post-Myself the ceiling is
+    // always enforced, so reaching Layer 2 (the gap → approval path this test
+    // is actually about) requires an explicit grant — we don't fall through a
+    // permissive default anymore.
+    let svc_instance: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "discloser",
+            "name": "discloser",
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let svc_id = svc_instance["id"].as_str().expect("service create failed");
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group not found");
+
+    let grant_resp = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id,
+            "access_level": "write",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(grant_resp.status(), 200);
+
     // Execute Mode C as the agent. No permission rule exists + explicit
     // `secrets` forces `needs_gate=true` → chain walk finds a gap at the
     // user level → 202 Pending Approval *before* any HTTP call, so we never

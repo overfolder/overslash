@@ -347,10 +347,10 @@ pub struct CeilingGrant {
 /// Result of a group ceiling check.
 #[derive(Debug, PartialEq, Eq)]
 pub enum GroupCeilingResult {
-    /// All keys are within the group ceiling.
-    WithinCeiling,
-    /// Within ceiling AND auto-approve-reads applies (non-mutating + flag set).
-    WithinCeilingAutoApprove,
+    /// Within the ceiling. `read_bypass` is true when the matching grant has
+    /// `auto_approve_reads = true` and the action is non-mutating — callers
+    /// should skip Layer 2 (no permission rule written, no approval filed).
+    WithinCeiling { read_bypass: bool },
     /// Exceeds ceiling — denied, not approvable.
     ExceedsCeiling(String),
     /// Identity has no groups assigned — no ceiling enforced (permissive).
@@ -375,10 +375,11 @@ pub fn check_group_ceiling(
         return GroupCeilingResult::NoGroups;
     }
 
-    // Mode A raw HTTP — gated by the allow_raw_http flag, not by service grants
+    // Mode A raw HTTP — gated by the allow_raw_http flag, not by service grants.
+    // Raw HTTP has no per-grant `auto_approve_reads` flag, so read_bypass is always false.
     if service_name == "http" {
         return if allow_raw_http {
-            GroupCeilingResult::WithinCeiling
+            GroupCeilingResult::WithinCeiling { read_bypass: false }
         } else {
             GroupCeilingResult::ExceedsCeiling("raw HTTP access not allowed by group".into())
         };
@@ -406,12 +407,10 @@ pub fn check_group_ceiling(
         ));
     }
 
-    // Auto-approve: if risk is read AND any matching grant has auto_approve_reads
-    if !risk.is_mutating() && matching.iter().any(|g| g.auto_approve_reads) {
-        return GroupCeilingResult::WithinCeilingAutoApprove;
-    }
+    // Read bypass: non-mutating risk AND at least one matching grant flips the flag.
+    let read_bypass = !risk.is_mutating() && matching.iter().any(|g| g.auto_approve_reads);
 
-    GroupCeilingResult::WithinCeiling
+    GroupCeilingResult::WithinCeiling { read_bypass }
 }
 
 #[cfg(test)]
@@ -708,7 +707,7 @@ mod tests {
         let grants = vec![grant("github", AccessLevel::Read, false)];
         assert_eq!(
             check_group_ceiling("github", Risk::Read, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -726,7 +725,7 @@ mod tests {
         let grants = vec![grant("github", AccessLevel::Write, false)];
         assert_eq!(
             check_group_ceiling("github", Risk::Write, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -744,7 +743,7 @@ mod tests {
         let grants = vec![grant("github", AccessLevel::Admin, false)];
         assert_eq!(
             check_group_ceiling("github", Risk::Delete, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -761,7 +760,7 @@ mod tests {
     fn ceiling_raw_http_allowed() {
         assert_eq!(
             check_group_ceiling("http", Risk::Write, &[], true, true),
-            GroupCeilingResult::WithinCeiling,
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -778,7 +777,7 @@ mod tests {
         let grants = vec![grant("github", AccessLevel::Write, true)];
         assert_eq!(
             check_group_ceiling("github", Risk::Read, &grants, false, true),
-            GroupCeilingResult::WithinCeilingAutoApprove,
+            GroupCeilingResult::WithinCeiling { read_bypass: true },
         );
     }
 
@@ -787,7 +786,7 @@ mod tests {
         let grants = vec![grant("github", AccessLevel::Write, true)];
         assert_eq!(
             check_group_ceiling("github", Risk::Write, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -800,7 +799,7 @@ mod tests {
         ];
         assert_eq!(
             check_group_ceiling("github", Risk::Delete, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -813,7 +812,7 @@ mod tests {
         ];
         assert_eq!(
             check_group_ceiling("github", Risk::Read, &grants, false, true),
-            GroupCeilingResult::WithinCeilingAutoApprove,
+            GroupCeilingResult::WithinCeiling { read_bypass: true },
         );
     }
 

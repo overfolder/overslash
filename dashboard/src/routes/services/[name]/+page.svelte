@@ -103,7 +103,69 @@
 		return match?.name ?? 'user';
 	});
 	const assignedGroupIds = $derived(new Set(serviceGroups.map((g) => g.group_id)));
-	const unassignedGroups = $derived(allGroups.filter((g) => !assignedGroupIds.has(g.id)));
+	// Filter out Myself groups for the "add a group" picker — Myself grants are
+	// auto-managed and only ever target their owner's services. Surfacing them
+	// in a generic picker would let an admin try to grant alice's service to
+	// bob's Myself, which the API rejects with the self-group guard.
+	const unassignedGroups = $derived(
+		allGroups
+			.filter((g) => !assignedGroupIds.has(g.id))
+			.filter((g) => g.system_kind !== 'self')
+	);
+	// The owner's own Myself group, if it has a grant on this service. The
+	// owner can manage this grant inline even when they aren't an org admin.
+	function isOwnerOfGrant(g: ServiceGroupRef): boolean {
+		const grp = allGroups.find((x) => x.id === g.group_id);
+		return (
+			!!grp &&
+			grp.system_kind === 'self' &&
+			!!currentUserId &&
+			grp.owner_identity_id === currentUserId
+		);
+	}
+	function canRemoveGrant(g: ServiceGroupRef): boolean {
+		// Owner manages their own Myself grant; org admins manage everything
+		// else (excluding system services where the table is read-only).
+		if (isSystem) return false;
+		if (isOwnerOfGrant(g)) return true;
+		return isAdmin;
+	}
+	const ownerSelfGroup = $derived(
+		currentUserId && svc?.owner_identity_id === currentUserId
+			? allGroups.find(
+					(g) => g.system_kind === 'self' && g.owner_identity_id === currentUserId
+				)
+			: undefined
+	);
+	const ownerSelfGrantMissing = $derived(
+		!!ownerSelfGroup && !assignedGroupIds.has(ownerSelfGroup.id)
+	);
+	let restoringSelf = $state(false);
+	let restoreAbort: AbortController | null = null;
+	async function restoreSelfGrant() {
+		if (!ownerSelfGroup || !svc) return;
+		restoreAbort?.abort();
+		const ctrl = new AbortController();
+		restoreAbort = ctrl;
+		restoringSelf = true;
+		error = null;
+		try {
+			await groupsApi.addGrant(ownerSelfGroup.id, {
+				service_instance_id: svc.id,
+				access_level: 'admin',
+				auto_approve_reads: true
+			});
+			const fresh = await listServiceGroups(svc.id, ctrl.signal);
+			if (ctrl.signal.aborted || destroyed) return;
+			serviceGroups = fresh;
+		} catch (e) {
+			if (ctrl.signal.aborted || destroyed) return;
+			error = e instanceof ApiError ? e.message : String(e);
+		} finally {
+			if (restoreAbort === ctrl) restoreAbort = null;
+			if (!ctrl.signal.aborted && !destroyed) restoringSelf = false;
+		}
+	}
 	const matchingConnections = $derived(
 		oauthAuth ? connections.filter((c) => c.provider_key === oauthAuth.provider) : connections
 	);
@@ -160,7 +222,11 @@
 					.get<Identity[]>('/v1/identities', ctrl.signal)
 					.catch(() => [] as Identity[]),
 				listServiceGroups(fresh.id, ctrl.signal).catch(() => [] as ServiceGroupRef[]),
-				groupsApi.list(ctrl.signal).catch(() => [] as Group[])
+				// Include Myself groups so the owner can see and manage their
+				// auto-created `system_kind = 'self'` grant inline. The default
+				// listing hides them — see groupsApi.list — so we use the
+				// explicit variant here.
+				groupsApi.listIncludingSelf(ctrl.signal).catch(() => [] as Group[])
 			]);
 			if (ctrl.signal.aborted) return;
 			template = tpl;
@@ -531,32 +597,55 @@
 								<th>Group</th>
 								<th>Access</th>
 								<th>Auto-approve reads</th>
-								{#if isAdmin && !isSystem}<th class="actions-col"></th>{/if}
+								{#if !isSystem}<th class="actions-col"></th>{/if}
 							</tr>
 						</thead>
 						<tbody>
 							{#each serviceGroups as g (g.grant_id)}
 								<tr>
 									<td>
-										<a class="link" href={`/org/groups/${g.group_id}`}>{g.group_name}</a>
+										{#if isOwnerOfGrant(g)}
+											<span title="Auto-managed grant for the service owner">Myself</span>
+										{:else}
+											<a class="link" href={`/org/groups/${g.group_id}`}>{g.group_name}</a>
+										{/if}
 									</td>
 									<td><span class="mono">{g.access_level}</span></td>
 									<td>{g.auto_approve_reads ? 'Yes' : 'No'}</td>
-									{#if isAdmin && !isSystem}
+									{#if !isSystem}
 										<td class="actions-col">
-											<button
-												type="button"
-												class="btn small danger"
-												onclick={() => removeGroupGrant(g)}
-											>
-												Remove
-											</button>
+											{#if canRemoveGrant(g)}
+												<button
+													type="button"
+													class="btn small danger"
+													onclick={() => removeGroupGrant(g)}
+												>
+													Remove
+												</button>
+											{/if}
 										</td>
 									{/if}
 								</tr>
 							{/each}
 						</tbody>
 					</table>
+				{/if}
+				{#if ownerSelfGrantMissing}
+					<div class="restore-self">
+						<p class="muted small">
+							You removed your Myself grant on this service. Restore it to use
+							the service again — agents you own get auto-approved reads via
+							the Myself group.
+						</p>
+						<button
+							type="button"
+							class="btn primary"
+							onclick={restoreSelfGrant}
+							disabled={restoringSelf}
+						>
+							{restoringSelf ? 'Restoring…' : 'Restore Myself grant'}
+						</button>
+					</div>
 				{/if}
 				{#if isAdmin && !isSystem}
 					{#if unassignedGroups.length > 0}
@@ -1003,6 +1092,19 @@
 	}
 	.add-group .field {
 		min-width: 180px;
+	}
+	.restore-self {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+		padding-top: 0.5rem;
+		margin-top: 0.5rem;
+		border-top: 1px dashed var(--color-border);
+	}
+	.restore-self p {
+		margin: 0;
+		flex: 1 1 240px;
 	}
 	.inline-field {
 		display: flex;

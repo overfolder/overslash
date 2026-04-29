@@ -294,16 +294,14 @@ async fn collect_visible_templates(
         .await?
         .unwrap_or(false);
 
+    // Visibility goes through `get_visible_service_ids` for any identity-bound
+    // call so the search/list view stays consistent with what `load_ceiling`
+    // enforces at action time. Org-level keys (no identity) bypass — they see
+    // every service in the org.
     let (ceiling_user_id, visible_instance_ids) = if let Some(identity_id) = auth.identity_id {
         let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?;
-        let groups = scope.list_groups_for_identity(ceiling_user_id).await?;
-        let has_user_groups = groups.iter().any(|g| !g.is_system);
-        let visible_ids = if !has_user_groups {
-            None
-        } else {
-            Some(scope.get_visible_service_ids(ceiling_user_id).await?)
-        };
-        (Some(ceiling_user_id), visible_ids)
+        let visible_ids = scope.get_visible_service_ids(ceiling_user_id).await?;
+        (Some(ceiling_user_id), Some(visible_ids))
     } else {
         (None, None)
     };

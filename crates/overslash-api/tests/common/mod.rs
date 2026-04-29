@@ -1184,6 +1184,92 @@ pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }
 
+/// Test helper: ensure an org-level instance for `template_key` exists, then
+/// grant Everyone admin access on it so any user-identity in the org clears
+/// Layer 1 for that service. Idempotent — safe to call repeatedly. Returns
+/// the service instance id.
+pub async fn grant_service_to_everyone(
+    base: &str,
+    client: &Client,
+    admin_key: &str,
+    template_key: &str,
+) -> Uuid {
+    // Create or fetch an org-level service instance for this template. The
+    // create endpoint uses the template_key as the default service name, which
+    // is what we want.
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": template_key,
+            "name": template_key,
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .expect("create service");
+
+    let svc_id: Uuid = if create_resp.status() == 200 {
+        let v: Value = create_resp.json().await.unwrap();
+        v["id"].as_str().unwrap().parse().unwrap()
+    } else {
+        // 409: already exists — look it up via /v1/services
+        let list: Vec<Value> = client
+            .get(format!("{base}/v1/services"))
+            .header("Authorization", format!("Bearer {admin_key}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        list.iter()
+            .find(|s| s["name"] == template_key)
+            .expect("service should exist after conflict")["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+
+    // Find the Everyone group and grant admin on it.
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group must exist after bootstrap");
+
+    let grant_resp = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "admin",
+            "auto_approve_reads": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 409 = already granted (idempotent), 200 = newly granted.
+    assert!(
+        grant_resp.status() == 200 || grant_resp.status() == 409,
+        "unexpected grant status: {}",
+        grant_resp.status()
+    );
+
+    svc_id
+}
+
 /// Opt the test process out of the SSRF guard so MCP/HTTP stubs bound to
 /// 127.0.0.1 are reachable. The production binary never sets this env var;
 /// the knob exists solely so tests can use loopback stubs without widening
