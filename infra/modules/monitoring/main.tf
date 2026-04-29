@@ -14,6 +14,8 @@ data "google_project" "current" {
 }
 
 locals {
+  # Filters as they reach the Cloud Monitoring API verbatim — raw quotes,
+  # consumed directly by alert policy `filter` fields.
   api_filter      = "resource.type = \"cloud_run_revision\" AND resource.labels.service_name = \"${var.api_service_name}\""
   db_filter       = "resource.type = \"cloudsql_database\" AND resource.labels.database_id = \"${var.project_id}:${var.cloud_sql_instance_name}\""
   business_filter = "resource.type = \"generic_task\" AND resource.labels.namespace = \"overslash\" AND resource.labels.job = \"metrics-exporter\""

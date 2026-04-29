@@ -7,11 +7,15 @@
 # only recreate when the template actually changes on disk.
 
 locals {
+  # Dashboard templates embed filter strings inside JSON, so the raw
+  # double-quotes need to be JSON-escaped (`"` → `\"`). Alert policies
+  # consume the same filters via a struct field and want them bare, so
+  # only the dashboard side gets escaped.
   dashboard_vars = {
     display_prefix  = var.base_prefix
-    api_filter      = local.api_filter
-    db_filter       = local.db_filter
-    business_filter = local.business_filter
+    api_filter      = replace(local.api_filter, "\"", "\\\"")
+    db_filter       = replace(local.db_filter, "\"", "\\\"")
+    business_filter = replace(local.business_filter, "\"", "\\\"")
     uptime_check_id = var.api_domain != "" ? google_monitoring_uptime_check_config.api_health[0].uptime_check_id : ""
   }
 }
