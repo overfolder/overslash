@@ -267,19 +267,22 @@ SVC ?= api
 logs:
 	@SVC_FILTER=$$(echo "$(SVC)" | sed 's/[^,]\+/resource.labels.service_name="overslash-$(ENV)-&"/g; s/,/ OR /g'); \
 	FILTER="resource.type=\"cloud_run_revision\" AND ($$SVC_FILTER) AND logName:\"stdout\""; \
+	STRIP_ANSI='s/\x1B\[[0-9;]*[A-Za-z]//g'; \
+	FMT='value(timestamp.date("%Y-%m-%d %H:%M:%S"), severity, resource.labels.service_name, jsonPayload.level, jsonPayload.target, jsonPayload.span.name, jsonPayload.message, jsonPayload.fields, textPayload)'; \
 	if [ -n "$(SINCE)" ]; then \
 		echo -e "$(GREEN)Reading Cloud Run logs: $(SVC) ($(ENV)) — last $(SINCE), then tailing$(NC)"; \
 		( set -x; \
 		  gcloud logging read "$$FILTER" \
 			--project=$(GCP_PROJECT) --freshness=$(SINCE) --limit=10000 \
-			--format='value(jsonPayload.timestamp.date("%Y-%m-%d %H:%M:%S"), jsonPayload.level, jsonPayload.target, jsonPayload.fields)' \
-		) | tac; \
+			--format="$$FMT" \
+		) | tac | sed -E "$$STRIP_ANSI"; \
 	fi; \
 	echo -e "$(GREEN)Tailing Cloud Run logs: $(SVC) ($(ENV))$(NC)"; \
 	set -x; \
 	gcloud beta logging tail "$$FILTER" \
 		--project=$(GCP_PROJECT) --buffer-window=3s \
-		--format='value(jsonPayload.timestamp.date("%H:%M:%S"), jsonPayload.level, jsonPayload.target, jsonPayload.fields)'
+		--format="$$FMT" \
+		| sed -uE "$$STRIP_ANSI"
 
 # View Cloud Build deploy logs (last build per service)
 # Usage: make logs-deploy                          (api only)
