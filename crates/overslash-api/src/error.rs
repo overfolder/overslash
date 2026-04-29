@@ -75,6 +75,30 @@ pub enum AppError {
     },
 }
 
+impl AppError {
+    /// Status code this error will eventually be rendered with.
+    /// Mirrors `into_response` without consuming the error — used by
+    /// metrics wrappers to classify outcomes before propagation.
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) | Self::IdentityArchived { .. } => StatusCode::FORBIDDEN,
+            Self::BadRequest(_) | Self::FilterSyntax(_) => StatusCode::BAD_REQUEST,
+            Self::BadGateway(_) | Self::Request(_) | Self::ResponseTooLarge { .. } => {
+                StatusCode::BAD_GATEWAY
+            }
+            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Gone(_) => StatusCode::GONE,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::TemplateValidationFailed { .. } => StatusCode::BAD_REQUEST,
+            Self::Internal(_) | Self::Database(_) | Self::Json(_) | Self::Crypto(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {

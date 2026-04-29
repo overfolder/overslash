@@ -539,6 +539,21 @@ async fn resolve_approval(
             )
         })?;
 
+    // The approval row is now in its terminal status — record the resolution
+    // metric *before* creating the pending execution so a downstream failure
+    // there can't drop the resolution counter (the DB row is the source of
+    // truth either way).
+    let event_label = match row.status.as_str() {
+        "allowed" => "approved",
+        "denied" => "denied",
+        other => other,
+    };
+    overslash_metrics::approvals::record_event(event_label, "user");
+    let age = overslash_metrics::approvals::duration_since(
+        time::OffsetDateTime::now_utc() - row.created_at,
+    );
+    overslash_metrics::approvals::record_resolution(event_label, age);
+
     // On allow/allow_remember, create the pending execution row. The actual
     // replay is triggered later by POST /v1/approvals/{id}/call.
     let execution = if status == "allowed" {
@@ -688,6 +703,7 @@ async fn call_approval(
         return Err(execution_conflict_error(current));
     };
     let execution_id = claimed.id;
+    overslash_metrics::approvals::record_event("called", triggered_by);
 
     // Validator: if any step fails, finalize the row and surface the error.
     // We own the row (unique claim) so this is race-free.

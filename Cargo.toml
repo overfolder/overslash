@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "crates/oversla-sh", "tests/mock-target"]
+members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "crates/oversla-sh", "crates/overslash-metrics", "tests/mock-target"]
 
 [workspace.package]
 edition = "2024"
@@ -31,6 +31,8 @@ rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path
 mime_guess = "2"
 url = "2"
 subtle = "2"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
 # Fast dev builds: minimal debug info
 [profile.dev]

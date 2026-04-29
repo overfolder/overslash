@@ -140,6 +140,7 @@ async fn put_secret(
         })
         .await;
 
+    overslash_metrics::secrets::record_op("write", "ok");
     Ok(Json(PutSecretResponse {
         name: secret.name,
         version: secret.current_version,
@@ -310,6 +311,7 @@ async fn reveal_version(
         })
         .await;
 
+    overslash_metrics::secrets::record_op("reveal", "ok");
     Ok(Json(RevealResponse { version, value }))
 }
 
@@ -363,6 +365,7 @@ async fn restore_version(
         })
         .await;
 
+    overslash_metrics::secrets::record_op("restore", "ok");
     Ok(Json(PutSecretResponse {
         name: secret.name,
         version: secret.current_version,
@@ -378,6 +381,7 @@ async fn delete_secret(
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
     let deleted = scope.soft_delete_secret(&name).await?;
+    overslash_metrics::secrets::record_op("delete", if deleted { "ok" } else { "not_found" });
     if deleted {
         let _ = OrgScope::new(auth.org_id, state.db.clone())
             .log_audit(AuditEntry {

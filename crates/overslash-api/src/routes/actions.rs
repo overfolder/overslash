@@ -39,6 +39,71 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/v1/actions/call", post(call_action))
 }
 
+/// Top-level handler that times the request and emits the
+/// `overslash_action_executions_total` / `_duration_seconds` metrics.
+/// Granular outcomes (approval_required vs called vs filtered) are encoded in
+/// the success-body status tag and would require threading an outcome out of
+/// the inner function — for now we classify by HTTP status only.
+async fn call_action(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    scope: OrgScope,
+    ip: ClientIp,
+    Json(req): Json<CallRequest>,
+) -> Result<Response, AppError> {
+    let start = std::time::Instant::now();
+    // Mode resolution mirrors `resolve_request` exactly: `connection` wins
+    // over `service+action` when both are present, so the metric label
+    // matches the execution path that actually runs downstream.
+    let mode = if req.connection.is_some() {
+        "b"
+    } else if req.service.is_some() {
+        "c"
+    } else {
+        "a"
+    };
+    // Bound the `template_key` label to keys that actually exist in the
+    // registry. A client could otherwise submit `service: "<arbitrary>"`
+    // and explode Prometheus cardinality even on requests that fail
+    // validation inside the inner handler. When `connection` wins (mode b),
+    // any `service` field is ignored downstream — emit `_raw` so labels
+    // don't lie about which template was used.
+    let template_key = if req.connection.is_some() {
+        "_raw".to_string()
+    } else {
+        match req.service.as_deref() {
+            Some(key) if state.registry.get(key).is_some() => key.to_string(),
+            Some(_) => "_unknown".to_string(),
+            None => "_raw".to_string(),
+        }
+    };
+
+    let result = call_action_impl(State(state), auth, scope, ip, Json(req)).await;
+
+    // Resolve the outcome to its eventual HTTP status so 4xx user-input errors
+    // (BadRequest, NotFound, Forbidden, RateLimited) don't count as `failed`.
+    let status_code = match &result {
+        Ok(resp) => resp.status().as_u16(),
+        Err(err) => err.status_code().as_u16(),
+    };
+    let status_label = if status_code >= 500 {
+        "failed"
+    } else if status_code == 403 {
+        "denied"
+    } else if status_code >= 400 {
+        "rejected"
+    } else {
+        "called"
+    };
+    overslash_metrics::actions::record_execution(
+        &template_key,
+        mode,
+        status_label,
+        start.elapsed(),
+    );
+    result
+}
+
 /// Unified call request: supports Mode A (raw HTTP) and Mode C (service + action).
 #[derive(Debug, Deserialize)]
 struct CallRequest {
@@ -139,7 +204,7 @@ struct ServiceScope {
     scope_param: Option<String>,
 }
 
-async fn call_action(
+async fn call_action_impl(
     State(state): State<AppState>,
     auth: AuthContext,
     scope: OrgScope,

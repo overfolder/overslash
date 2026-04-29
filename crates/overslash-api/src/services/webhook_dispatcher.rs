@@ -48,12 +48,15 @@ pub async fn dispatch(
             &sub.url,
             &sub.secret,
             &payload,
+            event,
+            1,
         )
         .await;
     }
 }
 
 /// Attempt to deliver a single webhook.
+#[allow(clippy::too_many_arguments)]
 async fn deliver(
     pool: &PgPool,
     http_client: &reqwest::Client,
@@ -61,6 +64,8 @@ async fn deliver(
     url: &str,
     secret: &str,
     payload: &serde_json::Value,
+    event_type: &str,
+    attempt: u32,
 ) {
     let body = serde_json::to_string(payload).unwrap_or_default();
 
@@ -87,19 +92,38 @@ async fn deliver(
                 let _ = system
                     .mark_webhook_delivered(delivery_id, status, &body)
                     .await;
+                overslash_metrics::webhooks::record_delivery(event_type, "success", true);
+                overslash_metrics::webhooks::record_attempts(event_type, "success", attempt);
             } else {
                 let _ = system
                     .mark_webhook_failed(delivery_id, Some(status), &body)
                     .await;
+                let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
+                let status_label = if exhausted { "failed" } else { "retry" };
+                overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
+                if exhausted {
+                    overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
+                }
             }
         }
         Err(e) => {
             let _ = system
                 .mark_webhook_failed(delivery_id, None, &e.to_string())
                 .await;
+            let exhausted = attempt >= MAX_DELIVERY_ATTEMPTS;
+            let status_label = if exhausted { "failed" } else { "retry" };
+            overslash_metrics::webhooks::record_delivery(event_type, status_label, exhausted);
+            if exhausted {
+                overslash_metrics::webhooks::record_attempts(event_type, "exhausted", attempt);
+            }
         }
     }
 }
+
+/// Mirrors the `attempts < 5` filter in `get_pending_deliveries`. Once the
+/// stored attempt counter reaches this number, the retry loop will stop
+/// picking the row up; further delivery attempts are also terminal.
+const MAX_DELIVERY_ATTEMPTS: u32 = 5;
 
 /// Background task: retry failed webhook deliveries.
 pub async fn spawn_retry_loop(pool: PgPool, http_client: reqwest::Client) {
@@ -107,14 +131,17 @@ pub async fn spawn_retry_loop(pool: PgPool, http_client: reqwest::Client) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
+        let start = std::time::Instant::now();
         let pending = match system.get_pending_webhook_deliveries(20).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("Webhook retry query failed: {e}");
+                overslash_metrics::background::record_tick("webhook_retry", "err", start.elapsed());
                 continue;
             }
         };
 
+        let status = if pending.is_empty() { "noop" } else { "ok" };
         for row in pending {
             deliver(
                 &pool,
@@ -123,8 +150,12 @@ pub async fn spawn_retry_loop(pool: PgPool, http_client: reqwest::Client) {
                 &row.url,
                 &row.secret,
                 &row.payload,
+                &row.event,
+                (row.attempts as u32).saturating_add(1),
             )
             .await;
         }
+        overslash_metrics::background::record_tick("webhook_retry", status, start.elapsed());
+        overslash_metrics::background::set_last_success("webhook_retry");
     }
 }
