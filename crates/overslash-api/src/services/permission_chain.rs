@@ -18,9 +18,11 @@ use uuid::Uuid;
 
 use overslash_core::permissions::{PermissionKey, PermissionResult, check_permissions};
 use overslash_core::types::{PermissionEffect, PermissionRule};
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::identity::IdentityRow;
 use overslash_db::scopes::{OrgScope, SystemScope};
 
+use crate::AppState;
 use crate::error::AppError;
 
 pub enum ChainWalkResult {
@@ -321,6 +323,172 @@ pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> 
         }
     }
     Ok(bubbled)
+}
+
+/// Re-evaluate pending approvals that the rules just placed at `placement_id`
+/// might satisfy, and auto-resolve the ones that are now structurally
+/// `Allowed`. Best-effort: per-approval errors are logged and skipped so a
+/// single bad row never poisons the cascade.
+///
+/// Candidate set: pending approvals in the same org whose **requester**
+/// (`identity_id`) is `placement_id` itself or a descendant. Iterating this
+/// set is fine — typical D ≪ org-wide pending count, and the permission walk
+/// is memoized per-identity by the DB.
+///
+/// Resolution mirrors `resolve_approval(allow)`:
+///   * `status='allowed'`, `resolved_by='cascade'`, `remember=false` (cascade
+///     never produces *new* remembered rules — that would chain),
+///   * a fresh pending `executions` row is created so the requester (or a
+///     resolver) can `/v1/approvals/{id}/call` to actually replay the action,
+///   * one `approval.cascade_resolved` audit row per cascaded approval,
+///   * the existing `approval.resolved` webhook is dispatched so listeners see
+///     it through the normal channel.
+///
+/// Returns the ids of the approvals that were resolved by this cascade.
+pub async fn cascade_resolve(
+    state: &AppState,
+    scope: &OrgScope,
+    placement_id: Uuid,
+    triggering_approval_id: Uuid,
+) -> Result<Vec<Uuid>, AppError> {
+    let candidates = scope
+        .list_pending_approvals_for_descendants(placement_id)
+        .await?;
+
+    let mut resolved_ids: Vec<Uuid> = Vec::new();
+    let ttl_secs = state.config.execution_pending_ttl_secs as i64;
+
+    for approval in candidates {
+        if approval.id == triggering_approval_id {
+            continue;
+        }
+
+        let perm_keys: Vec<PermissionKey> = approval
+            .permission_keys
+            .iter()
+            .map(|k| PermissionKey(k.clone()))
+            .collect();
+
+        let walk_result = match walk(scope, approval.identity_id, &perm_keys, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    approval_id = %approval.id,
+                    "cascade walk failed: {e}"
+                );
+                continue;
+            }
+        };
+
+        // Only act on Allowed; Gap/Denied stay as-is. Cascade-deny and
+        // bubble-down are deliberately out of scope for v1 — they carry
+        // surprising side effects and the user accepted Allowed-only.
+        if !matches!(walk_result, ChainWalkResult::Allowed) {
+            continue;
+        }
+
+        match scope
+            .resolve_approval(
+                approval.id,
+                "allowed",
+                "cascade",
+                false,
+                approval.current_resolver_identity_id,
+            )
+            .await
+        {
+            Ok(Some(_)) => {}
+            // None → someone else (manual resolve, auto-bubble) raced us.
+            // Skip silently; the other path will drive the lifecycle.
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    approval_id = %approval.id,
+                    "cascade resolve_approval failed: {e}"
+                );
+                continue;
+            }
+        };
+
+        // Try to create the pending execution. If it fails, the approval is
+        // already in `allowed` state — we still emit audit + webhook so
+        // observers see the cascade event, just with `execution_id=null`.
+        // The requester's natural retry path (re-issue the action; permission
+        // check now passes against the new rule) is unaffected.
+        let exec_expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(ttl_secs);
+        let execution = match scope
+            .create_pending_execution(approval.id, false, None, None, exec_expires_at)
+            .await
+        {
+            Ok(row) => Some(row),
+            Err(e) => {
+                tracing::warn!(
+                    approval_id = %approval.id,
+                    "cascade create_pending_execution failed: {e}"
+                );
+                None
+            }
+        };
+
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: scope.org_id(),
+                identity_id: None,
+                action: "approval.cascade_resolved",
+                resource_type: Some("approval"),
+                resource_id: Some(approval.id),
+                detail: serde_json::json!({
+                    "triggering_approval_id": triggering_approval_id,
+                    "rule_placement_id": placement_id,
+                    "execution_id": execution.as_ref().map(|e| e.id),
+                    "permission_keys": &approval.permission_keys,
+                }),
+                description: None,
+                ip_address: None,
+            })
+            .await;
+
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let org_id = scope.org_id();
+        let approval_id = approval.id;
+        let summary = approval.action_summary.clone();
+        let exec_for_webhook = execution.as_ref().map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "status": e.status,
+                "expires_at": e.expires_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
+            })
+        });
+        tokio::spawn(async move {
+            let mut payload = serde_json::json!({
+                "approval_id": approval_id,
+                "status": "allowed",
+                "action_summary": summary,
+                "resolved_by": "cascade",
+            });
+            if let Some(exec) = exec_for_webhook {
+                payload
+                    .as_object_mut()
+                    .expect("payload is a json object")
+                    .insert("execution".into(), exec);
+            }
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                "approval.resolved",
+                payload,
+            )
+            .await;
+        });
+
+        resolved_ids.push(approval.id);
+    }
+
+    Ok(resolved_ids)
 }
 
 /// Returns true if `candidate` is `target` or any ancestor of `target`.

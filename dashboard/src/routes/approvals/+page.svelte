@@ -55,8 +55,10 @@
 
 	function handleResolved(updated: ApprovalResponse) {
 		if (updated.status !== 'pending') {
-			approvals = approvals.filter((a) => a.id !== updated.id);
+			const cascaded = new Set(updated.cascaded_approval_ids ?? []);
+			approvals = approvals.filter((a) => a.id !== updated.id && !cascaded.has(a.id));
 			if (expandedId === updated.id) expandedId = null;
+			if (expandedId && cascaded.has(expandedId)) expandedId = null;
 		}
 	}
 

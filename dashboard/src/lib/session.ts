@@ -222,6 +222,12 @@ export interface ApprovalResponse {
 	 *  pending execution row. Absent on denied / bubbled / pre-replay
 	 *  approvals. */
 	execution?: ExecutionSummary;
+	/** Other pending approvals auto-resolved as a side effect of this call.
+	 *  Populated only on the response to POST /v1/approvals/{id}/call when
+	 *  an "Allow & Remember" rule was committed and that rule structurally
+	 *  satisfied other pending approvals under the same placement identity.
+	 *  Empty / omitted in all other contexts. */
+	cascaded_approval_ids?: string[];
 }
 
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
