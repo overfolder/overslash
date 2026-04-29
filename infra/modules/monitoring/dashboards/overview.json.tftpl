@@ -1,0 +1,131 @@
+{
+  "displayName": "${display_prefix} Overview",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "xPos": 0, "yPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "API Uptime",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "resource.type = \"uptime_url\" AND metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id = \"${uptime_check_id}\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_FRACTION_TRUE" }
+              }
+            },
+            "thresholds": [
+              { "value": 0.95, "color": "YELLOW", "direction": "BELOW" },
+              { "value": 0.99, "color": "RED", "direction": "BELOW" }
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Total Orgs",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/orgs_total\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 4, "width": 12, "height": 2,
+        "widget": { "title": "Golden Signals", "text": { "content": "---", "format": "MARKDOWN" } }
+      },
+      {
+        "xPos": 0, "yPos": 6, "width": 6, "height": 8,
+        "widget": {
+          "title": "Request Rate by Status Class",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${api_filter} AND metric.type = \"run.googleapis.com/request_count\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_RATE", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["metric.labels.response_code_class"] }
+                }
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 6, "width": 6, "height": 8,
+        "widget": {
+          "title": "Latency P50 / P95 / P99",
+          "xyChart": {
+            "dataSets": [
+              { "timeSeriesQuery": { "timeSeriesFilter": { "filter": "${api_filter} AND metric.type = \"run.googleapis.com/request_latencies\"", "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_PERCENTILE_50" } } }, "plotType": "LINE" },
+              { "timeSeriesQuery": { "timeSeriesFilter": { "filter": "${api_filter} AND metric.type = \"run.googleapis.com/request_latencies\"", "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_PERCENTILE_95" } } }, "plotType": "LINE" },
+              { "timeSeriesQuery": { "timeSeriesFilter": { "filter": "${api_filter} AND metric.type = \"run.googleapis.com/request_latencies\"", "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_PERCENTILE_99" } } }, "plotType": "LINE" }
+            ],
+            "yAxis": { "scale": "LINEAR", "label": "ms" }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 14, "width": 12, "height": 2,
+        "widget": { "title": "Background Tasks (silent-hang radar)", "text": { "content": "Age in seconds since each task last reported a successful tick. Red = stale > 5 min.", "format": "MARKDOWN" } }
+      },
+      {
+        "xPos": 0, "yPos": 16, "width": 12, "height": 8,
+        "widget": {
+          "title": "Background Task Last-Success Age (s)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "time() - max by (task) (overslash_background_task_last_success_timestamp)"
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR", "label": "seconds" }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 24, "width": 12, "height": 2,
+        "widget": { "title": "Approvals", "text": { "content": "---", "format": "MARKDOWN" } }
+      },
+      {
+        "xPos": 0, "yPos": 26, "width": 6, "height": 4,
+        "widget": {
+          "title": "Approvals Pending",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/approvals_pending\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 26, "width": 6, "height": 4,
+        "widget": {
+          "title": "Oldest Pending Approval (s)",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/approvals_pending_oldest_seconds\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            },
+            "thresholds": [
+              { "value": 600, "color": "YELLOW", "direction": "ABOVE" },
+              { "value": 1800, "color": "RED", "direction": "ABOVE" }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

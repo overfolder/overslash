@@ -35,3 +35,11 @@ enable_dns   = false
 
 # Valkey (if enabled)
 valkey_memory_size_gb = 1
+
+# Monitoring — set alert_email to enable the monitoring module (dashboards,
+# alerts, uptime checks, OTel sidecar). Leave empty to disable everything.
+alert_email               = ""
+pagerduty_integration_key = "" # optional; when set, P0 alerts also page
+monthly_budget_usd        = 200
+billing_account_id        = "" # optional; required for the billing-budget alert
+enable_metrics_sidecar    = true

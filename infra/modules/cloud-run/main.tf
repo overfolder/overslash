@@ -149,6 +149,24 @@ variable "stripe_webhook_secret_secret_id" {
   description = "GSM secret ID for the Stripe webhook signing secret. Only used when cloud_billing=true."
 }
 
+variable "enable_metrics_sidecar" {
+  type        = bool
+  default     = true
+  description = "Run an OTel collector sidecar that scrapes /internal/metrics and ships to Google Managed Prometheus. Required for the Prometheus-backed dashboards and alerts."
+}
+
+variable "metrics_sidecar_image" {
+  type        = string
+  default     = "otel/opentelemetry-collector-contrib:0.120.0"
+  description = "OTel collector image. Pinned to a specific tag to avoid silent breakage on `:latest`."
+}
+
+variable "container_port" {
+  type        = number
+  default     = 8080
+  description = "Port the API container listens on. The OTel sidecar scrapes localhost:<this>/internal/metrics."
+}
+
 locals {
   env_vars = merge(
     {
@@ -194,6 +212,37 @@ locals {
   )
 }
 
+# OTel collector config — generated from a template, stored in Secret Manager,
+# mounted as a file in the sidecar container. Only created when the sidecar is
+# enabled; otherwise nothing in this module touches Secret Manager.
+resource "google_secret_manager_secret" "otel_config" {
+  count     = var.enable_metrics_sidecar ? 1 : 0
+  project   = var.project_id
+  secret_id = "${var.base_prefix}-otel-collector-config"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "otel_config" {
+  count  = var.enable_metrics_sidecar ? 1 : 0
+  secret = google_secret_manager_secret.otel_config[0].id
+
+  secret_data = templatefile("${path.module}/otel-collector-config.yaml.tftpl", {
+    project_id = var.project_id
+    region     = var.region
+  })
+}
+
+resource "google_secret_manager_secret_iam_member" "otel_config_accessor" {
+  count     = var.enable_metrics_sidecar ? 1 : 0
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.otel_config[0].id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.service_account_email}"
+}
+
 resource "google_cloud_run_v2_service" "api" {
   name     = "${var.base_prefix}-api"
   location = var.region
@@ -217,6 +266,21 @@ resource "google_cloud_run_v2_service" "api" {
       }
     }
 
+    # OTel sidecar config — mounted into the sidecar at /etc/otelcol.
+    dynamic "volumes" {
+      for_each = var.enable_metrics_sidecar ? [1] : []
+      content {
+        name = "otel-config"
+        secret {
+          secret = google_secret_manager_secret.otel_config[0].secret_id
+          items {
+            version = "latest"
+            path    = "config.yaml"
+          }
+        }
+      }
+    }
+
     # Cloud SQL Auth Proxy (works for both public and private IP modes)
     volumes {
       name = "cloudsql"
@@ -226,10 +290,11 @@ resource "google_cloud_run_v2_service" "api" {
     }
 
     containers {
+      name  = "api"
       image = var.image
 
       ports {
-        container_port = 8080
+        container_port = var.container_port
       }
 
       resources {
@@ -269,7 +334,7 @@ resource "google_cloud_run_v2_service" "api" {
       startup_probe {
         http_get {
           path = "/health"
-          port = 8080
+          port = var.container_port
         }
         initial_delay_seconds = 5
         period_seconds        = 5
@@ -279,10 +344,41 @@ resource "google_cloud_run_v2_service" "api" {
       liveness_probe {
         http_get {
           path = "/health"
-          port = 8080
+          port = var.container_port
         }
         period_seconds    = 30
         failure_threshold = 3
+      }
+    }
+
+    # OTel collector sidecar — scrapes /internal/metrics on loopback and
+    # exports to Google Managed Prometheus. `depends_on` keeps Cloud Run from
+    # marking the revision ready before the API container is up, which would
+    # otherwise produce flaky scrape errors during cold starts.
+    dynamic "containers" {
+      for_each = var.enable_metrics_sidecar ? [1] : []
+      content {
+        name       = "otel-collector"
+        image      = var.metrics_sidecar_image
+        args       = ["--config=/etc/otelcol/config.yaml"]
+        depends_on = ["api"]
+
+        env {
+          name  = "METRICS_PORT"
+          value = tostring(var.container_port)
+        }
+
+        resources {
+          limits = {
+            cpu    = "250m"
+            memory = "128Mi"
+          }
+        }
+
+        volume_mounts {
+          name       = "otel-config"
+          mount_path = "/etc/otelcol"
+        }
       }
     }
   }
