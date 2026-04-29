@@ -313,6 +313,7 @@ async fn provider_callback(
         iat: now,
         exp: now + 7 * 24 * 3600,
         user_id: Some(resolved_user_id),
+        mcp_client_id: None,
     };
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
@@ -669,6 +670,7 @@ async fn switch_org(
         iat: now,
         exp: now + 7 * 24 * 3600,
         user_id: Some(user_id),
+        mcp_client_id: None,
     };
     let new_token = jwt::mint(&jwt_secret, &new_claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
@@ -933,6 +935,7 @@ async fn dev_token(
         iat: now,
         exp: now + 7 * 24 * 3600,
         user_id: dev_user_id,
+        mcp_client_id: None,
     };
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;

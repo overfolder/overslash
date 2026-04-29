@@ -9,6 +9,7 @@ pub mod jwt;
 pub mod mcp_auth;
 pub mod mcp_caller;
 pub mod mcp_client;
+pub mod mcp_session;
 pub mod oauth;
 pub mod oauth_as;
 pub mod oidc_discovery;

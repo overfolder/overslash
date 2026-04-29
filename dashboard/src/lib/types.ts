@@ -53,6 +53,31 @@ export interface McpClient {
   is_revoked: boolean;
 }
 
+/**
+ * Per-agent MCP binding + the connecting client's last-recorded `initialize`
+ * state. Used by the Agents detail page to render the "MCP Connection"
+ * section. `null` when no MCP client is bound to this agent.
+ *
+ * `elicitation_supported` is derived from the recorded `capabilities` —
+ * `true` when the client declared `capabilities.elicitation` at handshake.
+ * The Elicitation Approvals toggle is disabled in the UI when this is
+ * `false`, since enabling it would have no effect.
+ */
+export interface McpConnection {
+  client_id: string;
+  client_name: string | null;
+  software_id: string | null;
+  software_version: string | null;
+  capabilities: Record<string, unknown> | null;
+  client_info: { name?: string; version?: string } | null;
+  protocol_version: string | null;
+  session_id: string | null;
+  connected_at: string;
+  last_seen_at: string | null;
+  elicitation_enabled: boolean;
+  elicitation_supported: boolean;
+}
+
 export interface Webhook {
   id: string;
   url: string;

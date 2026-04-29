@@ -68,6 +68,11 @@ pub struct AuthContext {
     /// service account doing the impersonating). `identity_id` is rewritten
     /// to the target so all downstream permission checks use target context.
     pub impersonated_by: Option<Uuid>,
+    /// `oauth_mcp_clients.client_id` for callers presenting an MCP access
+    /// token; `None` otherwise (session cookie, agent key, dev shim).
+    /// Used by `routes/mcp.rs` to attribute capabilities + sessions to the
+    /// right MCP client row.
+    pub mcp_client_id: Option<String>,
 }
 
 /// Enforces subdomain↔JWT consistency: if the request hit `<slug>.<apex>`
@@ -106,6 +111,7 @@ impl FromRequestParts<AppState> for AuthContext {
                     key_id: None,
                     user_id: claims.user_id,
                     impersonated_by: None,
+                    mcp_client_id: None,
                 });
             }
         }
@@ -155,6 +161,7 @@ impl FromRequestParts<AppState> for AuthContext {
                     key_id: None,
                     user_id: None,
                     impersonated_by: None,
+                    mcp_client_id: claims.mcp_client_id,
                 });
             }
             return Err(AppError::Unauthorized("invalid key format".into()));
@@ -317,6 +324,7 @@ impl FromRequestParts<AppState> for AuthContext {
             key_id: Some(key_row.id),
             user_id: None,
             impersonated_by,
+            mcp_client_id: None,
         })
     }
 }

@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT c.id            AS \"id!\",\n                  c.client_id     AS \"client_id!\",\n                  c.client_name,\n                  c.redirect_uris AS \"redirect_uris!\",\n                  c.software_id,\n                  c.software_version,\n                  c.created_at    AS \"created_at!\",\n                  c.last_seen_at,\n                  c.created_ip,\n                  c.created_user_agent,\n                  c.is_revoked    AS \"is_revoked!\",\n                  b.agent_identity_id AS \"agent_identity_id!\"\n             FROM oauth_mcp_clients c\n             JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id\n            WHERE b.user_identity_id = $1\n              AND c.is_revoked = false\n              AND c.client_name IS NOT DISTINCT FROM $2\n              AND c.software_id IS NOT DISTINCT FROM $3\n         ORDER BY b.updated_at DESC\n            LIMIT 1",
+  "query": "SELECT id, client_id, client_name, redirect_uris,\n                software_id, software_version, created_at, last_seen_at,\n                created_ip, created_user_agent, is_revoked,\n                capabilities, client_info, protocol_version, last_session_id\n           FROM oauth_mcp_clients\n          WHERE client_id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id!",
+        "name": "id",
         "type_info": "Uuid"
       },
       {
         "ordinal": 1,
-        "name": "client_id!",
+        "name": "client_id",
         "type_info": "Text"
       },
       {
@@ -20,7 +20,7 @@
       },
       {
         "ordinal": 3,
-        "name": "redirect_uris!",
+        "name": "redirect_uris",
         "type_info": "TextArray"
       },
       {
@@ -35,7 +35,7 @@
       },
       {
         "ordinal": 6,
-        "name": "created_at!",
+        "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
@@ -55,19 +55,32 @@
       },
       {
         "ordinal": 10,
-        "name": "is_revoked!",
+        "name": "is_revoked",
         "type_info": "Bool"
       },
       {
         "ordinal": 11,
-        "name": "agent_identity_id!",
+        "name": "capabilities",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "client_info",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "protocol_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "last_session_id",
         "type_info": "Uuid"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
         "Text"
       ]
     },
@@ -83,8 +96,11 @@
       true,
       true,
       false,
-      false
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "6330d036160609b9c3f0a9497b10698c43f19a762b538eee561ebc9a9cf75f97"
+  "hash": "3342aa79769d1ed57bb186ba1ddd20349154e7786ae212c4bf42d29cb919b0d2"
 }

@@ -1,5 +1,5 @@
 import { session } from '$lib/session';
-import type { Identity } from '$lib/types';
+import type { Identity, McpConnection } from '$lib/types';
 
 export const ssr = false;
 
@@ -13,5 +13,18 @@ export const load = async ({ params }: { params: { name: string } }) => {
 		identities.find(
 			(i) => (i.kind === 'agent' || i.kind === 'sub_agent') && i.name === decoded
 		) ?? null;
-	return { requestedName: decoded, identity, identities };
+
+	let mcp: McpConnection | null = null;
+	if (identity) {
+		// Soft-fail: a missing connection 404s, anything else (transient API
+		// hiccup) just renders the empty-state card and the page still works.
+		mcp = await session
+			.get<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(identity.id)}/mcp-connection`
+			)
+			.then((r) => r.connection)
+			.catch(() => null);
+	}
+
+	return { requestedName: decoded, identity, identities, mcp };
 };

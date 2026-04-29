@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at\n           FROM mcp_client_agent_bindings\n          WHERE user_identity_id = $1\n          ORDER BY updated_at DESC",
+  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at, elicitation_enabled\n           FROM mcp_client_agent_bindings\n          WHERE user_identity_id = $1 AND client_id = $2",
   "describe": {
     "columns": [
       {
@@ -37,11 +37,17 @@
         "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "elicitation_enabled",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -51,8 +57,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "689bcbc24f1a21e6f604bcf95f63cefe698a77815318cd6b95d918476f99ba20"
+  "hash": "5f9fadcd4a8ee09ac1eb1809f6e7fcd0d394c95286bf3eb3914bcdc251954fac"
 }

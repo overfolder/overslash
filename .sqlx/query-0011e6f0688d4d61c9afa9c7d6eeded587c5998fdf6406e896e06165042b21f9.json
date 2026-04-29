@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at, elicitation_enabled\n           FROM mcp_client_agent_bindings\n          WHERE agent_identity_id = $1 AND client_id = $2\n          ORDER BY updated_at DESC\n          LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "agent_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "elicitation_enabled",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0011e6f0688d4d61c9afa9c7d6eeded587c5998fdf6406e896e06165042b21f9"
+}

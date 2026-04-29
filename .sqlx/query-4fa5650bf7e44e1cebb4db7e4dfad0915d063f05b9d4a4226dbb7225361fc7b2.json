@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_mcp_elicitations\n            SET status = $2, completed_at = now()\n          WHERE elicit_id = $1 AND status IN ($3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4fa5650bf7e44e1cebb4db7e4dfad0915d063f05b9d4a4226dbb7225361fc7b2"
+}

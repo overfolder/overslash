@@ -27,6 +27,14 @@ pub struct Claims {
     /// tokens minted before this field existed deserialize it as `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<Uuid>,
+    /// Source MCP OAuth client (`oauth_mcp_clients.client_id`) when this
+    /// token was minted by the MCP Authorization Server. Lets MCP-side
+    /// handlers correlate the calling identity back to its registered
+    /// client so capabilities/session state can be persisted on the
+    /// right row. `None` for non-MCP tokens and for legacy MCP tokens
+    /// minted before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_client_id: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +97,7 @@ pub fn mint_mcp(
     org: Uuid,
     email: String,
     ttl_secs: i64,
+    mcp_client_id: Option<String>,
 ) -> Result<String, JwtError> {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let claims = Claims {
@@ -99,6 +108,7 @@ pub fn mint_mcp(
         iat: now,
         exp: now + ttl_secs,
         user_id: None,
+        mcp_client_id,
     };
     mint(secret, &claims)
 }
@@ -160,6 +170,7 @@ mod tests {
             iat: now,
             exp: now + 3600,
             user_id: None,
+            mcp_client_id: None,
         }
     }
 
@@ -186,6 +197,7 @@ mod tests {
             iat: now - 7200,
             exp: now - 3600,
             user_id: None,
+            mcp_client_id: None,
         };
         let token = mint(&secret, &claims).unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());
@@ -217,6 +229,7 @@ mod tests {
             Uuid::new_v4(),
             "u@example.com".into(),
             3600,
+            None,
         )
         .unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());

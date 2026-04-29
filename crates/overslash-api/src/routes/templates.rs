@@ -628,6 +628,7 @@ async fn list_template_actions(
         key_id: auth.key_id,
         user_id: auth.user_id,
         impersonated_by: auth.impersonated_by,
+        mcp_client_id: auth.mcp_client_id.clone(),
     };
     let actions = resolve_template_actions(&state, &effective_auth, &key).await?;
     Ok(Json(actions))

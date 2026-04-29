@@ -934,6 +934,7 @@ async fn mcp_rejects_user_kind_bearer() {
         claims.org,
         claims.email,
         3600,
+        None,
     )
     .unwrap();
 

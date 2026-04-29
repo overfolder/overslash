@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at\n           FROM mcp_client_agent_bindings\n          WHERE user_identity_id = $1 AND client_id = $2",
+  "query": "DELETE FROM mcp_client_agent_bindings\n          WHERE agent_identity_id = $1\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled",
   "describe": {
     "columns": [
       {
@@ -37,12 +37,16 @@
         "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "elicitation_enabled",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -52,8 +56,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "de8e10f1a559ae3a2899f6c8d01e2cdc9f9af9e87607b4cded9d6acd985ed8a2"
+  "hash": "21e255bfd175926ec89b694a15baba8fdbabaa0fb36f09db85b2fd2676a251fb"
 }

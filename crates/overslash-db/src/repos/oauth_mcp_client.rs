@@ -1,3 +1,4 @@
+use serde_json::Value;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -15,6 +16,10 @@ pub struct OauthMcpClientRow {
     pub created_ip: Option<String>,
     pub created_user_agent: Option<String>,
     pub is_revoked: bool,
+    pub capabilities: Option<Value>,
+    pub client_info: Option<Value>,
+    pub protocol_version: Option<String>,
+    pub last_session_id: Option<Uuid>,
 }
 
 pub struct CreateOauthMcpClient<'a> {
@@ -39,7 +44,8 @@ pub async fn create(
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id, client_id, client_name, redirect_uris,
                      software_id, software_version, created_at, last_seen_at,
-                     created_ip, created_user_agent, is_revoked",
+                     created_ip, created_user_agent, is_revoked,
+                     capabilities, client_info, protocol_version, last_session_id",
         input.client_id,
         input.client_name,
         input.redirect_uris,
@@ -60,7 +66,8 @@ pub async fn get_by_client_id(
         OauthMcpClientRow,
         "SELECT id, client_id, client_name, redirect_uris,
                 software_id, software_version, created_at, last_seen_at,
-                created_ip, created_user_agent, is_revoked
+                created_ip, created_user_agent, is_revoked,
+                capabilities, client_info, protocol_version, last_session_id
            FROM oauth_mcp_clients
           WHERE client_id = $1",
         client_id,
@@ -74,7 +81,8 @@ pub async fn list_all(pool: &PgPool) -> Result<Vec<OauthMcpClientRow>, sqlx::Err
         OauthMcpClientRow,
         "SELECT id, client_id, client_name, redirect_uris,
                 software_id, software_version, created_at, last_seen_at,
-                created_ip, created_user_agent, is_revoked
+                created_ip, created_user_agent, is_revoked,
+                capabilities, client_info, protocol_version, last_session_id
            FROM oauth_mcp_clients
           ORDER BY created_at DESC",
     )
@@ -86,6 +94,35 @@ pub async fn mark_seen(pool: &PgPool, client_id: &str) -> Result<(), sqlx::Error
     sqlx::query!(
         "UPDATE oauth_mcp_clients SET last_seen_at = now() WHERE client_id = $1",
         client_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Persist the capabilities + clientInfo + protocolVersion + session id seen
+/// on the most recent `initialize` request. Called by the MCP route handler.
+pub async fn update_initialize_state(
+    pool: &PgPool,
+    client_id: &str,
+    capabilities: &Value,
+    client_info: &Value,
+    protocol_version: &str,
+    session_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE oauth_mcp_clients
+            SET capabilities = $2,
+                client_info = $3,
+                protocol_version = $4,
+                last_session_id = $5,
+                last_seen_at = now()
+          WHERE client_id = $1",
+        client_id,
+        capabilities,
+        client_info,
+        protocol_version,
+        session_id,
     )
     .execute(pool)
     .await?;
@@ -161,6 +198,10 @@ pub async fn find_similar_for_user(
                   c.created_ip,
                   c.created_user_agent,
                   c.is_revoked    AS "is_revoked!",
+                  c.capabilities,
+                  c.client_info,
+                  c.protocol_version,
+                  c.last_session_id,
                   b.agent_identity_id AS "agent_identity_id!"
              FROM oauth_mcp_clients c
              JOIN mcp_client_agent_bindings b ON b.client_id = c.client_id
@@ -190,6 +231,10 @@ pub async fn find_similar_for_user(
             created_ip: r.created_ip,
             created_user_agent: r.created_user_agent,
             is_revoked: r.is_revoked,
+            capabilities: r.capabilities,
+            client_info: r.client_info,
+            protocol_version: r.protocol_version,
+            last_session_id: r.last_session_id,
         },
         agent_identity_id: r.agent_identity_id,
     }))

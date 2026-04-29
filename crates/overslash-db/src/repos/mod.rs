@@ -26,6 +26,7 @@ pub mod execution;
 pub mod group;
 pub mod identity;
 pub mod mcp_client_agent_binding;
+pub mod mcp_elicitation;
 pub mod mcp_refresh_token;
 pub mod membership;
 pub mod oauth_mcp_client;

@@ -1,16 +1,88 @@
 <script lang="ts">
-	import type { Identity } from '$lib/types';
+	import type { Identity, McpConnection } from '$lib/types';
+	import { ApiError, session } from '$lib/session';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let {
 		data
-	}: { data: { requestedName: string; identity: Identity | null; identities: Identity[] } } =
-		$props();
+	}: {
+		data: {
+			requestedName: string;
+			identity: Identity | null;
+			identities: Identity[];
+			mcp: McpConnection | null;
+		};
+	} = $props();
 
 	const ident = $derived(data.identity);
-	const owner = $derived(ident ? data.identities.find((i) => i.id === ident.owner_id) ?? null : null);
-	const children = $derived(
-		ident ? data.identities.filter((i) => i.parent_id === ident.id) : []
+	const owner = $derived(
+		ident ? (data.identities.find((i) => i.id === ident.owner_id) ?? null) : null
 	);
+	const children = $derived(ident ? data.identities.filter((i) => i.parent_id === ident.id) : []);
+
+	let mcp = $state<McpConnection | null>(null);
+	$effect(() => {
+		// Reset when navigating between different agents (loader runs but local
+		// state would otherwise stick).
+		mcp = data.mcp;
+	});
+
+	let togglingElicitation = $state(false);
+	let elicitationError = $state<string | null>(null);
+	let confirmDisconnect = $state(false);
+	let disconnecting = $state(false);
+
+	async function setElicitation(next: boolean) {
+		if (!ident || !mcp) return;
+		togglingElicitation = true;
+		elicitationError = null;
+		try {
+			const resp = await session.patch<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(ident.id)}/mcp-connection`,
+				{ elicitation_enabled: next }
+			);
+			mcp = resp.connection;
+		} catch (e) {
+			elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+		} finally {
+			togglingElicitation = false;
+		}
+	}
+
+	async function doDisconnect() {
+		if (!ident) return;
+		disconnecting = true;
+		try {
+			await session.post(
+				`/v1/identities/${encodeURIComponent(ident.id)}/mcp-connection/disconnect`,
+				{}
+			);
+			mcp = null;
+			confirmDisconnect = false;
+		} catch (e) {
+			console.error('disconnect failed', e);
+		} finally {
+			disconnecting = false;
+		}
+	}
+
+	function fmtDate(iso: string | null | undefined): string {
+		if (!iso) return '—';
+		try {
+			return new Date(iso).toLocaleString();
+		} catch {
+			return iso;
+		}
+	}
+
+	const clientLabel = $derived.by(() => {
+		if (!mcp) return '';
+		const info = mcp.client_info ?? {};
+		const name = mcp.client_name ?? info.name ?? mcp.software_id ?? mcp.client_id;
+		const version = info.version ?? mcp.software_version;
+		return version ? `${name} · v${version}` : name;
+	});
 </script>
 
 <svelte:head><title>{data.requestedName} · Agents · Overslash</title></svelte:head>
@@ -62,9 +134,81 @@
 			</div>
 		</div>
 
+		<section class="mcp-section">
+			<h2>MCP Connection</h2>
+
+			{#if !mcp}
+				<div class="mcp-empty">
+					<p>
+						No MCP server bound to this identity. Run <code class="mono">overslash mcp login</code>
+						from your editor or CLI to register an MCP client and bind it to this agent.
+					</p>
+				</div>
+			{:else}
+				<div class="mcp-card">
+					<div class="mcp-head">
+						<div class="mcp-main">
+							<div class="mcp-title">
+								<span class="mcp-glyph" aria-hidden="true">◫</span>
+								<code class="mono">{mcp.client_name ?? mcp.client_id}</code>
+								<span class="badge badge-success">connected</span>
+							</div>
+							<dl class="kv">
+								<dt>Client</dt>
+								<dd>{clientLabel}</dd>
+								{#if mcp.session_id}
+									<dt>Session</dt>
+									<dd><code class="mono">{mcp.session_id}</code></dd>
+								{/if}
+								<dt>Connected</dt>
+								<dd>{fmtDate(mcp.connected_at)}</dd>
+								<dt>Last seen</dt>
+								<dd>{fmtDate(mcp.last_seen_at)}</dd>
+								{#if mcp.protocol_version}
+									<dt>Protocol</dt>
+									<dd><code class="mono">{mcp.protocol_version}</code></dd>
+								{/if}
+							</dl>
+						</div>
+						<button
+							type="button"
+							class="btn btn-danger btn-sm"
+							onclick={() => (confirmDisconnect = true)}
+						>
+							Disconnect
+						</button>
+					</div>
+
+					<div class="mcp-options-head">Connection Options</div>
+					<div class="mcp-option">
+						<div class="mcp-option-text">
+							<div class="opt-title" id="opt-elicitation-label">Elicitation approvals</div>
+							<div class="opt-desc">
+								Elicitation allows approving in line but stops the approval from being async.
+							</div>
+							{#if !mcp.elicitation_supported}
+								<div class="opt-warn">
+									This MCP client did not declare elicitation support at connect time.
+								</div>
+							{/if}
+							{#if elicitationError}
+								<div class="opt-warn">{elicitationError}</div>
+							{/if}
+						</div>
+						<ToggleSwitch
+							checked={mcp.elicitation_enabled}
+							disabled={!mcp.elicitation_supported || togglingElicitation}
+							labelledby="opt-elicitation-label"
+							onchange={(v) => setElicitation(v)}
+						/>
+					</div>
+				</div>
+			{/if}
+		</section>
+
 		{#if children.length > 0}
 			<div class="card">
-				<h2>Sub-agents</h2>
+				<h2 class="card-h2">Sub-agents</h2>
 				<ul class="agent-list">
 					{#each children as c (c.id)}
 						<li>
@@ -77,6 +221,17 @@
 		{/if}
 	{/if}
 </section>
+
+<ConfirmModal
+	open={confirmDisconnect}
+	title="Disconnect MCP client?"
+	message="The MCP client will need to re-authenticate via OAuth before it can act as this agent again."
+	confirmLabel="Disconnect"
+	destructive
+	busy={disconnecting}
+	onConfirm={doDisconnect}
+	onCancel={() => (confirmDisconnect = false)}
+/>
 
 <style>
 	.page {
@@ -97,6 +252,10 @@
 		margin: 0;
 	}
 	h2 {
+		margin: 0 0 0.6rem;
+		font: var(--text-h3);
+	}
+	.card-h2 {
 		margin: 0 0 0.5rem;
 		font-size: 0.95rem;
 	}
@@ -163,5 +322,144 @@
 	.empty p {
 		margin: 0;
 		font-size: 0.9rem;
+	}
+
+	/* MCP Connection section */
+	.mcp-section {
+		margin-bottom: 1rem;
+	}
+	.mcp-empty {
+		border: 1px dashed var(--color-border);
+		border-radius: 10px;
+		padding: 1.25rem;
+		color: var(--color-text-muted);
+		font-size: 0.9rem;
+	}
+	.mcp-empty p {
+		margin: 0;
+	}
+	.mcp-empty code {
+		background: var(--color-bg);
+		padding: 0 4px;
+		border-radius: 4px;
+	}
+	.mcp-card {
+		border: 1px solid var(--color-border);
+		border-radius: 10px;
+		background: var(--color-surface);
+		overflow: hidden;
+	}
+	.mcp-head {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 16px;
+		padding: 14px 16px;
+	}
+	.mcp-main {
+		flex: 1;
+		min-width: 0;
+	}
+	.mcp-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 8px;
+	}
+	.mcp-glyph {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		border-radius: 6px;
+		background: var(--color-primary-bg, var(--primary-50));
+		color: var(--color-primary);
+		font-size: 14px;
+		line-height: 1;
+	}
+	.kv {
+		display: grid;
+		grid-template-columns: 110px 1fr;
+		row-gap: 6px;
+		column-gap: 12px;
+		font-size: 12px;
+		margin: 0;
+	}
+	.kv dt {
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		font-size: 11px;
+	}
+	.kv dd {
+		margin: 0;
+	}
+	.badge {
+		display: inline-flex;
+		align-items: center;
+		padding: 2px 8px;
+		border-radius: 9999px;
+		font-size: 11px;
+		font-weight: 500;
+	}
+	.badge-success {
+		background: var(--badge-bg-success);
+		color: var(--color-success);
+	}
+	.btn {
+		padding: 6px 12px;
+		border-radius: 6px;
+		font: var(--text-body-medium);
+		cursor: pointer;
+		border: 1px solid var(--color-border);
+		background: var(--color-surface);
+		color: var(--color-text);
+	}
+	.btn-danger {
+		background: var(--color-danger);
+		border-color: var(--color-danger);
+		color: #fff;
+	}
+	.btn-sm {
+		padding: 4px 10px;
+		font-size: 12px;
+	}
+	.mcp-options-head {
+		padding: 10px 16px;
+		border-top: 1px solid var(--color-border-subtle);
+		background: var(--color-sidebar);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--color-text-muted);
+	}
+	.mcp-option {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 16px;
+		padding: 14px 16px;
+		border-top: 1px solid var(--color-border-subtle);
+	}
+	.mcp-option-text {
+		flex: 1;
+		min-width: 0;
+	}
+	.opt-title {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-text);
+	}
+	.opt-desc {
+		font-size: 12px;
+		color: var(--color-text-muted);
+		margin-top: 2px;
+	}
+	.opt-warn {
+		font-size: 12px;
+		color: var(--color-warning);
+		margin-top: 4px;
 	}
 </style>
