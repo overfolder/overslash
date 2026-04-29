@@ -13,6 +13,7 @@ COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
 COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
 COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
+COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 
 # Create dummy source files for every workspace member so `cargo build -p
@@ -33,6 +34,8 @@ RUN mkdir -p crates/overslash-core/src \
     && echo "fn main() {}" > crates/oversla-sh/src/main.rs \
     && mkdir -p crates/overslash-metrics/src \
     && echo "pub fn _dummy() {}" > crates/overslash-metrics/src/lib.rs \
+    && mkdir -p crates/overslash-metrics-exporter/src \
+    && echo "fn main() {}" > crates/overslash-metrics-exporter/src/main.rs \
     && mkdir -p tests/mock-target/src \
     && echo "fn main() {}" > tests/mock-target/src/main.rs
 
