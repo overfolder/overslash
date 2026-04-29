@@ -159,6 +159,9 @@ locals {
       DB_NAME                   = var.db_name
       DB_USER                   = var.db_user
       HOST                      = "0.0.0.0"
+      # Structured JSON logs so `make logs` can surface message/span fields
+      # via `jsonPayload.*` instead of falling back to ANSI-coded textPayload.
+      LOG_FORMAT = "json"
       # Enables tier-4 env-var fallback in the services OAuth cascade so the
       # overslash-managed default Google services client (OAUTH_GOOGLE_*) is
       # picked up when an org hasn't set its own credentials. Org-level BYO
