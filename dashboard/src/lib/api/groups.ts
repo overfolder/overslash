@@ -60,6 +60,7 @@ export interface Identity {
 	name: string;
 	kind: string; // "user" | "agent" | "sub_agent"
 	external_id?: string | null;
+	email?: string | null;
 	parent_id?: string | null;
 	depth: number;
 	owner_id?: string | null;

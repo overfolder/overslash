@@ -125,8 +125,11 @@ async fn group_crud() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let groups: Vec<Value> = resp.json().await.unwrap();
-    // 2 system groups (Everyone, Admins) + 1 test group = 3
-    assert_eq!(groups.len(), 3);
+    // 2 non-self system groups (Everyone, Admins) + caller's own Myself + 1 test group = 4.
+    // The default listing surfaces the caller's own Myself row so users can manage
+    // their own grants from /org/groups; other users' Myself rows stay hidden
+    // unless `?include_self=true`. See SPEC §7 *Myself groups*.
+    assert_eq!(groups.len(), 4);
 
     // Get group
     let resp = client
@@ -173,8 +176,8 @@ async fn group_crud() {
         .await
         .unwrap();
     let groups: Vec<Value> = resp.json().await.unwrap();
-    // Only system groups remain
-    assert_eq!(groups.len(), 2);
+    // Only system groups remain: Everyone, Admins, and the caller's own Myself.
+    assert_eq!(groups.len(), 3);
 }
 
 #[tokio::test]

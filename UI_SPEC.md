@@ -671,6 +671,14 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
   - **Members**: list with add/remove
   - **Service grants**: permission key patterns that define the ceiling for this group. Managed by org-admins.
 
+**Myself groups in the dashboard.** Per-user Myself groups (`system_kind === 'self'`, see SPEC §7 *Myself groups*) appear in the dashboard with the following rules:
+
+- *Groups list (`/org/groups`).* Calls `GET /v1/groups` (default), so each user sees their own Myself row alongside Everyone, Admins, and any custom groups they belong to. The row renders as **"Myself"** — never the raw storage form `Myself: <email> (<id8>)`. Admins surveying other users' Myself rows pass `?include_self=true`; those rows render as **"Myself (email)"**, falling back to **"Myself (email, id8)"** only on email collision.
+- *Delete button.* Hidden on every system row (Everyone, Admins, all Myself). The backend rejects deletes on system groups, so the action is suppressed at the UI layer rather than surfaced as a broken button.
+- *Group detail (`/org/groups/<self-id>`).* For a Myself group, the page hides the rename form, delete button, and add-member affordance (system metadata is immutable; membership is fixed to the owner). The "Add grant" service picker is filtered to services owned by the group's `owner_identity_id` — matching the backend cross-owner guard, which would otherwise reject the call.
+- *Services list groups column (`/services`).* Group pills for self grants render as **"Myself"**, derived from `system_kind === 'self'` on the per-grant `ServiceGroupRef`.
+- *Service detail Groups table (`/services/<name>`).* Owner's self grants render as **"Myself"** (same rule). The "Restore Myself grant" inline affordance remains for owners who removed their own grant.
+
 ```
 Group: Engineering
 

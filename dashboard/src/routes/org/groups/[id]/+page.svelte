@@ -47,6 +47,24 @@
 	const orgServices = $derived(services.filter((s) => !s.owner_identity_id));
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
+	const isSelfGroup = $derived(group?.system_kind === 'self');
+	// Backend cross-owner guard (groups.rs add_grant) restricts a Myself group's
+	// grants to services owned by its owner_identity_id. Mirror that in the UI
+	// so the picker doesn't offer impossible choices.
+	const pickableServices = $derived(
+		isSelfGroup
+			? services.filter((s) => s.owner_identity_id && s.owner_identity_id === group?.owner_identity_id)
+			: orgServices
+	);
+
+	function selfGroupLabel(g: typeof group): string {
+		if (!g) return '';
+		if (g.system_kind !== 'self') return g.name;
+		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
+		const email = ident?.email ?? ident?.name;
+		return email ? `Myself (${email})` : 'Myself';
+	}
+
 	onMount(load);
 
 	async function load() {
@@ -197,8 +215,10 @@
 		<div class="state error">{error}</div>
 	{:else if group}
 		<header class="header">
-			<h1>{group.name}</h1>
-			<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
+			<h1>{selfGroupLabel(group)}</h1>
+			{#if !group.is_system}
+				<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
+			{/if}
 		</header>
 
 		{#if error}
@@ -208,30 +228,36 @@
 			</div>
 		{/if}
 
-		<section class="card">
-			<h2>Details</h2>
-			<form onsubmit={saveMeta} class="form">
-				<label>
-					<span>Name</span>
-					<input type="text" bind:value={editName} required />
-				</label>
-				<label>
-					<span>Description</span>
-					<textarea bind:value={editDescription} rows="2"></textarea>
-				</label>
-				{#if metaError}<div class="err">{metaError}</div>{/if}
-				<div class="form-actions">
-					<button type="submit" class="btn btn-primary" disabled={savingMeta}>
-						{savingMeta ? 'Saving…' : 'Save'}
-					</button>
-				</div>
-			</form>
-		</section>
+		{#if !group.is_system}
+			<section class="card">
+				<h2>Details</h2>
+				<form onsubmit={saveMeta} class="form">
+					<label>
+						<span>Name</span>
+						<input type="text" bind:value={editName} required />
+					</label>
+					<label>
+						<span>Description</span>
+						<textarea bind:value={editDescription} rows="2"></textarea>
+					</label>
+					{#if metaError}<div class="err">{metaError}</div>{/if}
+					<div class="form-actions">
+						<button type="submit" class="btn btn-primary" disabled={savingMeta}>
+							{savingMeta ? 'Saving…' : 'Save'}
+						</button>
+					</div>
+				</form>
+			</section>
+		{/if}
 
 		<section class="card">
 			<h2>Service grants</h2>
 			<p class="hint">
-				Permission key patterns that define this group's ceiling. Org-level service instances only.
+				{#if isSelfGroup}
+					Services this user owns. Myself can only carry grants on its owner's services.
+				{:else}
+					Permission key patterns that define this group's ceiling. Org-level service instances only.
+				{/if}
 			</p>
 
 			{#if grants.length === 0}
@@ -272,7 +298,7 @@
 			<form class="add-grant" onsubmit={addGrant}>
 				<select bind:value={newServiceId} required>
 					<option value="" disabled>Select service…</option>
-					{#each orgServices as s (s.id)}
+					{#each pickableServices as s (s.id)}
 						<option value={s.id}>{s.name}</option>
 					{/each}
 				</select>
@@ -299,10 +325,16 @@
 		<section class="card">
 			<div class="section-head">
 				<h2>Members</h2>
-				<button class="btn btn-primary" onclick={() => (pickerOpen = true)}>Add member</button>
+				{#if !isSelfGroup}
+					<button class="btn btn-primary" onclick={() => (pickerOpen = true)}>Add member</button>
+				{/if}
 			</div>
 			<p class="hint">
-				Only users can be members. Agents inherit access via their owner.
+				{#if isSelfGroup}
+					Myself groups have a fixed membership of one — the owner.
+				{:else}
+					Only users can be members. Agents inherit access via their owner.
+				{/if}
 			</p>
 
 			{#if memberIds.length === 0}
@@ -316,7 +348,9 @@
 							{#if ident?.external_id}
 								<span class="ext">{ident.external_id}</span>
 							{/if}
-							<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
+							{#if !isSelfGroup}
+								<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
+							{/if}
 						</li>
 					{/each}
 				</ul>

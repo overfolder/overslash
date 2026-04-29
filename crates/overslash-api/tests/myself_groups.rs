@@ -135,13 +135,30 @@ async fn list_self_grants(base: &str, key: &str, group_id: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn list_groups_hides_self_groups_by_default() {
-    let (base, _pool, admin_key, user_id, _user_key, _agent_id, _agent_key) =
+async fn list_groups_default_includes_callers_own_self_only() {
+    // Default `GET /v1/groups` must surface the caller's own Myself row so a
+    // regular user can manage their own grants from /org/groups, while still
+    // hiding *other* users' Myself rows so an admin's group list isn't flooded.
+    // `?include_self=true` is the admin opt-in for cross-user audit.
+    let (base, _pool, admin_key, user_id, user_key, _agent_id, _agent_key) =
         setup_org_with_user_and_agent().await;
     let client = reqwest::Client::new();
 
-    // Default listing: only Everyone + Admins (no Myself).
-    let groups: Vec<Value> = client
+    // Resolve admin id via whoami so we can assert the admin sees their own
+    // Myself but not the user's.
+    let admin_who: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admin_id = admin_who["identity_id"].as_str().unwrap().to_string();
+
+    // Admin's default listing: includes admin's own Myself, excludes user's.
+    let admin_default: Vec<Value> = client
         .get(format!("{base}/v1/groups"))
         .header("Authorization", format!("Bearer {admin_key}"))
         .send()
@@ -150,17 +167,61 @@ async fn list_groups_hides_self_groups_by_default() {
         .json()
         .await
         .unwrap();
-    assert!(
-        groups
-            .iter()
-            .all(|g| g["system_kind"].as_str() != Some("self")),
-        "Myself groups must not appear in default listing"
+    let admin_self_rows: Vec<&Value> = admin_default
+        .iter()
+        .filter(|g| g["system_kind"].as_str() == Some("self"))
+        .collect();
+    assert_eq!(
+        admin_self_rows.len(),
+        1,
+        "admin default listing must contain exactly one self row (admin's own)"
     );
+    assert_eq!(admin_self_rows[0]["owner_identity_id"], admin_id);
 
-    // Opt-in listing exposes them.
-    let with_self = find_self_group(&base, &admin_key, user_id).await;
-    assert_eq!(with_self["system_kind"], "self");
-    assert_eq!(with_self["owner_identity_id"], user_id.to_string());
+    // User's default listing: includes user's own Myself, excludes admin's.
+    let user_default: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_self_rows: Vec<&Value> = user_default
+        .iter()
+        .filter(|g| g["system_kind"].as_str() == Some("self"))
+        .collect();
+    assert_eq!(
+        user_self_rows.len(),
+        1,
+        "user default listing must contain exactly one self row (user's own)"
+    );
+    assert_eq!(user_self_rows[0]["owner_identity_id"], user_id.to_string());
+
+    // Admin opt-in listing exposes both Myself rows for audit.
+    let admin_with_self: Vec<Value> = client
+        .get(format!("{base}/v1/groups?include_self=true"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owners: Vec<&str> = admin_with_self
+        .iter()
+        .filter(|g| g["system_kind"].as_str() == Some("self"))
+        .filter_map(|g| g["owner_identity_id"].as_str())
+        .collect();
+    assert!(
+        owners.contains(&admin_id.as_str()),
+        "admin's own Myself must appear with include_self=true"
+    );
+    assert!(
+        owners.contains(&user_id.to_string().as_str()),
+        "user's Myself must appear in admin's include_self=true listing"
+    );
 }
 
 #[tokio::test]

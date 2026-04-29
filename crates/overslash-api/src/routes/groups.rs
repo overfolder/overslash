@@ -169,20 +169,33 @@ async fn create_group(
 
 #[derive(Deserialize)]
 struct ListGroupsQuery {
-    /// Include per-user Myself groups (`system_kind = 'self'`) in the listing.
-    /// Default `false` because they'd flood an admin's group list.
+    /// Include other users' Myself groups (`system_kind = 'self'`) in the listing.
+    /// Default `false` because they'd flood an admin's group list with one row
+    /// per user; the caller's own Myself is always included so a regular user
+    /// can manage it from the Groups page.
     #[serde(default)]
     include_self: bool,
 }
 
 async fn list_groups(
+    OrgAcl {
+        identity_id: caller_identity,
+        ..
+    }: OrgAcl,
     scope: OrgScope,
     Query(q): Query<ListGroupsQuery>,
 ) -> Result<Json<Vec<GroupResponse>>> {
     let rows = scope.list_groups().await?;
     let filtered: Vec<_> = rows
         .into_iter()
-        .filter(|r| q.include_self || r.system_kind.as_deref() != Some("self"))
+        .filter(|r| {
+            // Always show non-self groups. For self groups, always show the
+            // caller's own Myself; show others' only when the caller opts in
+            // via `?include_self=true` (admin audit view).
+            r.system_kind.as_deref() != Some("self")
+                || q.include_self
+                || (caller_identity.is_some() && r.owner_identity_id == caller_identity)
+        })
         .map(GroupResponse::from)
         .collect();
     Ok(Json(filtered))
