@@ -58,7 +58,10 @@ variable "schedule_cron" {
 
 variable "cpu" {
   type    = string
-  default = "1"
+  default = "500m"
+  # The exporter is I/O bound (one parallel SQL sweep + one HTTPS POST,
+  # whole job finishes in ~1 s). Sub-1 vCPU also avoids the gen2
+  # "cpu always allocated" rule that forces memory ≥ 512Mi.
 }
 
 variable "memory" {
