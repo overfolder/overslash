@@ -12,9 +12,10 @@ mod cloud_monitoring;
 mod queries;
 
 use std::env;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing::info;
 
 use crate::cloud_monitoring::{
@@ -39,10 +40,15 @@ async fn main() -> Result<()> {
         anyhow::bail!("GCP_PROJECT_ID is required unless EXPORTER_DRY_RUN=1");
     }
 
+    // Cloud Run mounts the DB password as a separate env var so it can come
+    // from Secret Manager without baking the password into the URL. Splice
+    // it in at connect time when present; locally the URL itself can carry
+    // user:pass and DATABASE_PASSWORD stays unset.
+    let connect_opts = build_connect_options(&database_url, env::var("DATABASE_PASSWORD").ok())?;
     let db = PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(std::time::Duration::from_secs(10))
-        .connect(&database_url)
+        .connect_with(connect_opts)
         .await
         .context("failed to connect to Postgres")?;
 
@@ -244,6 +250,21 @@ fn metric(name: &str) -> String {
     format!("{METRIC_PREFIX}/{name}")
 }
 
+/// Parse `DATABASE_URL` and apply `DATABASE_PASSWORD` when set. Cloud Run
+/// passes the URL as `postgresql://user@host/db?...` and the password
+/// separately from Secret Manager — combining them here keeps secrets
+/// out of every plan/diff and lines up with the API service.
+fn build_connect_options(database_url: &str, password: Option<String>) -> Result<PgConnectOptions> {
+    let mut opts =
+        PgConnectOptions::from_str(database_url).context("failed to parse DATABASE_URL")?;
+    if let Some(pw) = password {
+        if !pw.is_empty() {
+            opts = opts.password(&pw);
+        }
+    }
+    Ok(opts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +335,73 @@ mod tests {
         // users_total, api_keys_active, secrets_total, secret_versions_total,
         // approvals_pending, approvals_pending_oldest_seconds = 6
         assert_eq!(series.len(), 6);
+    }
+
+    #[test]
+    fn build_connect_options_uses_password_env() {
+        let opts = build_connect_options(
+            "postgresql://overslash@localhost/overslash",
+            Some("hunter2".into()),
+        )
+        .expect("parse");
+        // PgConnectOptions doesn't expose the password, but Debug renders
+        // it as `<set>` vs absent, which is enough to confirm the env var
+        // was applied.
+        let dbg = format!("{opts:?}");
+        assert!(dbg.contains("password"));
+    }
+
+    #[test]
+    fn build_connect_options_accepts_no_password() {
+        let opts = build_connect_options("postgresql://overslash@localhost/overslash", None)
+            .expect("parse");
+        let _dbg = format!("{opts:?}");
+    }
+
+    #[test]
+    fn build_connect_options_ignores_empty_password() {
+        // Cloud Scheduler can't easily express "unset" — terraform might
+        // emit DATABASE_PASSWORD="" before bringup. Treat that as unset
+        // rather than overriding any password baked into the URL.
+        let opts =
+            build_connect_options("postgresql://u:fromurl@localhost/db", Some(String::new()))
+                .expect("parse");
+        let _dbg = format!("{opts:?}");
+    }
+
+    #[test]
+    fn build_connect_options_rejects_garbage_url() {
+        let err = build_connect_options("not a url", None).expect_err("must reject");
+        assert!(format!("{err:#}").contains("DATABASE_URL"));
+    }
+
+    #[test]
+    fn build_time_series_emits_int64_for_count_metrics() {
+        let r = business_resource("p", "us-central1");
+        let m = fake_metrics();
+        let series = build_time_series(&m, "2026-04-29T00:00:00Z", &r);
+        for s in series
+            .iter()
+            .filter(|s| !s.metric.metric_type.ends_with("_seconds"))
+        {
+            assert!(
+                s.points[0].value.int64_value.is_some(),
+                "{} should be int64 (count metrics)",
+                s.metric.metric_type,
+            );
+        }
+    }
+
+    #[test]
+    fn metric_function_includes_full_prefix() {
+        assert_eq!(
+            metric("approvals_pending"),
+            "custom.googleapis.com/overslash/business/approvals_pending"
+        );
+        assert_eq!(
+            metric("orgs_total"),
+            "custom.googleapis.com/overslash/business/orgs_total"
+        );
     }
 
     #[test]

@@ -244,4 +244,69 @@ mod tests {
             "Cloud Monitoring requires int64 as a string"
         );
     }
+
+    #[test]
+    fn point_value_constructors_are_disjoint() {
+        let d = PointValue::double(1.5);
+        assert_eq!(d.double_value, Some(1.5));
+        assert_eq!(d.int64_value, None);
+        let i = PointValue::int64(7);
+        assert_eq!(i.double_value, None);
+        assert_eq!(i.int64_value.as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn make_gauge_int_handles_negative_values() {
+        let r = business_resource("p", "us-central1");
+        let ts = make_gauge_int("custom.googleapis.com/x", &[], -5, "t", &r);
+        assert_eq!(ts.points[0].value.int64_value.as_deref(), Some("-5"));
+    }
+
+    #[test]
+    fn make_gauge_attaches_multiple_labels() {
+        let r = business_resource("p", "us-central1");
+        let ts = make_gauge(
+            "custom.googleapis.com/x",
+            &[("a", "1"), ("b", "2")],
+            0.0,
+            "t",
+            &r,
+        );
+        assert_eq!(ts.metric.labels.len(), 2);
+        assert_eq!(ts.metric.labels.get("a").map(String::as_str), Some("1"));
+        assert_eq!(ts.metric.labels.get("b").map(String::as_str), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn write_time_series_noop_on_empty_input() {
+        // Empty input must short-circuit before contacting the metadata
+        // server (which is unreachable from CI) — otherwise the test
+        // binary couldn't run this assertion at all.
+        let client = reqwest::Client::new();
+        write_time_series("dry-run-project", Vec::new(), &client)
+            .await
+            .expect("empty input must succeed without a network call");
+    }
+
+    #[test]
+    fn time_series_serializes_to_camel_case_for_gcm() {
+        // Cloud Monitoring REST API expects camelCase JSON keys. If serde
+        // ever drops the rename attributes by mistake, this test catches
+        // it at unit-test time rather than as a 400 from the live API.
+        let r = business_resource("p", "us-central1");
+        let ts = make_gauge_int(
+            "custom.googleapis.com/x",
+            &[],
+            1,
+            "2026-04-29T00:00:00Z",
+            &r,
+        );
+        let req = TimeSeriesRequest {
+            time_series: vec![ts],
+        };
+        let body = serde_json::to_string(&req).unwrap();
+        assert!(body.contains("\"timeSeries\""));
+        assert!(body.contains("\"endTime\""));
+        assert!(body.contains("\"int64Value\""));
+    }
 }
