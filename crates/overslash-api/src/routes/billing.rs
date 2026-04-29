@@ -743,12 +743,20 @@ async fn stripe_create_checkout_session(
     api_base: &str,
 ) -> Result<(String, String)> {
     let seats_str = seats.to_string();
+    // `customer_update[address]=auto` is required when `automatic_tax` is on
+    // and the Customer has no saved address — Stripe needs an address to
+    // compute tax, and `auto` tells it to copy the billing address collected
+    // in Checkout onto the Customer. Without it Stripe rejects the request
+    // with `customer_tax_location_invalid`.
     let params = [
         ("mode", "subscription"),
         ("customer", customer_id),
         ("line_items[0][price]", price_id),
         ("line_items[0][quantity]", &seats_str),
         ("automatic_tax[enabled]", "true"),
+        ("customer_update[address]", "auto"),
+        ("customer_update[name]", "auto"),
+        ("billing_address_collection", "required"),
         ("success_url", success_url),
         ("cancel_url", cancel_url),
     ];
