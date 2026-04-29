@@ -939,6 +939,19 @@ async fn resolve_request(
             ))
         })?;
 
+        // Reject calls whose params don't match the action's declared
+        // input contract: missing required fields, or unknown keys (e.g.
+        // a caller passing `jid` for an action that declares `recipient`).
+        // Catching this here means we don't silently render `{recipient}`
+        // in descriptions or collapse the permission scope to `*`.
+        if let Err(errors) =
+            overslash_core::openapi::validate_input::validate_args(&action.params, &req.params)
+        {
+            return Err(AppError::BadRequest(
+                overslash_core::openapi::validate_input::format_errors(&errors),
+            ));
+        }
+
         // ── MCP runtime fork ─────────────────────────────────────────
         // Disabled tools are invisible to agents even when they exist in
         // the compiled action map. Every MCP call force-gates (auth_injected)

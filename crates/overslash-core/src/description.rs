@@ -16,8 +16,9 @@ pub fn interpolate_description(
 ) -> String {
     // Pass 1: resolve [optional segments]
     let after_optionals = resolve_optional_segments(template, params);
-    // Pass 2: substitute remaining {param} placeholders
-    substitute_placeholders(&after_optionals, params)
+    // Pass 2: substitute remaining {param} placeholders (display-clamped:
+    // long values are truncated with `…` for the human-readable surface).
+    substitute_placeholders_display(&after_optionals, params)
 }
 
 /// Like [`interpolate_description`], but first checks a `resolved` map of
@@ -41,8 +42,8 @@ pub fn interpolate_description_with_resolved(
     // Pass 1: resolve [optional segments] — use original params for presence checks,
     // but the display_params for substitution
     let after_optionals = resolve_optional_segments(template, params);
-    // Pass 2: substitute with display-enriched values
-    substitute_placeholders(&after_optionals, &display_params)
+    // Pass 2: substitute with display-enriched values (display-clamped).
+    substitute_placeholders_display(&after_optionals, &display_params)
 }
 
 /// Resolve `[...]` optional segments. Flat only — no nesting.
@@ -113,7 +114,36 @@ fn is_value_present(value: Option<&serde_json::Value>) -> bool {
 
 /// Replace `{param}` placeholders with stringified values.
 /// Missing params are left as literal `{param}`.
+///
+/// Substituted values pass through unmodified — long strings are
+/// preserved as-is. This matters for non-display callers like the
+/// resolver-URL builder in `services::param_resolver`, where truncating
+/// a path segment (e.g. an OAuth-protected resource ID) would silently
+/// produce a broken URL.
+///
+/// For the human-facing description surface use
+/// [`substitute_placeholders_display`], which additionally clamps each
+/// substituted value to [`DISPLAY_MAX_CHARS`] visible characters.
 pub fn substitute_placeholders(text: &str, params: &HashMap<String, serde_json::Value>) -> String {
+    substitute_with(text, params, value_to_string)
+}
+
+/// Same as [`substitute_placeholders`] but clamps each substituted value
+/// to [`DISPLAY_MAX_CHARS`] visible characters with a trailing `…`.
+/// Used by the description renderer so a 5KB message body can't blow
+/// up the approval row, while leaving raw substitution paths untouched.
+pub fn substitute_placeholders_display(
+    text: &str,
+    params: &HashMap<String, serde_json::Value>,
+) -> String {
+    substitute_with(text, params, |v| clamp_display(&value_to_string(v)))
+}
+
+fn substitute_with(
+    text: &str,
+    params: &HashMap<String, serde_json::Value>,
+    fmt: impl Fn(&serde_json::Value) -> String,
+) -> String {
     let mut result = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -125,7 +155,7 @@ pub fn substitute_placeholders(text: &str, params: &HashMap<String, serde_json::
                 if !key.is_empty() {
                     if let Some(value) = params.get(key) {
                         if !value.is_null() {
-                            result.push_str(&value_to_string(value));
+                            result.push_str(&fmt(value));
                             i = i + 1 + close + 1;
                             continue;
                         }
@@ -148,16 +178,30 @@ pub fn substitute_placeholders(text: &str, params: &HashMap<String, serde_json::
     result
 }
 
-/// Convert a JSON value to a display string.
+/// Convert a JSON value to a display string. Lossless for primitives;
+/// arrays/objects use compact JSON.
 fn value_to_string(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Null => String::new(),
-        // Arrays and objects: compact JSON
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+/// Visible-character cap for any single substituted value in a rendered
+/// description. Includes the `…` suffix when truncation kicks in.
+const DISPLAY_MAX_CHARS: usize = 60;
+
+fn clamp_display(s: &str) -> String {
+    let count = s.chars().count();
+    if count <= DISPLAY_MAX_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(DISPLAY_MAX_CHARS - 1).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -332,6 +376,48 @@ mod tests {
             interpolate_description_with_resolved("List issues on {repo}", &p, &r,),
             "List issues on overfolder/app"
         );
+    }
+
+    #[test]
+    fn substitute_placeholders_does_not_clamp_long_values() {
+        // Pinned behavior: the public substitution function must preserve
+        // values verbatim. param_resolver builds resolver URLs through it
+        // and would silently corrupt long path segments (UUIDs, OAuth
+        // resource IDs) if clamping leaked in here. Use the
+        // `_display` variant when you want truncation.
+        let body = "a".repeat(500);
+        let p = params(&[("text", json!(body))]);
+        let out = substitute_placeholders("/files/{text}", &p);
+        assert_eq!(out, format!("/files/{body}"));
+        assert!(!out.contains('…'));
+    }
+
+    #[test]
+    fn long_string_value_truncated_with_ellipsis() {
+        let body = "a".repeat(200);
+        let p = params(&[("text", json!(body))]);
+        let out = interpolate_description("Send {text}", &p);
+        // 60 visible chars: 59 'a' + '…'
+        assert_eq!(out.chars().count(), "Send ".len() + 60);
+        assert!(out.ends_with('…'));
+        assert!(out.starts_with("Send aaaa"));
+    }
+
+    #[test]
+    fn short_string_value_not_truncated() {
+        let p = params(&[("text", json!("hello"))]);
+        assert_eq!(interpolate_description("Send {text}", &p), "Send hello");
+    }
+
+    #[test]
+    fn truncation_preserves_utf8_boundaries() {
+        // 100 emoji, each ≥4 bytes — char-aware clamp must not split a
+        // code point on truncation.
+        let body = "🚀".repeat(100);
+        let p = params(&[("text", json!(body))]);
+        let out = interpolate_description("{text}", &p);
+        assert_eq!(out.chars().count(), 60);
+        assert!(out.ends_with('…'));
     }
 
     #[test]

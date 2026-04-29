@@ -60,7 +60,7 @@ x-overslash-mcp:
     - name: send_message
       risk: write
       scope_param: recipient
-      description: "Send a WhatsApp text {text} to {recipient}, optionally as a quote-reply"
+      description: 'Send WhatsApp message "{text}" to {recipient}[, quoting {reply_to_id}]'
       input_schema:
         type: object
         properties:
@@ -75,6 +75,17 @@ x-overslash-mcp:
             type: string
             description: "Optional stanza id of the message to quote-reply to."
         required: [recipient, text]
+      # MCP-runtime disclosure projection is {runtime, tool, arguments,
+      # service, action} (see compute_approval_detail in routes/actions.rs),
+      # so filters address `.arguments.*` rather than the HTTP `.params.*` /
+      # `.body.*` shape used by Mode A/C HTTP actions.
+      disclose:
+        - label: "Recipient"
+          filter: ".arguments.recipient"
+        - label: "Message"
+          filter: ".arguments.text"
+        - label: "Reply to"
+          filter: ".arguments.reply_to_id // empty"
 
     # ── contacts ──
     - name: search_contacts
