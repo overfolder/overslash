@@ -3,7 +3,7 @@
 # Monthly billing budget at 50% / 80% / 100%. Skipped when the project isn't
 # linked to a billing account.
 resource "google_billing_budget" "monthly" {
-  count = var.billing_account_id != "" ? 1 : 0
+  count = local.alerts_enabled && var.billing_account_id != "" ? 1 : 0
 
   billing_account = var.billing_account_id
   display_name    = "${var.base_prefix} Monthly Budget"

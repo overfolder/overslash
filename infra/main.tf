@@ -151,10 +151,8 @@ module "cloud_run" {
   ]
 }
 
-# --- Monitoring (dashboards, alerts, uptime checks) ---
+# --- Monitoring (dashboards always; alerts gated on alert_email) ---
 module "monitoring" {
-  count = var.alert_email != "" ? 1 : 0
-
   source      = "./modules/monitoring"
   project_id  = var.project_id
   base_prefix = local.base_prefix
