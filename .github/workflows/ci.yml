@@ -120,7 +120,7 @@ jobs:
         run: cargo sqlx prepare --workspace --check -- --tests
 
   coverage:
-    name: Test + Coverage (${{ matrix.partition }}/3)
+    name: Test + Coverage (${{ matrix.partition }}/6)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
@@ -130,7 +130,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3]
+        partition: [1, 2, 3, 4, 5, 6]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -173,10 +173,10 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
-      - name: Tests with coverage (shard ${{ matrix.partition }}/3)
+      - name: Tests with coverage (shard ${{ matrix.partition }}/6)
         run: >-
           cargo llvm-cov nextest --workspace
-          --partition count:${{ matrix.partition }}/3
+          --partition count:${{ matrix.partition }}/6
           --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
