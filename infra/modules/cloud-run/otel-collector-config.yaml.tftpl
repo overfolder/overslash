@@ -1,0 +1,37 @@
+# OTel Collector config for Cloud Run → Google Managed Prometheus.
+# Scrapes the API container's `/internal/metrics` over loopback every 30s and
+# ships the result to GMP as `prometheus_target` series.
+# METRICS_PORT is wired to the API container's port via env on the sidecar.
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "app"
+          scrape_interval: 30s
+          metrics_path: /internal/metrics
+          static_configs:
+            - targets: ["localhost:$${env:METRICS_PORT}"]
+
+processors:
+  resource:
+    attributes:
+      - key: "location"
+        value: "${region}"
+        action: upsert
+      - key: "cluster"
+        value: ""
+        action: upsert
+      - key: "namespace"
+        value: ""
+        action: upsert
+
+exporters:
+  googlemanagedprometheus:
+    project: ${project_id}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [resource]
+      exporters: [googlemanagedprometheus]

@@ -214,3 +214,36 @@ variable "stripe_usd_lookup_key" {
   type        = string
   default     = "overslash_seat_usd"
 }
+
+# --- Monitoring ---
+
+variable "alert_email" {
+  description = "Email that receives every alert. Required for the monitoring module."
+  type        = string
+  default     = ""
+}
+
+variable "pagerduty_integration_key" {
+  description = "PagerDuty service integration key. When set, P0 alerts also page; empty = email-only."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly billing budget in USD. Triggers email alerts at 50%/80%/100%."
+  type        = number
+  default     = 200
+}
+
+variable "billing_account_id" {
+  description = "GCP billing account ID. Empty = skip the billing-budget alert."
+  type        = string
+  default     = ""
+}
+
+variable "enable_metrics_sidecar" {
+  description = "Run the OTel sidecar that scrapes /internal/metrics into Google Managed Prometheus."
+  type        = bool
+  default     = true
+}

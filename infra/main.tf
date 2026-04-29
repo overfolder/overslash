@@ -9,6 +9,8 @@ resource "google_project_service" "apis" {
       "secretmanager.googleapis.com",
       "compute.googleapis.com",
       "cloudscheduler.googleapis.com",
+      "monitoring.googleapis.com",
+      "billingbudgets.googleapis.com",
     ],
     var.use_private_vpc ? [
       "servicenetworking.googleapis.com",
@@ -140,10 +142,35 @@ module "cloud_run" {
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
+  enable_metrics_sidecar = var.enable_metrics_sidecar
+
   depends_on = [
     module.cloud_sql,
     module.secret_manager,
     module.artifact_registry,
+  ]
+}
+
+# --- Monitoring (dashboards, alerts, uptime checks) ---
+module "monitoring" {
+  count = var.alert_email != "" ? 1 : 0
+
+  source      = "./modules/monitoring"
+  project_id  = var.project_id
+  base_prefix = local.base_prefix
+
+  alert_email               = var.alert_email
+  pagerduty_integration_key = var.pagerduty_integration_key
+  api_domain                = var.domain
+  api_service_name          = module.cloud_run.service_name
+  cloud_sql_instance_name   = module.cloud_sql.instance_name
+  monthly_budget_usd        = var.monthly_budget_usd
+  billing_account_id        = var.billing_account_id
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+    module.cloud_sql,
   ]
 }
 

@@ -1,0 +1,98 @@
+{
+  "displayName": "${display_prefix} Cloud SQL USE",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "xPos": 0, "yPos": 0, "width": 6, "height": 8,
+        "widget": {
+          "title": "CPU Utilization",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${db_filter} AND metric.type = \"cloudsql.googleapis.com/database/cpu/utilization\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                }
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 0, "width": 6, "height": 8,
+        "widget": {
+          "title": "Memory Utilization",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${db_filter} AND metric.type = \"cloudsql.googleapis.com/database/memory/utilization\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                }
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 8, "width": 6, "height": 8,
+        "widget": {
+          "title": "Disk Utilization",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${db_filter} AND metric.type = \"cloudsql.googleapis.com/database/disk/utilization\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                }
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 8, "width": 6, "height": 8,
+        "widget": {
+          "title": "Active Connections",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${db_filter} AND metric.type = \"cloudsql.googleapis.com/database/postgresql/num_backends\"",
+                  "aggregation": { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+                }
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 16, "width": 12, "height": 8,
+        "widget": {
+          "title": "Disk Bytes Used (GB)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${db_filter} AND metric.type = \"cloudsql.googleapis.com/database/disk/bytes_used\"",
+                  "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+                }
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR", "label": "bytes" }
+          }
+        }
+      }
+    ]
+  }
+}

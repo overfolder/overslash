@@ -1,0 +1,131 @@
+{
+  "displayName": "${display_prefix} Actions & OAuth",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      { "xPos": 0, "yPos": 0, "width": 12, "height": 2, "widget": { "title": "Action Executions", "text": { "content": "Live execution rate from in-process Prometheus scrape (`overslash_action_executions_total`).", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 2, "width": 6, "height": 8,
+        "widget": {
+          "title": "Action Execution Rate by Template & Status (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (template_key, status) (rate(overslash_action_executions_total[5m]))"
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR", "label": "ops/s" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 2, "width": 6, "height": 8,
+        "widget": {
+          "title": "Action Execution p99 by Template (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "histogram_quantile(0.99, sum by (le, template_key) (rate(overslash_action_execution_duration_seconds_bucket[5m])))"
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR", "label": "s" }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 10, "width": 6, "height": 8,
+        "widget": {
+          "title": "Outbound HTTP p99 by Template & Status (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "histogram_quantile(0.99, sum by (le, template_key, status_class) (rate(overslash_outbound_http_duration_seconds_bucket[5m])))"
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR", "label": "s" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 10, "width": 6, "height": 8,
+        "widget": {
+          "title": "Outbound HTTP Rate by Status Class (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (status_class) (rate(overslash_outbound_http_total[5m]))"
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      { "xPos": 0, "yPos": 18, "width": 12, "height": 2, "widget": { "title": "OAuth Flows", "text": { "content": "Authorize → Callback → Token funnel and refresh health by provider.", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 20, "width": 6, "height": 8,
+        "widget": {
+          "title": "OAuth Flow Rate by Provider & Status (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (provider, flow, status) (rate(overslash_oauth_events_total[5m]))"
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 20, "width": 6, "height": 8,
+        "widget": {
+          "title": "Token Refresh Failure Ratio by Provider (15m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (provider) (rate(overslash_oauth_events_total{flow=\"refresh\",status=\"failure\"}[15m])) / clamp_min(sum by (provider) (rate(overslash_oauth_events_total{flow=\"refresh\"}[15m])), 1)"
+              },
+              "plotType": "LINE"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      { "xPos": 0, "yPos": 28, "width": 12, "height": 2, "widget": { "title": "Webhooks & Approvals", "text": { "content": "---", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 30, "width": 6, "height": 8,
+        "widget": {
+          "title": "Webhook Delivery Rate by Status (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (status) (rate(overslash_webhook_deliveries_total[5m]))"
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 30, "width": 6, "height": 8,
+        "widget": {
+          "title": "Approval Events by Decision (5m rate)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (event) (rate(overslash_approval_events_total[5m]))"
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      }
+    ]
+  }
+}
