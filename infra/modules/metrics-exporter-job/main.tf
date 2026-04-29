@@ -157,7 +157,10 @@ resource "google_cloud_scheduler_job" "tick" {
 
   http_target {
     http_method = "POST"
-    uri         = "https://${var.region}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${var.project_id}/jobs/${google_cloud_run_v2_job.exporter.name}:run"
+    # Cloud Run v2 jobs are invoked via the v2 REST endpoint. The legacy
+    # KNative path (`/apis/run.googleapis.com/v1/namespaces/...`) is for
+    # `google_cloud_run_service` and silently 404s for v2 jobs.
+    uri = "https://run.googleapis.com/v2/projects/${var.project_id}/locations/${var.region}/jobs/${google_cloud_run_v2_job.exporter.name}:run"
 
     oauth_token {
       service_account_email = var.scheduler_sa_email
