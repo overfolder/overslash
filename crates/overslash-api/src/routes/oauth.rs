@@ -1111,7 +1111,8 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
     let _ = oauth_mcp_client::mark_seen(&state.db, &row.client_id).await;
 
     let email = identity.email.as_deref().unwrap_or("");
-    let access = match mint_access_token(state, row.identity_id, row.org_id, email) {
+    let access = match mint_access_token(state, row.identity_id, row.org_id, email, &row.client_id)
+    {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -1149,7 +1150,7 @@ async fn issue_tokens(
         );
     }
     let _ = oauth_mcp_client::mark_seen(&state.db, client_id).await;
-    let access = match mint_access_token(state, identity_id, org_id, email) {
+    let access = match mint_access_token(state, identity_id, org_id, email, client_id) {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -1162,6 +1163,7 @@ fn mint_access_token(
     identity_id: Uuid,
     org_id: Uuid,
     email: &str,
+    mcp_client_id: &str,
 ) -> Result<String, Response> {
     let signing_key = hex::decode(&state.config.signing_key)
         .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
@@ -1171,6 +1173,7 @@ fn mint_access_token(
         org_id,
         email.to_string(),
         oauth_as::ACCESS_TOKEN_TTL_SECS,
+        Some(mcp_client_id.to_string()),
     )
     .map_err(|e| {
         tracing::error!("jwt mint failed: {e}");

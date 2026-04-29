@@ -285,6 +285,7 @@ async fn create_org(
             iat: now,
             exp: now + 7 * 24 * 3600,
             user_id: Some(user_id),
+            mcp_client_id: None,
         };
         let token = jwt::mint(&jwt_secret, &claims)
             .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;

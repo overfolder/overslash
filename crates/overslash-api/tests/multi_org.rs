@@ -39,6 +39,7 @@ fn mint_session_cookie_with_user(org_id: Uuid, identity_id: Uuid, user_id: Optio
         iat: now,
         exp: now + 3600,
         user_id,
+        mcp_client_id: None,
     };
     jwt::mint(&secret, &claims).expect("mint")
 }

@@ -29,6 +29,14 @@ pub fn router() -> Router<AppState> {
         .route("/v1/identities/{id}/children", get(list_children))
         .route("/v1/identities/{id}/chain", get(get_chain))
         .route("/v1/identities/{id}/restore", post(restore_identity))
+        .route(
+            "/v1/identities/{id}/mcp-connection",
+            get(get_mcp_connection).patch(patch_mcp_connection),
+        )
+        .route(
+            "/v1/identities/{id}/mcp-connection/disconnect",
+            post(disconnect_mcp_connection),
+        )
         .route("/v1/whoami", get(whoami))
 }
 
@@ -518,4 +526,192 @@ async fn restore_identity(
         )),
         RestoreOutcome::NotFound => Err(AppError::NotFound("identity not found".into())),
     }
+}
+
+// ---------------------------------------------------------------------------
+// /v1/identities/{id}/mcp-connection
+// ---------------------------------------------------------------------------
+// Reads and writes the MCP binding (oauth_mcp_clients + mcp_client_agent_bindings)
+// for a given agent identity. Used by the Agents detail page to render the
+// "MCP Connection" section, toggle elicitation approvals, and disconnect.
+//
+// Authorization: WriteAcl (org write access). The Agents UI is gated by org
+// membership; finer-grained ownership rules can be added later if needed —
+// this is consistent with the existing permission rule editor.
+
+#[derive(Debug, Serialize)]
+struct McpConnectionResponse {
+    connection: Option<McpConnectionDto>,
+}
+
+#[derive(Debug, Serialize)]
+struct McpConnectionDto {
+    client_id: String,
+    client_name: Option<String>,
+    software_id: Option<String>,
+    software_version: Option<String>,
+    capabilities: Option<serde_json::Value>,
+    client_info: Option<serde_json::Value>,
+    protocol_version: Option<String>,
+    session_id: Option<Uuid>,
+    connected_at: String,
+    last_seen_at: Option<String>,
+    elicitation_enabled: bool,
+    elicitation_supported: bool,
+}
+
+async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<McpConnectionDto>> {
+    let binding =
+        overslash_db::repos::mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_id)
+            .await?;
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    let client =
+        overslash_db::repos::oauth_mcp_client::get_by_client_id(&state.db, &binding.client_id)
+            .await?;
+    let Some(client) = client else {
+        return Ok(None);
+    };
+    let elicitation_supported = client
+        .capabilities
+        .as_ref()
+        .and_then(|c| c.get("elicitation"))
+        .is_some();
+    Ok(Some(McpConnectionDto {
+        client_id: client.client_id,
+        client_name: client.client_name,
+        software_id: client.software_id,
+        software_version: client.software_version,
+        capabilities: client.capabilities,
+        client_info: client.client_info,
+        protocol_version: client.protocol_version,
+        session_id: client.last_session_id,
+        connected_at: fmt_time(binding.created_at),
+        last_seen_at: client.last_seen_at.map(fmt_time),
+        elicitation_enabled: binding.elicitation_enabled,
+        elicitation_supported,
+    }))
+}
+
+async fn ensure_agent(scope: &OrgScope, id: Uuid) -> Result<()> {
+    let ident = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    if ident.kind != "agent" && ident.kind != "sub_agent" {
+        return Err(AppError::BadRequest(
+            "MCP connections only apply to agent identities".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn get_mcp_connection(
+    State(state): State<AppState>,
+    WriteAcl(_acl): WriteAcl,
+    scope: OrgScope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<McpConnectionResponse>> {
+    ensure_agent(&scope, id).await?;
+    let connection = load_mcp_connection(&state, id).await?;
+    Ok(Json(McpConnectionResponse { connection }))
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchMcpConnectionRequest {
+    elicitation_enabled: Option<bool>,
+}
+
+async fn patch_mcp_connection(
+    State(state): State<AppState>,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchMcpConnectionRequest>,
+) -> Result<Json<McpConnectionResponse>> {
+    ensure_agent(&scope, id).await?;
+
+    if let Some(enabled) = req.elicitation_enabled {
+        // Fan the toggle out to every binding under this agent. The
+        // dashboard surfaces a single per-agent toggle, so applying the
+        // change to only the most-recently-updated binding would leave
+        // older client bindings reading a stale flag (the eligibility
+        // check is keyed on the calling client's binding).
+        let updated =
+            overslash_db::repos::mcp_client_agent_binding::set_elicitation_enabled_for_agent(
+                &state.db, id, enabled,
+            )
+            .await?;
+        if updated == 0 {
+            return Err(AppError::NotFound(
+                "no MCP connection bound to this agent".into(),
+            ));
+        }
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: acl.org_id,
+                identity_id: acl.identity_id,
+                action: "mcp_connection.elicitation_toggled",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "elicitation_enabled": enabled,
+                    "bindings_updated": updated,
+                }),
+                description: None,
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+    }
+
+    let connection = load_mcp_connection(&state, id).await?;
+    Ok(Json(McpConnectionResponse { connection }))
+}
+
+async fn disconnect_mcp_connection(
+    State(state): State<AppState>,
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    ensure_agent(&scope, id).await?;
+    let removed =
+        overslash_db::repos::mcp_client_agent_binding::delete_by_agent_identity(&state.db, id)
+            .await?;
+    if removed.is_empty() {
+        return Err(AppError::NotFound(
+            "no MCP connection bound to this agent".into(),
+        ));
+    }
+
+    // Cancel any in-flight elicitations for this agent so an orphaned SSE
+    // stream doesn't sit polling. Keyed on `agent_identity_id` (not
+    // `last_session_id`) so a re-initialize between elicitation-start and
+    // disconnect doesn't leave stale rows pinned to an older session id —
+    // and so multi-binding-per-agent (reauth flow) is fully covered.
+    let _ = overslash_db::repos::mcp_elicitation::cancel_for_agent(&state.db, id).await;
+
+    // Audit one row per removed binding so the trail names every client_id
+    // we just disconnected, not just whichever one Postgres returned first.
+    for binding in &removed {
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: acl.org_id,
+                identity_id: acl.identity_id,
+                action: "mcp_connection.disconnected",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "client_id": binding.client_id,
+                    "binding_id": binding.id,
+                }),
+                description: None,
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }

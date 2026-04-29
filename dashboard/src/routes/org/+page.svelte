@@ -173,9 +173,9 @@
 
 	function revokeMcpClient(c: McpClient) {
 		openConfirm(
-			'Revoke MCP client?',
+			'Disconnect MCP client?',
 			`"${c.client_name ?? c.client_id}" will stop being able to complete OAuth on this deployment. Any outstanding refresh tokens bound to it will be revoked. This cannot be undone.`,
-			'Revoke',
+			'Disconnect',
 			async () => {
 				try {
 					await session.post(`/v1/oauth/mcp-clients/${encodeURIComponent(c.client_id)}/revoke`, {});
@@ -777,7 +777,7 @@
 			<p class="muted small">
 				Editors and agents that have authenticated to this deployment via
 				<code>overslash mcp login</code>. Clients self-register via OAuth 2.1 Dynamic
-				Client Registration — revoke any you no longer want to accept.
+				Client Registration — disconnect any you no longer want to accept.
 			</p>
 
 			{#if visibleMcpClients.length === 0}
@@ -803,7 +803,7 @@
 								<td class="small">{fmtDate(c.last_seen_at)}</td>
 								<td>
 									{#if c.is_revoked}
-										<span class="badge badge-off">revoked</span>
+										<span class="badge badge-off">disconnected</span>
 									{:else}
 										<span class="badge badge-on">active</span>
 									{/if}
@@ -815,7 +815,7 @@
 											class="btn-link danger"
 											onclick={() => revokeMcpClient(c)}
 										>
-											Revoke
+											Disconnect
 										</button>
 									{:else}
 										<span class="muted small">—</span>

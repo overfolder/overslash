@@ -25,21 +25,29 @@
 //! The route shape is reserved so we can turn it on without a client config
 //! change when needed.
 
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::{
     Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::post,
 };
+use futures_util::stream::{self, Stream, StreamExt};
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::{
     AppState,
     extractors::AuthContext,
-    services::{jwt, oauth_as, session},
+    services::{jwt, mcp_session, oauth_as, session},
 };
 
 pub fn router() -> Router<AppState> {
@@ -132,34 +140,106 @@ async fn post_mcp(
                 auth.org_id,
                 email,
                 oauth_as::ACCESS_TOKEN_TTL_SECS,
+                None,
             )
             .ok()
         });
 
-    let req: JsonRpcRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return rpc_error_response(Value::Null, PARSE_ERROR, format!("parse error: {e}"));
+    // Per Streamable HTTP, clients echo the `Mcp-Session-Id` they received
+    // on `initialize` in subsequent requests. We trust this header over the
+    // DB's `last_session_id` because the latter races between concurrent
+    // initialize calls sharing one client_id.
+    let req_session_id: Option<Uuid> = headers
+        .get("Mcp-Session-Id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    // First try to parse as a request (has `method`). If that fails, try to
+    // parse as a response — clients deliver elicitation answers as bare
+    // `{ id, result }` / `{ id, error }` objects on POST /mcp.
+    if let Ok(req) = serde_json::from_str::<JsonRpcRequest>(&body) {
+        if req.jsonrpc != "2.0" {
+            return rpc_error_response(req.id, INVALID_REQUEST, "jsonrpc must be \"2.0\"");
         }
-    };
-    if req.jsonrpc != "2.0" {
-        return rpc_error_response(req.id, INVALID_REQUEST, "jsonrpc must be \"2.0\"");
+        return match req.method.as_str() {
+            "initialize" => initialize_response(&state, &auth, &req).await,
+            "tools/list" => tools_list_response(req.id),
+            "tools/call" => tools_call(&state, &auth, req, bearer.as_deref(), req_session_id).await,
+            "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
+            other => rpc_error_response(
+                req.id,
+                METHOD_NOT_FOUND,
+                format!("unknown method `{other}`"),
+            ),
+        };
     }
 
-    match req.method.as_str() {
-        "initialize" => initialize_response(req.id),
-        "tools/list" => tools_list_response(req.id),
-        "tools/call" => tools_call(&state, req, bearer.as_deref()).await,
-        "notifications/initialized" => {
-            // Notifications don't expect a response; return 204.
-            (StatusCode::NO_CONTENT, "").into_response()
+    // Bare-response delivery (server-initiated elicitation answer). Schema:
+    //   { jsonrpc: "2.0", id: "elicit_<uuid>", result|error: ... }
+    if let Ok(resp) = serde_json::from_str::<Value>(&body) {
+        if let Some(id) = resp.get("id").and_then(Value::as_str) {
+            if id.starts_with("elicit_") {
+                // Tenant-isolation guard: the elicit_id behaves like a
+                // capability and can leak through logs / SSE payloads.
+                // Only the agent that owns the elicitation row may answer
+                // it — otherwise a caller in another tenant who learns the
+                // id could drive the victim's resolve+call as the victim.
+                let owner_ok = match overslash_db::repos::mcp_elicitation::get(&state.db, id).await
+                {
+                    Ok(Some(row)) => Some(row.agent_identity_id) == auth.identity_id,
+                    Ok(None) => false,
+                    Err(e) => {
+                        tracing::error!("lookup elicitation failed: {e}");
+                        false
+                    }
+                };
+                if !owner_ok {
+                    return rpc_error_response(
+                        Value::String(id.to_string()),
+                        INVALID_REQUEST,
+                        "elicitation not found or not addressable by this caller",
+                    );
+                }
+
+                let result = resp.get("result").cloned().unwrap_or_else(
+                    || json!({ "action": "cancel", "content": resp.get("error").cloned() }),
+                );
+                let st = state.clone();
+                let id_owned = id.to_string();
+                // Bound the background task: two loopback HTTP calls
+                // (resolve + call) shouldn't take more than a minute even
+                // under load. Without this an unresponsive upstream could
+                // pin a tokio task slot indefinitely.
+                tokio::spawn(async move {
+                    let work = mcp_session::complete_from_elicitation(&st, &id_owned, &result);
+                    match tokio::time::timeout(Duration::from_secs(60), work).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::error!(
+                                elicit_id = %id_owned,
+                                "complete elicitation failed: {e}"
+                            );
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                elicit_id = %id_owned,
+                                "complete elicitation timed out after 60s; cancelling row"
+                            );
+                            let _ = overslash_db::repos::mcp_elicitation::cancel(&st.db, &id_owned)
+                                .await;
+                        }
+                    }
+                });
+                return (StatusCode::ACCEPTED, "").into_response();
+            }
         }
-        other => rpc_error_response(
-            req.id,
-            METHOD_NOT_FOUND,
-            format!("unknown method `{other}`"),
-        ),
     }
+
+    rpc_error_response(
+        Value::Null,
+        PARSE_ERROR,
+        "parse error: not a request or recognised response",
+    )
 }
 
 fn rpc_error_response(id: Value, code: i32, message: impl Into<String>) -> Response {
@@ -180,10 +260,50 @@ fn rpc_ok_response(id: Value, result: Value) -> Response {
     (StatusCode::OK, Json(body)).into_response()
 }
 
-fn initialize_response(id: Value) -> Response {
-    rpc_ok_response(
-        id,
-        json!({
+async fn initialize_response(
+    state: &AppState,
+    auth: &AuthContext,
+    req: &JsonRpcRequest,
+) -> Response {
+    // Persist capabilities + clientInfo + protocolVersion declared by the
+    // client so we can later decide whether elicitation is reachable for
+    // that connection. Best-effort: a DB hiccup must not block the
+    // handshake (initialize is synchronous from the client's POV).
+    let session_id = Uuid::new_v4();
+    if let Some(client_id) = auth.mcp_client_id.as_deref() {
+        let capabilities = req
+            .params
+            .get("capabilities")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let client_info = req
+            .params
+            .get("clientInfo")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let protocol_version = req
+            .params
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Err(e) = overslash_db::repos::oauth_mcp_client::update_initialize_state(
+            &state.db,
+            client_id,
+            &capabilities,
+            &client_info,
+            protocol_version,
+            session_id,
+        )
+        .await
+        {
+            tracing::warn!(client_id, "failed to persist mcp initialize state: {e}");
+        }
+    }
+
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": req.id,
+        "result": {
             "protocolVersion": "2025-06-18",
             "capabilities": { "tools": {} },
             "serverInfo": {
@@ -193,8 +313,14 @@ fn initialize_response(id: Value) -> Response {
             "instructions": "Overslash MCP server. Use overslash_search to discover \
         services, overslash_call to run actions, and overslash_auth for \
         identity introspection (whoami, service_status).",
-        }),
+        }
+    });
+    (
+        StatusCode::OK,
+        [("Mcp-Session-Id", session_id.to_string())],
+        Json(body),
     )
+        .into_response()
 }
 
 fn tools_list_response(id: Value) -> Response {
@@ -262,7 +388,13 @@ struct ToolCallParams {
     arguments: Value,
 }
 
-async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>) -> Response {
+async fn tools_call(
+    state: &AppState,
+    auth: &AuthContext,
+    req: JsonRpcRequest,
+    bearer: Option<&str>,
+    req_session_id: Option<Uuid>,
+) -> Response {
     let mut params: ToolCallParams = match serde_json::from_value(req.params.clone()) {
         Ok(p) => p,
         Err(e) => {
@@ -280,7 +412,17 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
 
     let outcome = match params.name.as_str() {
         "overslash_search" => dispatch_search(state, bearer, &params.arguments).await,
-        "overslash_call" => dispatch_call(state, bearer, &params.arguments).await,
+        "overslash_call" => {
+            return tools_call_overslash_call(
+                state,
+                auth,
+                &req,
+                bearer,
+                &params.arguments,
+                req_session_id,
+            )
+            .await;
+        }
         "overslash_auth" => dispatch_auth(state, bearer, &params.arguments).await,
         other => {
             return rpc_error_response(req.id, METHOD_NOT_FOUND, format!("unknown tool `{other}`"));
@@ -296,6 +438,272 @@ async fn tools_call(state: &AppState, req: JsonRpcRequest, bearer: Option<&str>)
         ),
         Err(msg) => rpc_error_response(req.id, INTERNAL_ERROR, msg),
     }
+}
+
+/// Branch off `overslash_call` so we can upgrade to SSE on a permission gap.
+///
+/// Mirrors `dispatch_call` for happy-path (just calls it), then peeks for
+/// `status: "pending_approval"` in the response. If elicitation is enabled
+/// and the client supports it, the response is reframed as a server-initiated
+/// `elicitation/create` request streamed back over SSE; the final tool
+/// result lands once the user resolves through the dialog (or an out-of-band
+/// dashboard click). Otherwise the original synchronous `pending_approval`
+/// JSON is returned just like before.
+async fn tools_call_overslash_call(
+    state: &AppState,
+    auth: &AuthContext,
+    req: &JsonRpcRequest,
+    bearer: &str,
+    args: &Value,
+    req_session_id: Option<Uuid>,
+) -> Response {
+    let outcome = match dispatch_call(state, bearer, args).await {
+        Ok(v) => v,
+        Err(msg) => return rpc_error_response(req.id.clone(), INTERNAL_ERROR, msg),
+    };
+
+    // Synchronous success or platform action: return as today.
+    let is_pending = outcome.get("status").and_then(Value::as_str) == Some("pending_approval");
+    if !is_pending {
+        return rpc_ok_response(
+            req.id.clone(),
+            json!({
+                "content": [{ "type": "text", "text": serde_json::to_string(&outcome).unwrap_or_default() }]
+            }),
+        );
+    }
+
+    // Pending approval — promote to elicitation if eligible.
+    let promote = elicitation_eligible(state, auth).await;
+    if !promote {
+        return rpc_ok_response(
+            req.id.clone(),
+            json!({
+                "content": [{ "type": "text", "text": serde_json::to_string(&outcome).unwrap_or_default() }]
+            }),
+        );
+    }
+
+    let approval_id = match outcome.get("approval_id").and_then(Value::as_str) {
+        Some(s) => match Uuid::parse_str(s) {
+            Ok(u) => u,
+            Err(_) => return synchronous_pending_response(&req.id, &outcome),
+        },
+        None => return synchronous_pending_response(&req.id, &outcome),
+    };
+    let action_summary = outcome
+        .get("action_description")
+        .and_then(Value::as_str)
+        .unwrap_or("an action")
+        .to_string();
+    let agent_identity_id = match auth.identity_id {
+        Some(id) => id,
+        None => return synchronous_pending_response(&req.id, &outcome),
+    };
+
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    // Prefer the session id the client echoed in the `Mcp-Session-Id`
+    // header (per Streamable HTTP) — it identifies *this* client even when
+    // multiple clients share one DCR client_id. Fall back to the DB's
+    // `last_session_id` for clients that don't echo the header, then to a
+    // fresh UUID. The point of using an existing id is so disconnect's
+    // `cancel_for_session(last_session_id)` can find and cancel this row.
+    let session_id = match req_session_id {
+        Some(s) => s,
+        None => match auth.mcp_client_id.as_deref() {
+            Some(client_id) => {
+                match overslash_db::repos::oauth_mcp_client::get_by_client_id(&state.db, client_id)
+                    .await
+                {
+                    Ok(Some(c)) => c.last_session_id.unwrap_or_else(Uuid::new_v4),
+                    _ => Uuid::new_v4(),
+                }
+            }
+            None => Uuid::new_v4(),
+        },
+    };
+    if let Err(e) = mcp_session::open(
+        state,
+        &elicit_id,
+        session_id,
+        agent_identity_id,
+        approval_id,
+    )
+    .await
+    {
+        tracing::error!("open mcp elicitation failed: {e}");
+        return synchronous_pending_response(&req.id, &outcome);
+    }
+
+    sse_elicitation_response(
+        state.clone(),
+        req.id.clone(),
+        elicit_id,
+        approval_id,
+        action_summary,
+        outcome.clone(),
+    )
+}
+
+fn synchronous_pending_response(id: &Value, outcome: &Value) -> Response {
+    rpc_ok_response(
+        id.clone(),
+        json!({
+            "content": [{ "type": "text", "text": serde_json::to_string(outcome).unwrap_or_default() }]
+        }),
+    )
+}
+
+/// Decide whether elicitation is reachable for the *calling* (agent, client)
+/// pair. Both lookups are keyed on `auth.mcp_client_id` rather than the
+/// most-recently-updated binding for the agent — otherwise, in a
+/// multi-client-per-agent setup, an eligible client could be denied
+/// because the most recent binding belongs to a different client whose
+/// capabilities or toggle don't match.
+async fn elicitation_eligible(state: &AppState, auth: &AuthContext) -> bool {
+    let Some(agent_id) = auth.identity_id else {
+        return false;
+    };
+    let Some(client_id) = auth.mcp_client_id.as_deref() else {
+        return false;
+    };
+    let binding = match overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
+        &state.db, agent_id, client_id,
+    )
+    .await
+    {
+        Ok(Some(b)) => b,
+        _ => return false,
+    };
+    if !binding.elicitation_enabled {
+        return false;
+    }
+    let client =
+        match overslash_db::repos::oauth_mcp_client::get_by_client_id(&state.db, client_id).await {
+            Ok(Some(c)) => c,
+            _ => return false,
+        };
+    client
+        .capabilities
+        .as_ref()
+        .and_then(|c| c.get("elicitation"))
+        .is_some()
+}
+
+fn sse_elicitation_response(
+    state: AppState,
+    rpc_id: Value,
+    elicit_id: String,
+    approval_id: Uuid,
+    action_summary: String,
+    pending_outcome: Value,
+) -> Response {
+    let elicit_request = json!({
+        "jsonrpc": "2.0",
+        "id": elicit_id,
+        "method": "elicitation/create",
+        "params": elicitation_params(&action_summary, &pending_outcome),
+    });
+
+    let stream = elicitation_event_stream(state, rpc_id, elicit_id, approval_id, elicit_request);
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+        .into_response()
+}
+
+fn elicitation_event_stream(
+    state: AppState,
+    rpc_id: Value,
+    elicit_id: String,
+    approval_id: Uuid,
+    elicit_request: Value,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    let first = stream::once(async move {
+        Ok::<_, Infallible>(Event::default().json_data(elicit_request).unwrap())
+    });
+
+    let tail = stream::once(async move {
+        let outcome = mcp_session::await_completion(&state, &elicit_id).await;
+        let result_event = match outcome {
+            mcp_session::ElicitOutcome::Completed(v) => json!({
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "result": {
+                    "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
+                }
+            }),
+            mcp_session::ElicitOutcome::Failed(v) => json!({
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "result": {
+                    "isError": true,
+                    "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
+                }
+            }),
+            mcp_session::ElicitOutcome::Cancelled => json!({
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "error": {
+                    "code": INTERNAL_ERROR,
+                    "message": "elicitation cancelled or timed out",
+                    "data": { "approval_id": approval_id }
+                }
+            }),
+        };
+        Ok::<_, Infallible>(Event::default().json_data(result_event).unwrap())
+    });
+
+    first.chain(tail)
+}
+
+/// Build the elicitation/create params for a permission gap, mirroring the
+/// dashboard `ApprovalResolver` choices: decision (allow/allow_remember/
+/// deny/bubble_up), optional remember_keys (custom), optional ttl. The
+/// client renders a flat form whose answers we translate in
+/// `mcp_session::complete_from_elicitation`.
+fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
+    // Pull suggested tiers off the pending_approval response so the form
+    // can show the same scope choices the dashboard does.
+    let suggested = pending_outcome
+        .get("suggested_tiers")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(vec![]));
+
+    json!({
+        "message": format!("Allow this agent to: {}?", action_summary),
+        "requestedSchema": {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "title": "Decision",
+                    "oneOf": [
+                        { "const": "allow",          "title": "Allow once" },
+                        { "const": "allow_remember", "title": "Allow & remember" },
+                        { "const": "deny",           "title": "Deny" },
+                        { "const": "bubble_up",      "title": "Ask my parent" }
+                    ],
+                    "default": "allow"
+                },
+                "ttl": {
+                    "type": "string",
+                    "title": "If remembering, for how long",
+                    "oneOf": [
+                        { "const": "forever", "title": "Forever" },
+                        { "const": "1h",      "title": "1 hour" },
+                        { "const": "24h",     "title": "24 hours" },
+                        { "const": "7d",      "title": "7 days" },
+                        { "const": "30d",     "title": "30 days" }
+                    ],
+                    "default": "forever"
+                }
+            },
+            "required": ["decision"]
+        },
+        "_meta": {
+            "io.overslash/suggested_tiers": suggested
+        }
+    })
 }
 
 // Workaround for claude.ai / Claude Desktop connectors that stringify
