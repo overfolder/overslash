@@ -770,6 +770,9 @@ pub(super) fn extract_mcp_actions(
         }
         let params = input_schema.map(lower_input_schema).unwrap_or_default();
 
+        let disclose = parse_disclose(obj.get("x-overslash-disclose"), &base, &mut errors);
+        let redact = parse_redact(obj.get("x-overslash-redact"), &base, &mut errors);
+
         sink.insert(
             name.clone(),
             ServiceAction {
@@ -782,8 +785,8 @@ pub(super) fn extract_mcp_actions(
                 scope_param,
                 required_scopes: Vec::new(),
                 permission: None,
-                disclose: Vec::new(),
-                redact: Vec::new(),
+                disclose,
+                redact,
                 mcp_tool: Some(name),
                 output_schema,
                 disabled,

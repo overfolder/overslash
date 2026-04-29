@@ -34,9 +34,9 @@ pub(super) const ROOT_ALIASES: &[Alias] = &[
 ];
 
 /// MCP tool-level aliases. Tools are shaped like operations, so the same
-/// `risk:` / `scope_param:` unprefixed forms apply. Other tool fields
-/// (`name`, `description`, `input_schema`, `output_schema`, `disabled`) are
-/// plain JSON and not rewritten.
+/// `risk:` / `scope_param:` / `disclose:` / `redact:` unprefixed forms
+/// apply. Other tool fields (`name`, `description`, `input_schema`,
+/// `output_schema`, `disabled`) are plain JSON and not rewritten.
 pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
     Alias {
         alias: "risk",
@@ -45,6 +45,14 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
     Alias {
         alias: "scope_param",
         canonical: "x-overslash-scope_param",
+    },
+    Alias {
+        alias: "disclose",
+        canonical: "x-overslash-disclose",
+    },
+    Alias {
+        alias: "redact",
+        canonical: "x-overslash-redact",
     },
 ];
 
