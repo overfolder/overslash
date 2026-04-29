@@ -289,65 +289,75 @@ resource "google_cloud_run_v2_service" "api" {
       }
     }
 
-    containers {
-      name  = "api"
-      image = var.image
+    # API container. Wrapped in a `dynamic` (always one element) so it lives
+    # in the same kind of block as the optional OTel sidecar below. Mixing a
+    # static `containers` block with a dynamic one would put both into the
+    # same list but in an order Terraform's docs don't guarantee — and the
+    # `lifecycle.ignore_changes` rule below references `containers[0]` by
+    # index. With both blocks dynamic, source order is the merge order, so
+    # the API container is unambiguously at index 0.
+    dynamic "containers" {
+      for_each = [1]
+      content {
+        name  = "api"
+        image = var.image
 
-      ports {
-        container_port = var.container_port
-      }
-
-      resources {
-        limits = {
-          cpu    = var.cpu
-          memory = var.memory
+        ports {
+          container_port = var.container_port
         }
-        startup_cpu_boost = true
-      }
 
-      dynamic "env" {
-        for_each = local.env_vars
-        content {
-          name  = env.key
-          value = env.value
+        resources {
+          limits = {
+            cpu    = var.cpu
+            memory = var.memory
+          }
+          startup_cpu_boost = true
         }
-      }
 
-      dynamic "env" {
-        for_each = local.env_secrets
-        content {
-          name = env.key
-          value_source {
-            secret_key_ref {
-              secret  = env.value
-              version = "latest"
+        dynamic "env" {
+          for_each = local.env_vars
+          content {
+            name  = env.key
+            value = env.value
+          }
+        }
+
+        dynamic "env" {
+          for_each = local.env_secrets
+          content {
+            name = env.key
+            value_source {
+              secret_key_ref {
+                secret  = env.value
+                version = "latest"
+              }
             }
           }
         }
-      }
 
-      volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
-      }
-
-      startup_probe {
-        http_get {
-          path = "/health"
-          port = var.container_port
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
         }
-        initial_delay_seconds = 5
-        period_seconds        = 5
-        failure_threshold     = 10
-      }
 
-      liveness_probe {
-        http_get {
-          path = "/health"
-          port = var.container_port
+        startup_probe {
+          http_get {
+            path = "/health"
+            port = var.container_port
+          }
+          initial_delay_seconds = 5
+          period_seconds        = 5
+          failure_threshold     = 10
         }
-        period_seconds    = 30
-        failure_threshold = 3
+
+        liveness_probe {
+          http_get {
+            path = "/health"
+            port = var.container_port
+          }
+          period_seconds    = 30
+          failure_threshold = 3
+        }
       }
     }
 
