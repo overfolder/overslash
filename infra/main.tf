@@ -169,6 +169,54 @@ module "cloud_build" {
   ]
 }
 
+# --- Metrics exporter Cloud Run Job + Scheduler trigger ---
+module "metrics_exporter_job" {
+  source      = "./modules/metrics-exporter-job"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  service_account_email = module.iam.cloud_run_sa_email
+  scheduler_sa_email    = module.iam.scheduler_sa_email
+
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/overslash-metrics-exporter:latest"
+
+  cloud_sql_connection_name = module.cloud_sql.connection_name
+  db_user                   = module.cloud_sql.db_user
+  db_name                   = module.cloud_sql.db_name
+  db_password_secret_id     = module.secret_manager.db_password_secret_id
+
+  depends_on = [
+    module.cloud_sql,
+    module.secret_manager,
+    module.artifact_registry,
+    module.iam,
+  ]
+}
+
+# --- Cloud Build trigger for the exporter image ---
+module "cloud_build_metrics_exporter" {
+  source      = "./modules/cloud-build-metrics-exporter"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  repository_name = module.artifact_registry.repository_name
+
+  cloud_build_sa_id  = module.iam.cloud_build_sa_id
+  cloud_run_job_name = module.metrics_exporter_job.job_name
+
+  github_owner  = var.github_owner
+  github_repo   = var.github_repo
+  github_branch = var.github_branch
+
+  depends_on = [
+    module.artifact_registry,
+    module.iam,
+    module.metrics_exporter_job,
+  ]
+}
+
 # --- Night shutdown scheduler (optional) ---
 module "infra_scheduler" {
   count = var.enable_infra_scheduler ? 1 : 0

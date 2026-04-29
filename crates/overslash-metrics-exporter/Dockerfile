@@ -1,8 +1,12 @@
+# Cloud Run Job image for the business-metrics exporter.
+# Mirrors the API Dockerfile's two-stage layout so workspace dependency
+# caching works the same way.
+
 FROM rust:1.94-trixie AS builder
 
 WORKDIR /app
 
-# Copy workspace manifests first for dependency caching
+# Workspace manifests for dependency caching
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
@@ -14,7 +18,6 @@ COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
 COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 
-# Create dummy source files to cache dependency compilation
 RUN mkdir -p crates/overslash-core/src \
     && echo "pub fn _dummy() {}" > crates/overslash-core/src/lib.rs \
     && mkdir -p crates/overslash-db/src \
@@ -35,21 +38,17 @@ RUN mkdir -p crates/overslash-core/src \
     && mkdir -p tests/mock-target/src \
     && echo "fn main() {}" > tests/mock-target/src/main.rs
 
-# Build dependencies only (cached layer)
-RUN cargo build --release --package overslash-cli
+# Build the dependency tree only (cached layer).
+RUN cargo build --release --package overslash-metrics-exporter
 
-# Copy actual source code
 COPY crates/ crates/
-COPY services/ services/
 COPY .sqlx/ .sqlx/
-COPY SKILL.md SKILL.md
 
-# Touch source files to invalidate the dummy builds
+# Touch sources to invalidate the dummy-only layer.
 RUN find crates/ -name "*.rs" -exec touch {} +
 
-# sqlx offline mode: use cached query metadata from .sqlx/ instead of a live DB
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --package overslash-cli
+RUN cargo build --release --package overslash-metrics-exporter
 
 # --- Runtime stage ---
 FROM debian:trixie-slim AS runtime
@@ -63,16 +62,9 @@ RUN useradd --create-home --shell /bin/bash overslash
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/overslash /app/overslash
-COPY services/ /app/services/
-COPY crates/overslash-api/entrypoint.sh /app/entrypoint.sh
+COPY --from=builder /app/target/release/overslash-metrics-exporter /app/overslash-metrics-exporter
 
-RUN chmod +x /app/entrypoint.sh \
-    && chown -R overslash:overslash /app
+RUN chown -R overslash:overslash /app
 USER overslash
 
-ENV HOST=0.0.0.0
-ENV PORT=8080
-EXPOSE 8080
-
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/overslash-metrics-exporter"]
