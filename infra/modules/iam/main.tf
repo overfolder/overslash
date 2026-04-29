@@ -38,6 +38,16 @@ resource "google_project_iam_member" "cloud_run_trace_agent" {
   member  = "serviceAccount:${google_service_account.cloud_run.email}"
 }
 
+# Required by the metrics-exporter Cloud Run Job to call
+# monitoring.googleapis.com/v3/projects/{id}/timeSeries:create. Granted on
+# the Cloud Run SA so the same identity used by the API also works for the
+# exporter — the exporter runs as a sibling Cloud Run Job, not a separate SA.
+resource "google_project_iam_member" "cloud_run_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.cloud_run.email}"
+}
+
 # --- Cloud Build service account ---
 
 resource "google_service_account" "cloud_build" {
@@ -81,6 +91,15 @@ resource "google_service_account" "scheduler" {
 resource "google_project_iam_member" "scheduler_sql_admin" {
   project = var.project_id
   role    = "roles/cloudsql.admin"
+  member  = "serviceAccount:${google_service_account.scheduler.email}"
+}
+
+# Lets Cloud Scheduler invoke the metrics-exporter Cloud Run Job via the
+# `:run` REST endpoint. Project-wide grant matches how the existing
+# infra-scheduler invokes other resources.
+resource "google_project_iam_member" "scheduler_run_invoker" {
+  project = var.project_id
+  role    = "roles/run.invoker"
   member  = "serviceAccount:${google_service_account.scheduler.email}"
 }
 
