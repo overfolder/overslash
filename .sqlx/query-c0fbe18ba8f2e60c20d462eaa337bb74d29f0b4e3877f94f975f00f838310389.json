@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_idp_configs SET\n            encrypted_client_id = CASE WHEN $3 THEN $4 ELSE encrypted_client_id END,\n            encrypted_client_secret = CASE WHEN $3 THEN $5 ELSE encrypted_client_secret END,\n            enabled = COALESCE($6, enabled),\n            allowed_email_domains = COALESCE($7, allowed_email_domains),\n            updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "encrypted_client_id",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "encrypted_client_secret",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "allowed_email_domains",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool",
+        "Bytea",
+        "Bytea",
+        "Bool",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c0fbe18ba8f2e60c20d462eaa337bb74d29f0b4e3877f94f975f00f838310389"
+}

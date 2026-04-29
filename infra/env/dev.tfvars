@@ -2,8 +2,14 @@ project_id = "overslash-dev"
 region     = "europe-west1"
 env        = "dev"
 
-domain           = "api.dev.overslash.com"
-dashboard_origin = "https://app.dev.overslash.com"
+domain = ""
+
+app_host_suffix       = "app.dev.overslash.com"
+api_host_suffix       = "api.dev.overslash.com"
+session_cookie_domain = ".app.dev.overslash.com"
+enable_api_lb         = true
+
+dashboard_origin = "https://app.dev.overslash.com,https://*.app.dev.overslash.com"
 dashboard_url    = "https://app.dev.overslash.com"
 enable_dev_auth  = false
 

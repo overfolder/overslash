@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Cfm8popeKrflBrfL7fjteBixVHcJCqHiO3EvWwNqFcacpazkgR23fPujucTofgD
+\restrict Lc7TfKvNKwRHXZwPeY4F6bciVDI2Z0xCSpzRxgsaGYoL3A0SplfH6zm48z4tCBW
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,13 +23,6 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
-
-
---
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -77,6 +70,7 @@ CREATE TABLE public.approvals (
     current_resolver_identity_id uuid NOT NULL,
     resolver_assigned_at timestamp with time zone DEFAULT now() NOT NULL,
     disclosed_fields jsonb,
+    replay_payload jsonb,
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -95,7 +89,8 @@ CREATE TABLE public.audit_log (
     detail jsonb DEFAULT '{}'::jsonb NOT NULL,
     ip_address text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    description text
+    description text,
+    impersonated_by_identity_id uuid
 );
 
 
@@ -145,6 +140,29 @@ CREATE TABLE public.enabled_global_templates (
     template_key text NOT NULL,
     enabled_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: executions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.executions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    approval_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    status text NOT NULL,
+    remember boolean DEFAULT false NOT NULL,
+    remember_keys text[],
+    remember_rule_ttl timestamp with time zone,
+    result jsonb,
+    error text,
+    triggered_by text,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT executions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executing'::text, 'executed'::text, 'failed'::text, 'cancelled'::text, 'expired'::text])))
 );
 
 
@@ -307,7 +325,28 @@ CREATE TABLE public.org_idp_configs (
     allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
     CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
+);
+
+
+--
+-- Name: org_subscriptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_subscriptions (
+    org_id uuid NOT NULL,
+    stripe_subscription_id text NOT NULL,
+    stripe_customer_id text NOT NULL,
+    plan text DEFAULT 'team'::text NOT NULL,
+    seats integer DEFAULT 2 NOT NULL,
+    status text NOT NULL,
+    currency text NOT NULL,
+    current_period_start timestamp with time zone,
+    current_period_end timestamp with time zone,
+    cancel_at_period_end boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -329,6 +368,23 @@ CREATE TABLE public.orgs (
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     is_personal boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
+);
+
+
+--
+-- Name: pending_checkouts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.pending_checkouts (
+    id text NOT NULL,
+    user_id uuid NOT NULL,
+    org_name text NOT NULL,
+    org_slug text NOT NULL,
+    seats integer NOT NULL,
+    currency text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone DEFAULT (now() + '02:00:00'::interval) NOT NULL,
+    fulfilled_org_id uuid
 );
 
 
@@ -451,6 +507,7 @@ CREATE TABLE public.service_instances (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_system boolean DEFAULT false NOT NULL,
+    url text,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
@@ -502,7 +559,8 @@ CREATE TABLE public.users (
     overslash_idp_subject text,
     personal_org_id uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    stripe_customer_id text
 );
 
 
@@ -601,6 +659,14 @@ ALTER TABLE ONLY public.connections
 
 ALTER TABLE ONLY public.enabled_global_templates
     ADD CONSTRAINT enabled_global_templates_pkey PRIMARY KEY (org_id, template_key);
+
+
+--
+-- Name: executions executions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_pkey PRIMARY KEY (id);
 
 
 --
@@ -724,6 +790,22 @@ ALTER TABLE ONLY public.org_idp_configs
 
 
 --
+-- Name: org_subscriptions org_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_subscriptions
+    ADD CONSTRAINT org_subscriptions_pkey PRIMARY KEY (org_id);
+
+
+--
+-- Name: org_subscriptions org_subscriptions_stripe_subscription_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_subscriptions
+    ADD CONSTRAINT org_subscriptions_stripe_subscription_id_key UNIQUE (stripe_subscription_id);
+
+
+--
 -- Name: orgs orgs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -737,6 +819,14 @@ ALTER TABLE ONLY public.orgs
 
 ALTER TABLE ONLY public.orgs
     ADD CONSTRAINT orgs_slug_key UNIQUE (slug);
+
+
+--
+-- Name: pending_checkouts pending_checkouts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_checkouts
+    ADD CONSTRAINT pending_checkouts_pkey PRIMARY KEY (id);
 
 
 --
@@ -901,6 +991,13 @@ CREATE INDEX idx_audit_log_identity ON public.audit_log USING btree (identity_id
 
 
 --
+-- Name: idx_audit_log_impersonated_by; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_impersonated_by ON public.audit_log USING btree (org_id, impersonated_by_identity_id) WHERE (impersonated_by_identity_id IS NOT NULL);
+
+
+--
 -- Name: idx_audit_log_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -919,6 +1016,27 @@ CREATE INDEX idx_connections_identity ON public.connections USING btree (identit
 --
 
 CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id, provider_key);
+
+
+--
+-- Name: idx_executions_approval_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_executions_approval_id ON public.executions USING btree (approval_id);
+
+
+--
+-- Name: idx_executions_org_status_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_org_status_expires ON public.executions USING btree (org_id, status, expires_at);
+
+
+--
+-- Name: idx_executions_pending_expiry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_pending_expiry ON public.executions USING btree (expires_at) WHERE (status = 'pending'::text);
 
 
 --
@@ -1076,6 +1194,13 @@ CREATE INDEX idx_org_idp_configs_org ON public.org_idp_configs USING btree (org_
 
 
 --
+-- Name: idx_pending_checkouts_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_checkouts_user ON public.pending_checkouts USING btree (user_id);
+
+
+--
 -- Name: idx_permission_rules_identity; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1223,6 +1348,13 @@ CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btr
 
 
 --
+-- Name: org_idp_configs_one_default_per_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_idp_configs_one_default_per_org ON public.org_idp_configs USING btree (org_id) WHERE is_default;
+
+
+--
 -- Name: service_action_embeddings_global_unique; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1255,6 +1387,13 @@ CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_acti
 --
 
 CREATE UNIQUE INDEX users_overslash_idp_unique ON public.users USING btree (overslash_idp_provider, overslash_idp_subject) WHERE ((overslash_idp_provider IS NOT NULL) AND (overslash_idp_subject IS NOT NULL));
+
+
+--
+-- Name: users_stripe_customer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX users_stripe_customer ON public.users USING btree (stripe_customer_id) WHERE (stripe_customer_id IS NOT NULL);
 
 
 --
@@ -1303,6 +1442,14 @@ ALTER TABLE ONLY public.approvals
 
 ALTER TABLE ONLY public.audit_log
     ADD CONSTRAINT audit_log_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: audit_log audit_log_impersonated_by_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_log
+    ADD CONSTRAINT audit_log_impersonated_by_identity_id_fkey FOREIGN KEY (impersonated_by_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
 
 
 --
@@ -1383,6 +1530,22 @@ ALTER TABLE ONLY public.enabled_global_templates
 
 ALTER TABLE ONLY public.enabled_global_templates
     ADD CONSTRAINT enabled_global_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: executions executions_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: executions executions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --
@@ -1535,6 +1698,22 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: org_subscriptions org_subscriptions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_subscriptions
+    ADD CONSTRAINT org_subscriptions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: pending_checkouts pending_checkouts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_checkouts
+    ADD CONSTRAINT pending_checkouts_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -1741,5 +1920,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Cfm8popeKrflBrfL7fjteBixVHcJCqHiO3EvWwNqFcacpazkgR23fPujucTofgD
+\unrestrict Lc7TfKvNKwRHXZwPeY4F6bciVDI2Z0xCSpzRxgsaGYoL3A0SplfH6zm48z4tCBW
 

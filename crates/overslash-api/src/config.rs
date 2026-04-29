@@ -60,10 +60,15 @@ pub struct Config {
     /// server; in production this is always "https://api.stripe.com/v1".
     pub stripe_api_base: String,
     /// Optional apex used to resolve `<slug>.<apex>` subdomains into an org.
-    /// e.g. `app.overslash.com`. When unset, subdomain routing is disabled
-    /// (helpful for self-hosted single-host deploys). Leave unset in local
-    /// dev; tests set this explicitly.
+    /// e.g. `app.overslash.com`. The dashboard surface — browsers run on
+    /// `<slug>.app.overslash.com`. When unset, subdomain routing is disabled
+    /// for this surface. Leave unset in local dev; tests set this explicitly.
     pub app_host_suffix: Option<String>,
+    /// Optional apex for the programmatic surface (MCP, OAuth AS metadata,
+    /// REST). e.g. `api.overslash.com`. Both suffixes are accepted by the
+    /// subdomain middleware; `.well-known` issuers built on a corp subdomain
+    /// prefer this one because programmatic clients hit Cloud Run directly.
+    pub api_host_suffix: Option<String>,
     /// Optional Domain attribute for the session cookie, typically a leading
     /// dot + `app_host_suffix` so cookies are shared across subdomains
     /// (e.g. `.app.overslash.com`). When None, cookies stay origin-scoped,
@@ -153,6 +158,7 @@ impl Config {
                 .unwrap_or(true),
             single_org_mode: env::var("SINGLE_ORG_MODE").ok().filter(|s| !s.is_empty()),
             app_host_suffix: env::var("APP_HOST_SUFFIX").ok().filter(|s| !s.is_empty()),
+            api_host_suffix: env::var("API_HOST_SUFFIX").ok().filter(|s| !s.is_empty()),
             session_cookie_domain: env::var("SESSION_COOKIE_DOMAIN")
                 .ok()
                 .filter(|s| !s.is_empty()),

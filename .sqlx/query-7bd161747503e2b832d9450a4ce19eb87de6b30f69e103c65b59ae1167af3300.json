@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at\n         FROM org_idp_configs WHERE org_id = $1 AND enabled = true ORDER BY created_at",
+  "query": "UPDATE org_idp_configs SET is_default = true, updated_at = now()\n         WHERE id = $1 AND org_id = $2\n         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -40,17 +40,23 @@
       },
       {
         "ordinal": 7,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -63,8 +69,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "0101f184283f242305632b0737b1f30c007aec05032d5c5bb5d0e9ba4e6a5be4"
+  "hash": "7bd161747503e2b832d9450a4ce19eb87de6b30f69e103c65b59ae1167af3300"
 }

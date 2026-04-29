@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use axum::{
     Form, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -30,10 +30,11 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
+    middleware::subdomain::RequestOrgContext,
     services::{jwt, oauth_as, session},
 };
 use overslash_db::repos::{
-    identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client,
+    identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client, org_idp_config,
 };
 use overslash_db::scopes::OrgScope;
 
@@ -191,9 +192,14 @@ struct AuthorizeQuery {
 
 async fn authorize(
     State(state): State<AppState>,
+    ctx: Option<Extension<RequestOrgContext>>,
     Query(params): Query<AuthorizeQuery>,
     headers: HeaderMap,
 ) -> Response {
+    // Older test harnesses mount the OAuth router without the subdomain
+    // middleware; treat the missing extension as Root so the existing
+    // env-var IdP path still works.
+    let ctx = ctx.map(|Extension(c)| c).unwrap_or(RequestOrgContext::Root);
     // Reject bad params BEFORE checking auth so every failure is diagnosable.
     if params.response_type != "code" {
         return oauth_error(
@@ -263,27 +269,34 @@ async fn authorize(
     let session_claims = match session::extract_session(&state, &headers) {
         Some(c) => c,
         None => {
-            let provider = match default_idp_provider(&state) {
-                Some(p) => p,
-                None => {
+            let authorize_path = rebuild_authorize_path(&params);
+            let next = urlencoding::encode(&authorize_path);
+            match default_idp_provider_for_request(&state, &ctx).await {
+                IdpBounce::Provider(provider) => {
+                    // Dev login is a separate endpoint, not the generic
+                    // /auth/login/{provider_key} path (which requires an
+                    // oauth_providers DB row).
+                    let login = if provider == "dev" {
+                        format!("/auth/dev/token?next={next}")
+                    } else {
+                        format!("/auth/login/{provider}?next={next}")
+                    };
+                    return Redirect::to(&login).into_response();
+                }
+                IdpBounce::Picker => {
+                    // Corp subdomain with multiple enabled IdPs and no
+                    // designated default — let the user pick. The dashboard
+                    // login page calls /auth/providers and renders the list.
+                    return Redirect::to(&format!("/login?next={next}")).into_response();
+                }
+                IdpBounce::None => {
                     return oauth_error(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "login_required",
-                        "no IdP is configured on this Overslash deployment",
+                        "no IdP is configured for this org",
                     );
                 }
-            };
-            let authorize_path = rebuild_authorize_path(&params);
-            let next = urlencoding::encode(&authorize_path);
-            // Dev login is a separate endpoint, not the generic
-            // /auth/login/{provider_key} path (which requires an
-            // oauth_providers DB row).
-            let login = if provider == "dev" {
-                format!("/auth/dev/token?next={next}")
-            } else {
-                format!("/auth/login/{provider}?next={next}")
-            };
-            return Redirect::to(&login).into_response();
+            }
         }
     };
 
@@ -393,25 +406,59 @@ fn issue_authorization_code(
     Redirect::to(&redirect).into_response()
 }
 
-/// Pick the first configured env-var IdP for bouncing `/oauth/authorize`
-/// through login. Production deployments should always have exactly one
-/// default; installations with multiple IdPs can pick via a UI redirect
-/// layer above `/oauth/authorize`.
-fn default_idp_provider(state: &AppState) -> Option<&'static str> {
-    if state.config.google_auth_client_id.is_some()
-        && state.config.google_auth_client_secret.is_some()
-    {
-        return Some("google");
+/// Outcome of picking an IdP to bounce an unauthenticated `/oauth/authorize`
+/// caller through.
+enum IdpBounce {
+    /// One specific provider key — redirect straight to its login.
+    Provider(String),
+    /// Multiple IdPs configured for the org and none marked default — the
+    /// dashboard `/login` page should render a picker.
+    Picker,
+    /// No IdP available at all → service-unavailable.
+    None,
+}
+
+/// Pick how to bounce an unauthenticated `/oauth/authorize` caller through
+/// IdP login.
+///
+/// On a corp subdomain (`RequestOrgContext::Org`) we honor the org's
+/// designated default IdP, then fall back to the picker if any IdPs are
+/// enabled. We **never** fall through to env-var (Overslash-managed) login
+/// on a corp subdomain — corp subdomains are strict trust domains
+/// (DECISIONS.md D12).
+///
+/// On the apex (`RequestOrgContext::Root`) we keep the existing env-var
+/// behavior so personal-org sign-up keeps working without any DB IdP rows.
+async fn default_idp_provider_for_request(state: &AppState, ctx: &RequestOrgContext) -> IdpBounce {
+    match ctx {
+        RequestOrgContext::Org { org_id, .. } => {
+            // Designated default first.
+            if let Ok(Some(row)) = org_idp_config::get_default_by_org(&state.db, *org_id).await {
+                return IdpBounce::Provider(row.provider_key);
+            }
+            // No default but at least one enabled IdP → picker.
+            match org_idp_config::list_enabled_by_org(&state.db, *org_id).await {
+                Ok(rows) if !rows.is_empty() => IdpBounce::Picker,
+                _ => IdpBounce::None,
+            }
+        }
+        RequestOrgContext::Root => {
+            if state.config.google_auth_client_id.is_some()
+                && state.config.google_auth_client_secret.is_some()
+            {
+                return IdpBounce::Provider("google".into());
+            }
+            if state.config.github_auth_client_id.is_some()
+                && state.config.github_auth_client_secret.is_some()
+            {
+                return IdpBounce::Provider("github".into());
+            }
+            if state.config.dev_auth_enabled {
+                return IdpBounce::Provider("dev".into());
+            }
+            IdpBounce::None
+        }
     }
-    if state.config.github_auth_client_id.is_some()
-        && state.config.github_auth_client_secret.is_some()
-    {
-        return Some("github");
-    }
-    if state.config.dev_auth_enabled {
-        return Some("dev");
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

@@ -21,8 +21,32 @@ variable "domain" {
   default     = ""
 }
 
+variable "app_host_suffix" {
+  description = "Apex for the dashboard subdomain surface (e.g. app.overslash.com). Empty disables wildcard routing on this surface."
+  type        = string
+  default     = ""
+}
+
+variable "api_host_suffix" {
+  description = "Apex for the programmatic / MCP / OAuth-AS subdomain surface (e.g. api.overslash.com). Empty disables wildcard routing here."
+  type        = string
+  default     = ""
+}
+
+variable "session_cookie_domain" {
+  description = "Domain attribute for the session cookie. Typically a leading dot + app_host_suffix (e.g. .app.overslash.com) so the cookie is shared across org subdomains."
+  type        = string
+  default     = ""
+}
+
+variable "enable_api_lb" {
+  description = "Provision a global HTTPS LB with wildcard managed cert in front of Cloud Run (required for *.api.<apex> routing)."
+  type        = bool
+  default     = false
+}
+
 variable "dashboard_origin" {
-  description = "Comma-separated allowed CORS origins for the dashboard (e.g. https://app.overslash.com)"
+  description = "Comma-separated allowed CORS origins for the dashboard. Wildcards `https://*.app.overslash.com` allowed."
   type        = string
   default     = "*localhost*"
 }

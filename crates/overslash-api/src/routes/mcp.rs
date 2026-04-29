@@ -27,7 +27,7 @@
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Extension, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -39,6 +39,8 @@ use serde_json::{Value, json};
 use crate::{
     AppState,
     extractors::AuthContext,
+    middleware::subdomain::RequestOrgContext,
+    routes::oauth_as as oauth_as_routes,
     services::{jwt, oauth_as, session},
 };
 
@@ -70,10 +72,13 @@ struct JsonRpcRequest {
 // Auth challenge (401 + WWW-Authenticate)
 // ---------------------------------------------------------------------------
 
-fn challenge(state: &AppState) -> Response {
-    let public_url = state.config.public_url.trim_end_matches('/');
+fn challenge(state: &AppState, headers: &HeaderMap, ctx: &RequestOrgContext) -> Response {
+    // The challenge URL must point at the same issuer the metadata
+    // endpoint will return so the MCP client can complete the discovery
+    // chain on a per-org subdomain. Reuse the issuer builder.
+    let issuer = oauth_as_routes::issuer_for(state, headers, ctx);
     let header_val =
-        format!(r#"Bearer resource_metadata="{public_url}/.well-known/oauth-protected-resource""#,);
+        format!(r#"Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource""#);
     (
         StatusCode::UNAUTHORIZED,
         [(header::WWW_AUTHENTICATE, header_val)],
@@ -88,10 +93,13 @@ fn challenge(state: &AppState) -> Response {
 
 async fn get_mcp(
     State(state): State<AppState>,
+    ctx: Option<Extension<RequestOrgContext>>,
+    headers: HeaderMap,
     auth: Result<AuthContext, crate::error::AppError>,
 ) -> Response {
     if auth.is_err() {
-        return challenge(&state);
+        let ctx = ctx.map(|Extension(c)| c).unwrap_or(RequestOrgContext::Root);
+        return challenge(&state, &headers, &ctx);
     }
     // No server-initiated streams for v1.
     (StatusCode::METHOD_NOT_ALLOWED, "method not allowed").into_response()
@@ -103,13 +111,15 @@ async fn get_mcp(
 
 async fn post_mcp(
     State(state): State<AppState>,
+    ctx: Option<Extension<RequestOrgContext>>,
     auth: Result<AuthContext, crate::error::AppError>,
     headers: HeaderMap,
     body: String,
 ) -> Response {
+    let ctx = ctx.map(|Extension(c)| c).unwrap_or(RequestOrgContext::Root);
     let auth = match auth {
         Ok(a) => a,
-        Err(_) => return challenge(&state),
+        Err(_) => return challenge(&state, &headers, &ctx),
     };
 
     // Prefer the explicit Bearer header. When the caller authenticated via

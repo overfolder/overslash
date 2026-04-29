@@ -2,8 +2,19 @@ project_id = "overslash"
 region     = "europe-west1"
 env        = "prod"
 
-domain           = "api.overslash.com"
-dashboard_origin = "https://app.overslash.com"
+# Empty `domain` skips the single-host google_cloud_run_domain_mapping in
+# favor of the wildcard GCLB stack (see `enable_api_lb`).
+domain = ""
+
+# Wildcard subdomain surfaces.
+app_host_suffix       = "app.overslash.com"
+api_host_suffix       = "api.overslash.com"
+session_cookie_domain = ".app.overslash.com"
+enable_api_lb         = true
+
+# Wildcard CORS so `<slug>.app.overslash.com` browser sessions can call the
+# API cross-origin without enumerating slugs.
+dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"
 dashboard_url    = "https://app.overslash.com"
 enable_dev_auth  = false
 

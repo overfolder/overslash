@@ -260,7 +260,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // Build allowed-origin matcher. `DASHBOARD_ORIGIN` accepts:
     //   - "*localhost*" (default): any http(s) localhost / 127.0.0.1 origin on any port
     //     — needed because worktrees pick dynamic dashboard ports.
-    //   - a comma-separated list of explicit origins (e.g. "https://app.example.com")
+    //   - a comma-separated list of origins. Entries beginning with
+    //     `https://*.` are treated as wildcard subdomain patterns
+    //     (e.g. `https://*.app.overslash.com`) so per-org dashboard
+    //     subdomains all match without enumerating every slug.
     let allow_origin = {
         let raw = state.config.dashboard_origin.trim().to_string();
         if raw == "*localhost*" {
@@ -276,16 +279,47 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     .unwrap_or(false)
             })
         } else {
-            let origins: Vec<HeaderValue> = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| {
-                    s.parse::<HeaderValue>()
-                        .map_err(|e| anyhow::anyhow!("invalid DASHBOARD_ORIGIN entry {s:?}: {e}"))
+            // Split into exact and wildcard buckets. Wildcards collapse to
+            // `(scheme, suffix)` pairs so the predicate is allocation-free
+            // per-request.
+            let mut exact: Vec<String> = Vec::new();
+            let mut wild: Vec<(String, String)> = Vec::new();
+            for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                if let Some(rest) = entry.strip_prefix("https://*.") {
+                    wild.push(("https://".into(), format!(".{rest}")));
+                } else if let Some(rest) = entry.strip_prefix("http://*.") {
+                    wild.push(("http://".into(), format!(".{rest}")));
+                } else {
+                    // Validate it parses as a HeaderValue early so misconfigs
+                    // surface at boot rather than mid-request.
+                    entry.parse::<HeaderValue>().map_err(|e| {
+                        anyhow::anyhow!("invalid DASHBOARD_ORIGIN entry {entry:?}: {e}")
+                    })?;
+                    exact.push(entry.to_string());
+                }
+            }
+            AllowOrigin::predicate(move |origin: &HeaderValue, _req| {
+                let Ok(o) = origin.to_str() else {
+                    return false;
+                };
+                if exact.iter().any(|e| e == o) {
+                    return true;
+                }
+                wild.iter().any(|(scheme, suffix)| {
+                    let Some(rest) = o.strip_prefix(scheme.as_str()) else {
+                        return false;
+                    };
+                    let Some(label_end) = rest.find(suffix.as_str()) else {
+                        return false;
+                    };
+                    // Single DNS label between scheme and suffix — no further
+                    // dotted parts (so `evil.attacker.app.overslash.com`
+                    // doesn't squeak through the wildcard).
+                    let label = &rest[..label_end];
+                    let tail = &rest[label_end + suffix.len()..];
+                    !label.is_empty() && !label.contains('.') && tail.is_empty()
                 })
-                .collect::<anyhow::Result<_>>()?;
-            AllowOrigin::list(origins)
+            })
         }
     };
 
