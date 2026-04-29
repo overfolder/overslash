@@ -12,16 +12,17 @@ COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
 COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
 COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
+COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 COPY crates/overslash-db/migrations crates/overslash-db/migrations
 COPY .sqlx .sqlx
 COPY services services
 # Stub sources so cargo-chef can resolve the workspace
-RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-api/src crates/overslash-mcp/src crates/overslash-cli/src crates/oversla-sh/src tests/mock-target/src && \
+RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-api/src crates/overslash-mcp/src crates/overslash-cli/src crates/oversla-sh/src crates/overslash-metrics/src tests/mock-target/src && \
     echo "fn main() {}" > crates/overslash-cli/src/main.rs && \
     echo "fn main() {}" > crates/oversla-sh/src/main.rs && \
     echo "fn main() {}" > tests/mock-target/src/main.rs && \
-    touch crates/overslash-core/src/lib.rs crates/overslash-db/src/lib.rs crates/overslash-api/src/lib.rs crates/overslash-mcp/src/lib.rs crates/oversla-sh/src/lib.rs
+    touch crates/overslash-core/src/lib.rs crates/overslash-db/src/lib.rs crates/overslash-api/src/lib.rs crates/overslash-mcp/src/lib.rs crates/oversla-sh/src/lib.rs crates/overslash-metrics/src/lib.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: build dependencies (cached image layer)
@@ -64,6 +65,7 @@ COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
 COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
 COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
+COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 
 # Copy migrations, sqlx cache, services
