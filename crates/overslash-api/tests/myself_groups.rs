@@ -318,6 +318,75 @@ async fn admin_cannot_grant_alices_service_to_bobs_self_group() {
 }
 
 #[tokio::test]
+async fn admin_cannot_add_other_user_to_alices_self_group() {
+    // The cross-owner Myself guard added in `add_grant` is mirrored on the
+    // membership endpoint: an admin must not be able to add bob to alice's
+    // Myself group, because `get_ceiling_for_user` unions grants across all
+    // groups bob belongs to and bob would silently inherit alice's Myself
+    // grants (admin + auto_approve_reads on every service alice owns).
+    let (base, _pool, admin_key, alice_id, _alice_key, _agent_id, _agent_key) =
+        setup_org_with_user_and_agent().await;
+    let client = reqwest::Client::new();
+
+    let bob: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name": "bob-membership", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bob_id: Uuid = bob["id"].as_str().unwrap().parse().unwrap();
+
+    let alice_self = find_self_group(&base, &admin_key, alice_id).await;
+    let alice_self_id = alice_self["id"].as_str().unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/groups/{alice_self_id}/members"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"identity_id": bob_id}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("Myself"),
+        "expected Myself-guard error, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn admin_cannot_remove_owner_from_self_group() {
+    // The owner is the only member of their Myself group by construction;
+    // removing them would silently sever access to every service they own.
+    // Confirms the `unassign_identity` Myself-owner guard.
+    let (base, _pool, admin_key, alice_id, _alice_key, _agent_id, _agent_key) =
+        setup_org_with_user_and_agent().await;
+    let client = reqwest::Client::new();
+
+    let alice_self = find_self_group(&base, &admin_key, alice_id).await;
+    let alice_self_id = alice_self["id"].as_str().unwrap();
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{alice_self_id}/members/{alice_id}"
+        ))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("Myself"),
+        "expected Myself-owner guard error, got {body}"
+    );
+}
+
+#[tokio::test]
 async fn agent_read_on_owners_service_skips_layer_2() {
     let (base, pool, admin_key, _user_id, user_key, agent_id, agent_key) =
         setup_org_with_user_and_agent().await;

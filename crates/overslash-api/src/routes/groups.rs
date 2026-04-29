@@ -499,6 +499,19 @@ async fn assign_identity(
         ));
     }
 
+    // Self-group guard (mirror of the cross-owner check in `add_grant`):
+    // a `system_kind = 'self'` group can only have its owner as a member.
+    // Without this, an admin could add bob to alice's Myself group, and
+    // since the ceiling query unions grants across all the user's groups,
+    // bob would silently inherit every grant alice has via Myself —
+    // including admin + auto_approve_reads on every service alice owns.
+    if grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id != Some(req.identity_id)
+    {
+        return Err(AppError::BadRequest(
+            "Myself groups can only contain their owner".into(),
+        ));
+    }
+
     let row = scope
         .assign_identity_to_group(req.identity_id, group_id)
         .await
@@ -562,14 +575,27 @@ async fn unassign_identity(
         .await?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    // Prevent removing the last member from the Admins system group
-    if grp.is_system && grp.name == "Admins" {
+    // Prevent removing the last member from the Admins system group.
+    // Keyed on `system_kind` rather than the brittle `name == "Admins"`
+    // literal that the rest of this PR migrated away from.
+    if grp.system_kind.as_deref() == Some("admins") {
         let count = scope.count_members_in_group(group_id).await?;
         if count <= 1 {
             return Err(AppError::BadRequest(
                 "cannot remove the last member from the Admins group".into(),
             ));
         }
+    }
+
+    // A Myself group always has exactly one member: its owner. Removing
+    // that member would silently sever every grant the owner has on their
+    // own services until someone re-adds them — pure availability vector,
+    // no good reason to allow it. The owner can adjust their grants via
+    // `/v1/groups/{self_id}/grants` if they need to revoke access.
+    if grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == Some(identity_id) {
+        return Err(AppError::BadRequest(
+            "cannot remove a user from their own Myself group".into(),
+        ));
     }
 
     let deleted = scope

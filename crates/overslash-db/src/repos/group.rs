@@ -464,13 +464,23 @@ pub(crate) async fn ensure_self_group(
 
     let mut tx = pool.begin().await?;
 
+    // Suffix the name with the first 8 chars of the identity uuid so the
+    // `(org_id, name)` unique constraint on `groups` cannot collide between
+    // two users in the same org who happen to share an email or display name
+    // (`identities.email`/`name` are not unique per migration 043). The
+    // dashboard hides this suffix behind the "Myself" label.
+    let unique_name = format!(
+        "Myself: {label} ({})",
+        &identity_id.simple().to_string()[..8]
+    );
     let row = sqlx::query!(
         "INSERT INTO groups (org_id, name, description, is_system, system_kind, owner_identity_id, allow_raw_http)
          VALUES ($1, $2, 'Personal services and Layer-1 grants for this user', true, 'self', $3, true)
-         ON CONFLICT DO NOTHING
+         ON CONFLICT (org_id, owner_identity_id) WHERE system_kind = 'self'
+         DO NOTHING
          RETURNING id",
         org_id,
-        format!("Myself: {label}"),
+        unique_name,
         identity_id,
     )
     .fetch_optional(&mut *tx)

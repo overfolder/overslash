@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4sarpH9D3pmNWF4uwtkeaf7Zq21ZXWHoWK6faZVkAbfotiPWTLSO76RhK5dVUIv
+\restrict jkLtMx060z4fUdMOZisfQjcdwaaWnxVU8MsdKUWX9mRY2CaVyaJT6ooZFwaC0RS
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -1938,5 +1938,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4sarpH9D3pmNWF4uwtkeaf7Zq21ZXWHoWK6faZVkAbfotiPWTLSO76RhK5dVUIv
+\unrestrict jkLtMx060z4fUdMOZisfQjcdwaaWnxVU8MsdKUWX9mRY2CaVyaJT6ooZFwaC0RS
 
