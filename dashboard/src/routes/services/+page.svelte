@@ -295,7 +295,7 @@
 									{#if s.groups && s.groups.length > 0}
 										<span class="group-pills">
 											{#each s.groups as g (g.grant_id)}
-												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.group_name}</span>
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
 											{/each}
 										</span>
 									{:else}

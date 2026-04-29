@@ -267,6 +267,10 @@ export interface ServiceGroupRef {
   grant_id: string;
   group_id: string;
   group_name: string;
+  /** "everyone" | "admins" | "self" for system groups; absent otherwise. The
+   *  dashboard renders self grants as a clean "Myself" label off this field
+   *  rather than parsing the storage-form `group_name`. */
+  system_kind?: 'everyone' | 'admins' | 'self';
   access_level: string;
   auto_approve_reads: boolean;
 }

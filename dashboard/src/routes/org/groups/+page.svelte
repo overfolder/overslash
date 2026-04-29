@@ -1,13 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
-	import { groupsApi, type Group } from '$lib/api/groups';
+	import { groupsApi, identitiesApi, type Group, type Identity } from '$lib/api/groups';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	type Row = Group & { memberCount: number; grantCount: number };
 
 	let rows = $state<Row[]>([]);
+	let identities = $state<Identity[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
@@ -20,13 +22,50 @@
 	let deleteTarget = $state<Group | null>(null);
 	let deleteBusy = $state(false);
 
+	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+	// Self rows that share an email (rare — same user re-added under different
+	// identities, or two users with the same external email per migration 043).
+	// We disambiguate those with the (email, id8) form on the admin opt-in view.
+	const collidingSelfEmails = $derived.by(() => {
+		const seen = new Map<string, number>();
+		for (const r of rows) {
+			if (r.system_kind !== 'self' || !r.owner_identity_id) continue;
+			const email = identityById.get(r.owner_identity_id)?.email;
+			if (!email) continue;
+			seen.set(email, (seen.get(email) ?? 0) + 1);
+		}
+		return new Set(Array.from(seen.entries()).filter(([, n]) => n > 1).map(([e]) => e));
+	});
+
+	function groupLabel(g: Group): string {
+		if (g.system_kind !== 'self') return g.name;
+		if (g.owner_identity_id && currentUserId && g.owner_identity_id === currentUserId) {
+			return 'Myself';
+		}
+		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
+		const email = ident?.email ?? ident?.name;
+		if (!email) return 'Myself';
+		if (collidingSelfEmails.has(email) && g.owner_identity_id) {
+			return `Myself (${email}, ${g.owner_identity_id.slice(0, 8)})`;
+		}
+		return `Myself (${email})`;
+	}
+
 	onMount(load);
 
 	async function load() {
 		loading = true;
 		error = null;
 		try {
-			const groups = await groupsApi.list();
+			// `list()` (no include_self) now returns the caller's own Myself row
+			// alongside non-self groups; the backend hides other users' Myself
+			// unless `?include_self=true`. See SPEC §7 *Myself groups*.
+			const [groups, idents] = await Promise.all([
+				groupsApi.list(),
+				identitiesApi.list().catch(() => [] as Identity[])
+			]);
+			identities = idents;
 			const enriched = await Promise.all(
 				groups.map(async (g) => {
 					const [grants, members] = await Promise.all([
@@ -137,13 +176,15 @@
 				{#each rows as g (g.id)}
 					<tr>
 						<td>
-							<a href="/org/groups/{g.id}" class="name-link">{g.name}</a>
+							<a href="/org/groups/{g.id}" class="name-link">{groupLabel(g)}</a>
 						</td>
 						<td class="muted">{g.description || '—'}</td>
 						<td class="num">{g.memberCount}</td>
 						<td class="num">{g.grantCount}</td>
 						<td class="actions-col">
-							<button class="link-danger" onclick={() => (deleteTarget = g)}>Delete</button>
+							{#if !g.is_system}
+								<button class="link-danger" onclick={() => (deleteTarget = g)}>Delete</button>
+							{/if}
 						</td>
 					</tr>
 				{/each}

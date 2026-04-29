@@ -47,6 +47,36 @@
 	const orgServices = $derived(services.filter((s) => !s.owner_identity_id));
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
+	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const isSelfGroup = $derived(group?.system_kind === 'self');
+	// Only the Myself owner can manage their own grants — backend cross-owner
+	// guard (groups.rs add_grant + remove_grant) rejects everyone else, including
+	// org admins. Hide the management UI when an admin opens someone else's
+	// Myself via `?include_self=true`; the page becomes read-only audit.
+	const isSelfOwner = $derived(
+		isSelfGroup && !!currentUserId && group?.owner_identity_id === currentUserId
+	);
+	// Backend cross-owner guard restricts a Myself group's grants to services
+	// owned by its owner. Mirror that in the picker so we never offer choices
+	// the API will reject. Only used when the caller is the Myself owner —
+	// services list scope is the caller's, so for a non-owner admin this would
+	// always be empty anyway, which is why we hide the form entirely above.
+	const pickableServices = $derived(
+		isSelfGroup
+			? services.filter(
+					(s) => s.owner_identity_id && s.owner_identity_id === group?.owner_identity_id
+				)
+			: orgServices
+	);
+
+	function selfGroupLabel(g: typeof group): string {
+		if (!g) return '';
+		if (g.system_kind !== 'self') return g.name;
+		const ident = g.owner_identity_id ? identityById.get(g.owner_identity_id) : undefined;
+		const email = ident?.email ?? ident?.name;
+		return email ? `Myself (${email})` : 'Myself';
+	}
+
 	onMount(load);
 
 	async function load() {
@@ -197,8 +227,10 @@
 		<div class="state error">{error}</div>
 	{:else if group}
 		<header class="header">
-			<h1>{group.name}</h1>
-			<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
+			<h1>{selfGroupLabel(group)}</h1>
+			{#if !group.is_system}
+				<button class="link-danger" onclick={() => (deleteOpen = true)}>Delete group</button>
+			{/if}
 		</header>
 
 		{#if error}
@@ -208,30 +240,36 @@
 			</div>
 		{/if}
 
-		<section class="card">
-			<h2>Details</h2>
-			<form onsubmit={saveMeta} class="form">
-				<label>
-					<span>Name</span>
-					<input type="text" bind:value={editName} required />
-				</label>
-				<label>
-					<span>Description</span>
-					<textarea bind:value={editDescription} rows="2"></textarea>
-				</label>
-				{#if metaError}<div class="err">{metaError}</div>{/if}
-				<div class="form-actions">
-					<button type="submit" class="btn btn-primary" disabled={savingMeta}>
-						{savingMeta ? 'Saving…' : 'Save'}
-					</button>
-				</div>
-			</form>
-		</section>
+		{#if !group.is_system}
+			<section class="card">
+				<h2>Details</h2>
+				<form onsubmit={saveMeta} class="form">
+					<label>
+						<span>Name</span>
+						<input type="text" bind:value={editName} required />
+					</label>
+					<label>
+						<span>Description</span>
+						<textarea bind:value={editDescription} rows="2"></textarea>
+					</label>
+					{#if metaError}<div class="err">{metaError}</div>{/if}
+					<div class="form-actions">
+						<button type="submit" class="btn btn-primary" disabled={savingMeta}>
+							{savingMeta ? 'Saving…' : 'Save'}
+						</button>
+					</div>
+				</form>
+			</section>
+		{/if}
 
 		<section class="card">
 			<h2>Service grants</h2>
 			<p class="hint">
-				Permission key patterns that define this group's ceiling. Org-level service instances only.
+				{#if isSelfGroup}
+					Services this user owns. Myself can only carry grants on its owner's services.
+				{:else}
+					Permission key patterns that define this group's ceiling. Org-level service instances only.
+				{/if}
 			</p>
 
 			{#if grants.length === 0}
@@ -243,7 +281,7 @@
 							<th>Service</th>
 							<th>Access level</th>
 							<th>Auto-approve reads</th>
-							<th></th>
+							{#if !isSelfGroup || isSelfOwner}<th></th>{/if}
 						</tr>
 					</thead>
 					<tbody>
@@ -254,55 +292,69 @@
 								</td>
 								<td>{g.access_level}</td>
 								<td>
-									<ToggleSwitch
-										checked={g.auto_approve_reads}
-										onchange={() => toggleAutoApprove(g)}
-										label="Auto-approve reads"
-									/>
+									{#if !isSelfGroup || isSelfOwner}
+										<ToggleSwitch
+											checked={g.auto_approve_reads}
+											onchange={() => toggleAutoApprove(g)}
+											label="Auto-approve reads"
+										/>
+									{:else}
+										{g.auto_approve_reads ? 'Yes' : 'No'}
+									{/if}
 								</td>
-								<td class="row-actions">
-									<button class="link-danger" onclick={() => removeGrant(g.id)}>Remove</button>
-								</td>
+								{#if !isSelfGroup || isSelfOwner}
+									<td class="row-actions">
+										<button class="link-danger" onclick={() => removeGrant(g.id)}>Remove</button>
+									</td>
+								{/if}
 							</tr>
 						{/each}
 					</tbody>
 				</table>
 			{/if}
 
-			<form class="add-grant" onsubmit={addGrant}>
-				<select bind:value={newServiceId} required>
-					<option value="" disabled>Select service…</option>
-					{#each orgServices as s (s.id)}
-						<option value={s.id}>{s.name}</option>
-					{/each}
-				</select>
-				<select bind:value={newAccessLevel}>
-					<option value="read">read</option>
-					<option value="write">write</option>
-					<option value="admin">admin</option>
-				</select>
-				<span class="inline">
-					<ToggleSwitch
-						checked={newAutoApprove}
-						onchange={(v) => (newAutoApprove = v)}
-						labelledby="new-auto-approve-label"
-					/>
-					<span id="new-auto-approve-label">Auto-approve reads</span>
-				</span>
-				<button type="submit" class="btn btn-primary" disabled={addingGrant}>
-					{addingGrant ? 'Adding…' : 'Add grant'}
-				</button>
-			</form>
-			{#if grantError}<div class="err">{grantError}</div>{/if}
+			{#if !isSelfGroup || isSelfOwner}
+				<form class="add-grant" onsubmit={addGrant}>
+					<select bind:value={newServiceId} required>
+						<option value="" disabled>Select service…</option>
+						{#each pickableServices as s (s.id)}
+							<option value={s.id}>{s.name}</option>
+						{/each}
+					</select>
+					<select bind:value={newAccessLevel}>
+						<option value="read">read</option>
+						<option value="write">write</option>
+						<option value="admin">admin</option>
+					</select>
+					<span class="inline">
+						<ToggleSwitch
+							checked={newAutoApprove}
+							onchange={(v) => (newAutoApprove = v)}
+							labelledby="new-auto-approve-label"
+						/>
+						<span id="new-auto-approve-label">Auto-approve reads</span>
+					</span>
+					<button type="submit" class="btn btn-primary" disabled={addingGrant}>
+						{addingGrant ? 'Adding…' : 'Add grant'}
+					</button>
+				</form>
+				{#if grantError}<div class="err">{grantError}</div>{/if}
+			{/if}
 		</section>
 
 		<section class="card">
 			<div class="section-head">
 				<h2>Members</h2>
-				<button class="btn btn-primary" onclick={() => (pickerOpen = true)}>Add member</button>
+				{#if !isSelfGroup}
+					<button class="btn btn-primary" onclick={() => (pickerOpen = true)}>Add member</button>
+				{/if}
 			</div>
 			<p class="hint">
-				Only users can be members. Agents inherit access via their owner.
+				{#if isSelfGroup}
+					Myself groups have a fixed membership of one — the owner.
+				{:else}
+					Only users can be members. Agents inherit access via their owner.
+				{/if}
 			</p>
 
 			{#if memberIds.length === 0}
@@ -316,7 +368,9 @@
 							{#if ident?.external_id}
 								<span class="ext">{ident.external_id}</span>
 							{/if}
-							<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
+							{#if !isSelfGroup}
+								<button class="link-danger" onclick={() => removeMember(id)}>Remove</button>
+							{/if}
 						</li>
 					{/each}
 				</ul>

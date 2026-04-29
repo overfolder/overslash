@@ -52,6 +52,10 @@ pub struct ServiceGroupRow {
     pub service_instance_id: Uuid,
     pub group_id: Uuid,
     pub group_name: String,
+    /// `'everyone'`, `'admins'`, or `'self'` for system groups; `None` otherwise.
+    /// Lets the dashboard render Myself grants as a clean "Myself" label without
+    /// leaking the storage-form name `Myself: <email> (<id8>)`.
+    pub system_kind: Option<String>,
     pub access_level: String,
     pub auto_approve_reads: bool,
 }
@@ -226,6 +230,7 @@ pub(crate) async fn list_groups_for_service(
                 gg.service_instance_id,
                 gg.group_id,
                 g.name AS group_name,
+                g.system_kind,
                 gg.access_level,
                 gg.auto_approve_reads
          FROM group_grants gg
@@ -259,6 +264,7 @@ pub(crate) async fn list_groups_for_services(
                 gg.service_instance_id,
                 gg.group_id,
                 g.name AS group_name,
+                g.system_kind,
                 gg.access_level,
                 gg.auto_approve_reads
          FROM group_grants gg

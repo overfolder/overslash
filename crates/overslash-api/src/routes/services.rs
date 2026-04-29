@@ -69,6 +69,11 @@ struct ServiceGroupRef {
     grant_id: Uuid,
     group_id: Uuid,
     group_name: String,
+    /// `'everyone'`, `'admins'`, `'self'` for system groups; absent otherwise.
+    /// The dashboard renders self grants as a clean "Myself" label off this field
+    /// rather than parsing the storage-form `group_name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_kind: Option<String>,
     access_level: String,
     auto_approve_reads: bool,
 }
@@ -79,6 +84,7 @@ impl From<ServiceGroupRow> for ServiceGroupRef {
             grant_id: r.grant_id,
             group_id: r.group_id,
             group_name: r.group_name,
+            system_kind: r.system_kind,
             access_level: r.access_level,
             auto_approve_reads: r.auto_approve_reads,
         }
