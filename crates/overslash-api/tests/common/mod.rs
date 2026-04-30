@@ -605,6 +605,8 @@ where
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
     customize(&mut config);
 
@@ -656,6 +658,7 @@ where
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
@@ -727,6 +730,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -776,11 +781,13 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth_upstream::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
@@ -834,6 +841,8 @@ pub async fn start_api_with_auth_providers(
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1198,6 +1207,8 @@ pub async fn start_api_with_registry(
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1247,6 +1258,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
@@ -1315,6 +1327,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1404,6 +1418,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1453,6 +1469,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())

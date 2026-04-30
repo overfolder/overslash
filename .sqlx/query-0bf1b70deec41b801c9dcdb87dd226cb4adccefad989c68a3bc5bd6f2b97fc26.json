@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_upstream_tokens\n            SET superseded_at = now()\n          WHERE connection_id = $1 AND superseded_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0bf1b70deec41b801c9dcdb87dd226cb4adccefad989c68a3bc5bd6f2b97fc26"
+}

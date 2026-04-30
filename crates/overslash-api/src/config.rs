@@ -78,6 +78,12 @@ pub struct Config {
     /// `OVERSLASH_SSRF_ALLOW_PRIVATE=1` is set, so prod deploys can leave the
     /// var defined harmlessly.
     pub service_base_overrides: HashMap<String, String>,
+    /// Base URL for the `oversla.sh` short-link service, e.g.
+    /// `https://oversla.sh`. When set together with `oversla_sh_api_key`,
+    /// the nested-OAuth `initiate` handler creates a short URL alongside
+    /// the proxied URL. When unset, only the proxied URL is returned.
+    pub oversla_sh_base_url: Option<String>,
+    pub oversla_sh_api_key: Option<String>,
 }
 
 fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
@@ -244,6 +250,12 @@ impl Config {
             service_base_overrides: parse_service_base_overrides(
                 env::var("OVERSLASH_SERVICE_BASE_OVERRIDES").ok().as_deref(),
             ),
+            oversla_sh_base_url: env::var("OVERSLA_SH_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oversla_sh_api_key: env::var("OVERSLA_SH_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -494,6 +506,8 @@ mod tests {
             app_host_suffix: None,
             session_cookie_domain: None,
             service_base_overrides: HashMap::new(),
+            oversla_sh_base_url: None,
+            oversla_sh_api_key: None,
         }
     }
 }

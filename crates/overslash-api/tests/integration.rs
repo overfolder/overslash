@@ -57,6 +57,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     // Build the app with the test pool directly
@@ -1297,6 +1299,8 @@ async fn test_service_registry_api() {
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -2271,6 +2275,8 @@ async fn start_api_with_registry(
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
         service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {

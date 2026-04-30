@@ -127,6 +127,14 @@ fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppErro
         Http { status, body } => {
             AppError::BadGateway(format!("mcp server returned HTTP {status}: {body}"))
         }
+        // Surfacing this as BadGateway for now; the dedicated boot/ensure
+        // endpoint detects it earlier and returns a structured pending_auth
+        // payload instead of bubbling through this error map.
+        AuthRequired {
+            resource_metadata_url,
+        } => AppError::BadGateway(format!(
+            "upstream MCP server requires OAuth (resource_metadata={resource_metadata_url})"
+        )),
         Rpc { code, message } => {
             AppError::BadGateway(format!("mcp JSON-RPC error {code}: {message}"))
         }

@@ -78,6 +78,63 @@ export interface McpConnection {
   elicitation_supported: boolean;
 }
 
+export interface UpstreamConnection {
+  id: string;
+  upstream_resource: string;
+  status: 'pending_auth' | 'ready' | 'revoked' | 'error';
+  has_token: boolean;
+  access_token_expires_at: string | null;
+  created_at: string;
+  last_refreshed_at: string | null;
+}
+
+export interface InitiateUpstreamResponse {
+  status: 'ready' | 'pending_auth';
+  flow_id?: string;
+  expires_at?: string;
+  authorize_urls?: {
+    proxied: string;
+    short?: string | null;
+    raw?: string | null;
+  };
+  connection_id?: string;
+  upstream_resource?: string;
+  access_token_expires_at?: string | null;
+}
+
+/**
+ * Long-lived `osk_…` API key minted from Org Settings → Service keys.
+ * Always carries the `service` pseudo-scope; carries `impersonate` when
+ * minted with the danger toggle on. All service keys bind to the org's
+ * shared `org-service` Agent identity (auto-created on first mint).
+ */
+export interface ServiceKeySummary {
+  id: string;
+  identity_id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  created_at: string;
+  last_used_at: string | null;
+}
+
+/**
+ * Returned exactly once when a service key is minted. Mirrors the backend's
+ * `CreateResponse` — note: `created_at` / `last_used_at` are NOT in this
+ * payload (the create endpoint returns only the fields needed for the
+ * one-time reveal banner). Use `ServiceKeySummary` from the list endpoint
+ * for those.
+ */
+export interface ServiceKeyCreated {
+  id: string;
+  identity_id: string;
+  /** Plaintext `osk_…`. Must not be persisted by the dashboard. */
+  key: string;
+  key_prefix: string;
+  name: string;
+  scopes: string[];
+}
+
 export interface Webhook {
   id: string;
   url: string;

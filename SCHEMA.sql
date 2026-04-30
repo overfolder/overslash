@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict jkLtMx060z4fUdMOZisfQjcdwaaWnxVU8MsdKUWX9mRY2CaVyaJT6ooZFwaC0RS
+\restrict V3oIUzl0Ide5Rz5vrcBFuY6chxVbbHYv3C9NEmeKMUEMNRfWuPoh3dUojYUYBJx
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -259,7 +259,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     client_id text NOT NULL,
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    elicitation_enabled boolean DEFAULT false NOT NULL
 );
 
 
@@ -281,6 +282,61 @@ CREATE TABLE public.mcp_refresh_tokens (
 
 
 --
+-- Name: mcp_upstream_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_upstream_connections (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    upstream_resource text NOT NULL,
+    upstream_client_id text NOT NULL,
+    status text DEFAULT 'pending_auth'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_refreshed_at timestamp with time zone,
+    CONSTRAINT mcp_upstream_connections_status_check CHECK ((status = ANY (ARRAY['pending_auth'::text, 'ready'::text, 'revoked'::text, 'error'::text])))
+);
+
+
+--
+-- Name: mcp_upstream_flows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_upstream_flows (
+    id text NOT NULL,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    upstream_resource text NOT NULL,
+    upstream_client_id text NOT NULL,
+    upstream_as_issuer text NOT NULL,
+    upstream_token_endpoint text NOT NULL,
+    upstream_authorize_url text NOT NULL,
+    pkce_code_verifier text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_ip text,
+    created_user_agent text
+);
+
+
+--
+-- Name: mcp_upstream_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_upstream_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    connection_id uuid NOT NULL,
+    access_token_ciphertext bytea NOT NULL,
+    refresh_token_ciphertext bytea,
+    access_token_expires_at timestamp with time zone,
+    scope text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    superseded_at timestamp with time zone
+);
+
+
+--
 -- Name: oauth_mcp_clients; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -295,7 +351,11 @@ CREATE TABLE public.oauth_mcp_clients (
     last_seen_at timestamp with time zone,
     created_ip text,
     created_user_agent text,
-    is_revoked boolean DEFAULT false NOT NULL
+    is_revoked boolean DEFAULT false NOT NULL,
+    capabilities jsonb,
+    client_info jsonb,
+    protocol_version text,
+    last_session_id uuid
 );
 
 
@@ -377,7 +437,9 @@ CREATE TABLE public.orgs (
     global_templates_enabled boolean DEFAULT true NOT NULL,
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     is_personal boolean DEFAULT false NOT NULL,
-    CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
+    plan text DEFAULT 'standard'::text NOT NULL,
+    CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
+    CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
 
 
@@ -395,6 +457,22 @@ CREATE TABLE public.pending_checkouts (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone DEFAULT (now() + '02:00:00'::interval) NOT NULL,
     fulfilled_org_id uuid
+);
+
+
+--
+-- Name: pending_mcp_elicitations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.pending_mcp_elicitations (
+    elicit_id text NOT NULL,
+    session_id uuid NOT NULL,
+    agent_identity_id uuid NOT NULL,
+    approval_id uuid NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    final_response jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone
 );
 
 
@@ -570,7 +648,9 @@ CREATE TABLE public.users (
     personal_org_id uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    stripe_customer_id text
+    stripe_customer_id text,
+    is_instance_admin boolean DEFAULT false NOT NULL,
+    CONSTRAINT users_instance_admin_requires_overslash_idp CHECK (((NOT is_instance_admin) OR (overslash_idp_provider IS NOT NULL)))
 );
 
 
@@ -760,6 +840,38 @@ ALTER TABLE ONLY public.mcp_refresh_tokens
 
 
 --
+-- Name: mcp_upstream_connections mcp_upstream_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_upstream_connections mcp_upstream_connections_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_unique UNIQUE (identity_id, upstream_resource);
+
+
+--
+-- Name: mcp_upstream_flows mcp_upstream_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_flows
+    ADD CONSTRAINT mcp_upstream_flows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_upstream_tokens mcp_upstream_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_tokens
+    ADD CONSTRAINT mcp_upstream_tokens_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: oauth_mcp_clients oauth_mcp_clients_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -837,6 +949,14 @@ ALTER TABLE ONLY public.orgs
 
 ALTER TABLE ONLY public.pending_checkouts
     ADD CONSTRAINT pending_checkouts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: pending_mcp_elicitations pending_mcp_elicitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_mcp_elicitations
+    ADD CONSTRAINT pending_mcp_elicitations_pkey PRIMARY KEY (elicit_id);
 
 
 --
@@ -1183,6 +1303,34 @@ CREATE UNIQUE INDEX idx_mcp_refresh_tokens_hash ON public.mcp_refresh_tokens USI
 
 
 --
+-- Name: idx_mcp_upstream_connections_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_upstream_connections_org ON public.mcp_upstream_connections USING btree (org_id);
+
+
+--
+-- Name: idx_mcp_upstream_flows_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_upstream_flows_expires_at ON public.mcp_upstream_flows USING btree (expires_at) WHERE (consumed_at IS NULL);
+
+
+--
+-- Name: idx_mcp_upstream_flows_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_upstream_flows_identity ON public.mcp_upstream_flows USING btree (identity_id, created_at DESC);
+
+
+--
+-- Name: idx_mcp_upstream_tokens_current; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_mcp_upstream_tokens_current ON public.mcp_upstream_tokens USING btree (connection_id) WHERE (superseded_at IS NULL);
+
+
+--
 -- Name: idx_memberships_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1211,10 +1359,31 @@ CREATE INDEX idx_org_idp_configs_org ON public.org_idp_configs USING btree (org_
 
 
 --
+-- Name: idx_orgs_plan; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_orgs_plan ON public.orgs USING btree (plan) WHERE (plan <> 'standard'::text);
+
+
+--
 -- Name: idx_pending_checkouts_user; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pending_checkouts_user ON public.pending_checkouts USING btree (user_id);
+
+
+--
+-- Name: idx_pending_mcp_elicit_session; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_mcp_elicit_session ON public.pending_mcp_elicitations USING btree (session_id);
+
+
+--
+-- Name: idx_pending_mcp_elicit_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_mcp_elicit_status ON public.pending_mcp_elicitations USING btree (status, created_at);
 
 
 --
@@ -1348,6 +1517,13 @@ CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates U
 --
 
 CREATE INDEX idx_users_email ON public.users USING btree (email);
+
+
+--
+-- Name: idx_users_is_instance_admin; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_is_instance_admin ON public.users USING btree (is_instance_admin) WHERE is_instance_admin;
 
 
 --
@@ -1703,6 +1879,46 @@ ALTER TABLE ONLY public.mcp_refresh_tokens
 
 
 --
+-- Name: mcp_upstream_connections mcp_upstream_connections_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_connections mcp_upstream_connections_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_flows mcp_upstream_flows_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_flows
+    ADD CONSTRAINT mcp_upstream_flows_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_flows mcp_upstream_flows_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_flows
+    ADD CONSTRAINT mcp_upstream_flows_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_tokens mcp_upstream_tokens_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_tokens
+    ADD CONSTRAINT mcp_upstream_tokens_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.mcp_upstream_connections(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1732,6 +1948,22 @@ ALTER TABLE ONLY public.org_subscriptions
 
 ALTER TABLE ONLY public.pending_checkouts
     ADD CONSTRAINT pending_checkouts_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: pending_mcp_elicitations pending_mcp_elicitations_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_mcp_elicitations
+    ADD CONSTRAINT pending_mcp_elicitations_agent_identity_id_fkey FOREIGN KEY (agent_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: pending_mcp_elicitations pending_mcp_elicitations_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_mcp_elicitations
+    ADD CONSTRAINT pending_mcp_elicitations_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id) ON DELETE CASCADE;
 
 
 --
@@ -1938,5 +2170,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict jkLtMx060z4fUdMOZisfQjcdwaaWnxVU8MsdKUWX9mRY2CaVyaJT6ooZFwaC0RS
+\unrestrict V3oIUzl0Ide5Rz5vrcBFuY6chxVbbHYv3C9NEmeKMUEMNRfWuPoh3dUojYUYBJx
 

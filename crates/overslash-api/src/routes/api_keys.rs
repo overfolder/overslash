@@ -187,7 +187,8 @@ async fn create_api_key(
     }))
 }
 
-fn generate_api_key() -> std::result::Result<(String, String, String), crate::error::AppError> {
+pub(crate) fn generate_api_key()
+-> std::result::Result<(String, String, String), crate::error::AppError> {
     use rand::RngExt;
 
     let mut bytes = [0u8; 32];
