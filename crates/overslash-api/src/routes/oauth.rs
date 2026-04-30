@@ -432,6 +432,7 @@ struct ConsentClientInfo {
     client_name: Option<String>,
     software_id: Option<String>,
     software_version: Option<String>,
+    elicitation_supported: bool,
 }
 
 #[derive(Serialize)]
@@ -461,6 +462,10 @@ struct ConsentReauthTarget {
     parent_id: Option<Uuid>,
     parent_name: Option<String>,
     last_seen_at: Option<String>,
+    /// Pre-fill for the elicitation toggle on the consent page so a reauth
+    /// doesn't silently flip a user's previously-saved choice back to the
+    /// `false` default. Read from the existing binding for this agent.
+    elicitation_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -491,6 +496,12 @@ struct ConsentFinishRequest {
     /// happens to return (newer enrollments, revocations, etc. could
     /// shift it between GET context and POST finish).
     reauth_agent_id: Option<Uuid>,
+    /// User's choice from the Connection Settings card. `None` means the
+    /// caller didn't speak the per-binding setting (older dashboard build,
+    /// third-party POST) and the existing binding value is preserved.
+    /// `Some(b)` is an explicit choice from the consent page; the server
+    /// applies it across the agent's bindings, gated by capability.
+    elicitation_enabled: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -637,6 +648,8 @@ async fn consent_context(
         });
     }
 
+    let elicitation_supported = client.elicitation_supported();
+
     let (mode, reauth_target) = if let Some(sim) = similar {
         let agent = identity::get_by_id(&state.db, pending.org_id, sim.agent_identity_id).await?;
         match agent {
@@ -650,6 +663,11 @@ async fn consent_context(
                 } else {
                     None
                 };
+                let existing_elicitation =
+                    mcp_client_agent_binding::get_by_agent_identity(&state.db, a.id)
+                        .await?
+                        .map(|b| b.elicitation_enabled)
+                        .unwrap_or(false);
                 (
                     "reauth",
                     Some(ConsentReauthTarget {
@@ -658,6 +676,7 @@ async fn consent_context(
                         parent_id: a.parent_id,
                         parent_name,
                         last_seen_at: sim.client.last_seen_at.map(super::util::fmt_time),
+                        elicitation_enabled: existing_elicitation,
                     }),
                 )
             }
@@ -674,6 +693,7 @@ async fn consent_context(
             client_name: client.client_name.clone(),
             software_id: client.software_id.clone(),
             software_version: client.software_version.clone(),
+            elicitation_supported,
         },
         connection: ConsentConnectionInfo {
             ip: client.created_ip.clone(),
@@ -853,12 +873,40 @@ async fn consent_finish(
         }
     };
 
+    // Read the agent's existing elicitation value BEFORE upserting. Reauth
+    // under a re-registered client_id creates a fresh binding row that
+    // defaults to `false`, so without a pre-fetch the new row would hide
+    // whatever value the user saved on a prior binding.
+    let prior_elicitation =
+        mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_identity_id)
+            .await?
+            .map(|b| b.elicitation_enabled)
+            .unwrap_or(false);
+
     mcp_client_agent_binding::upsert(
         &state.db,
         pending.org_id,
         pending.user_identity_id,
         &pending.client_id,
         agent_identity_id,
+    )
+    .await?;
+
+    // Resolve the per-agent value: an explicit choice from the consent page
+    // wins (gated by capability — a hand-crafted `true` against a client
+    // that didn't announce elicitation gets forced to `false`); a missing
+    // field inherits the agent's prior value so older dashboard builds /
+    // third-party POSTs don't destroy a previously-saved choice. Fan out
+    // unconditionally to keep every binding row in sync with the per-agent
+    // toggle (see `set_elicitation_enabled_for_agent`).
+    let resolved_elicitation = match body.elicitation_enabled {
+        Some(requested) => requested && client.elicitation_supported(),
+        None => prior_elicitation,
+    };
+    mcp_client_agent_binding::set_elicitation_enabled_for_agent(
+        &state.db,
+        agent_identity_id,
+        resolved_elicitation,
     )
     .await?;
 
