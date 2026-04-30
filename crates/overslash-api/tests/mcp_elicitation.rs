@@ -1161,6 +1161,8 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     overslash_api::AppState {

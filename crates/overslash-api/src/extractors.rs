@@ -679,7 +679,7 @@ impl FromRequestParts<AppState> for OrgScope {
 #[allow(dead_code)]
 fn _scope_types_exist(_: AgentScope, _: SystemScope) {}
 
-fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     for pair in cookie_header.split(';') {
         let pair = pair.trim();

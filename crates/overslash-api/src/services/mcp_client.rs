@@ -44,6 +44,13 @@ pub enum McpClientError {
     #[error("server returned HTTP {status} {body}")]
     Http { status: u16, body: String },
 
+    /// Upstream MCP server returned `401 Unauthorized` with a
+    /// `WWW-Authenticate: Bearer resource_metadata="..."` header (RFC 9728).
+    /// The caller should look up an existing token, attempt refresh, and
+    /// otherwise mint a nested-OAuth flow at `resource_metadata_url`.
+    #[error("upstream requires OAuth (resource_metadata={resource_metadata_url})")]
+    AuthRequired { resource_metadata_url: String },
+
     #[error("JSON-RPC error {code}: {message}")]
     Rpc { code: i64, message: String },
 
@@ -196,6 +203,25 @@ impl McpClient {
             .unwrap_or("")
             .to_string();
 
+        // RFC 9728 §3 — 401 + `WWW-Authenticate: Bearer resource_metadata="..."`
+        // signals that the resource server expects a bearer token issued by
+        // its associated authorization server. Surface this as a structured
+        // error so callers can mint a nested-OAuth flow rather than treating
+        // it as a generic transport failure.
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(www) = response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+            {
+                if let Some(url) = parse_resource_metadata(www) {
+                    return Err(McpClientError::AuthRequired {
+                        resource_metadata_url: url,
+                    });
+                }
+            }
+        }
+
         // Short-circuit if Content-Length is already oversized. This stops us
         // buffering anything when a server advertises a huge payload upfront.
         if let Some(len) = response.content_length() {
@@ -248,6 +274,29 @@ impl McpClient {
     }
 }
 
+/// Extract `resource_metadata="..."` from a `WWW-Authenticate: Bearer …`
+/// header per RFC 9728 §5.1. Tolerates both quoted and unquoted forms; the
+/// MCP spec mandates the parameter when an MCP server expects auth.
+fn parse_resource_metadata(www_authenticate: &str) -> Option<String> {
+    // Skip the auth scheme prefix ("Bearer", "DPoP", etc.).
+    let rest = www_authenticate
+        .split_once(' ')
+        .map(|(_, r)| r)
+        .unwrap_or(www_authenticate);
+    for param in rest.split(',') {
+        let param = param.trim();
+        let (k, v) = param.split_once('=')?;
+        if k.trim().eq_ignore_ascii_case("resource_metadata") {
+            let v = v.trim();
+            let v = v.trim_start_matches('"').trim_end_matches('"');
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Parse a Streamable HTTP response into the JSON-RPC envelope.
 ///
 /// If the server replied with `text/event-stream`, we take the first
@@ -276,6 +325,40 @@ mod tests {
     fn invalid_url_rejected() {
         let err = McpClient::new(reqwest::Client::new(), "not a url").unwrap_err();
         assert!(matches!(err, McpClientError::InvalidUrl(_)));
+    }
+
+    #[test]
+    fn parse_resource_metadata_quoted() {
+        assert_eq!(
+            parse_resource_metadata(
+                "Bearer resource_metadata=\"https://x.example/.well-known/oauth-protected-resource\""
+            ),
+            Some("https://x.example/.well-known/oauth-protected-resource".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_resource_metadata_with_other_params() {
+        assert_eq!(
+            parse_resource_metadata(
+                "Bearer realm=\"x\", resource_metadata=\"https://x/foo\", scope=\"read write\""
+            ),
+            Some("https://x/foo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_resource_metadata_missing() {
+        assert_eq!(parse_resource_metadata("Bearer realm=\"x\""), None);
+    }
+
+    #[test]
+    fn parse_resource_metadata_unquoted() {
+        // RFC 7235 allows token68 unquoted forms; tolerate both.
+        assert_eq!(
+            parse_resource_metadata("Bearer resource_metadata=https://x/foo"),
+            Some("https://x/foo".to_string())
+        );
     }
 
     #[test]

@@ -604,6 +604,8 @@ where
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
     customize(&mut config);
 
@@ -725,6 +727,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -779,6 +783,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth_upstream::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
@@ -831,6 +836,8 @@ pub async fn start_api_with_auth_providers(
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1409,6 +1416,8 @@ pub async fn start_api_with_registry(
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1525,6 +1534,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {
@@ -1613,6 +1624,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let state = overslash_api::AppState {

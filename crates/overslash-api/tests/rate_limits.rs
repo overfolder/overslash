@@ -368,6 +368,8 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -605,6 +607,8 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -660,6 +664,8 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
     overslash_api::AppState {
         db: pool,
@@ -1034,6 +1040,8 @@ async fn test_cache_invalidation_user_budget() {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     // Prime the cache
@@ -1186,6 +1194,8 @@ async fn test_cache_invalidation_org_flushes_all() {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
 
     let r1 = cache
