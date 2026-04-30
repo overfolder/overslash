@@ -297,9 +297,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces
+          # `runner.temp` is available in step `with:` (unlike job-level `env:`).
+          # The harness writes its state dir at $WORKTREE_STATE_DIR/.e2e/ which
+          # we set to runner.temp in the first step.
           path: |
             dashboard/test-results
-            ${{ env.WORKTREE_STATE_DIR }}/.e2e
+            ${{ runner.temp }}/.e2e
           if-no-files-found: ignore
           retention-days: 7
 

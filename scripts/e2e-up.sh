@@ -147,18 +147,26 @@ log "building dashboard against $API_URL"
        npm run build:static --silent >/dev/null )
 
 log "starting dashboard preview on $DASH_URL"
+[ -d "$REPO_ROOT/dashboard/build" ] || fail "dashboard/build/ does not exist after build:static — see build output above"
 ( cd "$REPO_ROOT/dashboard" \
     && API_URL="$API_URL" \
-       npx vite preview --port "$DASH_PORT" --strictPort \
+       npx vite preview --port "$DASH_PORT" --strictPort --host 127.0.0.1 \
        > "$STATE_DIR/dashboard.log" 2>&1 ) &
 DASH_PID=$!
 record_pid "$DASH_PID"
 
-for _ in $(seq 1 100); do
+# Wait up to 60s for readiness. vite preview writes "Local:  http://..." on
+# its stdout when ready; we also probe with curl as a backup.
+for _ in $(seq 1 300); do
+    if grep -q "Local:" "$STATE_DIR/dashboard.log" 2>/dev/null; then break; fi
     if curl -sf "$DASH_URL" >/dev/null 2>&1; then break; fi
     sleep 0.2
 done
-curl -sf "$DASH_URL" >/dev/null || fail "dashboard preview did not become reachable within 20s — see $STATE_DIR/dashboard.log"
+if ! curl -sf "$DASH_URL" >/dev/null 2>&1; then
+    log "dashboard.log tail:"
+    tail -40 "$STATE_DIR/dashboard.log" >&2 || true
+    fail "dashboard preview did not become reachable within 60s — see $STATE_DIR/dashboard.log"
+fi
 echo "$DASH_URL" > "$STATE_DIR/dashboard.url"
 
 # 6. Write the unified env file Playwright reads.
