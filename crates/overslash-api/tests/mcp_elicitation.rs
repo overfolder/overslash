@@ -1175,6 +1175,9 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         rate_limit_cache: std::sync::Arc::new(
             overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_secs(30)),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),

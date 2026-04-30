@@ -73,6 +73,11 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -1317,6 +1322,11 @@ async fn test_service_registry_api() {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -1698,7 +1708,7 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
     let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
 
     // Create org + identity
-    let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test")
+    let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test", "standard")
         .await
         .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
@@ -1759,7 +1769,7 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     let enc_key_hex = "ab".repeat(32);
     let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
 
-    let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test")
+    let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test", "standard")
         .await
         .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
@@ -1812,9 +1822,10 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
     let enc_key_hex = "ab".repeat(32);
     let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
 
-    let org = overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test")
-        .await
-        .unwrap();
+    let org =
+        overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test", "standard")
+            .await
+            .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
         .await
         .unwrap();
@@ -2272,6 +2283,11 @@ async fn start_api_with_registry(
         ),
         rate_limit_cache: std::sync::Arc::new(
             overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
                 std::time::Duration::from_secs(30),
             ),
         ),

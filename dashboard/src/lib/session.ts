@@ -125,6 +125,11 @@ export interface MeIdentity {
 	external_id: string | null;
 	picture?: string | null;
 	is_org_admin?: boolean;
+	/** Operator-granted instance admin flag (set only via DB). The single
+	 *  elevated capability today is creating free-unlimited orgs through
+	 *  the Create-Org modal. Drives the small "Instance" badge in the
+	 *  layout. */
+	is_instance_admin?: boolean;
 	/** Multi-org additions. `user_id` + `memberships` are present once a
 	 *  post-multi-org-rewire session is minted; legacy tokens leave them
 	 *  empty until re-login. */
@@ -197,6 +202,11 @@ export interface ApprovalResponse {
 	 *  `spiffe://acme/user/alice/agent/henry`. May be null if the chain
 	 *  could not be resolved. */
 	identity_path: string | null;
+	/** Identity ids for each `(kind, name)` unit in `identity_path`, in the
+	 *  same order. Excludes the org slug, so its length matches the unit
+	 *  count of `identity_path`. Empty when `identity_path` is null.
+	 *  IdentityPath uses these to build `/agents/<id>` links per segment. */
+	identity_path_ids: string[];
 	action_summary: string;
 	permission_keys: string[];
 	derived_keys: DerivedKey[];

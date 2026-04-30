@@ -379,7 +379,7 @@ async fn create_test_user(pool: &PgPool) -> Uuid {
 /// Create a real org row for DB-level tests.
 async fn create_test_org(pool: &PgPool) -> Uuid {
     let slug = format!("test-org-{}", Uuid::new_v4().simple());
-    let org = overslash_db::repos::org::create(pool, "Test Org", &slug)
+    let org = overslash_db::repos::org::create(pool, "Test Org", &slug, "standard")
         .await
         .unwrap();
     org.id
@@ -983,7 +983,7 @@ async fn test_webhook_slug_collision_does_not_provision_attacker() {
     let user_a = create_test_user(&pool).await;
     let user_b = create_test_user(&pool).await;
     let collision_slug = format!("acme-collide-{}", Uuid::new_v4().simple());
-    let org_a = overslash_db::repos::org::create(&pool, "Acme A", &collision_slug)
+    let org_a = overslash_db::repos::org::create(&pool, "Acme A", &collision_slug, "standard")
         .await
         .unwrap();
     let identity_a = overslash_db::repos::identity::create(&pool, org_a.id, "A", "user", None)

@@ -225,7 +225,7 @@
 		<dt>Agent</dt>
 		<dd>
 			{#if current.identity_path}
-				<IdentityPath path={current.identity_path} />
+				<IdentityPath path={current.identity_path} pathIds={current.identity_path_ids} />
 			{:else}
 				<code class="mono mute">{current.identity_id}</code>
 			{/if}

@@ -555,6 +555,43 @@ impl FromRequestParts<AppState> for AdminAcl {
     }
 }
 
+/// Requires that the caller's `users` row has `is_instance_admin = true`.
+///
+/// Session-cookie only — bearer API keys can't carry instance-admin
+/// privilege because the role is bound to the human, not to an identity
+/// inside an org. The single elevated capability today is creating
+/// `free_unlimited` orgs through `POST /v1/orgs/free-unlimited`.
+///
+/// **No cache.** A `SELECT is_instance_admin FROM users WHERE id = $1`
+/// runs on every request. The flag flips infrequently (operator psql) and
+/// removing the cache means revocation is immediate.
+#[derive(Debug, Clone)]
+pub struct InstanceAdminAuth {
+    pub user_id: Uuid,
+    pub session: SessionAuth,
+}
+
+impl FromRequestParts<AppState> for InstanceAdminAuth {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = SessionAuth::from_request_parts(parts, state).await?;
+        let user_id = session
+            .user_id
+            .ok_or_else(|| AppError::Unauthorized("multi-org session required".into()))?;
+        let is_admin = overslash_db::repos::user::is_instance_admin(&state.db, user_id)
+            .await
+            .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+        if !is_admin {
+            return Err(AppError::Forbidden("instance_admin_required".into()));
+        }
+        Ok(InstanceAdminAuth { user_id, session })
+    }
+}
+
 /// Optional ACL extractor for endpoints that allow unauthenticated bootstrap.
 /// Returns `Ok(Some(acl))` if valid auth was provided, `Ok(None)` only when
 /// NO auth was provided at all, and `Err` if auth was provided but invalid.

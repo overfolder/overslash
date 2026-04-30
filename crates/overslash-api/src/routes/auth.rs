@@ -534,17 +534,17 @@ async fn me_identity(
 
     // Multi-org surface: memberships + personal-org pointer live on the
     // `users` row. Legacy tokens (no `user_id` claim) fall back to the
-    // identity's FK.
+    // identity's FK. Fetch the user once and reuse for instance-admin too.
     let user_id = session.user_id.or(ident.user_id);
-    let (memberships, personal_org_id) = if let Some(uid) = user_id {
+    let (memberships, personal_org_id, is_instance_admin) = if let Some(uid) = user_id {
+        let user = user_repo::get_by_id(&state.db, uid).await?;
         (
             list_membership_summaries(&state, uid).await?,
-            user_repo::get_by_id(&state.db, uid)
-                .await?
-                .and_then(|u| u.personal_org_id),
+            user.as_ref().and_then(|u| u.personal_org_id),
+            user.as_ref().map(|u| u.is_instance_admin).unwrap_or(false),
         )
     } else {
-        (Vec::new(), None)
+        (Vec::new(), None, false)
     };
 
     let email = ident.email.clone().unwrap_or_default();
@@ -559,6 +559,7 @@ async fn me_identity(
         "kind": ident.kind,
         "external_id": ident.external_id,
         "is_org_admin": is_org_admin,
+        "is_instance_admin": is_instance_admin,
         "picture": picture,
         "user_id": user_id,
         "personal_org_id": personal_org_id,
@@ -917,7 +918,7 @@ async fn dev_token(
             .await?;
             existing.org_id
         }
-        None => match org::create(&state.db, "Dev Org", "dev-org").await {
+        None => match org::create(&state.db, "Dev Org", "dev-org", "standard").await {
             Ok(new_org) => {
                 let new_scope = OrgScope::new(new_org.id, state.db.clone());
                 let admin_identity = new_scope
@@ -1312,7 +1313,7 @@ async fn provision_root(
             } else {
                 generate_personal_slug()
             };
-            match org::create(&state.db, display_name, &candidate).await {
+            match org::create(&state.db, display_name, &candidate, "standard").await {
                 Ok(mut row) => {
                     // Flip is_personal=true. The column was added in 040 with
                     // DEFAULT false; personal orgs are marked explicitly so the

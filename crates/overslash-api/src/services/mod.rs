@@ -1,4 +1,5 @@
 pub mod action_caller;
+pub mod billing_tier;
 pub mod client_credentials;
 pub mod disclosure;
 pub mod embedding_backfill;

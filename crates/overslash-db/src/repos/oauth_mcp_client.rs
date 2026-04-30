@@ -22,6 +22,19 @@ pub struct OauthMcpClientRow {
     pub last_session_id: Option<Uuid>,
 }
 
+impl OauthMcpClientRow {
+    /// Did the client announce the `elicitation` capability at `initialize`
+    /// time? Single source of truth used by the consent endpoints, the
+    /// `mcp-connection` DTO, and any future capability-gated toggle so the
+    /// "supported" semantics can't drift between surfaces.
+    pub fn elicitation_supported(&self) -> bool {
+        self.capabilities
+            .as_ref()
+            .and_then(|c| c.get("elicitation"))
+            .is_some()
+    }
+}
+
 pub struct CreateOauthMcpClient<'a> {
     pub client_id: &'a str,
     pub client_name: Option<&'a str>,

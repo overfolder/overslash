@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)\n         VALUES ($1, $2, $3, $4)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
+  "query": "INSERT INTO users (email, display_name)\n         VALUES ($1, $2)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -35,19 +35,22 @@
       },
       {
         "ordinal": 6,
+        "name": "is_instance_admin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
         "Text",
         "Text"
       ]
@@ -60,8 +63,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "1d9b163cd0d9b3ec7d6715b64903848305cccaab4e113a58ee8f892973f90244"
+  "hash": "69a5329053044ab6c8830988098e3fc00c5db383dbc55e04a43fb0e13c4fca8d"
 }

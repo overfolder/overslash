@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_orgs_plan;
+
+ALTER TABLE orgs DROP COLUMN IF EXISTS plan;
