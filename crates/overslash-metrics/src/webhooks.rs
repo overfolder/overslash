@@ -2,6 +2,24 @@
 
 use metrics::{counter, histogram};
 
+/// Pre-register the delivery counter so it appears in `/internal/metrics`
+/// from the very first scrape — even on an environment where no webhook has
+/// been dispatched yet. GCP rejects creating a PromQL alert against a metric
+/// that has never been seen in Managed Prometheus, so without this the
+/// `webhook_failure_rate` alert can't be applied on a fresh project.
+///
+/// The seeded series uses a sentinel `event_type="_init"` and `status="success"`
+/// so it never matches the alert's `status="failed"` filter.
+pub fn init() {
+    counter!(
+        "overslash_webhook_deliveries_total",
+        "event_type" => "_init",
+        "status" => "success",
+        "final" => "true",
+    )
+    .increment(0);
+}
+
 /// `status` ∈ {`success`, `retry`, `failed`}.
 /// `final` is `"true"` once the delivery is terminal (success or exhausted).
 pub fn record_delivery(event_type: &str, status: &str, terminal: bool) {

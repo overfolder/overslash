@@ -54,6 +54,7 @@ pub struct AppState {
 /// Create the application router with all routes and middleware.
 pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let metrics_handle = overslash_metrics::setup();
+    overslash_metrics::webhooks::init();
 
     let db = PgPool::connect(&config.database_url).await?;
 

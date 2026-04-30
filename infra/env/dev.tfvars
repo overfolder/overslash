@@ -40,3 +40,5 @@ cloud_billing = true
 # Lookup keys default to overslash_seat_eur / overslash_seat_usd
 # stripe_eur_lookup_key = "overslash_seat_eur"
 # stripe_usd_lookup_key = "overslash_seat_usd"
+
+alert_email = "alert@overspiral.com"
