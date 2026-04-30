@@ -140,16 +140,23 @@
 
 	async function setElicitation(next: boolean) {
 		if (!selected || !mcp) return;
+		// Capture the target so a mid-flight selection switch can't apply this
+		// agent's response to a different agent's card.
+		const targetId = selected.id;
 		togglingElicitation = true;
 		elicitationError = null;
 		try {
 			const resp = await session.patch<{ connection: McpConnection | null }>(
-				`/v1/identities/${encodeURIComponent(selected.id)}/mcp-connection`,
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
 				{ elicitation_enabled: next }
 			);
-			mcp = resp.connection;
+			if (selected?.id === targetId) {
+				mcp = resp.connection;
+			}
 		} catch (e) {
-			elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+			if (selected?.id === targetId) {
+				elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+			}
 		} finally {
 			togglingElicitation = false;
 		}
