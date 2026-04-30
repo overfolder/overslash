@@ -956,7 +956,10 @@ async fn dev_token(
     };
 
     // Step 2: resolve (or lazily create) the requested profile's identity
-    // inside Dev Org.
+    // inside Dev Org. Non-admin profiles need the same provisioning the
+    // production OIDC callback does (user row + user_id link + Everyone
+    // group + membership row); without it `/account`, the org switcher,
+    // and group ceilings all misbehave.
     let profile_email = profile.email();
     let identity_id =
         if let Some(existing) = system.find_user_identity_by_email(profile_email).await? {
@@ -976,6 +979,38 @@ async fn dev_token(
                     }}),
                 )
                 .await?;
+            // Provision the human + multi-org plumbing for non-admin profiles.
+            // The admin profile already went through bootstrap_org above, which
+            // takes a different fast-path; keep this branch focused on the
+            // member/readonly case.
+            if !matches!(profile, DevProfile::Admin) {
+                let user = user_repo::create_org_only(
+                    &state.db,
+                    Some(profile_email),
+                    Some(profile.display_name()),
+                )
+                .await?;
+                overslash_db::repos::identity::set_user_id(
+                    &state.db,
+                    admin_org_id,
+                    new_identity.id,
+                    Some(user.id),
+                )
+                .await?;
+                overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+                    &state.db,
+                    admin_org_id,
+                    new_identity.id,
+                )
+                .await?;
+                match membership::create(&state.db, user.id, admin_org_id, membership::ROLE_MEMBER)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
             new_identity.id
         };
     let org_id = admin_org_id;
