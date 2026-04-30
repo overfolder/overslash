@@ -112,6 +112,13 @@ struct ApprovalResponse {
     /// (`spiffe://<org>/user/alice/agent/henry/...`). See
     /// `crate::services::identity_path`.
     identity_path: Option<String>,
+    /// Identity ids for each `(kind, name)` unit in `identity_path`, in the
+    /// same order. Excludes the org slug (which has no id), so the length
+    /// matches the unit-segment count of `identity_path`. Empty when
+    /// `identity_path` is `None`. The dashboard uses this to build
+    /// `/agents/<id>` links for each clickable segment without resolving
+    /// names → ids on the client.
+    identity_path_ids: Vec<Uuid>,
     action_summary: String,
     permission_keys: Vec<String>,
     derived_keys: Vec<overslash_core::permissions::DerivedKey>,
@@ -165,6 +172,7 @@ impl ApprovalResponse {
     fn from_row(
         r: overslash_db::repos::approval::ApprovalRow,
         identity_path: Option<String>,
+        identity_path_ids: Vec<Uuid>,
         execution: Option<ExecutionRow>,
     ) -> Self {
         let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
@@ -191,6 +199,7 @@ impl ApprovalResponse {
             requesting_identity_id: r.identity_id,
             current_resolver_identity_id: r.current_resolver_identity_id,
             identity_path,
+            identity_path_ids,
             action_summary: r.action_summary,
             permission_keys: r.permission_keys,
             derived_keys,
@@ -213,14 +222,22 @@ async fn build_response(
     scope: &OrgScope,
     row: overslash_db::repos::approval::ApprovalRow,
 ) -> Result<ApprovalResponse> {
-    let identity_path = crate::services::identity_path::build_for_identity(scope, row.identity_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
-            None
-        });
+    let (identity_path, identity_path_ids) =
+        crate::services::identity_path::build_for_identity(scope, row.identity_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
+                None
+            })
+            .map(|(p, ids)| (Some(p), ids))
+            .unwrap_or((None, Vec::new()));
     let execution = scope.get_execution_by_approval(row.id).await?;
-    Ok(ApprovalResponse::from_row(row, identity_path, execution))
+    Ok(ApprovalResponse::from_row(
+        row,
+        identity_path,
+        identity_path_ids,
+        execution,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -317,15 +334,22 @@ async fn batch_responses(
         executions.into_iter().map(|e| (e.approval_id, e)).collect();
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let identity_path =
+        let (identity_path, identity_path_ids) =
             crate::services::identity_path::build_for_identity(scope, row.identity_id)
                 .await
                 .unwrap_or_else(|e| {
                     tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
                     None
-                });
+                })
+                .map(|(p, ids)| (Some(p), ids))
+                .unwrap_or((None, Vec::new()));
         let execution = exec_map.remove(&row.id);
-        out.push(ApprovalResponse::from_row(row, identity_path, execution));
+        out.push(ApprovalResponse::from_row(
+            row,
+            identity_path,
+            identity_path_ids,
+            execution,
+        ));
     }
     Ok(out)
 }
@@ -637,15 +661,19 @@ async fn resolve_approval(
         });
     }
 
-    let identity_path = crate::services::identity_path::build_for_identity(&scope, row.identity_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
-            None
-        });
+    let (identity_path, identity_path_ids) =
+        crate::services::identity_path::build_for_identity(&scope, row.identity_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("failed to build identity_path for approval {}: {e}", row.id);
+                None
+            })
+            .map(|(p, ids)| (Some(p), ids))
+            .unwrap_or((None, Vec::new()));
     Ok(Json(ApprovalResponse::from_row(
         row,
         identity_path,
+        identity_path_ids,
         execution,
     )))
 }
@@ -1068,11 +1096,14 @@ async fn call_approval(
         });
     }
 
-    let identity_path =
+    let (identity_path, identity_path_ids) =
         crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
             .await
-            .unwrap_or(None);
-    let mut response = ApprovalResponse::from_row(approval, identity_path, Some(finalised));
+            .unwrap_or(None)
+            .map(|(p, ids)| (Some(p), ids))
+            .unwrap_or((None, Vec::new()));
+    let mut response =
+        ApprovalResponse::from_row(approval, identity_path, identity_path_ids, Some(finalised));
     response.cascaded_approval_ids = cascaded_approval_ids;
     Ok(Json(response))
 }
@@ -1158,13 +1189,16 @@ async fn cancel_approval_execution(
         });
     }
 
-    let identity_path =
+    let (identity_path, identity_path_ids) =
         crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
             .await
-            .unwrap_or(None);
+            .unwrap_or(None)
+            .map(|(p, ids)| (Some(p), ids))
+            .unwrap_or((None, Vec::new()));
     Ok(Json(ApprovalResponse::from_row(
         approval,
         identity_path,
+        identity_path_ids,
         Some(cancelled),
     )))
 }
