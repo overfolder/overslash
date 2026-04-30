@@ -12,6 +12,7 @@
 			identity: Identity | null;
 			identities: Identity[];
 			mcp: McpConnection | null;
+			mcpError: string | null;
 		};
 	} = $props();
 
@@ -137,7 +138,11 @@
 		<section class="mcp-section">
 			<h2>MCP Connection</h2>
 
-			{#if !mcp}
+			{#if data.mcpError}
+				<div class="mcp-empty mcp-error">
+					<p>Could not load MCP connection: {data.mcpError}</p>
+				</div>
+			{:else if !mcp}
 				<div class="mcp-empty">
 					<p>
 						No MCP server bound to this identity. Run <code class="mono">overslash mcp login</code>
@@ -337,6 +342,10 @@
 	}
 	.mcp-empty p {
 		margin: 0;
+	}
+	.mcp-empty.mcp-error {
+		border-color: var(--color-danger, #b91c1c);
+		color: var(--color-danger, #b91c1c);
 	}
 	.mcp-empty code {
 		background: var(--color-bg);

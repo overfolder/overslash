@@ -12,7 +12,7 @@
 		deletePermission,
 		type CreateIdentityRequest
 	} from '$lib/identityApi';
-	import type { Identity, PermissionRule } from '$lib/types';
+	import type { Identity, McpConnection, PermissionRule } from '$lib/types';
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
@@ -28,20 +28,54 @@
 	let collapsed = $state(new Set<string>());
 	let selectedId = $state<string | null>(null);
 
-	let detailRules = $state<PermissionRule[]>([]);
-	let detailApprovals = $state<ApprovalResponse[]>([]);
-	let detailLoading = $state(false);
-	let detailError = $state<string | null>(null);
+	// All per-agent UI state lives on a single object keyed by `agentId`.
+	// It is replaced wholesale in `selectIdentity` so that any in-flight
+	// async handler can compare `detail?.agentId === capturedId` to drop
+	// stale results, and so a stuck error / loading flag from one agent
+	// cannot bleed onto the next selection.
+	interface AgentDetailState {
+		agentId: string;
+		rules: PermissionRule[];
+		approvals: ApprovalResponse[];
+		loading: boolean;
+		error: string | null;
+		mcp: McpConnection | null;
+		mcpError: string | null;
+		togglingElicitation: boolean;
+		elicitationError: string | null;
+		confirmDisconnect: boolean;
+		disconnecting: boolean;
+		disconnectError: string | null;
+		deleteModalOpen: boolean;
+		deleteModalBusy: boolean;
+	}
+
+	function freshDetail(agentId: string): AgentDetailState {
+		return {
+			agentId,
+			rules: [],
+			approvals: [],
+			loading: false,
+			error: null,
+			mcp: null,
+			mcpError: null,
+			togglingElicitation: false,
+			elicitationError: null,
+			confirmDisconnect: false,
+			disconnecting: false,
+			disconnectError: null,
+			deleteModalOpen: false,
+			deleteModalBusy: false
+		};
+	}
+
+	let detail = $state<AgentDetailState | null>(null);
 
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
 	let createInherit = $state(false);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
-
-	// Delete confirmation modal state
-	let deleteModalOpen = $state(false);
-	let deleteModalBusy = $state(false);
 
 	const selected = $derived(identities.find((i) => i.id === selectedId) ?? null);
 	const childrenOf = $derived.by(() => {
@@ -90,21 +124,161 @@
 	}
 
 	async function loadDetail(id: string) {
-		detailLoading = true;
-		detailError = null;
+		// Refresh data on the live `detail` object. Bail if the user has
+		// already switched away or if no detail is mounted yet — the
+		// `selectIdentity` path is responsible for creating it.
+		if (!detail || detail.agentId !== id) return;
+		detail.loading = true;
+		detail.error = null;
+		// A successful refresh wipes any stale error from previous handlers
+		// (failed setElicitation, failed disconnect) — otherwise an error
+		// from a now-resolved condition would keep rendering on top of an
+		// otherwise healthy card after a polling tick fixes things up.
+		detail.mcpError = null;
+		detail.elicitationError = null;
+		detail.disconnectError = null;
 		try {
-			const [rules, apr] = await Promise.all([listPermissions(id), listApprovals(id)]);
-			detailRules = rules;
-			detailApprovals = apr;
+			const [rules, apr, mcpResp] = await Promise.all([
+				listPermissions(id),
+				listApprovals(id),
+				session
+					.get<{ connection: McpConnection | null }>(
+						`/v1/identities/${encodeURIComponent(id)}/mcp-connection`
+					)
+					.then((r) => ({ ok: true as const, connection: r.connection }))
+					.catch((e) => ({ ok: false as const, error: e }))
+			]);
+			if (detail?.agentId !== id) return;
+			detail.rules = rules;
+			detail.approvals = apr;
+			if (mcpResp.ok) {
+				detail.mcp = mcpResp.connection;
+				detail.mcpError = null;
+			} else if (
+				mcpResp.error instanceof ApiError &&
+				(mcpResp.error.status === 404 || mcpResp.error.status === 403)
+			) {
+				detail.mcp = null;
+				detail.mcpError = null;
+			} else {
+				detail.mcp = null;
+				detail.mcpError =
+					mcpResp.error instanceof ApiError
+						? `Error ${mcpResp.error.status}`
+						: 'Network error';
+			}
 		} catch (e) {
-			detailError = e instanceof Error ? e.message : String(e);
+			if (detail?.agentId !== id) return;
+			detail.error = e instanceof Error ? e.message : String(e);
 		} finally {
-			detailLoading = false;
+			if (detail?.agentId === id) detail.loading = false;
 		}
 	}
 
+	async function setElicitation(next: boolean) {
+		if (!detail || !detail.mcp) return;
+		const targetId = detail.agentId;
+		detail.togglingElicitation = true;
+		detail.elicitationError = null;
+		try {
+			const resp = await session.patch<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
+				{ elicitation_enabled: next }
+			);
+			if (detail?.agentId === targetId) {
+				if (resp.connection) {
+					detail.mcp = resp.connection;
+				} else {
+					// The binding vanished between the GET that rendered the
+					// switch and this PATCH (e.g. another tab disconnected the
+					// client). Collapse the card and surface why via mcpError
+					// — that path renders the dashed error box instead of the
+					// blank "no connection" state, so the user knows the
+					// toggle didn't silently no-op.
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+				}
+			}
+		} catch (e) {
+			if (detail?.agentId === targetId) {
+				if (e instanceof ApiError && e.status === 404) {
+					// 404 here means the binding was deleted (e.g. another tab
+					// hit Disconnect) before our PATCH landed. This is the
+					// same "vanished binding" case the success path handles
+					// when `connection: null` comes back — surface it through
+					// `mcpError` so the prominent error box renders, not a
+					// small warning under the toggle. Drop any prior toggle
+					// error so a later polling refresh that resurrects the
+					// connection doesn't render the now-stale message.
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+					detail.elicitationError = null;
+				} else {
+					detail.elicitationError =
+						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+				}
+			}
+		} finally {
+			if (detail?.agentId === targetId) {
+				detail.togglingElicitation = false;
+			}
+		}
+	}
+
+	async function doDisconnect() {
+		if (!detail) return;
+		const targetId = detail.agentId;
+		detail.disconnecting = true;
+		detail.disconnectError = null;
+		try {
+			await session.post(
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection/disconnect`,
+				{}
+			);
+			if (detail?.agentId === targetId) {
+				detail.mcp = null;
+				detail.confirmDisconnect = false;
+			}
+		} catch (e) {
+			// Surface failures in the modal instead of silently freezing it:
+			// the user clicked Disconnect, got a stopped spinner, and would
+			// otherwise have no idea whether the binding was removed.
+			console.error('disconnect failed', e);
+			if (detail?.agentId === targetId) {
+				detail.disconnectError =
+					e instanceof ApiError ? `Disconnect failed (${e.status}).` : 'Disconnect failed.';
+			}
+		} finally {
+			if (detail?.agentId === targetId) {
+				detail.disconnecting = false;
+			}
+		}
+	}
+
+	function fmtDate(iso: string | null | undefined): string {
+		if (!iso) return '—';
+		try {
+			return new Date(iso).toLocaleString();
+		} catch {
+			return iso;
+		}
+	}
+
+	const clientLabel = $derived.by(() => {
+		const m = detail?.mcp;
+		if (!m) return '';
+		const info = m.client_info ?? {};
+		const name = m.client_name ?? info.name ?? m.software_id ?? m.client_id;
+		const version = info.version ?? m.software_version;
+		return version ? `${name} · v${version}` : name;
+	});
+
 	function selectIdentity(id: string) {
 		selectedId = id;
+		// Replace the detail object wholesale so any in-flight handler from
+		// the previous agent will see `detail.agentId !== capturedId` and
+		// drop its result instead of clobbering the new selection.
+		detail = freshDetail(id);
 		void loadDetail(id);
 	}
 
@@ -114,10 +288,14 @@
 		// for the selected agent — an "Allow & Remember" resolution creates
 		// new permission rules that should show up in the Rules table.
 		approvals = approvals.filter((a) => a.id !== updated.id);
-		detailApprovals = detailApprovals.filter((a) => a.id !== updated.id);
-		if (selectedId) {
+		if (detail) {
+			const targetId = detail.agentId;
+			detail.approvals = detail.approvals.filter((a) => a.id !== updated.id);
 			try {
-				detailRules = await listPermissions(selectedId);
+				const rules = await listPermissions(targetId);
+				if (detail?.agentId === targetId) {
+					detail.rules = rules;
+				}
 			} catch {
 				// Non-fatal — the approval itself was already resolved.
 			}
@@ -218,22 +396,25 @@
 	}
 
 	function requestDelete() {
-		if (!selected || selected.kind === 'user') return;
-		deleteModalOpen = true;
+		if (!selected || selected.kind === 'user' || !detail) return;
+		detail.deleteModalOpen = true;
 	}
 
 	async function confirmDelete() {
-		if (!selected) return;
-		deleteModalBusy = true;
+		if (!selected || !detail) return;
+		const targetId = detail.agentId;
+		detail.deleteModalBusy = true;
 		try {
 			await deleteIdentity(selected.id);
 			selectedId = null;
+			detail = null;
 			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
-		} finally {
-			deleteModalBusy = false;
-			deleteModalOpen = false;
+			if (detail?.agentId === targetId) {
+				detail.deleteModalBusy = false;
+				detail.deleteModalOpen = false;
+			}
 		}
 	}
 
@@ -332,8 +513,8 @@
 					{/if}
 				</div>
 
-				{#if detailError}
-					<div class="error-bar">{detailError}</div>
+				{#if detail?.error}
+					<div class="error-bar">{detail.error}</div>
 				{/if}
 
 				{#if selected.kind === 'user'}
@@ -372,9 +553,9 @@
 					</div>
 
 					<!-- Pending Approvals -->
-					{#if detailApprovals.length > 0}
+					{#if detail && detail.approvals.length > 0}
 						<h3 class="section-title">Pending Approvals</h3>
-						{#each detailApprovals as a (a.id)}
+						{#each detail.approvals as a (a.id)}
 							<div class="approval-card">
 								<div class="approval-main">
 									<div class="approval-summary">{a.action_summary}</div>
@@ -388,7 +569,7 @@
 
 					<!-- Permission Rules -->
 					<h3 class="section-title">Permission Rules</h3>
-					{#if detailRules.length === 0}
+					{#if !detail || detail.rules.length === 0}
 						<p class="muted" style="font-size:0.85rem;">No rules.</p>
 					{:else}
 						<table class="rules-table">
@@ -402,7 +583,7 @@
 								</tr>
 							</thead>
 							<tbody>
-								{#each detailRules as r (r.id)}
+								{#each detail.rules as r (r.id)}
 									<tr>
 										<td class="mono">{r.action_pattern}</td>
 										<td>
@@ -417,6 +598,83 @@
 								{/each}
 							</tbody>
 						</table>
+					{/if}
+
+					<!-- MCP Connection -->
+					<h3 class="section-title">MCP Connection</h3>
+					{#if detail?.mcpError}
+						<div class="mcp-empty mcp-error">
+							<p>Could not load MCP connection: {detail.mcpError}</p>
+						</div>
+					{:else if !detail?.mcp}
+						<div class="mcp-empty">
+							<p>
+								No MCP server bound to this identity. Run
+								<code class="mono">overslash mcp login</code> from your editor or CLI to register an
+								MCP client and bind it to this agent.
+							</p>
+						</div>
+					{:else}
+						<div class="mcp-card">
+							<div class="mcp-head">
+								<div class="mcp-main">
+									<div class="mcp-title">
+										<span class="mcp-glyph" aria-hidden="true">◫</span>
+										<code class="mono">{detail.mcp.client_name ?? detail.mcp.client_id}</code>
+										<span class="pill pill-active">connected</span>
+									</div>
+									<dl class="kv">
+										<dt>Client</dt>
+										<dd>{clientLabel}</dd>
+										{#if detail.mcp.session_id}
+											<dt>Session</dt>
+											<dd><code class="mono">{detail.mcp.session_id}</code></dd>
+										{/if}
+										<dt>Connected</dt>
+										<dd>{fmtDate(detail.mcp.connected_at)}</dd>
+										<dt>Last seen</dt>
+										<dd>{fmtDate(detail.mcp.last_seen_at)}</dd>
+										{#if detail.mcp.protocol_version}
+											<dt>Protocol</dt>
+											<dd><code class="mono">{detail.mcp.protocol_version}</code></dd>
+										{/if}
+									</dl>
+								</div>
+								<button
+									type="button"
+									class="btn-delete"
+									onclick={() => {
+										if (detail) detail.confirmDisconnect = true;
+									}}
+								>
+									Disconnect
+								</button>
+							</div>
+
+							<div class="mcp-options-head">Connection Options</div>
+							<div class="mcp-option">
+								<div class="mcp-option-text">
+									<div class="opt-title" id="opt-elicitation-label">Elicitation approvals</div>
+									<div class="opt-desc">
+										Elicitation allows approving in line but stops the approval from being async.
+									</div>
+									{#if !detail.mcp.elicitation_supported}
+										<div class="opt-warn">
+											This MCP client did not declare elicitation support at connect time.
+										</div>
+									{/if}
+									{#if detail.elicitationError}
+										<div class="opt-warn">{detail.elicitationError}</div>
+									{/if}
+								</div>
+								<ToggleSwitch
+									checked={detail.mcp.elicitation_enabled}
+									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
+									labelledby="opt-elicitation-label"
+									onchange={(v) => setElicitation(v)}
+								/>
+							</div>
+						</div>
 					{/if}
 
 					<!-- Delete Agent -->
@@ -549,21 +807,40 @@
 	</div>
 {/if}
 
-{#if selected}
+{#if selected && detail}
 	{@const totalDescendants = descendantCount(selected.id)}
 	<ConfirmModal
-		open={deleteModalOpen}
+		open={detail.deleteModalOpen}
 		title="Delete agent?"
 		message={totalDescendants > 0
 			? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
 			: `Delete agent:${selected.name}? This cannot be undone.`}
 		confirmLabel="Delete Agent"
 		destructive={true}
-		busy={deleteModalBusy}
+		busy={detail.deleteModalBusy}
 		onConfirm={confirmDelete}
-		onCancel={() => (deleteModalOpen = false)}
+		onCancel={() => {
+			if (detail) detail.deleteModalOpen = false;
+		}}
 	/>
 {/if}
+
+<ConfirmModal
+	open={detail?.confirmDisconnect ?? false}
+	title="Disconnect MCP client?"
+	message="This removes the binding between this agent and its MCP client. The client will need to re-run the OAuth flow to reconnect."
+	confirmLabel="Disconnect"
+	destructive={true}
+	busy={detail?.disconnecting ?? false}
+	error={detail?.disconnectError ?? null}
+	onConfirm={doDisconnect}
+	onCancel={() => {
+		if (detail) {
+			detail.confirmDisconnect = false;
+			detail.disconnectError = null;
+		}
+	}}
+/>
 
 <ApprovalModal
 	open={!!modalApproval}
@@ -1056,6 +1333,104 @@
 		gap: 8px;
 		justify-content: flex-end;
 		margin-top: 8px;
+	}
+
+	/* ── MCP Connection card ── */
+	.mcp-empty {
+		border: 1px dashed var(--color-border);
+		border-radius: 10px;
+		padding: 16px;
+		color: var(--color-text-muted);
+		font-size: 13px;
+	}
+	.mcp-empty p {
+		margin: 0;
+	}
+	.mcp-empty.mcp-error {
+		border-color: var(--color-danger, #b91c1c);
+		color: var(--color-danger, #b91c1c);
+	}
+	.mcp-empty code {
+		background: var(--color-bg);
+		padding: 0 4px;
+		border-radius: 4px;
+	}
+	.mcp-card {
+		border: 1px solid var(--color-border);
+		border-radius: 10px;
+		padding: 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.mcp-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 12px;
+	}
+	.mcp-main {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		min-width: 0;
+	}
+	.mcp-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+	}
+	.mcp-glyph {
+		color: var(--color-text-muted);
+	}
+	.kv {
+		display: grid;
+		grid-template-columns: 110px 1fr;
+		gap: 4px 12px;
+		margin: 0;
+		font-size: 12px;
+	}
+	.kv dt {
+		color: var(--color-text-muted);
+	}
+	.kv dd {
+		margin: 0;
+		color: var(--color-text);
+		word-break: break-all;
+	}
+	.mcp-options-head {
+		text-transform: uppercase;
+		font-size: 10px;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+		border-top: 1px solid var(--color-border);
+		padding-top: 12px;
+	}
+	.mcp-option {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 12px;
+	}
+	.mcp-option-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+	.opt-title {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-text);
+	}
+	.opt-desc {
+		font-size: 12px;
+		color: var(--color-text-muted);
+	}
+	.opt-warn {
+		font-size: 11px;
+		color: var(--color-danger, #b91c1c);
 	}
 
 	/* Error modal shown when the deep-linked approval can't be loaded. */

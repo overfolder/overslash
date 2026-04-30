@@ -1,4 +1,4 @@
-import { session } from '$lib/session';
+import { ApiError, session } from '$lib/session';
 import type { Identity, McpConnection } from '$lib/types';
 
 export const ssr = false;
@@ -15,16 +15,24 @@ export const load = async ({ params }: { params: { name: string } }) => {
 		) ?? null;
 
 	let mcp: McpConnection | null = null;
+	let mcpError: string | null = null;
 	if (identity) {
-		// Soft-fail: a missing connection 404s, anything else (transient API
-		// hiccup) just renders the empty-state card and the page still works.
-		mcp = await session
-			.get<{ connection: McpConnection | null }>(
+		// 404 (no binding) and 403 (caller can't read connections) are normal —
+		// render the empty-state card. Anything else surfaces as a banner so a
+		// real API/auth regression doesn't masquerade as "not connected".
+		try {
+			const r = await session.get<{ connection: McpConnection | null }>(
 				`/v1/identities/${encodeURIComponent(identity.id)}/mcp-connection`
-			)
-			.then((r) => r.connection)
-			.catch(() => null);
+			);
+			mcp = r.connection;
+		} catch (e) {
+			if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
+				mcp = null;
+			} else {
+				mcpError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+			}
+		}
 	}
 
-	return { requestedName: decoded, identity, identities, mcp };
+	return { requestedName: decoded, identity, identities, mcp, mcpError };
 };
