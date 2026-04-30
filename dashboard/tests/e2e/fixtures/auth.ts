@@ -7,11 +7,11 @@ export type DevProfile = 'admin' | 'member' | 'readonly';
  * server sets the `oss_session` cookie on the response; we copy it into the
  * Playwright browser context so subsequent page navigations land authenticated.
  *
- * The API base URL is taken from the `x-e2e-api-base` header which the
- * playwright.config.ts sets from `API_URL`.
+ * The API base URL is read from `process.env.API_URL`, which `playwright.config.ts`
+ * populates from the per-worktree `.e2e/dashboard.env` file the harness writes.
  */
 export async function loginAs(page: Page, request: APIRequestContext, profile: DevProfile) {
-	const apiBase = await getApiBase(request);
+	const apiBase = getApiBase();
 	const res = await request.get(`${apiBase}/auth/dev/token?profile=${profile}`);
 	if (!res.ok()) {
 		throw new Error(`dev login failed: HTTP ${res.status()} ${await res.text()}`);
@@ -26,14 +26,15 @@ export async function loginAs(page: Page, request: APIRequestContext, profile: D
 	await page.context().addCookies(cookies);
 }
 
-async function getApiBase(request: APIRequestContext): Promise<string> {
-	// We stash the API base URL in a custom header on the global request
-	// context (set by playwright.config.ts). Roundtrip it via a tiny request
-	// so we don't have to thread it through every fixture.
-	const headers = (request as unknown as { _options?: { extraHTTPHeaders?: Record<string, string> } })
-		._options?.extraHTTPHeaders;
-	const fromHeaders = headers?.['x-e2e-api-base'];
-	return fromHeaders ?? process.env.API_URL ?? 'http://127.0.0.1:3000';
+function getApiBase(): string {
+	const v = process.env.API_URL;
+	if (!v) {
+		throw new Error(
+			'API_URL is not set. The harness writes it into <state>/.e2e/dashboard.env; ' +
+				'playwright.config.ts hoists it onto process.env at config-load time.'
+		);
+	}
+	return v;
 }
 
 function parseSetCookie(raw: string, defaultDomain: string) {
@@ -86,8 +87,8 @@ type Fixtures = {
 };
 
 export const test = base.extend<Fixtures>({
-	apiBase: async ({ request }, use) => {
-		await use(await getApiBase(request));
+	apiBase: async ({}, use) => {
+		await use(getApiBase());
 	}
 });
 

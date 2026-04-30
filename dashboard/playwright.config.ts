@@ -24,6 +24,12 @@ const baseURL =
 	process.env.DASHBOARD_URL ?? envFromFile.DASHBOARD_URL ?? 'http://127.0.0.1:5173';
 const apiURL = process.env.API_URL ?? envFromFile.API_URL ?? 'http://127.0.0.1:3000';
 
+// Re-export the resolved values into the process env so test fixtures
+// (e.g. tests/e2e/fixtures/auth.ts) can read them via `process.env.API_URL`
+// without needing access to the playwright config.
+process.env.DASHBOARD_URL = baseURL;
+process.env.API_URL = apiURL;
+
 export default defineConfig({
 	testDir: './tests/e2e',
 	fullyParallel: false, // tests share dev-login users; keep sequential for now.
@@ -33,11 +39,8 @@ export default defineConfig({
 	reporter: process.env.CI ? [['github'], ['list']] : 'list',
 	use: {
 		baseURL,
-		extraHTTPHeaders: { 'x-e2e-api-base': apiURL },
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure'
 	},
-	projects: [
-		{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }
-	]
+	projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
 });
