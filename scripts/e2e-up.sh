@@ -139,9 +139,12 @@ DASH_PORT=$(free_port)
 DASH_URL="http://127.0.0.1:$DASH_PORT"
 
 log "building dashboard against $API_URL"
+# build:static so `vite preview` serves the SPA bundle from `build/`. The
+# Vercel adapter (default `npm run build`) emits a serverless layout that
+# `vite preview` can't serve as-is.
 ( cd "$REPO_ROOT/dashboard" \
     && VITE_API_BASE_URL="$API_URL" \
-       npm run build --silent >/dev/null )
+       npm run build:static --silent >/dev/null )
 
 log "starting dashboard preview on $DASH_URL"
 ( cd "$REPO_ROOT/dashboard" \
