@@ -130,6 +130,13 @@
 		if (!detail || detail.agentId !== id) return;
 		detail.loading = true;
 		detail.error = null;
+		// A successful refresh wipes any stale error from previous handlers
+		// (failed setElicitation, failed disconnect) — otherwise an error
+		// from a now-resolved condition would keep rendering on top of an
+		// otherwise healthy card after a polling tick fixes things up.
+		detail.mcpError = null;
+		detail.elicitationError = null;
+		detail.disconnectError = null;
 		try {
 			const [rules, apr, mcpResp] = await Promise.all([
 				listPermissions(id),
@@ -200,9 +207,12 @@
 					// same "vanished binding" case the success path handles
 					// when `connection: null` comes back — surface it through
 					// `mcpError` so the prominent error box renders, not a
-					// small warning under the toggle.
+					// small warning under the toggle. Drop any prior toggle
+					// error so a later polling refresh that resurrects the
+					// connection doesn't render the now-stale message.
 					detail.mcp = null;
 					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+					detail.elicitationError = null;
 				} else {
 					detail.elicitationError =
 						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
