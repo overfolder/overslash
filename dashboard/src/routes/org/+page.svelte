@@ -6,6 +6,8 @@
 		OAuthCredential,
 		OrgInfo,
 		SecretRequestSettings,
+		ServiceKeyCreated,
+		ServiceKeySummary,
 		Webhook,
 		WebhookCreated,
 		WebhookDelivery
@@ -24,6 +26,7 @@
 	// client_ids currently fading out after a local revoke. Entries auto-
 	// expire from the visible list 3 s after revocation.
 	let revokingIds = $state<Set<string>>(new Set());
+	let serviceKeys = $state<ServiceKeySummary[]>([]);
 	let webhooks = $state<Webhook[]>([]);
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
@@ -34,6 +37,7 @@
 		idpConfigs = data.idpConfigs;
 		oauthCredentials = data.oauthCredentials;
 		mcpClients = data.mcpClients;
+		serviceKeys = data.serviceKeys;
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
 		subscription = data.subscription;
@@ -133,6 +137,96 @@
 		}
 		idpUseOrgCreds = hasOrgCredFor(idpType) && !idpOverrideOrgCreds;
 	});
+
+	// Service keys (Org Settings → Service keys)
+	let showServiceKeyForm = $state(false);
+	let svcKeyName = $state('');
+	let svcKeyAllowImpersonate = $state(false);
+	let svcKeyError = $state<string | null>(null);
+	let svcKeySubmitting = $state(false);
+	let createdServiceKey = $state<ServiceKeyCreated | null>(null);
+	let svcKeyCopied = $state(false);
+
+	async function refetchServiceKeys() {
+		serviceKeys = await session.get<ServiceKeySummary[]>('/v1/org-service-keys');
+	}
+
+	async function performCreateServiceKey() {
+		if (!org) return;
+		svcKeyError = null;
+		svcKeySubmitting = true;
+		try {
+			const created = await session.post<ServiceKeyCreated>('/v1/org-service-keys', {
+				org_id: org.id,
+				name: svcKeyName.trim(),
+				allow_impersonate: svcKeyAllowImpersonate
+			});
+			createdServiceKey = created;
+			showServiceKeyForm = false;
+			svcKeyName = '';
+			svcKeyAllowImpersonate = false;
+			await refetchServiceKeys();
+		} catch (err) {
+			svcKeyError = asMessage(err);
+			throw err;
+		} finally {
+			svcKeySubmitting = false;
+		}
+	}
+
+	function submitServiceKey(e: Event) {
+		e.preventDefault();
+		if (!svcKeyName.trim()) {
+			svcKeyError = 'Name is required.';
+			return;
+		}
+		// Danger gate: impersonation-capable creation goes through ConfirmModal.
+		// Plain keys submit directly — they're still bound to the shared
+		// org-service identity but cannot pretend to be a user.
+		if (svcKeyAllowImpersonate) {
+			openConfirm(
+				'Create impersonation-capable key?',
+				`This key will be able to act as any member of "${org?.name ?? 'this org'}". It authenticates as the shared org-service identity — anyone holding it can read and act on any user's data, including other admins. Audit logs will record your identity as the minter. Continue?`,
+				'Create key',
+				performCreateServiceKey
+			);
+		} else {
+			performCreateServiceKey().catch(() => {
+				// error already surfaced via svcKeyError
+			});
+		}
+	}
+
+	async function copyServiceKey() {
+		if (!createdServiceKey?.key) return;
+		try {
+			await navigator.clipboard?.writeText(createdServiceKey.key);
+			svcKeyCopied = true;
+			setTimeout(() => (svcKeyCopied = false), 1400);
+		} catch {
+			// clipboard write can fail in non-secure contexts; ignore silently
+		}
+	}
+
+	function dismissCreatedServiceKey() {
+		createdServiceKey = null;
+		svcKeyCopied = false;
+	}
+
+	function revokeServiceKey(k: ServiceKeySummary) {
+		openConfirm(
+			'Revoke service key?',
+			`"${k.name}" (${k.key_prefix}…) will stop working immediately. This cannot be undone.`,
+			'Revoke',
+			async () => {
+				await session.post(
+					`/v1/org-service-keys/${encodeURIComponent(k.id)}/revoke`,
+					{}
+				);
+				await refetchServiceKeys();
+			}
+		);
+	}
 
 	// Webhook form
 	let showWebhookForm = $state(false);
@@ -833,6 +927,131 @@
 			{/if}
 		</section>
 
+		<!-- Service keys -->
+		<section class="card">
+			<div class="card-head">
+				<h2>Service keys</h2>
+				<button
+					type="button"
+					class="btn btn-primary"
+					onclick={() => {
+						showServiceKeyForm = !showServiceKeyForm;
+						svcKeyError = null;
+						if (!showServiceKeyForm) {
+							svcKeyName = '';
+							svcKeyAllowImpersonate = false;
+						}
+					}}
+				>
+					{showServiceKeyForm ? 'Cancel' : 'Add service key'}
+				</button>
+			</div>
+			<p class="section-desc">
+				Long-lived <code>osk_…</code> API keys for org automation (CI, cron jobs,
+				server-side integrations). All service keys share the org's
+				<strong>org-service</strong> identity — audit logs record which admin minted
+				each key, and impersonated actions record both the org-service identity
+				and the user the action was directed at.
+			</p>
+
+			{#if createdServiceKey}
+				<div class="secret-banner">
+					<div>
+						<strong>Service key created.</strong> Copy the key now — it won't be shown again.
+					</div>
+					<div class="secret-row">
+						<code>{createdServiceKey.key}</code>
+						<button type="button" class="btn-link" onclick={copyServiceKey}>
+							{svcKeyCopied ? '✓ Copied' : 'Copy'}
+						</button>
+						<button type="button" class="btn-link" onclick={dismissCreatedServiceKey}>
+							Dismiss
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if serviceKeys.length === 0}
+				<p class="muted">No service keys yet.</p>
+			{:else}
+				<table>
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Prefix</th>
+							<th>Scopes</th>
+							<th>Created</th>
+							<th>Last used</th>
+							<th class="actions-col">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each serviceKeys as k (k.id)}
+							<tr>
+								<td>{k.name}</td>
+								<td class="mono small">{k.key_prefix}…</td>
+								<td>
+									{#if k.scopes.includes('impersonate')}
+										<span class="badge badge-imp">impersonate</span>
+									{:else}
+										<span class="badge badge-svc">service</span>
+									{/if}
+								</td>
+								<td class="small">{fmtDate(k.created_at)}</td>
+								<td class="small">{fmtDate(k.last_used_at)}</td>
+								<td class="actions-col">
+									<button
+										type="button"
+										class="btn-link danger"
+										onclick={() => revokeServiceKey(k)}
+									>
+										Revoke
+									</button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+
+			{#if showServiceKeyForm}
+				<form class="inline-form" onsubmit={submitServiceKey}>
+					<label>
+						Name
+						<input
+							type="text"
+							bind:value={svcKeyName}
+							placeholder="ci-deploy"
+							required
+						/>
+					</label>
+					{#if !isPersonalOrg}
+						<label class="checkbox-row">
+							<input type="checkbox" bind:checked={svcKeyAllowImpersonate} />
+							<span class="checkbox-body">
+								<span class="checkbox-label">Allow impersonation</span>
+								<span class="checkbox-help">
+									⚠ Lets this key act as <strong>any user in your org</strong> via
+									the <code>X-Overslash-As</code> header. The key authenticates
+									as the shared org-service identity — audit logs are the only
+									way to trace use back to a person, so treat this as sensitive
+									as a root credential.
+								</span>
+							</span>
+						</label>
+					{/if}
+					{#if svcKeyError}
+						<p class="form-error">{svcKeyError}</p>
+					{/if}
+					<div class="form-actions">
+						<button type="submit" class="btn btn-primary" disabled={svcKeySubmitting}>
+							{svcKeySubmitting ? 'Creating…' : 'Create service key'}
+						</button>
+					</div>
+				</form>
+			{/if}
+		</section>
+
 		<!-- Webhooks -->
 		<section class="card">
 			<div class="card-head">
@@ -1163,6 +1382,49 @@
 	.badge-off {
 		background: #fbe9e9;
 		color: #b42318;
+	}
+	.badge-svc {
+		background: #eef0ff;
+		color: #3949ab;
+	}
+	.badge-imp {
+		background: #fbe9e9;
+		color: #b42318;
+		border: 1px solid #f1a6a0;
+	}
+
+	.checkbox-row {
+		display: flex !important;
+		flex-direction: row !important;
+		align-items: flex-start;
+		gap: 0.55rem;
+	}
+	.checkbox-row input[type='checkbox'] {
+		margin-top: 0.2rem;
+	}
+	.checkbox-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		flex: 1;
+		min-width: 0;
+	}
+	.checkbox-label {
+		font-weight: 600;
+		color: var(--color-text);
+		font-size: 0.9rem;
+	}
+	.checkbox-help {
+		color: var(--color-text-muted);
+		font-size: 0.82rem;
+		line-height: 1.45;
+	}
+	.checkbox-help code {
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		padding: 0.05rem 0.25rem;
+		border-radius: 3px;
+		background: var(--color-bg);
 	}
 
 	tr.revoking {

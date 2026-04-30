@@ -6,6 +6,7 @@ import type {
 	OAuthCredential,
 	OrgInfo,
 	SecretRequestSettings,
+	ServiceKeySummary,
 	Webhook
 } from '$lib/types';
 
@@ -35,6 +36,7 @@ export interface OrgPageData {
 	idpConfigs: IdpConfig[];
 	oauthCredentials: OAuthCredential[];
 	mcpClients: McpClient[];
+	serviceKeys: ServiceKeySummary[];
 	webhooks: Webhook[];
 	secretRequestSettings: SecretRequestSettings | null;
 	subscription: OrgSubscription | null;
@@ -58,6 +60,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				idpConfigs: [],
 				oauthCredentials: [],
 				mcpClients: [],
+				serviceKeys: [],
 				webhooks: [],
 				secretRequestSettings: null,
 				subscription: null,
@@ -65,19 +68,27 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			};
 		}
 
-		const [org, idpConfigs, oauthCredentials, mcpClientsResp, webhooks, secretRequestSettings] =
-			await Promise.all([
-				orgId
-					? session.get<OrgInfo>(`/v1/orgs/${orgId}`)
-					: Promise.resolve(null as unknown as OrgInfo),
-				session.get<IdpConfig[]>('/v1/org-idp-configs'),
-				session.get<OAuthCredential[]>('/v1/org-oauth-credentials'),
-				session.get<{ clients: McpClient[] }>('/v1/oauth/mcp-clients'),
-				session.get<Webhook[]>('/v1/webhooks'),
-				orgId
-					? session.get<SecretRequestSettings>(`/v1/orgs/${orgId}/secret-request-settings`)
-					: Promise.resolve(null)
-			]);
+		const [
+			org,
+			idpConfigs,
+			oauthCredentials,
+			mcpClientsResp,
+			serviceKeys,
+			webhooks,
+			secretRequestSettings
+		] = await Promise.all([
+			orgId
+				? session.get<OrgInfo>(`/v1/orgs/${orgId}`)
+				: Promise.resolve(null as unknown as OrgInfo),
+			session.get<IdpConfig[]>('/v1/org-idp-configs'),
+			session.get<OAuthCredential[]>('/v1/org-oauth-credentials'),
+			session.get<{ clients: McpClient[] }>('/v1/oauth/mcp-clients'),
+			session.get<ServiceKeySummary[]>('/v1/org-service-keys'),
+			session.get<Webhook[]>('/v1/webhooks'),
+			orgId
+				? session.get<SecretRequestSettings>(`/v1/orgs/${orgId}/secret-request-settings`)
+				: Promise.resolve(null)
+		]);
 
 		// Load subscription for non-personal Team orgs (404 = no subscription, silently null).
 		let subscription: OrgSubscription | null = null;
@@ -95,6 +106,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			idpConfigs,
 			oauthCredentials,
 			mcpClients: mcpClientsResp.clients,
+			serviceKeys,
 			webhooks,
 			secretRequestSettings,
 			subscription,
@@ -110,6 +122,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			idpConfigs: [],
 			oauthCredentials: [],
 			mcpClients: [],
+			serviceKeys: [],
 			webhooks: [],
 			secretRequestSettings: null,
 			subscription: null,
