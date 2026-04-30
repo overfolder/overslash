@@ -104,12 +104,17 @@ fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
 }
 
 /// Returns true if the override target is loopback or
-/// `OVERSLASH_SSRF_ALLOW_PRIVATE=1` is in the environment. Mirrors the SSRF
+/// `OVERSLASH_SSRF_ALLOW_PRIVATE` is set to a truthy value. Mirrors the SSRF
 /// guard so production deploys can leave `OVERSLASH_SERVICE_BASE_OVERRIDES`
 /// set harmlessly: a public override target is silently dropped.
 fn ssrf_allowed_for(base_url: &str) -> bool {
-    if env::var("OVERSLASH_SSRF_ALLOW_PRIVATE").is_ok() {
-        return true;
+    if let Ok(v) = env::var("OVERSLASH_SSRF_ALLOW_PRIVATE") {
+        // Accept the same truthy spellings as `CLOUD_BILLING` etc. above so a
+        // stray `OVERSLASH_SSRF_ALLOW_PRIVATE=0` doesn't accidentally enable
+        // the bypass.
+        if matches!(v.as_str(), "true" | "1" | "yes") {
+            return true;
+        }
     }
     let Ok(parsed) = url::Url::parse(base_url) else {
         return false;
