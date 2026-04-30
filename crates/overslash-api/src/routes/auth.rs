@@ -933,6 +933,18 @@ async fn dev_token(
     let profile_email = profile.email();
     let identity_id =
         if let Some(existing) = system.find_user_identity_by_email(profile_email).await? {
+            // Re-assert admin group membership on every admin login. Without
+            // this, an admin removed from the Admins group manually (or by a
+            // test that toggled it off) silently loses admin powers on the
+            // next sign-in. bootstrap_org is idempotent, so this is cheap.
+            if matches!(profile, DevProfile::Admin) {
+                overslash_db::repos::org_bootstrap::bootstrap_org(
+                    &state.db,
+                    admin_org_id,
+                    Some(existing.id),
+                )
+                .await?;
+            }
             existing.id
         } else {
             let scope = OrgScope::new(admin_org_id, state.db.clone());
