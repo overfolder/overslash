@@ -12,7 +12,7 @@
 		deletePermission,
 		type CreateIdentityRequest
 	} from '$lib/identityApi';
-	import type { Identity, PermissionRule } from '$lib/types';
+	import type { Identity, McpConnection, PermissionRule } from '$lib/types';
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
@@ -32,6 +32,13 @@
 	let detailApprovals = $state<ApprovalResponse[]>([]);
 	let detailLoading = $state(false);
 	let detailError = $state<string | null>(null);
+
+	let mcp = $state<McpConnection | null>(null);
+	let mcpError = $state<string | null>(null);
+	let togglingElicitation = $state(false);
+	let elicitationError = $state<string | null>(null);
+	let confirmDisconnect = $state(false);
+	let disconnecting = $state(false);
 
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
@@ -92,16 +99,92 @@
 	async function loadDetail(id: string) {
 		detailLoading = true;
 		detailError = null;
+		mcp = null;
+		mcpError = null;
 		try {
-			const [rules, apr] = await Promise.all([listPermissions(id), listApprovals(id)]);
+			const [rules, apr, mcpResp] = await Promise.all([
+				listPermissions(id),
+				listApprovals(id),
+				session
+					.get<{ connection: McpConnection | null }>(
+						`/v1/identities/${encodeURIComponent(id)}/mcp-connection`
+					)
+					.then((r) => ({ ok: true as const, connection: r.connection }))
+					.catch((e) => ({ ok: false as const, error: e }))
+			]);
 			detailRules = rules;
 			detailApprovals = apr;
+			if (mcpResp.ok) {
+				mcp = mcpResp.connection;
+			} else if (
+				mcpResp.error instanceof ApiError &&
+				(mcpResp.error.status === 404 || mcpResp.error.status === 403)
+			) {
+				mcp = null;
+			} else {
+				mcp = null;
+				mcpError =
+					mcpResp.error instanceof ApiError
+						? `Error ${mcpResp.error.status}`
+						: 'Network error';
+			}
 		} catch (e) {
 			detailError = e instanceof Error ? e.message : String(e);
 		} finally {
 			detailLoading = false;
 		}
 	}
+
+	async function setElicitation(next: boolean) {
+		if (!selected || !mcp) return;
+		togglingElicitation = true;
+		elicitationError = null;
+		try {
+			const resp = await session.patch<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(selected.id)}/mcp-connection`,
+				{ elicitation_enabled: next }
+			);
+			mcp = resp.connection;
+		} catch (e) {
+			elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+		} finally {
+			togglingElicitation = false;
+		}
+	}
+
+	async function doDisconnect() {
+		if (!selected) return;
+		disconnecting = true;
+		try {
+			await session.post(
+				`/v1/identities/${encodeURIComponent(selected.id)}/mcp-connection/disconnect`,
+				{}
+			);
+			mcp = null;
+			confirmDisconnect = false;
+		} catch (e) {
+			console.error('disconnect failed', e);
+		} finally {
+			disconnecting = false;
+		}
+	}
+
+	function fmtDate(iso: string | null | undefined): string {
+		if (!iso) return '—';
+		try {
+			return new Date(iso).toLocaleString();
+		} catch {
+			return iso;
+		}
+	}
+
+	const clientLabel = $derived.by(() => {
+		if (!mcp) return '';
+		const info = mcp.client_info ?? {};
+		const name = mcp.client_name ?? info.name ?? mcp.software_id ?? mcp.client_id;
+		const version = info.version ?? mcp.software_version;
+		return version ? `${name} · v${version}` : name;
+	});
 
 	function selectIdentity(id: string) {
 		selectedId = id;
@@ -419,6 +502,81 @@
 						</table>
 					{/if}
 
+					<!-- MCP Connection -->
+					<h3 class="section-title">MCP Connection</h3>
+					{#if mcpError}
+						<div class="mcp-empty mcp-error">
+							<p>Could not load MCP connection: {mcpError}</p>
+						</div>
+					{:else if !mcp}
+						<div class="mcp-empty">
+							<p>
+								No MCP server bound to this identity. Run
+								<code class="mono">overslash mcp login</code> from your editor or CLI to register an
+								MCP client and bind it to this agent.
+							</p>
+						</div>
+					{:else}
+						<div class="mcp-card">
+							<div class="mcp-head">
+								<div class="mcp-main">
+									<div class="mcp-title">
+										<span class="mcp-glyph" aria-hidden="true">◫</span>
+										<code class="mono">{mcp.client_name ?? mcp.client_id}</code>
+										<span class="pill pill-active">connected</span>
+									</div>
+									<dl class="kv">
+										<dt>Client</dt>
+										<dd>{clientLabel}</dd>
+										{#if mcp.session_id}
+											<dt>Session</dt>
+											<dd><code class="mono">{mcp.session_id}</code></dd>
+										{/if}
+										<dt>Connected</dt>
+										<dd>{fmtDate(mcp.connected_at)}</dd>
+										<dt>Last seen</dt>
+										<dd>{fmtDate(mcp.last_seen_at)}</dd>
+										{#if mcp.protocol_version}
+											<dt>Protocol</dt>
+											<dd><code class="mono">{mcp.protocol_version}</code></dd>
+										{/if}
+									</dl>
+								</div>
+								<button
+									type="button"
+									class="btn-delete"
+									onclick={() => (confirmDisconnect = true)}
+								>
+									Disconnect
+								</button>
+							</div>
+
+							<div class="mcp-options-head">Connection Options</div>
+							<div class="mcp-option">
+								<div class="mcp-option-text">
+									<div class="opt-title" id="opt-elicitation-label">Elicitation approvals</div>
+									<div class="opt-desc">
+										Elicitation allows approving in line but stops the approval from being async.
+									</div>
+									{#if !mcp.elicitation_supported}
+										<div class="opt-warn">
+											This MCP client did not declare elicitation support at connect time.
+										</div>
+									{/if}
+									{#if elicitationError}
+										<div class="opt-warn">{elicitationError}</div>
+									{/if}
+								</div>
+								<ToggleSwitch
+									checked={mcp.elicitation_enabled}
+									disabled={!mcp.elicitation_supported || togglingElicitation}
+									labelledby="opt-elicitation-label"
+									onchange={(v) => setElicitation(v)}
+								/>
+							</div>
+						</div>
+					{/if}
+
 					<!-- Delete Agent -->
 					<div class="detail-footer">
 						<button class="btn-delete" onclick={requestDelete}>Delete Agent</button>
@@ -564,6 +722,17 @@
 		onCancel={() => (deleteModalOpen = false)}
 	/>
 {/if}
+
+<ConfirmModal
+	open={confirmDisconnect}
+	title="Disconnect MCP client?"
+	message="This removes the binding between this agent and its MCP client. The client will need to re-run the OAuth flow to reconnect."
+	confirmLabel="Disconnect"
+	destructive={true}
+	busy={disconnecting}
+	onConfirm={doDisconnect}
+	onCancel={() => (confirmDisconnect = false)}
+/>
 
 <ApprovalModal
 	open={!!modalApproval}
@@ -1056,6 +1225,104 @@
 		gap: 8px;
 		justify-content: flex-end;
 		margin-top: 8px;
+	}
+
+	/* ── MCP Connection card ── */
+	.mcp-empty {
+		border: 1px dashed var(--color-border);
+		border-radius: 10px;
+		padding: 16px;
+		color: var(--color-text-muted);
+		font-size: 13px;
+	}
+	.mcp-empty p {
+		margin: 0;
+	}
+	.mcp-empty.mcp-error {
+		border-color: var(--color-danger, #b91c1c);
+		color: var(--color-danger, #b91c1c);
+	}
+	.mcp-empty code {
+		background: var(--color-bg);
+		padding: 0 4px;
+		border-radius: 4px;
+	}
+	.mcp-card {
+		border: 1px solid var(--color-border);
+		border-radius: 10px;
+		padding: 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+	.mcp-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 12px;
+	}
+	.mcp-main {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		min-width: 0;
+	}
+	.mcp-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+	}
+	.mcp-glyph {
+		color: var(--color-text-muted);
+	}
+	.kv {
+		display: grid;
+		grid-template-columns: 110px 1fr;
+		gap: 4px 12px;
+		margin: 0;
+		font-size: 12px;
+	}
+	.kv dt {
+		color: var(--color-text-muted);
+	}
+	.kv dd {
+		margin: 0;
+		color: var(--color-text);
+		word-break: break-all;
+	}
+	.mcp-options-head {
+		text-transform: uppercase;
+		font-size: 10px;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+		border-top: 1px solid var(--color-border);
+		padding-top: 12px;
+	}
+	.mcp-option {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 12px;
+	}
+	.mcp-option-text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+	.opt-title {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--color-text);
+	}
+	.opt-desc {
+		font-size: 12px;
+		color: var(--color-text-muted);
+	}
+	.opt-warn {
+		font-size: 11px;
+		color: var(--color-danger, #b91c1c);
 	}
 
 	/* Error modal shown when the deep-linked approval can't be loaded. */

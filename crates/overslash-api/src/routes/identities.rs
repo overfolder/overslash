@@ -535,9 +535,10 @@ async fn restore_identity(
 // for a given agent identity. Used by the Agents detail page to render the
 // "MCP Connection" section, toggle elicitation approvals, and disconnect.
 //
-// Authorization: WriteAcl (org write access). The Agents UI is gated by org
-// membership; finer-grained ownership rules can be added later if needed —
-// this is consistent with the existing permission rule editor.
+// Authorization: GET is open to any authenticated org member (OrgAcl) — the
+// Agents detail page is read-only for most users and the empty card otherwise
+// renders for anyone without `overslash:write`. PATCH and disconnect remain
+// gated on WriteAcl since they mutate binding state.
 
 #[derive(Debug, Serialize)]
 struct McpConnectionResponse {
@@ -609,7 +610,7 @@ async fn ensure_agent(scope: &OrgScope, id: Uuid) -> Result<()> {
 
 async fn get_mcp_connection(
     State(state): State<AppState>,
-    WriteAcl(_acl): WriteAcl,
+    _: crate::extractors::OrgAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<McpConnectionResponse>> {
