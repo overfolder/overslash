@@ -35,11 +35,17 @@ async function request<T>(
 	const res = await fetch(path, init);
 
 	if (!res.ok) {
-		let errorBody: unknown;
-		try {
-			errorBody = await res.json();
-		} catch {
-			errorBody = await res.text();
+		// Read once, parse if it looks like JSON. Calling `.json()` and then
+		// falling back to `.text()` blows up on empty 404 bodies because the
+		// stream is already consumed.
+		const text = await res.text();
+		let errorBody: unknown = text;
+		if (text) {
+			try {
+				errorBody = JSON.parse(text);
+			} catch {
+				/* keep as text */
+			}
 		}
 		if (res.status === 401 && typeof window !== 'undefined') {
 			const here = window.location.pathname + window.location.search;
@@ -69,11 +75,17 @@ async function requestText<T>(path: string, text: string, signal?: AbortSignal):
 	});
 
 	if (!res.ok) {
-		let errorBody: unknown;
-		try {
-			errorBody = await res.json();
-		} catch {
-			errorBody = await res.text();
+		// Read once, parse if it looks like JSON. Calling `.json()` and then
+		// falling back to `.text()` blows up on empty 404 bodies because the
+		// stream is already consumed.
+		const text = await res.text();
+		let errorBody: unknown = text;
+		if (text) {
+			try {
+				errorBody = JSON.parse(text);
+			} catch {
+				/* keep as text */
+			}
 		}
 		if (res.status === 401 && typeof window !== 'undefined') {
 			const here = window.location.pathname + window.location.search;

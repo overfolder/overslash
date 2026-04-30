@@ -5,6 +5,12 @@ use uuid::Uuid;
 /// Reason an identity was archived. Stored in `archived_reason`.
 pub const ARCHIVED_REASON_IDLE_TIMEOUT: &str = "idle_timeout";
 
+/// `external_id` reserved for the per-org Agent that owns "service keys"
+/// minted from Org Settings. The colon-prefixed namespace cannot collide
+/// with IdP-issued subjects (IdP subs come from per-provider strings
+/// without that namespace).
+pub const ORG_SERVICE_EXTERNAL_ID: &str = "overslash:org-service";
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct IdentityRow {
     pub id: Uuid,
@@ -347,6 +353,91 @@ pub async fn set_is_org_admin(
     }
     tx.commit().await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Resolve (or create) the well-known "org-service" Agent for an org.
+///
+/// All API keys minted from the dashboard's Org Settings → Service keys
+/// section bind to this single shared identity. The first call inserts
+/// a row with `external_id = ORG_SERVICE_EXTERNAL_ID`, points its
+/// `owner_id` at itself, and attaches it to the org's Admins group;
+/// subsequent calls return the existing row.
+///
+/// **Self-ownership is intentional.** The standard agent layout
+/// (`Agent.owner_id → User`) routes ACL ceiling lookups through the
+/// owner's group memberships. We don't want this agent's authority to
+/// be anchored to any individual admin User (it would die when that
+/// admin is offboarded), so we make it self-owned. `get_ceiling_for_user`
+/// joins on `identity_groups` directly and does not require the input
+/// to be a User, so feeding it the agent's own id makes its Admins
+/// membership the authoritative ceiling source.
+///
+/// We don't use `set_is_org_admin` here because the DB CHECK
+/// `identities_is_org_admin_only_user` rejects `is_org_admin=true` on
+/// non-User identities. Membership in the Admins group via `identity_groups`
+/// is what `resolve_identity_access` reads to compute the agent's
+/// AccessLevel, so the impersonation cap at the auth layer treats it as
+/// admin-level when an impersonate-capable key is presented.
+///
+/// Returns `(row, created)` so the caller can emit a one-time
+/// `org_service_agent.created` audit row.
+pub async fn get_or_create_org_service_agent(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<(IdentityRow, bool), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // ON CONFLICT DO NOTHING returns no row if a parallel writer already
+    // inserted, so a SELECT fallback covers the race. The UNIQUE(org_id,
+    // external_id) index is the single source of truth either way.
+    let inserted = sqlx::query_as!(
+        IdentityRow,
+        "INSERT INTO identities (org_id, name, kind, external_id)
+         VALUES ($1, 'org-service', 'agent', $2)
+         ON CONFLICT (org_id, external_id) DO NOTHING
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+        org_id,
+        ORG_SERVICE_EXTERNAL_ID,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if let Some(agent) = inserted {
+        let agent = sqlx::query_as!(
+            IdentityRow,
+            "UPDATE identities SET owner_id = id, updated_at = now()
+             WHERE id = $1
+             RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+            agent.id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "INSERT INTO identity_groups (identity_id, group_id)
+             SELECT $1, g.id FROM groups g
+             WHERE g.org_id = $2 AND g.system_kind = 'admins'
+             ON CONFLICT DO NOTHING",
+            agent.id,
+            org_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok((agent, true));
+    }
+
+    let agent = sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+         FROM identities
+         WHERE org_id = $1 AND external_id = $2",
+        org_id,
+        ORG_SERVICE_EXTERNAL_ID,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok((agent, false))
 }
 
 pub async fn set_inherit_permissions(
