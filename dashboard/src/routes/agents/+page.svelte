@@ -194,7 +194,19 @@
 			}
 		} catch (e) {
 			if (detail?.agentId === targetId) {
-				detail.elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+				if (e instanceof ApiError && e.status === 404) {
+					// 404 here means the binding was deleted (e.g. another tab
+					// hit Disconnect) before our PATCH landed. This is the
+					// same "vanished binding" case the success path handles
+					// when `connection: null` comes back — surface it through
+					// `mcpError` so the prominent error box renders, not a
+					// small warning under the toggle.
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+				} else {
+					detail.elicitationError =
+						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+				}
 			}
 		} finally {
 			if (detail?.agentId === targetId) {
