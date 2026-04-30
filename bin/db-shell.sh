@@ -91,12 +91,15 @@ for i in $(seq 1 20); do
 done
 log "Proxy ready."
 
-# psql
-PSQL_OPTS=()
+# psql. For READONLY=1 we set the GUC via PGOPTIONS so it's applied by the
+# server at connection time and persists for the whole interactive session —
+# `-c "SET ..."` would run the command and exit immediately, defeating the
+# purpose.
+PG_EXTRA_OPTIONS=""
 if [ "${READONLY:-0}" = "1" ]; then
-  PSQL_OPTS+=(--variable=ON_ERROR_STOP=1 -c "SET default_transaction_read_only = on;")
+  PG_EXTRA_OPTIONS="-c default_transaction_read_only=on"
 fi
 
-PGPASSWORD="$DB_PASSWORD" psql \
+PGPASSWORD="$DB_PASSWORD" PGOPTIONS="$PG_EXTRA_OPTIONS" psql \
   "host=127.0.0.1 port=${PORT} user=${DB_USER} dbname=${DB_NAME} sslmode=disable" \
-  "${PSQL_OPTS[@]}" "$@"
+  "$@"
