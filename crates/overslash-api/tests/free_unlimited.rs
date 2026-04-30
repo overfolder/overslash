@@ -55,6 +55,8 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately
     // observe the new state without waiting on cache expiry. Tests that want

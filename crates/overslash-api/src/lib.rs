@@ -342,6 +342,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::skill_md::router())
         .merge(routes::oauth_as::router())
         .merge(routes::oauth::router())
+        .merge(routes::oauth_upstream::router())
         .merge(routes::mcp::router())
         .merge(stripe_webhook_routes)
         .merge(rate_limited_routes)

@@ -14,6 +14,7 @@ pub mod oauth;
 pub mod oauth_as;
 pub mod oauth_mcp_clients;
 pub mod oauth_providers;
+pub mod oauth_upstream;
 pub mod org_idp_configs;
 pub mod org_oauth_credentials;
 pub mod orgs;

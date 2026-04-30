@@ -69,6 +69,12 @@ pub struct Config {
     /// (e.g. `.app.overslash.com`). When None, cookies stay origin-scoped,
     /// which is what local dev without TLS needs.
     pub session_cookie_domain: Option<String>,
+    /// Base URL for the `oversla.sh` short-link service, e.g.
+    /// `https://oversla.sh`. When set together with `oversla_sh_api_key`,
+    /// the nested-OAuth `initiate` handler creates a short URL alongside
+    /// the proxied URL. When unset, only the proxied URL is returned.
+    pub oversla_sh_base_url: Option<String>,
+    pub oversla_sh_api_key: Option<String>,
 }
 
 /// Build the default `public_url` from the bind host/port. We map
@@ -181,6 +187,12 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "https://api.stripe.com/v1".into()),
+            oversla_sh_base_url: env::var("OVERSLA_SH_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oversla_sh_api_key: env::var("OVERSLA_SH_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 

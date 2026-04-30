@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM mcp_upstream_flows\n          WHERE expires_at < now() AND consumed_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "7cccbd0b2501a51bdfbb4ddf470f8c0c5b6eaea9fc7bfae092c971a183df04fe"
+}
