@@ -119,13 +119,6 @@ ci_status() {
   fi
 }
 
-ci_has_failures() {
-  # $1 = raw `gh pr checks` output.
-  # Echoes csv of failing check names (in-progress view) — i.e. any rows whose
-  # state is `fail`, even if other rows are still pending. Empty if none.
-  printf '%s\n' "$1" | awk -F'\t' '$2=="fail" {print $1}' | paste -sd, -
-}
-
 seer_check_state() {
   # $1 = raw `gh pr checks` output.
   # Echoes: RUNNING | DONE | MISSING | ERROR:<msg>
@@ -226,15 +219,17 @@ if [[ "$CI" == PENDING:* ]]; then
   while :; do
     raw="$(gh_pr_checks_raw)"
     CI="$(ci_status "$raw")"
-    # CI fully settled (GREEN/FAILING/ERROR) -> exit loop, normal flow handles it.
-    [[ "$CI" != PENDING:* ]] && break
 
-    # Fail-fast #1: any required check has gone red, even with others pending.
-    fails="$(ci_has_failures "$raw")"
-    if [[ -n "$fails" ]]; then
-      CI_FAIL_FAST="failing checks (${fails}) — other CI still pending"
+    # Fail-fast #1: any required check has gone red. ci_status returns
+    # FAILING:* whenever at least one row is `fail`, even if others are still
+    # pending — so this short-circuits the wait the moment a failure appears.
+    if [[ "$CI" == FAILING:* ]]; then
+      CI_FAIL_FAST="failing checks (${CI#FAILING:})"
       break
     fi
+
+    # CI fully settled green/error -> exit loop, normal flow handles it.
+    [[ "$CI" != PENDING:* ]] && break
 
     # Fail-fast #2: Seer's own check is done AND it left unresolved comments.
     seer="$(seer_check_state "$raw")"
