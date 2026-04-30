@@ -10,8 +10,11 @@
 	};
 
 	let view: 'loading' | 'ready' | 'timeout' | 'error' = 'loading';
+	let orgId: string | null = null;
 	let redirectTo: string | null = null;
 	let errorMsg: string | null = null;
+	let switching = false;
+	let switchError: string | null = null;
 
 	onMount(() => {
 		const sessionId = $page.url.searchParams.get('session_id');
@@ -33,6 +36,7 @@
 				);
 				if (res.status === 'fulfilled') {
 					clearInterval(timer);
+					orgId = res.org_id ?? null;
 					redirectTo = res.redirect_to ?? null;
 					view = 'ready';
 					// Return so a tick at the timeout boundary doesn't overwrite
@@ -50,6 +54,37 @@
 
 		return () => clearInterval(timer);
 	});
+
+	async function enterOrg() {
+		if (switching) return;
+		switching = true;
+		switchError = null;
+		try {
+			// Mint a new session JWT scoped to the new org BEFORE navigating —
+			// otherwise the user lands on the new org's subdomain still
+			// authenticated as their previous org.
+			if (orgId) {
+				const res = await session.post<{ redirect_to?: string }>('/auth/switch-org', {
+					org_id: orgId
+				});
+				const target = res?.redirect_to ?? redirectTo;
+				if (target) {
+					window.location.href = target;
+					return;
+				}
+				window.location.reload();
+				return;
+			}
+			if (redirectTo) {
+				window.location.href = redirectTo;
+				return;
+			}
+			window.location.reload();
+		} catch (e) {
+			switchError = e instanceof Error ? e.message : 'Failed to enter org';
+			switching = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -67,12 +102,11 @@
 			<div class="check">✓</div>
 			<h1>Your team org is ready</h1>
 			<p>Everything is set up. Click below to enter your new workspace.</p>
-			{#if redirectTo}
-				<a href={redirectTo} class="btn-primary">Enter org →</a>
-			{:else}
-				<button class="btn-primary" onclick={() => window.location.reload()}>
-					Go to dashboard
-				</button>
+			<button class="btn-primary" onclick={enterOrg} disabled={switching}>
+				{switching ? 'Entering…' : 'Enter org →'}
+			</button>
+			{#if switchError}
+				<p class="error">{switchError}</p>
 			{/if}
 
 		{:else if view === 'timeout'}
@@ -172,8 +206,18 @@
 		margin-top: 0.5rem;
 	}
 
-	.btn-primary:hover {
+	.btn-primary:hover:not(:disabled) {
 		filter: brightness(1.08);
+	}
+
+	.btn-primary:disabled {
+		opacity: 0.7;
+		cursor: default;
+	}
+
+	.error {
+		color: var(--color-danger, #b00020);
+		font-size: 0.8rem;
 	}
 
 	.btn-secondary {
