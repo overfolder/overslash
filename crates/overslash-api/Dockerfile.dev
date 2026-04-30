@@ -1,5 +1,5 @@
 # Stage 1: generate a dependency recipe
-FROM rust:1.94-slim-trixie AS chef
+FROM rust:1.95-slim-trixie AS chef
 WORKDIR /app
 # Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
 COPY rust-toolchain.toml ./
@@ -28,7 +28,7 @@ RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: build dependencies (cached image layer)
-FROM rust:1.94-slim-trixie AS deps
+FROM rust:1.95-slim-trixie AS deps
 WORKDIR /app
 # Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
 COPY rust-toolchain.toml ./
@@ -48,7 +48,7 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 RUN cargo chef cook --recipe-path recipe.json
 
 # Stage 3: dev runtime — deps already in /app/target from the image layer
-FROM rust:1.94-slim-trixie
+FROM rust:1.95-slim-trixie
 
 WORKDIR /app
 
