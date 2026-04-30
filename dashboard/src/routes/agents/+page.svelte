@@ -45,6 +45,7 @@
 		elicitationError: string | null;
 		confirmDisconnect: boolean;
 		disconnecting: boolean;
+		disconnectError: string | null;
 		deleteModalOpen: boolean;
 		deleteModalBusy: boolean;
 	}
@@ -62,6 +63,7 @@
 			elicitationError: null,
 			confirmDisconnect: false,
 			disconnecting: false,
+			disconnectError: null,
 			deleteModalOpen: false,
 			deleteModalBusy: false
 		};
@@ -194,6 +196,7 @@
 		if (!detail) return;
 		const targetId = detail.agentId;
 		detail.disconnecting = true;
+		detail.disconnectError = null;
 		try {
 			await session.post(
 				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection/disconnect`,
@@ -204,7 +207,14 @@
 				detail.confirmDisconnect = false;
 			}
 		} catch (e) {
+			// Surface failures in the modal instead of silently freezing it:
+			// the user clicked Disconnect, got a stopped spinner, and would
+			// otherwise have no idea whether the binding was removed.
 			console.error('disconnect failed', e);
+			if (detail?.agentId === targetId) {
+				detail.disconnectError =
+					e instanceof ApiError ? `Disconnect failed (${e.status}).` : 'Disconnect failed.';
+			}
 		} finally {
 			if (detail?.agentId === targetId) {
 				detail.disconnecting = false;
@@ -789,9 +799,13 @@
 	confirmLabel="Disconnect"
 	destructive={true}
 	busy={detail?.disconnecting ?? false}
+	error={detail?.disconnectError ?? null}
 	onConfirm={doDisconnect}
 	onCancel={() => {
-		if (detail) detail.confirmDisconnect = false;
+		if (detail) {
+			detail.confirmDisconnect = false;
+			detail.disconnectError = null;
+		}
 	}}
 />
 
