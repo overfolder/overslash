@@ -98,9 +98,13 @@ e2e-down:
 	@bash scripts/e2e-down.sh
 
 # Boot the e2e stack, run Playwright, then tear down regardless of result.
+# The env file the harness writes (API_URL, DASHBOARD_URL, ...) is sourced
+# into the playwright invocation so worker subprocesses see them — setting
+# them only inside playwright.config.ts isn't enough.
 e2e:
 	@bash scripts/e2e-up.sh
-	@status=0; ( cd dashboard && npx playwright test ) || status=$$?; \
+	@STATE_DIR="$${WORKTREE_STATE_DIR:-$$(pwd)}/.e2e"; \
+	  status=0; ( cd dashboard && set -a && . "$$STATE_DIR/dashboard.env" && set +a && npx playwright test ) || status=$$?; \
 	  bash scripts/e2e-down.sh; \
 	  exit $$status
 
