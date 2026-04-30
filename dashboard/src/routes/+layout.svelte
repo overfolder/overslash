@@ -24,6 +24,7 @@
 			$page.url.pathname.startsWith('/oauth/consent')
 	);
 	const isAdmin = $derived(data?.user?.is_org_admin === true);
+	const isInstanceAdmin = $derived(data?.user?.is_instance_admin === true);
 	const collapsed = $derived($sidebarCollapsed);
 
 	$effect(() => {
@@ -69,6 +70,7 @@
 		<Sidebar
 			user={data?.user ?? null}
 			{isAdmin}
+			{isInstanceAdmin}
 			memberships={data?.user?.memberships ?? []}
 			currentOrgId={data?.user?.org_id ?? ''}
 		/>

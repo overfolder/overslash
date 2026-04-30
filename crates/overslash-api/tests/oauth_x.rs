@@ -165,7 +165,7 @@ async fn test_oauth_x_token_refresh() {
     let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
 
     // Create org + identity directly
-    let org = overslash_db::repos::org::create(&pool, "XRefreshOrg", "x-refresh-test")
+    let org = overslash_db::repos::org::create(&pool, "XRefreshOrg", "x-refresh-test", "standard")
         .await
         .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)

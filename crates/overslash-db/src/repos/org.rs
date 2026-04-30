@@ -10,17 +10,28 @@ pub struct OrgRow {
     pub subagent_idle_timeout_secs: i32,
     pub subagent_archive_retention_days: i32,
     pub is_personal: bool,
+    pub plan: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
-pub async fn create(pool: &PgPool, name: &str, slug: &str) -> Result<OrgRow, sqlx::Error> {
+/// Insert a new org. `plan` must be one of the values allowed by the
+/// `orgs.plan` CHECK constraint (today: `'standard'` or `'free_unlimited'`).
+/// Most callers pass `"standard"`; the instance-admin path passes
+/// `"free_unlimited"` to skip Stripe.
+pub async fn create(
+    pool: &PgPool,
+    name: &str,
+    slug: &str,
+    plan: &str,
+) -> Result<OrgRow, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "INSERT INTO orgs (name, slug) VALUES ($1, $2)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at",
+        "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at",
         name,
         slug,
+        plan,
     )
     .fetch_one(pool)
     .await
@@ -29,12 +40,22 @@ pub async fn create(pool: &PgPool, name: &str, slug: &str) -> Result<OrgRow, sql
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
     .fetch_optional(pool)
     .await
+}
+
+/// Read just the `plan` field for an org. Used by the rate-limit hot path
+/// to decide whether to bypass limits without dragging the full `OrgRow`
+/// shape into the cache. Returns `None` if the org doesn't exist.
+pub async fn get_plan(pool: &PgPool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query!("SELECT plan FROM orgs WHERE id = $1", id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.plan))
 }
 
 /// Read just the `approval_auto_bubble_secs` setting for an org.
@@ -181,7 +202,7 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -203,7 +224,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

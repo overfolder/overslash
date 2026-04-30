@@ -430,6 +430,25 @@ async fn get_subscription(
         return Err(AppError::Forbidden("org mismatch".into()));
     }
 
+    // Free-unlimited orgs have no Stripe subscription row by design. Return a
+    // synthetic body so the dashboard can render a "Courtesy plan" badge in
+    // place of the billing controls.
+    if state
+        .free_unlimited_cache
+        .is_free_unlimited(&state.db, org_id)
+        .await
+    {
+        return Ok(Json(SubscriptionResponse {
+            org_id,
+            plan: "free_unlimited".into(),
+            seats: 0,
+            status: "active".into(),
+            currency: String::new(),
+            current_period_end: None,
+            cancel_at_period_end: false,
+        }));
+    }
+
     let sub = billing::get_org_subscription(&state.db, org_id)
         .await?
         .ok_or_else(|| AppError::NotFound("no subscription".into()))?;
@@ -536,6 +555,7 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
         &state.db,
         &checkout.org_name,
         &checkout.org_slug,
+        "standard",
     )
     .await
     {

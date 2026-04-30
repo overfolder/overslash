@@ -21,6 +21,11 @@ pub struct UserRow {
     /// Set only for Overslash-backed users. A personal org is auto-created on
     /// first root-level login and is always 1-member.
     pub personal_org_id: Option<Uuid>,
+    /// Operator-granted flag (set only via psql). The single elevated
+    /// capability today is creating new orgs with `plan='free_unlimited'`
+    /// via `POST /v1/orgs/free-unlimited`. A CHECK constraint requires
+    /// `overslash_idp_provider IS NOT NULL` whenever this is true.
+    pub is_instance_admin: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -28,12 +33,41 @@ pub struct UserRow {
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as!(
         UserRow,
-        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at
+        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at
          FROM users WHERE id = $1",
         id,
     )
     .fetch_optional(pool)
     .await
+}
+
+/// Lightweight fetch used by the `InstanceAdminAuth` extractor on every
+/// request that gates on the flag. Returns `false` when the user doesn't
+/// exist (matches the extractor's "not an admin" semantics).
+pub async fn is_instance_admin(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!("SELECT is_instance_admin FROM users WHERE id = $1", user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.is_instance_admin).unwrap_or(false))
+}
+
+/// Operator-only setter, exposed for tests and any future internal tooling.
+/// **No HTTP route uses this.** The CHECK constraint
+/// `users_instance_admin_requires_overslash_idp` will reject the UPDATE if
+/// the user has no `overslash_idp_provider`.
+pub async fn set_instance_admin(
+    pool: &PgPool,
+    user_id: Uuid,
+    flag: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE users SET is_instance_admin = $2, updated_at = now() WHERE id = $1",
+        user_id,
+        flag,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Primary auth-time lookup. Keyed on `(provider, subject)`, never on email —
@@ -46,7 +80,7 @@ pub async fn find_by_overslash_idp(
 ) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as!(
         UserRow,
-        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at
+        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at
          FROM users
          WHERE overslash_idp_provider = $1 AND overslash_idp_subject = $2",
         provider,
@@ -69,7 +103,7 @@ pub async fn create_overslash_backed(
         UserRow,
         "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
         email,
         display_name,
         provider,
@@ -90,7 +124,7 @@ pub async fn create_org_only(
         UserRow,
         "INSERT INTO users (email, display_name)
          VALUES ($1, $2)
-         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
         email,
         display_name,
     )
@@ -113,7 +147,7 @@ pub async fn refresh_profile(
              display_name = COALESCE($3, display_name),
              updated_at = now()
          WHERE id = $1
-         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, created_at, updated_at",
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
         id,
         email,
         display_name,

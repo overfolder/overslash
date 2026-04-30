@@ -621,6 +621,11 @@ where
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -735,6 +740,11 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -836,6 +846,11 @@ pub async fn start_api_with_auth_providers(
         ),
         rate_limit_cache: std::sync::Arc::new(
             overslash_api::services::rate_limit::RateLimitConfigCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
                 std::time::Duration::from_secs(30),
             ),
         ),
@@ -1409,6 +1424,11 @@ pub async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -1520,6 +1540,11 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::StubEmbedder),
@@ -1603,6 +1628,11 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -1677,4 +1707,84 @@ pub fn minimal_openapi(key: &str) -> String {
         include_str!("../fixtures/openapi/minimal.yaml.tmpl"),
         &[("key", key), ("display_name", key)],
     )
+}
+
+/// Options for `seed_org_user_key`.
+#[derive(Default, Clone, Copy)]
+pub struct SeedOptions {
+    /// Mark the new org as a personal (1-member) tenant.
+    pub is_personal: bool,
+    /// Flip `identities.is_org_admin` so the resulting API key passes
+    /// `AdminAcl` extraction.
+    pub is_admin: bool,
+}
+
+/// Insert org + user identity + user-bound API key directly via SQL,
+/// bypassing the HTTP bootstrap path. Returns `(org_id, user_id, raw_api_key)`.
+///
+/// The raw key is the literal `osk_<32-char-suffix>` string the caller would
+/// send in `Authorization: Bearer …`; the row stored in `api_keys` carries
+/// the argon2 hash (matches the production flow). Used by tests that need
+/// fine control over org/identity setup without going through the public
+/// `POST /v1/orgs` route — useful for testing rate-limit middleware,
+/// per-org plan flags, etc.
+pub async fn seed_org_user_key(pool: &PgPool, opts: SeedOptions) -> (Uuid, Uuid, String) {
+    use rand::RngExt;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug, is_personal) VALUES ($1, $2, $3, $4)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .bind(opts.is_personal)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO identities (id, org_id, name, kind, is_org_admin)
+         VALUES ($1, $2, $3, 'user', $4)",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .bind("test-user")
+    .bind(opts.is_admin)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let suffix: String = (0..32)
+        .map(|_| {
+            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            chars[rand::rng().random_range(0..chars.len())] as char
+        })
+        .collect();
+    let raw_key = format!("osk_{suffix}");
+    let prefix = raw_key[..12].to_string();
+
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+    };
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(raw_key.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
+         VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[])",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind("test-key")
+    .bind(&hash)
+    .bind(&prefix)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    (org_id, user_id, raw_key)
 }

@@ -15,7 +15,7 @@ use overslash_db::repos::{identity, membership, user as user_repo};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp},
+    extractors::{AdminAcl, AuthContext, ClientIp, InstanceAdminAuth},
     routes::auth::{session_cookie, signing_key_bytes},
     services::jwt,
 };
@@ -23,6 +23,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/orgs", post(create_org))
+        .route("/v1/orgs/free-unlimited", post(create_free_unlimited_org))
         .route("/v1/orgs/check-slug", get(check_slug))
         .route("/v1/orgs/{id}", get(get_org).patch(patch_org))
         .route(
@@ -199,7 +200,7 @@ async fn create_org(
         return Err(AppError::BadRequest(reject.code().into()));
     }
 
-    let org = match overslash_db::repos::org::create(&state.db, name, &req.slug).await {
+    let org = match overslash_db::repos::org::create(&state.db, name, &req.slug, "standard").await {
         Ok(row) => row,
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             return Err(AppError::Conflict("slug_taken".into()));
@@ -211,37 +212,55 @@ async fn create_org(
     // multi-org `user_id` claim, attach the bootstrap admin. Otherwise the
     // org is created anonymously (legacy + test-harness path).
     let session_user_id = extract_optional_session_user(&state, &headers);
+    let audit_detail = serde_json::json!({
+        "name": &org.name,
+        "slug": &org.slug,
+        "bootstrap_user_id": session_user_id.map(|u| u.to_string()),
+    });
 
-    // The follow-up writes (identity create, admin flag, bootstrap_org
-    // system-asset seeding, membership row) each run in their own sqlx
-    // transactions — sqlx doesn't nest, so a single outer tx isn't
-    // available without refactoring `bootstrap_org`. Instead we roll our
-    // own compensating-rollback: if any step after `org::create` fails,
-    // delete the org (which cascades to identities / memberships /
-    // groups / service_instances / group_grants) and surface the error.
-    let bootstrap_result: Result<Option<Uuid>> =
-        provision_new_org_contents(&state, org.id, session_user_id).await;
-    let bootstrap_identity_id = match bootstrap_result {
-        Ok(id) => id,
-        Err(e) => {
-            // Best-effort cleanup. If this also fails we leave a dangling
-            // org row, but that's strictly better than the half-bootstrapped
-            // state; admins can sweep manually. The audit log entry below
-            // is skipped in this branch.
-            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                .execute(&state.db)
-                .await
-            {
-                tracing::error!(
-                    org_id = %org.id,
-                    bootstrap_error = %e,
-                    cleanup_error = %cleanup_err,
-                    "create_org rollback failed; manual cleanup required"
-                );
+    finalize_new_org(&state, org, session_user_id, audit_detail, ip).await
+}
+
+/// Shared tail for org-creation handlers: provisions contents (with
+/// compensating rollback), emits the `org.created` audit row, builds the
+/// `OrgResponse` with `redirect_to`, and re-mints the session cookie when
+/// `bootstrap_user_id` is set so the dashboard redirect lands inside an
+/// authenticated session on the new subdomain.
+///
+/// The follow-up writes inside `provision_new_org_contents` (identity
+/// create, admin flag, `bootstrap_org`, membership row) each run in their
+/// own sqlx transaction — sqlx doesn't nest, so a single outer tx isn't
+/// available without refactoring `bootstrap_org`. The compensating rollback
+/// (DELETE FROM orgs) cascades to identities / memberships / groups /
+/// service_instances / group_grants on failure.
+async fn finalize_new_org(
+    state: &AppState,
+    org: overslash_db::repos::org::OrgRow,
+    bootstrap_user_id: Option<Uuid>,
+    audit_detail: serde_json::Value,
+    ip: ClientIp,
+) -> Result<axum::response::Response> {
+    let bootstrap_identity_id =
+        match provision_new_org_contents(state, org.id, bootstrap_user_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Best-effort cleanup. If this also fails we leave a dangling
+                // org row, but that's strictly better than the half-bootstrapped
+                // state; admins can sweep manually.
+                if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                    .execute(&state.db)
+                    .await
+                {
+                    tracing::error!(
+                        org_id = %org.id,
+                        bootstrap_error = %e,
+                        cleanup_error = %cleanup_err,
+                        "create_org rollback failed; manual cleanup required"
+                    );
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
 
     let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db.clone());
     let _ = bootstrap_scope
@@ -251,17 +270,13 @@ async fn create_org(
             action: "org.created",
             resource_type: Some("org"),
             resource_id: Some(org.id),
-            detail: serde_json::json!({
-                "name": &org.name,
-                "slug": &org.slug,
-                "bootstrap_user_id": session_user_id.map(|u| u.to_string()),
-            }),
+            detail: audit_detail,
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    let redirect_to = redirect_for_org(&state, &org);
+    let redirect_to = redirect_for_org(state, &org);
     let mut resp: OrgResponse = org.into();
     resp.redirect_to = Some(redirect_to);
 
@@ -271,7 +286,7 @@ async fn create_org(
     // subdomain↔JWT guard (`org_mismatch` 401), forcing an extra switch-org
     // round-trip. Anonymous creators keep no session.
     let mut response_headers = HeaderMap::new();
-    if let (Some(user_id), Some(identity_id)) = (session_user_id, bootstrap_identity_id) {
+    if let (Some(user_id), Some(identity_id)) = (bootstrap_user_id, bootstrap_identity_id) {
         let jwt_secret = signing_key_bytes(&state.config.signing_key);
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let claims = jwt::Claims {
@@ -289,10 +304,55 @@ async fn create_org(
         };
         let token = jwt::mint(&jwt_secret, &claims)
             .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
-        response_headers.insert(header::SET_COOKIE, session_cookie(&state, &token)?);
+        response_headers.insert(header::SET_COOKIE, session_cookie(state, &token)?);
     }
 
     Ok((response_headers, Json(resp)).into_response())
+}
+
+/// POST /v1/orgs/free-unlimited — instance-admin-only direct create that
+/// bypasses Stripe entirely. The new org comes up with `plan='free_unlimited'`,
+/// which makes the existing rate-limit bypass and synthetic subscription
+/// endpoint kick in for free. No `org_subscriptions` row is written.
+///
+/// Mounted regardless of `cloud_billing` so instance admins keep working
+/// in self-hosted deploys (where the toggle still moves the new org to
+/// the courtesy tier).
+async fn create_free_unlimited_org(
+    admin: InstanceAdminAuth,
+    State(state): State<AppState>,
+    ip: ClientIp,
+    Json(req): Json<CreateOrgRequest>,
+) -> Result<axum::response::Response> {
+    if !state.config.allow_org_creation {
+        return Err(AppError::Forbidden("org_creation_disabled".into()));
+    }
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("name is required".into()));
+    }
+    if let Err(reject) = validate_slug_format(&req.slug) {
+        return Err(AppError::BadRequest(reject.code().into()));
+    }
+
+    let org = match overslash_db::repos::org::create(&state.db, name, &req.slug, "free_unlimited")
+        .await
+    {
+        Ok(row) => row,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(AppError::Conflict("slug_taken".into()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let audit_detail = serde_json::json!({
+        "name": &org.name,
+        "slug": &org.slug,
+        "free_unlimited": true,
+        "created_by_instance_admin": admin.user_id.to_string(),
+    });
+
+    finalize_new_org(&state, org, Some(admin.user_id), audit_detail, ip).await
 }
 
 #[derive(Deserialize)]
