@@ -186,14 +186,17 @@
 		}
 	}
 
-	// Closing the disconnect modal automatically when the user picks a
-	// different agent prevents an open confirmation from outliving the
-	// selection it was opened against (the modal copy still references the
-	// previous agent and that's confusing).
+	// Reset agent-scoped MCP UI state when the user switches selection: a
+	// stale error banner or a stuck `togglingElicitation=true` (because the
+	// previous PATCH is still in flight) would otherwise bleed onto the next
+	// agent's card. The disconnect-modal reset on the same trigger keeps an
+	// open confirmation from outliving the selection it was opened against.
 	$effect(() => {
 		void selectedId;
 		confirmDisconnect = false;
 		disconnectTargetId = null;
+		elicitationError = null;
+		togglingElicitation = false;
 	});
 
 	function fmtDate(iso: string | null | undefined): string {
