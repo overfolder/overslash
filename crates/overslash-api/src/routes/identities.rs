@@ -574,11 +574,7 @@ async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<
     let Some(client) = client else {
         return Ok(None);
     };
-    let elicitation_supported = client
-        .capabilities
-        .as_ref()
-        .and_then(|c| c.get("elicitation"))
-        .is_some();
+    let elicitation_supported = client.elicitation_supported();
     Ok(Some(McpConnectionDto {
         client_id: client.client_id,
         client_name: client.client_name,

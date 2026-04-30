@@ -432,6 +432,7 @@ struct ConsentClientInfo {
     client_name: Option<String>,
     software_id: Option<String>,
     software_version: Option<String>,
+    elicitation_supported: bool,
 }
 
 #[derive(Serialize)]
@@ -461,6 +462,10 @@ struct ConsentReauthTarget {
     parent_id: Option<Uuid>,
     parent_name: Option<String>,
     last_seen_at: Option<String>,
+    /// Pre-fill for the elicitation toggle on the consent page so a reauth
+    /// doesn't silently flip a user's previously-saved choice back to the
+    /// `false` default. Read from the existing binding for this agent.
+    elicitation_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -491,6 +496,12 @@ struct ConsentFinishRequest {
     /// happens to return (newer enrollments, revocations, etc. could
     /// shift it between GET context and POST finish).
     reauth_agent_id: Option<Uuid>,
+    /// User's choice from the Connection Settings card. Default `false`
+    /// matches the DB column default so a missing field == new agent with
+    /// elicitation off. Server-side gating still applies — see the call
+    /// site below.
+    #[serde(default)]
+    elicitation_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -637,6 +648,8 @@ async fn consent_context(
         });
     }
 
+    let elicitation_supported = client.elicitation_supported();
+
     let (mode, reauth_target) = if let Some(sim) = similar {
         let agent = identity::get_by_id(&state.db, pending.org_id, sim.agent_identity_id).await?;
         match agent {
@@ -650,6 +663,11 @@ async fn consent_context(
                 } else {
                     None
                 };
+                let existing_elicitation =
+                    mcp_client_agent_binding::get_by_agent_identity(&state.db, a.id)
+                        .await?
+                        .map(|b| b.elicitation_enabled)
+                        .unwrap_or(false);
                 (
                     "reauth",
                     Some(ConsentReauthTarget {
@@ -658,6 +676,7 @@ async fn consent_context(
                         parent_id: a.parent_id,
                         parent_name,
                         last_seen_at: sim.client.last_seen_at.map(super::util::fmt_time),
+                        elicitation_enabled: existing_elicitation,
                     }),
                 )
             }
@@ -674,6 +693,7 @@ async fn consent_context(
             client_name: client.client_name.clone(),
             software_id: client.software_id.clone(),
             software_version: client.software_version.clone(),
+            elicitation_supported,
         },
         connection: ConsentConnectionInfo {
             ip: client.created_ip.clone(),
@@ -859,6 +879,21 @@ async fn consent_finish(
         pending.user_identity_id,
         &pending.client_id,
         agent_identity_id,
+    )
+    .await?;
+
+    // Server-side gate: even though the dashboard disables the toggle when
+    // the client didn't announce elicitation, a hand-crafted POST could set
+    // `elicitation_enabled=true` against an unsupported client. Drop the
+    // flag in that case — the upsert leaves the column at its DB default
+    // of `false`, so we only need to act when the user opted in. Apply to
+    // every binding for the agent (matches the dashboard's per-agent
+    // toggle semantics — see `set_elicitation_enabled_for_agent`).
+    let want_elicitation = body.elicitation_enabled && client.elicitation_supported();
+    mcp_client_agent_binding::set_elicitation_enabled_for_agent(
+        &state.db,
+        agent_identity_id,
+        want_elicitation,
     )
     .await?;
 
