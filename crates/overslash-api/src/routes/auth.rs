@@ -931,64 +931,67 @@ async fn dev_token(
     // the org switcher, group ceilings, and is_admin all behave. Admin
     // additionally joins the Admins group via `bootstrap_org(.., Some(id))`.
     let profile_email = profile.email();
-    let identity_id = if let Some(existing) =
-        system.find_user_identity_by_email(profile_email).await?
-    {
-        existing.id
-    } else {
-        let scope = OrgScope::new(admin_org_id, state.db.clone());
-        let new_identity = scope
-            .create_identity_with_email(
-                profile.display_name(),
-                "user",
-                Some(profile.external_id()),
-                Some(profile_email),
-                json!({"dev": true, "profile": match profile {
-                    DevProfile::Admin => "admin",
-                    DevProfile::Member => "member",
-                    DevProfile::Readonly => "readonly",
-                }}),
-            )
-            .await?;
-
-        let user = user_repo::create_org_only(
-            &state.db,
-            Some(profile_email),
-            Some(profile.display_name()),
-        )
-        .await?;
-        overslash_db::repos::identity::set_user_id(
-            &state.db,
-            admin_org_id,
-            new_identity.id,
-            Some(user.id),
-        )
-        .await?;
-
-        if matches!(profile, DevProfile::Admin) {
-            overslash_db::repos::org_bootstrap::bootstrap_org(
-                &state.db,
-                admin_org_id,
-                Some(new_identity.id),
-            )
-            .await?;
+    let identity_id =
+        if let Some(existing) = system.find_user_identity_by_email(profile_email).await? {
+            existing.id
         } else {
-            overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+            let scope = OrgScope::new(admin_org_id, state.db.clone());
+            let new_identity = scope
+                .create_identity_with_email(
+                    profile.display_name(),
+                    "user",
+                    Some(profile.external_id()),
+                    Some(profile_email),
+                    json!({"dev": true, "profile": match profile {
+                        DevProfile::Admin => "admin",
+                        DevProfile::Member => "member",
+                        DevProfile::Readonly => "readonly",
+                    }}),
+                )
+                .await?;
+
+            let user = user_repo::create_org_only(
+                &state.db,
+                Some(profile_email),
+                Some(profile.display_name()),
+            )
+            .await?;
+            overslash_db::repos::identity::set_user_id(
                 &state.db,
                 admin_org_id,
                 new_identity.id,
+                Some(user.id),
             )
             .await?;
-        }
 
-        match membership::create(&state.db, user.id, admin_org_id, membership::ROLE_MEMBER).await {
-            Ok(_) => {}
-            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
-            Err(e) => return Err(e.into()),
-        }
+            let role = if matches!(profile, DevProfile::Admin) {
+                // Admins join the Admins group AND get an admin membership row,
+                // matching what POST /v1/orgs and the org-creator IdP path do.
+                overslash_db::repos::org_bootstrap::bootstrap_org(
+                    &state.db,
+                    admin_org_id,
+                    Some(new_identity.id),
+                )
+                .await?;
+                membership::ROLE_ADMIN
+            } else {
+                overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+                    &state.db,
+                    admin_org_id,
+                    new_identity.id,
+                )
+                .await?;
+                membership::ROLE_MEMBER
+            };
 
-        new_identity.id
-    };
+            match membership::create(&state.db, user.id, admin_org_id, role).await {
+                Ok(_) => {}
+                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
+                Err(e) => return Err(e.into()),
+            }
+
+            new_identity.id
+        };
     let org_id = admin_org_id;
     let dev_email = profile_email;
 
