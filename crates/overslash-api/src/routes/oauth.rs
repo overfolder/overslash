@@ -496,12 +496,12 @@ struct ConsentFinishRequest {
     /// happens to return (newer enrollments, revocations, etc. could
     /// shift it between GET context and POST finish).
     reauth_agent_id: Option<Uuid>,
-    /// User's choice from the Connection Settings card. Default `false`
-    /// matches the DB column default so a missing field == new agent with
-    /// elicitation off. Server-side gating still applies — see the call
-    /// site below.
-    #[serde(default)]
-    elicitation_enabled: bool,
+    /// User's choice from the Connection Settings card. `None` means the
+    /// caller didn't speak the per-binding setting (older dashboard build,
+    /// third-party POST) and the existing binding value is preserved.
+    /// `Some(b)` is an explicit choice from the consent page; the server
+    /// applies it across the agent's bindings, gated by capability.
+    elicitation_enabled: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -873,6 +873,16 @@ async fn consent_finish(
         }
     };
 
+    // Read the agent's existing elicitation value BEFORE upserting. Reauth
+    // under a re-registered client_id creates a fresh binding row that
+    // defaults to `false`, so without a pre-fetch the new row would hide
+    // whatever value the user saved on a prior binding.
+    let prior_elicitation =
+        mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_identity_id)
+            .await?
+            .map(|b| b.elicitation_enabled)
+            .unwrap_or(false);
+
     mcp_client_agent_binding::upsert(
         &state.db,
         pending.org_id,
@@ -882,18 +892,21 @@ async fn consent_finish(
     )
     .await?;
 
-    // Server-side gate: even though the dashboard disables the toggle when
-    // the client didn't announce elicitation, a hand-crafted POST could set
-    // `elicitation_enabled=true` against an unsupported client. Drop the
-    // flag in that case — the upsert leaves the column at its DB default
-    // of `false`, so we only need to act when the user opted in. Apply to
-    // every binding for the agent (matches the dashboard's per-agent
-    // toggle semantics — see `set_elicitation_enabled_for_agent`).
-    let want_elicitation = body.elicitation_enabled && client.elicitation_supported();
+    // Resolve the per-agent value: an explicit choice from the consent page
+    // wins (gated by capability — a hand-crafted `true` against a client
+    // that didn't announce elicitation gets forced to `false`); a missing
+    // field inherits the agent's prior value so older dashboard builds /
+    // third-party POSTs don't destroy a previously-saved choice. Fan out
+    // unconditionally to keep every binding row in sync with the per-agent
+    // toggle (see `set_elicitation_enabled_for_agent`).
+    let resolved_elicitation = match body.elicitation_enabled {
+        Some(requested) => requested && client.elicitation_supported(),
+        None => prior_elicitation,
+    };
     mcp_client_agent_binding::set_elicitation_enabled_for_agent(
         &state.db,
         agent_identity_id,
-        want_elicitation,
+        resolved_elicitation,
     )
     .await?;
 

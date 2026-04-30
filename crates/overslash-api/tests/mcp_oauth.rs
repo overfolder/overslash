@@ -1807,6 +1807,216 @@ async fn consent_finish_drops_elicitation_when_unsupported() {
     );
 }
 
+/// A consent finish payload that omits `elicitation_enabled` (older
+/// dashboard build / third-party POST) must NOT clobber the existing
+/// per-binding setting. Reauth-without-the-field is the dangerous case:
+/// the agent already has bindings with `elicitation_enabled=true` from a
+/// prior connection, and the fan-out helper would zero them all if we
+/// treated "missing" as "explicit false".
+#[tokio::test]
+async fn consent_finish_missing_elicitation_field_preserves_binding() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
+    let redirect = "http://127.0.0.1:9986/callback";
+    let (_, challenge) = pkce();
+
+    let body1: Value = client
+        .post(format!("{base}/oauth/register"))
+        .json(&json!({
+            "client_name": "Claude Desktop",
+            "software_id": "com.anthropic.claude",
+            "software_version": "0.7.3",
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let client_id_1 = body1["client_id"].as_str().unwrap().to_string();
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    db::oauth_mcp_client::update_initialize_state(
+        &pool,
+        &client_id_1,
+        &json!({ "elicitation": {} }),
+        &json!({ "name": "Claude Desktop", "version": "0.7.3" }),
+        "2025-06-18",
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url1 = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id_1),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let r1 = no_redirect
+        .get(&url1)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc1 = r1.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let request_id1 = consent_loc1
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .unwrap();
+    let request_id1 = urlencoding::decode(request_id1).unwrap().into_owned();
+
+    // First consent: explicit elicitation_enabled=true so the binding is set.
+    let resp1 = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id1)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "mode": "new",
+                "agent_name": "preserve-test",
+                "inherit_permissions": false,
+                "group_names": [],
+                "elicitation_enabled": true,
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), 200);
+
+    // Re-register and reauth, but OMIT elicitation_enabled from the body.
+    let body2: Value = client
+        .post(format!("{base}/oauth/register"))
+        .json(&json!({
+            "client_name": "Claude Desktop",
+            "software_id": "com.anthropic.claude",
+            "software_version": "0.7.4",
+            "redirect_uris": [redirect],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let client_id_2 = body2["client_id"].as_str().unwrap().to_string();
+    db::oauth_mcp_client::update_initialize_state(
+        &pool,
+        &client_id_2,
+        &json!({ "elicitation": {} }),
+        &json!({ "name": "Claude Desktop", "version": "0.7.4" }),
+        "2025-06-18",
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    let url2 = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp",
+        urlencoding::encode(&client_id_2),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let r2 = no_redirect
+        .get(&url2)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc2 = r2.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let request_id2 = consent_loc2
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .unwrap();
+    let request_id2 = urlencoding::decode(request_id2).unwrap().into_owned();
+
+    let ctx: Value = client
+        .get(format!(
+            "{base}/v1/oauth/consent/{}",
+            urlencoding::encode(&request_id2)
+        ))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ctx["mode"].as_str(), Some("reauth"));
+    let reauth_agent_id = ctx["reauth_target"]["agent_id"].as_str().unwrap();
+
+    // Reauth payload OMITS elicitation_enabled — must not clobber the binding.
+    let resp2 = client
+        .post(format!(
+            "{base}/v1/oauth/consent/{}/finish",
+            urlencoding::encode(&request_id2)
+        ))
+        .header("cookie", &session_cookie)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "mode": "reauth",
+                "reauth_agent_id": reauth_agent_id,
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+
+    let mcp: Value = client
+        .get(format!(
+            "{base}/v1/identities/{}/mcp-connection",
+            urlencoding::encode(reauth_agent_id)
+        ))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        mcp["connection"]["elicitation_enabled"].as_bool(),
+        Some(true),
+        "reauth without elicitation_enabled in body must preserve the prior \
+         binding's value, not silently zero it out: {mcp}"
+    );
+}
+
 /// Re-registering the same MCP client (matching client_name + software_id)
 /// must surface the previously-saved elicitation choice on the consent
 /// context so the dashboard can pre-fill the toggle. Without this, every
