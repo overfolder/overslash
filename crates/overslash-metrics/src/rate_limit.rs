@@ -2,7 +2,9 @@
 
 use metrics::counter;
 
-/// `scope` ∈ {`org`, `group`, `user`, `identity_cap`, `unscoped`}.
+/// `scope` ∈ {`org`, `group`, `user`, `identity_cap`, `unscoped`, `free_unlimited`}.
+/// `free_unlimited` is emitted (always with `allow`) when the rate-limit
+/// middleware bypasses limits for an org marked `plan='free_unlimited'`.
 /// `decision` ∈ {`allow`, `deny`}.
 pub fn record_decision(scope: &str, decision: &str) {
     counter!(

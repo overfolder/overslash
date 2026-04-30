@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 	import { ApiError, session } from '$lib/session';
+	import { slugify, makeDebouncedSlugChecker, type SlugCheck } from '$lib/utils/slug';
 
 	type GeoResponse = { currency: string; base_price: number };
 
@@ -27,19 +29,24 @@
 	let slugTouched = $state(false);
 	let seats = $state(2);
 
-	type SlugCheck =
-		| { kind: 'idle' }
-		| { kind: 'checking' }
-		| { kind: 'available' }
-		| { kind: 'invalid'; reason: string };
 	let slugCheck = $state<SlugCheck>({ kind: 'idle' });
-	let slugCheckTimer: ReturnType<typeof setTimeout> | null = null;
-	let slugCheckSeq = 0;
+	const scheduleSlugCheck = makeDebouncedSlugChecker((s) => (slugCheck = s));
 
 	let submitting = $state(false);
 	let submitError = $state<string | null>(null);
 
 	onMount(async () => {
+		// Prefill from query params when the user lands here from the
+		// instance-admin Create-Org modal with the toggle off.
+		const qsName = $page.url.searchParams.get('name');
+		const qsSlug = $page.url.searchParams.get('slug');
+		if (qsName) orgName = qsName;
+		if (qsSlug) {
+			orgSlug = qsSlug;
+			slugTouched = true;
+			scheduleSlugCheck(qsSlug);
+		}
+
 		try {
 			const geo = await session.get<GeoResponse>('/v1/billing/geo');
 			currency = geo.currency;
@@ -62,38 +69,6 @@
 			seats >= 2 &&
 			seats <= 20
 	);
-
-	function slugify(raw: string): string {
-		return raw
-			.toLowerCase()
-			.replace(/[^a-z0-9-]+/g, '-')
-			.replace(/^-+|-+$/g, '')
-			.slice(0, 63);
-	}
-
-	function scheduleSlugCheck(slug: string) {
-		if (slugCheckTimer) clearTimeout(slugCheckTimer);
-		if (!slug) {
-			slugCheck = { kind: 'idle' };
-			return;
-		}
-		slugCheck = { kind: 'checking' };
-		const seq = ++slugCheckSeq;
-		slugCheckTimer = setTimeout(async () => {
-			try {
-				const res = await session.get<{ available: boolean; reason?: string }>(
-					`/v1/orgs/check-slug?slug=${encodeURIComponent(slug)}`
-				);
-				if (seq !== slugCheckSeq) return;
-				slugCheck = res.available
-					? { kind: 'available' }
-					: { kind: 'invalid', reason: res.reason ?? 'slug_invalid' };
-			} catch {
-				if (seq !== slugCheckSeq) return;
-				slugCheck = { kind: 'invalid', reason: 'lookup_failed' };
-			}
-		}, 300);
-	}
 
 	function onNameInput(e: Event) {
 		const value = (e.currentTarget as HTMLInputElement).value;

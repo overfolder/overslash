@@ -30,6 +30,10 @@ pub struct AppState {
     pub registry: Arc<ServiceRegistry>,
     pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
     pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
+    /// Caches per-org `plan` lookups so the rate-limit middleware can decide
+    /// whether to bypass for `free_unlimited` orgs without hitting Postgres
+    /// on every request. See `services::billing_tier`.
+    pub free_unlimited_cache: Arc<services::billing_tier::FreeUnlimitedCache>,
     /// In-memory store for one-shot OAuth 2.1 authorization codes (60s TTL).
     /// Process-local for v1; promoted to Redis once horizontal replication
     /// is on the roadmap (tracked in `TECH_DEBT.md`).
@@ -119,6 +123,9 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let rate_limit_cache = Arc::new(services::rate_limit::RateLimitConfigCache::new(
         std::time::Duration::from_secs(30),
     ));
+    let free_unlimited_cache = Arc::new(services::billing_tier::FreeUnlimitedCache::new(
+        std::time::Duration::from_secs(30),
+    ));
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
@@ -129,6 +136,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         registry: Arc::new(registry),
         rate_limiter,
         rate_limit_cache,
+        free_unlimited_cache,
         auth_code_store: services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: services::oauth_as::PendingAuthorizeStore::new(),
         embedder,

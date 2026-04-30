@@ -125,6 +125,11 @@ export interface MeIdentity {
 	external_id: string | null;
 	picture?: string | null;
 	is_org_admin?: boolean;
+	/** Operator-granted instance admin flag (set only via DB). The single
+	 *  elevated capability today is creating free-unlimited orgs through
+	 *  the Create-Org modal. Drives the small "Instance" badge in the
+	 *  layout. */
+	is_instance_admin?: boolean;
 	/** Multi-org additions. `user_id` + `memberships` are present once a
 	 *  post-multi-org-rewire session is minted; legacy tokens leave them
 	 *  empty until re-login. */

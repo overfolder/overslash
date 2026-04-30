@@ -43,6 +43,11 @@
 	// Overslash-level IdP on the root domain — no per-org IdP or OAuth App
 	// Credentials make sense there. See docs/design/multi_org_auth.md.
 	const isPersonalOrg = $derived(org?.is_personal === true);
+	// Free-unlimited courtesy tier — granted out-of-band by an operator
+	// (`UPDATE orgs SET plan='free_unlimited'`). No Stripe involvement, no
+	// rate limits. Renders a "Courtesy plan" badge in place of billing
+	// controls.
+	const isFreeUnlimited = $derived(subscription?.plan === 'free_unlimited');
 	// Corp orgs need at least one enabled IdP before anyone besides the
 	// creator can sign in (via their Overslash-level login). Banner nudges
 	// them to add one so their team can sign in via the corp IdP.
@@ -973,19 +978,23 @@
 				<div class="billing-info">
 					<div class="billing-stat">
 						<span class="billing-label">Plan</span>
-						<span class="billing-value">{subscription.plan.charAt(0).toUpperCase() + subscription.plan.slice(1)}</span>
+						<span class="billing-value">
+							{isFreeUnlimited ? 'Free Unlimited' : subscription.plan.charAt(0).toUpperCase() + subscription.plan.slice(1)}
+						</span>
 					</div>
-					<div class="billing-stat">
-						<span class="billing-label">Seats</span>
-						<span class="billing-value">{subscription.seats}</span>
-					</div>
+					{#if !isFreeUnlimited}
+						<div class="billing-stat">
+							<span class="billing-label">Seats</span>
+							<span class="billing-value">{subscription.seats}</span>
+						</div>
+					{/if}
 					<div class="billing-stat">
 						<span class="billing-label">Status</span>
 						<span class="billing-value billing-status" class:ok={subscription.status === 'active' || subscription.status === 'trialing'} class:warn={subscription.status === 'past_due'} class:muted={subscription.status === 'canceled'}>
 							{subscription.status}
 						</span>
 					</div>
-					{#if subscription.current_period_end}
+					{#if !isFreeUnlimited && subscription.current_period_end}
 						<div class="billing-stat">
 							<span class="billing-label">{subscription.cancel_at_period_end ? 'Cancels' : 'Renews'}</span>
 							<span class="billing-value">
@@ -994,14 +1003,20 @@
 						</div>
 					{/if}
 				</div>
-				<a
-					href={`/billing/portal?org_id=${org?.id}`}
-					class="btn btn-secondary"
-				>
-					Manage subscription
-				</a>
+				{#if !isFreeUnlimited}
+					<a
+						href={`/billing/portal?org_id=${org?.id}`}
+						class="btn btn-secondary"
+					>
+						Manage subscription
+					</a>
+				{/if}
 			</div>
-			{#if subscription.cancel_at_period_end}
+			{#if isFreeUnlimited}
+				<p class="billing-courtesy-notice">
+					Courtesy plan — no billing, no rate limits.
+				</p>
+			{:else if subscription.cancel_at_period_end}
 				<p class="billing-cancel-notice">
 					⚠ This subscription will cancel at the end of the current period.
 					<a href={`/billing/portal?org_id=${org?.id}`}>Reactivate</a> to keep access.
@@ -1366,5 +1381,11 @@
 	.billing-cancel-notice a {
 		color: inherit;
 		text-decoration: underline;
+	}
+
+	.billing-courtesy-notice {
+		margin: 0.75rem 0 0;
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
 	}
 </style>

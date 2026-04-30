@@ -3,7 +3,6 @@
 
 mod common;
 
-use rand::RngExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -671,6 +670,9 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         rate_limit_cache: Arc::new(
             overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
         ),
+        free_unlimited_cache: Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_secs(30)),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
@@ -703,61 +705,10 @@ async fn spawn_middleware_app(state: overslash_api::AppState) -> SocketAddr {
 }
 
 /// Create an org + user identity + user-bound API key directly in the DB.
-/// Returns (org_id, user_id, raw_api_key).
+/// Returns (org_id, user_id, raw_api_key). Thin wrapper over the shared
+/// `common::seed_org_user_key` so the middleware tests stay readable.
 async fn make_org_user_key(pool: &PgPool) -> (Uuid, Uuid, String) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("test-org")
-        .bind(format!("test-{}", Uuid::new_v4()))
-        .execute(pool)
-        .await
-        .unwrap();
-
-    let user_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'user')")
-        .bind(user_id)
-        .bind(org_id)
-        .bind("test-user")
-        .execute(pool)
-        .await
-        .unwrap();
-
-    // Generate an API key. Format must be osk_<random>. The prefix (12 chars) is what
-    // the middleware uses for the lookup; we hash the full key with argon2.
-    let suffix: String = (0..32)
-        .map(|_| {
-            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            chars[rand::rng().random_range(0..chars.len())] as char
-        })
-        .collect();
-    let raw_key = format!("osk_{suffix}");
-    let prefix = raw_key[..12].to_string();
-
-    use argon2::{
-        Argon2,
-        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default()
-        .hash_password(raw_key.as_bytes(), &salt)
-        .unwrap()
-        .to_string();
-
-    sqlx::query(
-        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
-         VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[])",
-    )
-    .bind(org_id)
-    .bind(user_id)
-    .bind("test-key")
-    .bind(&hash)
-    .bind(&prefix)
-    .execute(pool)
-    .await
-    .unwrap();
-
-    (org_id, user_id, raw_key)
+    common::seed_org_user_key(pool, common::SeedOptions::default()).await
 }
 
 #[tokio::test]

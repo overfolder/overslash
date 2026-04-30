@@ -5,16 +5,19 @@
 	import NavItem from './NavItem.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
 	import ProfileAvatar from './ProfileAvatar.svelte';
+	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
 	import type { MembershipSummary } from '$lib/session';
 
 	let {
 		user,
 		isAdmin = false,
+		isInstanceAdmin = false,
 		memberships = [],
 		currentOrgId = ''
 	}: {
 		user: { name?: string; email?: string } | null;
 		isAdmin?: boolean;
+		isInstanceAdmin?: boolean;
 		memberships?: MembershipSummary[];
 		currentOrgId?: string;
 	} = $props();
@@ -24,6 +27,8 @@
 	}
 
 	const collapsed = $derived($sidebarCollapsed);
+
+	let createOrgOpen = $state(false);
 </script>
 
 <aside class="sidebar" class:collapsed>
@@ -48,6 +53,16 @@
 		{#if memberships.length > 0 && currentOrgId}
 			<OrgSwitcher {memberships} {currentOrgId} {collapsed} />
 		{/if}
+		{#if isInstanceAdmin}
+			<button
+				class="create-org-btn"
+				type="button"
+				onclick={() => (createOrgOpen = true)}
+				title="Create org"
+			>
+				{#if collapsed}+{:else}+ Create org{/if}
+			</button>
+		{/if}
 		{#if isAdmin}
 			<NavItem
 				href={SETTINGS_NAV_ITEM.href}
@@ -60,10 +75,17 @@
 			{collapsed ? '»' : '«'}
 		</button>
 		{#if user}
-			<ProfileAvatar name={user.name ?? ''} email={user.email ?? ''} showName={!collapsed} />
+			<div class="profile-row">
+				<ProfileAvatar name={user.name ?? ''} email={user.email ?? ''} showName={!collapsed} />
+				{#if isInstanceAdmin && !collapsed}
+					<span class="instance-badge" title="Instance admin">⚡ Instance</span>
+				{/if}
+			</div>
 		{/if}
 	</div>
 </aside>
+
+<CreateOrgModal open={createOrgOpen} onClose={() => (createOrgOpen = false)} />
 
 <style>
 	.sidebar {
@@ -127,6 +149,35 @@
 	.collapse-btn:hover {
 		background: var(--color-neutral-100, var(--color-border));
 		color: var(--color-text);
+	}
+	.create-org-btn {
+		background: transparent;
+		border: 1px dashed var(--color-border);
+		color: var(--color-text);
+		cursor: pointer;
+		padding: 0.4rem 0.6rem;
+		border-radius: 6px;
+		font-size: 0.85rem;
+		text-align: center;
+		margin: 0.25rem 0;
+	}
+	.create-org-btn:hover {
+		background: var(--color-neutral-100, var(--color-border));
+	}
+	.profile-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.instance-badge {
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		padding: 2px 6px;
+		border-radius: 999px;
+		background: var(--color-neutral-100, var(--color-border));
+		color: var(--color-text-muted);
+		white-space: nowrap;
 	}
 
 	@media (max-width: 768px) {
