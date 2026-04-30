@@ -28,6 +28,12 @@ export default defineConfig(({ mode }) => {
 	return {
 		plugins: [sveltekit()],
 		build: {
+			// Emit client source maps on Vercel preview / dev deploys so DevTools
+			// can map minified chunks back to original Svelte/TS sources. Production
+			// (app.overslash.com) and the embedded-binary release build keep the
+			// default of no maps — VERCEL_ENV is unset in those builds.
+			sourcemap:
+				process.env.VERCEL_ENV === 'preview' || process.env.VERCEL_ENV === 'development',
 			rollupOptions: {
 				// In strict mode, any Rollup warning fails the build. Paired with the
 				// post-build chunk-size check in scripts/check-chunk-sizes.mjs this
