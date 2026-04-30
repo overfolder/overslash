@@ -4,7 +4,7 @@
        dashboard-static web-build web build install \
        logs logs-deploy \
        shortener-dev shortener-down shortener-deploy \
-       deploy
+       deploy db-shell
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -151,6 +151,17 @@ ifndef SVC
 	@exit 1
 endif
 	@bin/deploy-cloudrun.sh $(SVC) $(ENV)
+
+# Open a psql shell against the Cloud SQL instance via the Auth Proxy.
+# No public IP whitelisting needed — the proxy authenticates as your gcloud
+# identity. Wakes the instance first if the night scheduler has paused it.
+#
+# Usage:
+#   make db-shell                     # dev
+#   make db-shell ENV=prod            # prod (asks for confirmation)
+#   READONLY=1 make db-shell ENV=prod # read-only session
+db-shell:
+	@bin/db-shell.sh $(ENV)
 
 # Remove worktree containers and volumes
 worktree-clean:
