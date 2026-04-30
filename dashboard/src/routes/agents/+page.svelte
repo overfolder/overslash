@@ -28,30 +28,52 @@
 	let collapsed = $state(new Set<string>());
 	let selectedId = $state<string | null>(null);
 
-	let detailRules = $state<PermissionRule[]>([]);
-	let detailApprovals = $state<ApprovalResponse[]>([]);
-	let detailLoading = $state(false);
-	let detailError = $state<string | null>(null);
+	// All per-agent UI state lives on a single object keyed by `agentId`.
+	// It is replaced wholesale in `selectIdentity` so that any in-flight
+	// async handler can compare `detail?.agentId === capturedId` to drop
+	// stale results, and so a stuck error / loading flag from one agent
+	// cannot bleed onto the next selection.
+	interface AgentDetailState {
+		agentId: string;
+		rules: PermissionRule[];
+		approvals: ApprovalResponse[];
+		loading: boolean;
+		error: string | null;
+		mcp: McpConnection | null;
+		mcpError: string | null;
+		togglingElicitation: boolean;
+		elicitationError: string | null;
+		confirmDisconnect: boolean;
+		disconnecting: boolean;
+		deleteModalOpen: boolean;
+		deleteModalBusy: boolean;
+	}
 
-	let mcp = $state<McpConnection | null>(null);
-	let mcpError = $state<string | null>(null);
-	let togglingElicitation = $state(false);
-	let elicitationError = $state<string | null>(null);
-	let confirmDisconnect = $state(false);
-	// Captured at click time so a mid-modal selection change can't redirect the
-	// disconnect to a different agent's binding.
-	let disconnectTargetId = $state<string | null>(null);
-	let disconnecting = $state(false);
+	function freshDetail(agentId: string): AgentDetailState {
+		return {
+			agentId,
+			rules: [],
+			approvals: [],
+			loading: false,
+			error: null,
+			mcp: null,
+			mcpError: null,
+			togglingElicitation: false,
+			elicitationError: null,
+			confirmDisconnect: false,
+			disconnecting: false,
+			deleteModalOpen: false,
+			deleteModalBusy: false
+		};
+	}
+
+	let detail = $state<AgentDetailState | null>(null);
 
 	let createOpen = $state(false);
 	let createParentId = $state<string | null>(null);
 	let createInherit = $state(false);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
-
-	// Delete confirmation modal state
-	let deleteModalOpen = $state(false);
-	let deleteModalBusy = $state(false);
 
 	const selected = $derived(identities.find((i) => i.id === selectedId) ?? null);
 	const childrenOf = $derived.by(() => {
@@ -100,10 +122,12 @@
 	}
 
 	async function loadDetail(id: string) {
-		detailLoading = true;
-		detailError = null;
-		mcp = null;
-		mcpError = null;
+		// Refresh data on the live `detail` object. Bail if the user has
+		// already switched away or if no detail is mounted yet — the
+		// `selectIdentity` path is responsible for creating it.
+		if (!detail || detail.agentId !== id) return;
+		detail.loading = true;
+		detail.error = null;
 		try {
 			const [rules, apr, mcpResp] = await Promise.all([
 				listPermissions(id),
@@ -115,89 +139,78 @@
 					.then((r) => ({ ok: true as const, connection: r.connection }))
 					.catch((e) => ({ ok: false as const, error: e }))
 			]);
-			detailRules = rules;
-			detailApprovals = apr;
+			if (detail?.agentId !== id) return;
+			detail.rules = rules;
+			detail.approvals = apr;
 			if (mcpResp.ok) {
-				mcp = mcpResp.connection;
+				detail.mcp = mcpResp.connection;
+				detail.mcpError = null;
 			} else if (
 				mcpResp.error instanceof ApiError &&
 				(mcpResp.error.status === 404 || mcpResp.error.status === 403)
 			) {
-				mcp = null;
+				detail.mcp = null;
+				detail.mcpError = null;
 			} else {
-				mcp = null;
-				mcpError =
+				detail.mcp = null;
+				detail.mcpError =
 					mcpResp.error instanceof ApiError
 						? `Error ${mcpResp.error.status}`
 						: 'Network error';
 			}
 		} catch (e) {
-			detailError = e instanceof Error ? e.message : String(e);
+			if (detail?.agentId !== id) return;
+			detail.error = e instanceof Error ? e.message : String(e);
 		} finally {
-			detailLoading = false;
+			if (detail?.agentId === id) detail.loading = false;
 		}
 	}
 
 	async function setElicitation(next: boolean) {
-		if (!selected || !mcp) return;
-		// Capture the target so a mid-flight selection switch can't apply this
-		// agent's response to a different agent's card.
-		const targetId = selected.id;
-		togglingElicitation = true;
-		elicitationError = null;
+		if (!detail || !detail.mcp) return;
+		const targetId = detail.agentId;
+		detail.togglingElicitation = true;
+		detail.elicitationError = null;
 		try {
 			const resp = await session.patch<{ connection: McpConnection | null }>(
 				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
 				{ elicitation_enabled: next }
 			);
-			if (selected?.id === targetId) {
-				mcp = resp.connection;
+			if (detail?.agentId === targetId) {
+				detail.mcp = resp.connection;
 			}
 		} catch (e) {
-			if (selected?.id === targetId) {
-				elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+			if (detail?.agentId === targetId) {
+				detail.elicitationError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
 			}
 		} finally {
-			togglingElicitation = false;
+			if (detail?.agentId === targetId) {
+				detail.togglingElicitation = false;
+			}
 		}
 	}
 
 	async function doDisconnect() {
-		const targetId = disconnectTargetId;
-		if (!targetId) return;
-		disconnecting = true;
+		if (!detail) return;
+		const targetId = detail.agentId;
+		detail.disconnecting = true;
 		try {
 			await session.post(
 				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection/disconnect`,
 				{}
 			);
-			// Only blank the visible card if the user is still looking at the
-			// agent we just disconnected. Otherwise leave their current view
-			// alone and trust the next loadDetail to reflect reality.
-			if (selected?.id === targetId) {
-				mcp = null;
+			if (detail?.agentId === targetId) {
+				detail.mcp = null;
+				detail.confirmDisconnect = false;
 			}
-			confirmDisconnect = false;
-			disconnectTargetId = null;
 		} catch (e) {
 			console.error('disconnect failed', e);
 		} finally {
-			disconnecting = false;
+			if (detail?.agentId === targetId) {
+				detail.disconnecting = false;
+			}
 		}
 	}
-
-	// Reset agent-scoped MCP UI state when the user switches selection: a
-	// stale error banner or a stuck `togglingElicitation=true` (because the
-	// previous PATCH is still in flight) would otherwise bleed onto the next
-	// agent's card. The disconnect-modal reset on the same trigger keeps an
-	// open confirmation from outliving the selection it was opened against.
-	$effect(() => {
-		void selectedId;
-		confirmDisconnect = false;
-		disconnectTargetId = null;
-		elicitationError = null;
-		togglingElicitation = false;
-	});
 
 	function fmtDate(iso: string | null | undefined): string {
 		if (!iso) return '—';
@@ -209,15 +222,20 @@
 	}
 
 	const clientLabel = $derived.by(() => {
-		if (!mcp) return '';
-		const info = mcp.client_info ?? {};
-		const name = mcp.client_name ?? info.name ?? mcp.software_id ?? mcp.client_id;
-		const version = info.version ?? mcp.software_version;
+		const m = detail?.mcp;
+		if (!m) return '';
+		const info = m.client_info ?? {};
+		const name = m.client_name ?? info.name ?? m.software_id ?? m.client_id;
+		const version = info.version ?? m.software_version;
 		return version ? `${name} · v${version}` : name;
 	});
 
 	function selectIdentity(id: string) {
 		selectedId = id;
+		// Replace the detail object wholesale so any in-flight handler from
+		// the previous agent will see `detail.agentId !== capturedId` and
+		// drop its result instead of clobbering the new selection.
+		detail = freshDetail(id);
 		void loadDetail(id);
 	}
 
@@ -227,10 +245,14 @@
 		// for the selected agent — an "Allow & Remember" resolution creates
 		// new permission rules that should show up in the Rules table.
 		approvals = approvals.filter((a) => a.id !== updated.id);
-		detailApprovals = detailApprovals.filter((a) => a.id !== updated.id);
-		if (selectedId) {
+		if (detail) {
+			const targetId = detail.agentId;
+			detail.approvals = detail.approvals.filter((a) => a.id !== updated.id);
 			try {
-				detailRules = await listPermissions(selectedId);
+				const rules = await listPermissions(targetId);
+				if (detail?.agentId === targetId) {
+					detail.rules = rules;
+				}
 			} catch {
 				// Non-fatal — the approval itself was already resolved.
 			}
@@ -331,22 +353,25 @@
 	}
 
 	function requestDelete() {
-		if (!selected || selected.kind === 'user') return;
-		deleteModalOpen = true;
+		if (!selected || selected.kind === 'user' || !detail) return;
+		detail.deleteModalOpen = true;
 	}
 
 	async function confirmDelete() {
-		if (!selected) return;
-		deleteModalBusy = true;
+		if (!selected || !detail) return;
+		const targetId = detail.agentId;
+		detail.deleteModalBusy = true;
 		try {
 			await deleteIdentity(selected.id);
 			selectedId = null;
+			detail = null;
 			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));
-		} finally {
-			deleteModalBusy = false;
-			deleteModalOpen = false;
+			if (detail?.agentId === targetId) {
+				detail.deleteModalBusy = false;
+				detail.deleteModalOpen = false;
+			}
 		}
 	}
 
@@ -445,8 +470,8 @@
 					{/if}
 				</div>
 
-				{#if detailError}
-					<div class="error-bar">{detailError}</div>
+				{#if detail?.error}
+					<div class="error-bar">{detail.error}</div>
 				{/if}
 
 				{#if selected.kind === 'user'}
@@ -485,9 +510,9 @@
 					</div>
 
 					<!-- Pending Approvals -->
-					{#if detailApprovals.length > 0}
+					{#if detail && detail.approvals.length > 0}
 						<h3 class="section-title">Pending Approvals</h3>
-						{#each detailApprovals as a (a.id)}
+						{#each detail.approvals as a (a.id)}
 							<div class="approval-card">
 								<div class="approval-main">
 									<div class="approval-summary">{a.action_summary}</div>
@@ -501,7 +526,7 @@
 
 					<!-- Permission Rules -->
 					<h3 class="section-title">Permission Rules</h3>
-					{#if detailRules.length === 0}
+					{#if !detail || detail.rules.length === 0}
 						<p class="muted" style="font-size:0.85rem;">No rules.</p>
 					{:else}
 						<table class="rules-table">
@@ -515,7 +540,7 @@
 								</tr>
 							</thead>
 							<tbody>
-								{#each detailRules as r (r.id)}
+								{#each detail.rules as r (r.id)}
 									<tr>
 										<td class="mono">{r.action_pattern}</td>
 										<td>
@@ -534,11 +559,11 @@
 
 					<!-- MCP Connection -->
 					<h3 class="section-title">MCP Connection</h3>
-					{#if mcpError}
+					{#if detail?.mcpError}
 						<div class="mcp-empty mcp-error">
-							<p>Could not load MCP connection: {mcpError}</p>
+							<p>Could not load MCP connection: {detail.mcpError}</p>
 						</div>
-					{:else if !mcp}
+					{:else if !detail?.mcp}
 						<div class="mcp-empty">
 							<p>
 								No MCP server bound to this identity. Run
@@ -552,23 +577,23 @@
 								<div class="mcp-main">
 									<div class="mcp-title">
 										<span class="mcp-glyph" aria-hidden="true">◫</span>
-										<code class="mono">{mcp.client_name ?? mcp.client_id}</code>
+										<code class="mono">{detail.mcp.client_name ?? detail.mcp.client_id}</code>
 										<span class="pill pill-active">connected</span>
 									</div>
 									<dl class="kv">
 										<dt>Client</dt>
 										<dd>{clientLabel}</dd>
-										{#if mcp.session_id}
+										{#if detail.mcp.session_id}
 											<dt>Session</dt>
-											<dd><code class="mono">{mcp.session_id}</code></dd>
+											<dd><code class="mono">{detail.mcp.session_id}</code></dd>
 										{/if}
 										<dt>Connected</dt>
-										<dd>{fmtDate(mcp.connected_at)}</dd>
+										<dd>{fmtDate(detail.mcp.connected_at)}</dd>
 										<dt>Last seen</dt>
-										<dd>{fmtDate(mcp.last_seen_at)}</dd>
-										{#if mcp.protocol_version}
+										<dd>{fmtDate(detail.mcp.last_seen_at)}</dd>
+										{#if detail.mcp.protocol_version}
 											<dt>Protocol</dt>
-											<dd><code class="mono">{mcp.protocol_version}</code></dd>
+											<dd><code class="mono">{detail.mcp.protocol_version}</code></dd>
 										{/if}
 									</dl>
 								</div>
@@ -576,9 +601,7 @@
 									type="button"
 									class="btn-delete"
 									onclick={() => {
-										if (!selected) return;
-										disconnectTargetId = selected.id;
-										confirmDisconnect = true;
+										if (detail) detail.confirmDisconnect = true;
 									}}
 								>
 									Disconnect
@@ -592,18 +615,18 @@
 									<div class="opt-desc">
 										Elicitation allows approving in line but stops the approval from being async.
 									</div>
-									{#if !mcp.elicitation_supported}
+									{#if !detail.mcp.elicitation_supported}
 										<div class="opt-warn">
 											This MCP client did not declare elicitation support at connect time.
 										</div>
 									{/if}
-									{#if elicitationError}
-										<div class="opt-warn">{elicitationError}</div>
+									{#if detail.elicitationError}
+										<div class="opt-warn">{detail.elicitationError}</div>
 									{/if}
 								</div>
 								<ToggleSwitch
-									checked={mcp.elicitation_enabled}
-									disabled={!mcp.elicitation_supported || togglingElicitation}
+									checked={detail.mcp.elicitation_enabled}
+									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
 									labelledby="opt-elicitation-label"
 									onchange={(v) => setElicitation(v)}
 								/>
@@ -741,31 +764,35 @@
 	</div>
 {/if}
 
-{#if selected}
+{#if selected && detail}
 	{@const totalDescendants = descendantCount(selected.id)}
 	<ConfirmModal
-		open={deleteModalOpen}
+		open={detail.deleteModalOpen}
 		title="Delete agent?"
 		message={totalDescendants > 0
 			? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
 			: `Delete agent:${selected.name}? This cannot be undone.`}
 		confirmLabel="Delete Agent"
 		destructive={true}
-		busy={deleteModalBusy}
+		busy={detail.deleteModalBusy}
 		onConfirm={confirmDelete}
-		onCancel={() => (deleteModalOpen = false)}
+		onCancel={() => {
+			if (detail) detail.deleteModalOpen = false;
+		}}
 	/>
 {/if}
 
 <ConfirmModal
-	open={confirmDisconnect}
+	open={detail?.confirmDisconnect ?? false}
 	title="Disconnect MCP client?"
 	message="This removes the binding between this agent and its MCP client. The client will need to re-run the OAuth flow to reconnect."
 	confirmLabel="Disconnect"
 	destructive={true}
-	busy={disconnecting}
+	busy={detail?.disconnecting ?? false}
 	onConfirm={doDisconnect}
-	onCancel={() => (confirmDisconnect = false)}
+	onCancel={() => {
+		if (detail) detail.confirmDisconnect = false;
+	}}
 />
 
 <ApprovalModal
