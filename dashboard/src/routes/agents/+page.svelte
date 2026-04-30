@@ -38,6 +38,9 @@
 	let togglingElicitation = $state(false);
 	let elicitationError = $state<string | null>(null);
 	let confirmDisconnect = $state(false);
+	// Captured at click time so a mid-modal selection change can't redirect the
+	// disconnect to a different agent's binding.
+	let disconnectTargetId = $state<string | null>(null);
 	let disconnecting = $state(false);
 
 	let createOpen = $state(false);
@@ -153,21 +156,38 @@
 	}
 
 	async function doDisconnect() {
-		if (!selected) return;
+		const targetId = disconnectTargetId;
+		if (!targetId) return;
 		disconnecting = true;
 		try {
 			await session.post(
-				`/v1/identities/${encodeURIComponent(selected.id)}/mcp-connection/disconnect`,
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection/disconnect`,
 				{}
 			);
-			mcp = null;
+			// Only blank the visible card if the user is still looking at the
+			// agent we just disconnected. Otherwise leave their current view
+			// alone and trust the next loadDetail to reflect reality.
+			if (selected?.id === targetId) {
+				mcp = null;
+			}
 			confirmDisconnect = false;
+			disconnectTargetId = null;
 		} catch (e) {
 			console.error('disconnect failed', e);
 		} finally {
 			disconnecting = false;
 		}
 	}
+
+	// Closing the disconnect modal automatically when the user picks a
+	// different agent prevents an open confirmation from outliving the
+	// selection it was opened against (the modal copy still references the
+	// previous agent and that's confusing).
+	$effect(() => {
+		void selectedId;
+		confirmDisconnect = false;
+		disconnectTargetId = null;
+	});
 
 	function fmtDate(iso: string | null | undefined): string {
 		if (!iso) return '—';
@@ -545,7 +565,11 @@
 								<button
 									type="button"
 									class="btn-delete"
-									onclick={() => (confirmDisconnect = true)}
+									onclick={() => {
+										if (!selected) return;
+										disconnectTargetId = selected.id;
+										confirmDisconnect = true;
+									}}
 								>
 									Disconnect
 								</button>
