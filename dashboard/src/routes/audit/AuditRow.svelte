@@ -1,5 +1,4 @@
 <script lang="ts">
-	import IdentityPath from '$lib/components/IdentityPath.svelte';
 	import type { AuditEntry } from './types';
 
 	let {
@@ -51,8 +50,14 @@
 <tr class="row" class:expanded onclick={ontoggle}>
 	<td class="ts" title={fullTime(entry.created_at)}>{relativeTime(entry.created_at)}</td>
 	<td class="identity">
-		{#if entry.identity_name}
-			<IdentityPath path={entry.identity_name} />
+		{#if entry.identity_id && entry.identity_name}
+			<a
+				class="identity-link"
+				href={`/agents/${entry.identity_id}`}
+				onclick={(e) => e.stopPropagation()}
+			>{entry.identity_name}</a>
+		{:else if entry.identity_name}
+			<span class="mono">{entry.identity_name}</span>
 		{:else}
 			<span class="muted">—</span>
 		{/if}
@@ -173,6 +178,18 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	.identity-link {
+		color: var(--color-text);
+		text-decoration: none;
+		font-family: var(--font-mono, monospace);
+		font-size: 0.85rem;
+		border-radius: 3px;
+		padding: 0 0.1rem;
+	}
+	.identity-link:hover {
+		color: var(--color-primary);
+		text-decoration: underline;
 	}
 	.mono {
 		font-family: var(--font-mono, monospace);

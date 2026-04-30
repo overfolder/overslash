@@ -280,6 +280,19 @@
 		// drop its result instead of clobbering the new selection.
 		detail = freshDetail(id);
 		void loadDetail(id);
+		writeSelectionToUrl(id);
+	}
+
+	function writeSelectionToUrl(id: string | null) {
+		// Mirror the current selection into the URL as `/agents/<id>` (or
+		// `/agents` when nothing is selected). Preserve query/hash — notably
+		// `?approval=<id>` so the deep-link modal survives a tree click.
+		const target = id ? `/agents/${id}` : '/agents';
+		const search = $page.url.search;
+		const hash = $page.url.hash;
+		const next = `${target}${search}${hash}`;
+		if (next === `${$page.url.pathname}${search}${hash}`) return;
+		void goto(next, { replaceState: true, noScroll: true, keepFocus: true });
 	}
 
 	async function onApprovalResolved(updated: ApprovalResponse) {
@@ -301,6 +314,43 @@
 			}
 		}
 	}
+
+	// URL → selection sync. The route is `/agents/[[id]]` so `params.id` is
+	// either a UUID or undefined. Drives the selection from the URL, both on
+	// initial load (deep-link) and on browser back/forward. Selection → URL
+	// is handled by `selectIdentity` via `writeSelectionToUrl`.
+	const paramId = $derived($page.params.id ?? null);
+	$effect(() => {
+		const target = paramId;
+		// Wait for the first identities load before validating — otherwise
+		// we'd nuke a deep-link URL on the initial render before we know
+		// whether the id resolves.
+		if (loading && identities.length === 0) return;
+		if (target === selectedId) return;
+
+		if (target === null) {
+			// URL has no id — clear any in-memory selection.
+			selectedId = null;
+			detail = null;
+			return;
+		}
+		const found = identities.find((i) => i.id === target);
+		if (found) {
+			selectedId = target;
+			detail = freshDetail(target);
+			void loadDetail(target);
+		} else {
+			// Stale or invalid id. Drop selection and replace the URL with
+			// `/agents` (preserving query/hash so `?approval=<id>` survives).
+			selectedId = null;
+			detail = null;
+			void goto(`/agents${$page.url.search}${$page.url.hash}`, {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true
+			});
+		}
+	});
 
 	// Deep-link modal: when the URL has `?approval=<id>` (e.g. from a
 	// redirected `/approvals/<id>` visit or an agent-emitted link), load
@@ -408,6 +458,7 @@
 			await deleteIdentity(selected.id);
 			selectedId = null;
 			detail = null;
+			writeSelectionToUrl(null);
 			await loadAll();
 		} catch (e) {
 			alert(e instanceof Error ? e.message : String(e));

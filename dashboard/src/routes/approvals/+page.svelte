@@ -113,7 +113,7 @@
 					<button class="row-summary" onclick={() => toggle(a.id)}>
 						<div class="col col-identity">
 							{#if a.identity_path}
-								<IdentityPath path={a.identity_path} />
+								<IdentityPath path={a.identity_path} pathIds={a.identity_path_ids} />
 							{:else}
 								<code class="mono mute">{a.requesting_identity_id}</code>
 							{/if}
@@ -154,7 +154,7 @@
 							<div class="exec-main">
 								<div class="col col-identity">
 									{#if a.identity_path}
-										<IdentityPath path={a.identity_path} />
+										<IdentityPath path={a.identity_path} pathIds={a.identity_path_ids} />
 									{:else}
 										<code class="mono mute">{a.requesting_identity_id}</code>
 									{/if}
