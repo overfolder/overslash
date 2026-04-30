@@ -49,6 +49,12 @@ pub async fn invoke(
 ) -> Result<ActionResult, AppError> {
     let headers = mcp_auth::resolve_headers(state, scope, auth).await?;
 
+    // Apply OVERSLASH_SSRF_ALLOW_PRIVATE-gated host overrides so e2e tests
+    // can route MCP calls at a local fake. Same semantics as the HTTP path
+    // in `action_caller::call_action_request`.
+    let resolved_url = state.config.apply_base_overrides(url);
+    let url = resolved_url.as_str();
+
     // SSRF guard: validate url's host resolves to a public IP and pin
     // the reqwest client to that IP so a compromised resolver cannot rebind
     // to an internal target between validation and connect. Timeouts live

@@ -4,7 +4,8 @@
        dashboard-static web-build web build install \
        logs logs-deploy \
        shortener-dev shortener-down shortener-deploy \
-       deploy db-shell
+       deploy db-shell \
+       e2e e2e-up e2e-down
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -84,6 +85,28 @@ web: build
 # Stop services
 down:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans
+
+# Bring up the full e2e stack: Postgres → overslash-fakes → API → dashboard
+# preview, all on dynamic ports written into a per-worktree .e2e/ state dir.
+# Multiple worktrees can run concurrently without colliding.
+e2e-up:
+	@bash scripts/e2e-up.sh
+
+# Tear down the e2e stack started by `make e2e-up`. Postgres is left running;
+# use `make worktree-clean` for a full teardown.
+e2e-down:
+	@bash scripts/e2e-down.sh
+
+# Boot the e2e stack, run Playwright, then tear down regardless of result.
+# The env file the harness writes (API_URL, DASHBOARD_URL, ...) is sourced
+# into the playwright invocation so worker subprocesses see them — setting
+# them only inside playwright.config.ts isn't enough.
+e2e:
+	@bash scripts/e2e-up.sh
+	@STATE_DIR="$${WORKTREE_STATE_DIR:-$$(pwd)}/.e2e"; \
+	  status=0; ( cd dashboard && set -a && . "$$STATE_DIR/dashboard.env" && set +a && npx playwright test ) || status=$$?; \
+	  bash scripts/e2e-down.sh; \
+	  exit $$status
 
 # Start the oversla.sh shortener dev stack (valkey + shortener on :8081)
 shortener-dev:

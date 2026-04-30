@@ -850,6 +850,48 @@ pub(crate) fn session_cookie(
 #[derive(Deserialize, Default)]
 struct DevTokenQuery {
     next: Option<String>,
+    /// `admin` (default), `member`, or `readonly`. Each maps to a deterministic
+    /// dev identity inside Dev Org so e2e fixtures can sign in as different
+    /// roles. Unknown values fall back to `admin` for forward compatibility.
+    profile: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum DevProfile {
+    Admin,
+    Member,
+    Readonly,
+}
+
+impl DevProfile {
+    fn parse(s: Option<&str>) -> Self {
+        match s.unwrap_or("admin") {
+            "member" => Self::Member,
+            "readonly" => Self::Readonly,
+            _ => Self::Admin,
+        }
+    }
+    fn email(self) -> &'static str {
+        match self {
+            Self::Admin => "dev@overslash.local",
+            Self::Member => "member@overslash.local",
+            Self::Readonly => "readonly@overslash.local",
+        }
+    }
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Admin => "Dev User",
+            Self::Member => "Dev Member",
+            Self::Readonly => "Dev Readonly",
+        }
+    }
+    fn external_id(self) -> &'static str {
+        match self {
+            Self::Admin => "dev-local",
+            Self::Member => "dev-local-member",
+            Self::Readonly => "dev-local-readonly",
+        }
+    }
 }
 
 async fn dev_token(
@@ -860,58 +902,110 @@ async fn dev_token(
         return Err(AppError::NotFound("not found".into()));
     }
 
-    let dev_email = "dev@overslash.local";
+    let profile = DevProfile::parse(query.profile.as_deref());
+    let admin_email = DevProfile::Admin.email();
     let system = SystemScope::new_internal(state.db.clone());
-    let (org_id, identity_id) =
-        if let Some(existing) = system.find_user_identity_by_email(dev_email).await? {
-            // Re-run bootstrap so the dev user is always an org admin, even if it
-            // pre-existed the bootstrap logic or was created before joining Admins.
-            // bootstrap_org is idempotent.
-            overslash_db::repos::org_bootstrap::bootstrap_org(
+
+    // Step 1: ensure Dev Org exists. Look up the admin identity to find the
+    // org or create one. We always run org_bootstrap (idempotent) so
+    // Everyone/Admins groups + the overslash service instance exist.
+    let admin_org_id = match system.find_user_identity_by_email(admin_email).await? {
+        Some(existing) => existing.org_id,
+        None => match org::create(&state.db, "Dev Org", "dev-org", "standard").await {
+            Ok(new_org) => new_org.id,
+            Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+                org::get_by_slug(&state.db, "dev-org")
+                    .await?
+                    .ok_or_else(|| AppError::Internal("dev race: dev-org missing".into()))?
+                    .id
+            }
+            Err(e) => return Err(e.into()),
+        },
+    };
+    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, admin_org_id, None).await?;
+
+    // Step 2: resolve (or lazily create) the requested profile's identity
+    // inside Dev Org. Every profile gets the same provisioning the
+    // production OIDC callback applies — `users` row, `user_id` on the
+    // identity, Everyone + Myself groups, membership row — so `/account`,
+    // the org switcher, group ceilings, and is_admin all behave. Admin
+    // additionally joins the Admins group via `bootstrap_org(.., Some(id))`.
+    let profile_email = profile.email();
+    let identity_id =
+        if let Some(existing) = system.find_user_identity_by_email(profile_email).await? {
+            // Re-assert admin group membership on every admin login. Without
+            // this, an admin removed from the Admins group manually (or by a
+            // test that toggled it off) silently loses admin powers on the
+            // next sign-in. bootstrap_org is idempotent, so this is cheap.
+            if matches!(profile, DevProfile::Admin) {
+                overslash_db::repos::org_bootstrap::bootstrap_org(
+                    &state.db,
+                    admin_org_id,
+                    Some(existing.id),
+                )
+                .await?;
+            }
+            existing.id
+        } else {
+            let scope = OrgScope::new(admin_org_id, state.db.clone());
+            let new_identity = scope
+                .create_identity_with_email(
+                    profile.display_name(),
+                    "user",
+                    Some(profile.external_id()),
+                    Some(profile_email),
+                    json!({"dev": true, "profile": match profile {
+                        DevProfile::Admin => "admin",
+                        DevProfile::Member => "member",
+                        DevProfile::Readonly => "readonly",
+                    }}),
+                )
+                .await?;
+
+            let user = user_repo::create_org_only(
                 &state.db,
-                existing.org_id,
-                Some(existing.id),
+                Some(profile_email),
+                Some(profile.display_name()),
             )
             .await?;
-            (existing.org_id, existing.id)
-        } else {
-            match org::create(&state.db, "Dev Org", "dev-org", "standard").await {
-                Ok(new_org) => {
-                    let new_scope = OrgScope::new(new_org.id, state.db.clone());
-                    let new_identity = new_scope
-                        .create_identity_with_email(
-                            "Dev User",
-                            "user",
-                            Some("dev-local"),
-                            Some(dev_email),
-                            json!({"dev": true}),
-                        )
-                        .await?;
-                    // Bootstrap system assets and add dev user as admin
-                    overslash_db::repos::org_bootstrap::bootstrap_org(
-                        &state.db,
-                        new_org.id,
-                        Some(new_identity.id),
-                    )
-                    .await?;
-                    (new_org.id, new_identity.id)
-                }
-                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                    let existing = system
-                        .find_user_identity_by_email(dev_email)
-                        .await?
-                        .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
-                    overslash_db::repos::org_bootstrap::bootstrap_org(
-                        &state.db,
-                        existing.org_id,
-                        Some(existing.id),
-                    )
-                    .await?;
-                    (existing.org_id, existing.id)
-                }
+            overslash_db::repos::identity::set_user_id(
+                &state.db,
+                admin_org_id,
+                new_identity.id,
+                Some(user.id),
+            )
+            .await?;
+
+            let role = if matches!(profile, DevProfile::Admin) {
+                // Admins join the Admins group AND get an admin membership row,
+                // matching what POST /v1/orgs and the org-creator IdP path do.
+                overslash_db::repos::org_bootstrap::bootstrap_org(
+                    &state.db,
+                    admin_org_id,
+                    Some(new_identity.id),
+                )
+                .await?;
+                membership::ROLE_ADMIN
+            } else {
+                overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+                    &state.db,
+                    admin_org_id,
+                    new_identity.id,
+                )
+                .await?;
+                membership::ROLE_MEMBER
+            };
+
+            match membership::create(&state.db, user.id, admin_org_id, role).await {
+                Ok(_) => {}
+                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
                 Err(e) => return Err(e.into()),
             }
+
+            new_identity.id
         };
+    let org_id = admin_org_id;
+    let dev_email = profile_email;
 
     // Dev login was single-org pre-multi-org. Post-040 we still back every
     // `kind='user'` identity with a `users` row; resolve it here so the dev

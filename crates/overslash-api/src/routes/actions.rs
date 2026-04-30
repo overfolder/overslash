@@ -646,6 +646,7 @@ async fn call_action_impl(
 
     let (resolved_url, resolved_headers) = inject_secrets(&action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let resolved_url = state.config.apply_base_overrides(&resolved_url);
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {

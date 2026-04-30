@@ -162,6 +162,7 @@ pub async fn call_action_request(
 
     let (resolved_url, resolved_headers) = inject_secrets(action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let resolved_url = ctx.state.config.apply_base_overrides(&resolved_url);
 
     // ── Streaming path ───────────────────────────────────────────────
     if ctx.prefer_stream {
