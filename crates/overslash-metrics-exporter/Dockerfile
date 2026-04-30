@@ -2,7 +2,7 @@
 # Mirrors the API Dockerfile's two-stage layout so workspace dependency
 # caching works the same way.
 
-FROM rust:1.94-trixie AS builder
+FROM rust:1.95-trixie AS builder
 
 WORKDIR /app
 

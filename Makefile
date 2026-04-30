@@ -3,7 +3,8 @@
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
        logs logs-deploy \
-       shortener-dev shortener-down shortener-deploy
+       shortener-dev shortener-down shortener-deploy \
+       deploy
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -112,8 +113,8 @@ shortener-deploy:
 	$(eval SHA ?= $(shell git rev-parse --short HEAD))
 	@if [ "$(ENV)" = "prod" ] && [ "$(DEPLOY_AUTO_APPROVE)" != "1" ]; then \
 		echo -e "$(RED)About to deploy $(SERVICE) ($(IMAGE):$(SHA)) to PRODUCTION ($(GCP_PROJECT))$(NC)"; \
-		echo -n "Type 'deploy' to confirm: "; \
-		read confirm && [ "$$confirm" = "deploy" ] || (echo "Aborted." && exit 1); \
+		echo -n "Type 'prod' to confirm: "; \
+		read confirm && [ "$$confirm" = "prod" ] || (echo "Aborted." && exit 1); \
 	fi
 	@echo -e "$(GREEN)[1/3] docker build -> $(IMAGE):$(SHA)$(NC)"
 	docker build \
@@ -131,6 +132,25 @@ shortener-deploy:
 		--project $(GCP_PROJECT) \
 		--quiet
 	@echo -e "$(GREEN)Deployed $(SERVICE) at $(IMAGE):$(SHA)$(NC)"
+
+# Build, push, and deploy a Cloud Run service or Job from local — bypasses
+# Cloud Build entirely. Useful when CB is degraded (incidents, weekends) or
+# when you want to skip the GitHub-trigger round-trip. Wakes Cloud SQL first
+# so it works after the night scheduler has paused the dev instance.
+#
+# Usage:
+#   make deploy SVC=api                       # api → dev
+#   make deploy SVC=metrics-exporter ENV=dev  # exporter Cloud Run Job
+#   make deploy SVC=shortener ENV=prod        # prod (asks for confirmation)
+#   make deploy SVC=api SHA=v1.2.3            # override image tag
+#   DEPLOY_AUTO_APPROVE=1 make deploy SVC=api ENV=prod
+#   CONTAINER_RUNTIME=podman make deploy SVC=api
+deploy:
+ifndef SVC
+	@echo -e "$(RED)SVC is required. Usage: make deploy SVC=api|metrics-exporter|shortener [ENV=dev|prod]$(NC)"
+	@exit 1
+endif
+	@bin/deploy-cloudrun.sh $(SVC) $(ENV)
 
 # Remove worktree containers and volumes
 worktree-clean:
