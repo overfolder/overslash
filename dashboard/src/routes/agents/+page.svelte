@@ -179,7 +179,18 @@
 				{ elicitation_enabled: next }
 			);
 			if (detail?.agentId === targetId) {
-				detail.mcp = resp.connection;
+				if (resp.connection) {
+					detail.mcp = resp.connection;
+				} else {
+					// The binding vanished between the GET that rendered the
+					// switch and this PATCH (e.g. another tab disconnected the
+					// client). Collapse the card and surface why via mcpError
+					// — that path renders the dashed error box instead of the
+					// blank "no connection" state, so the user knows the
+					// toggle didn't silently no-op.
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+				}
 			}
 		} catch (e) {
 			if (detail?.agentId === targetId) {
