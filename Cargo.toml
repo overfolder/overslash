@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "crates/oversla-sh", "crates/overslash-metrics", "crates/overslash-metrics-exporter", "tests/mock-target"]
+members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "crates/oversla-sh", "crates/overslash-metrics", "crates/overslash-metrics-exporter", "crates/overslash-fakes", "tests/mock-target"]
 
 [workspace.package]
 edition = "2024"

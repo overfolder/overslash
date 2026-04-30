@@ -242,10 +242,70 @@ jobs:
       - name: Build (strict — fails on any warning)
         run: npm run build:strict
 
+  e2e:
+    name: E2E (Playwright)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: overslash
+          POSTGRES_PASSWORD: overslash
+          POSTGRES_DB: overslash
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://overslash:overslash@localhost:5432/overslash
+      SQLX_OFFLINE: "true"
+      WORKTREE_STATE_DIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci --include=dev
+
+      - name: Install Playwright browsers
+        working-directory: dashboard
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e suite
+        run: make e2e
+
+      - name: Upload Playwright trace artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: |
+            dashboard/test-results
+            ${{ runner.temp }}/.e2e
+          if-no-files-found: ignore
+          retention-days: 7
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, sqlx-check, coverage, infra, dashboard]
+    needs: [changes, lint, sqlx-check, coverage, infra, dashboard, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped

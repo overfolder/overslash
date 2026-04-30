@@ -604,6 +604,7 @@ where
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
     };
     customize(&mut config);
 
@@ -720,6 +721,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
     };
 
     let state = overslash_api::AppState {
@@ -821,6 +823,7 @@ pub async fn start_api_with_auth_providers(
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
     };
 
     let state = overslash_api::AppState {
@@ -884,230 +887,15 @@ pub async fn start_api_with_auth_providers(
 
 /// Start the mock target in-process on a random port.
 /// Includes: echo, webhook receiver, and mock OAuth token endpoint.
+/// Boot the combined OAuth/OIDC + GitHub user + echo + webhook fake on an
+/// OS-assigned `127.0.0.1` port. The handle is leaked because tests treat
+/// the fake as long-lived; dropping it would shut the server down.
 pub async fn start_mock() -> SocketAddr {
-    use axum::{
-        Form, Json, Router,
-        body::Bytes,
-        extract::State,
-        http::HeaderMap,
-        routing::{get, post},
-    };
-    use tokio::sync::Mutex;
-
-    #[derive(Default)]
-    struct MockState {
-        webhooks: Vec<Value>,
-        webhook_headers: Vec<Value>,
-    }
-
-    type S = Arc<Mutex<MockState>>;
-
-    async fn echo(uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
-        let h: serde_json::Map<String, Value> = headers
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
-            .collect();
-        Json(json!({
-            "headers": h,
-            "body": String::from_utf8_lossy(&body).to_string(),
-            "uri": uri.to_string(),
-        }))
-    }
-
-    async fn receive_webhook(
-        State(s): State<S>,
-        headers: HeaderMap,
-        Json(p): Json<Value>,
-    ) -> &'static str {
-        let h: serde_json::Map<String, Value> = headers
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
-            .collect();
-        let mut state = s.lock().await;
-        state.webhooks.push(p);
-        state.webhook_headers.push(json!(h));
-        "ok"
-    }
-
-    async fn list_webhooks(State(s): State<S>) -> Json<Value> {
-        let state = s.lock().await;
-        Json(json!({
-            "webhooks": state.webhooks.clone(),
-            "headers": state.webhook_headers.clone(),
-        }))
-    }
-
-    // Mock OAuth token endpoint — returns fake tokens for any code/refresh_token
-    async fn oauth_token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {
-        let grant_type = params
-            .iter()
-            .find(|(k, _)| k == "grant_type")
-            .map(|(_, v)| v.as_str())
-            .unwrap_or("");
-
-        match grant_type {
-            "authorization_code" => {
-                let code = params
-                    .iter()
-                    .find(|(k, _)| k == "code")
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or("unknown");
-                Json(json!({
-                    "access_token": format!("mock_access_{code}"),
-                    "refresh_token": format!("mock_refresh_{code}"),
-                    "expires_in": 3600,
-                    "token_type": "Bearer",
-                }))
-            }
-            "refresh_token" => Json(json!({
-                "access_token": "mock_refreshed_access_token",
-                "refresh_token": "mock_refreshed_refresh_token",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-            })),
-            _ => Json(json!({"error": "unsupported_grant_type"})),
-        }
-    }
-
-    /// Returns N bytes of 0xAB. Usage: GET /large-file?size=1000
-    async fn large_file(
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> axum::response::Response {
-        let size: usize = params
-            .get("size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1024);
-        let data = vec![0xABu8; size];
-        ([("content-type", "application/octet-stream")], data).into_response()
-    }
-
-    use axum::response::IntoResponse;
-
-    /// Simulates Google Drive redirect: returns 302 to /drive/files/content
-    async fn drive_download(
-        headers: HeaderMap,
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> axum::response::Response {
-        // Verify auth header is present
-        let has_auth = headers.get("authorization").is_some();
-        let size: usize = params
-            .get("size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
-        if !has_auth {
-            return (axum::http::StatusCode::UNAUTHORIZED, "missing auth").into_response();
-        }
-        // Redirect to content endpoint (simulating Google's redirect)
-        axum::response::Redirect::temporary(&format!("/drive/files/content?size={size}"))
-            .into_response()
-    }
-
-    /// Serves file content (redirect target — no auth required, like Google's CDN)
-    async fn drive_content(
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> axum::response::Response {
-        let size: usize = params
-            .get("size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
-        let data = vec![0xCDu8; size];
-        ([("content-type", "application/pdf")], data).into_response()
-    }
-
-    // Mock OIDC userinfo endpoint — returns a standard OIDC claims set.
-    //
-    // `sub` is stable across logins so the multi-org auth flow (keyed on
-    // `(provider, subject)`) treats repeat logins as the same human. The
-    // token we received is ignored for claim purposes — it only proves the
-    // caller obtained a valid access_token from the mock token endpoint.
-    async fn oidc_userinfo(headers: HeaderMap) -> Json<Value> {
-        let _token = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("unknown");
-        Json(json!({
-            "sub": "oidc-sub-testuser",
-            "email": "testuser@example.com",
-            "name": "Test User",
-            "picture": "https://example.com/avatar.png",
-        }))
-    }
-
-    // Mock GitHub user endpoint
-    async fn github_user(headers: HeaderMap) -> Json<Value> {
-        let _token = headers.get("authorization");
-        Json(json!({
-            "id": 12345,
-            "login": "testuser",
-            "name": "Test GitHub User",
-            "avatar_url": "https://github.com/avatar.png",
-        }))
-    }
-
-    // Mock GitHub user emails endpoint
-    async fn github_user_emails() -> Json<Value> {
-        Json(json!([
-            { "email": "testuser@example.com", "primary": true, "verified": true },
-            { "email": "other@example.com", "primary": false, "verified": true },
-        ]))
-    }
-
-    // Mock OIDC Discovery endpoint — returns a well-known config document.
-    // The issuer is dynamically constructed from the Host header so tests can
-    // use the mock server's address and pass issuer validation.
-    async fn oidc_discovery(headers: HeaderMap) -> Json<Value> {
-        let host = headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("localhost");
-        let base = format!("http://{host}");
-        Json(json!({
-            "issuer": base,
-            "authorization_endpoint": format!("{base}/oauth/authorize"),
-            "token_endpoint": format!("{base}/oauth/token"),
-            "userinfo_endpoint": format!("{base}/oidc/userinfo"),
-            "jwks_uri": format!("{base}/oidc/jwks"),
-            "scopes_supported": ["openid", "email", "profile", "offline_access"],
-            "response_types_supported": ["code"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
-        }))
-    }
-
-    // Mock GitHub user endpoint with no verified emails (edge case)
-    async fn github_user_emails_none_verified() -> Json<Value> {
-        Json(json!([
-            { "email": "unverified@example.com", "primary": true, "verified": false },
-        ]))
-    }
-
-    let state: S = Arc::new(Mutex::new(MockState::default()));
-    let app = Router::new()
-        .route(
-            "/echo",
-            get(echo).post(echo).put(echo).delete(echo).patch(echo),
-        )
-        .route("/large-file", get(large_file))
-        .route("/drive/files/download", get(drive_download))
-        .route("/drive/files/content", get(drive_content))
-        .route("/webhooks/receive", post(receive_webhook))
-        .route("/webhooks/received", get(list_webhooks))
-        .route("/oauth/token", post(oauth_token))
-        .route("/oidc/userinfo", get(oidc_userinfo))
-        .route("/.well-known/openid-configuration", get(oidc_discovery))
-        .route("/github/user", get(github_user))
-        .route("/github/user/emails", get(github_user_emails))
-        .route(
-            "/github/user/emails-none-verified",
-            get(github_user_emails_none_verified),
-        )
-        .fallback(echo)
-        .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let handle = overslash_fakes::combined::start_in_process().await;
+    let addr = handle.addr;
+    // Leak so the listener stays alive for the whole test process — matches
+    // the prior in-process implementation that never shut its spawn down.
+    Box::leak(Box::new(handle));
     addr
 }
 
@@ -1394,6 +1182,7 @@ pub async fn start_api_with_registry(
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
     };
 
     let state = overslash_api::AppState {
@@ -1505,6 +1294,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
     };
 
     let state = overslash_api::AppState {
@@ -1588,6 +1378,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         stripe_eur_lookup_key: "overslash_seat_eur".into(),
         stripe_usd_lookup_key: "overslash_seat_usd".into(),
         stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
     };
 
     let state = overslash_api::AppState {

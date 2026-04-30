@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 
 #[derive(Clone, Debug)]
@@ -69,6 +70,60 @@ pub struct Config {
     /// (e.g. `.app.overslash.com`). When None, cookies stay origin-scoped,
     /// which is what local dev without TLS needs.
     pub session_cookie_domain: Option<String>,
+    /// Test-only host rewrites applied to every upstream URL right before the
+    /// HTTP request goes out. Keyed by hostname (`api.github.com`) → base URL
+    /// (`http://127.0.0.1:54321`). Loaded from `OVERSLASH_SERVICE_BASE_OVERRIDES`
+    /// in the form `host=base_url[,host=base_url...]`. The override is
+    /// silently ignored unless the override target is a loopback address or
+    /// `OVERSLASH_SSRF_ALLOW_PRIVATE=1` is set, so prod deploys can leave the
+    /// var defined harmlessly.
+    pub service_base_overrides: HashMap<String, String>,
+}
+
+fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(s) = raw.filter(|s| !s.trim().is_empty()) else {
+        return out;
+    };
+    for entry in s.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = entry.split_once('=') else {
+            continue;
+        };
+        let host = k.trim();
+        let base = v.trim();
+        if host.is_empty() || base.is_empty() {
+            continue;
+        }
+        out.insert(host.to_string(), base.to_string());
+    }
+    out
+}
+
+/// Returns true if the override target is loopback or
+/// `OVERSLASH_SSRF_ALLOW_PRIVATE=1` is in the environment. Mirrors the SSRF
+/// guard so production deploys can leave `OVERSLASH_SERVICE_BASE_OVERRIDES`
+/// set harmlessly: a public override target is silently dropped.
+fn ssrf_allowed_for(base_url: &str) -> bool {
+    if env::var("OVERSLASH_SSRF_ALLOW_PRIVATE").is_ok() {
+        return true;
+    }
+    let Ok(parsed) = url::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    false
 }
 
 /// Build the default `public_url` from the bind host/port. We map
@@ -181,6 +236,9 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "https://api.stripe.com/v1".into()),
+            service_base_overrides: parse_service_base_overrides(
+                env::var("OVERSLASH_SERVICE_BASE_OVERRIDES").ok().as_deref(),
+            ),
         }
     }
 
@@ -226,6 +284,42 @@ impl Config {
         } else {
             format!("{}{dash}{path}", self.public_url.trim_end_matches('/'))
         }
+    }
+
+    /// Apply host-based base URL overrides to an upstream URL.
+    ///
+    /// If the URL's host matches an entry in `service_base_overrides`, the
+    /// `scheme://host[:port]` portion is replaced with the override base
+    /// (preserving path + query). When no override matches, returns the URL
+    /// unchanged.
+    ///
+    /// The override is silently skipped if the override target is not loopback
+    /// and `OVERSLASH_SSRF_ALLOW_PRIVATE` isn't set — the SSRF guard is
+    /// honored regardless. Errors in URL parsing fall through unchanged.
+    pub fn apply_base_overrides(&self, url_str: &str) -> String {
+        if self.service_base_overrides.is_empty() {
+            return url_str.to_string();
+        }
+        let Ok(parsed) = url::Url::parse(url_str) else {
+            return url_str.to_string();
+        };
+        let Some(host) = parsed.host_str() else {
+            return url_str.to_string();
+        };
+        let Some(override_base) = self.service_base_overrides.get(host) else {
+            return url_str.to_string();
+        };
+        if !ssrf_allowed_for(override_base) {
+            return url_str.to_string();
+        }
+        // Splice override base + path + query.
+        let mut out = override_base.trim_end_matches('/').to_string();
+        out.push_str(parsed.path());
+        if let Some(q) = parsed.query() {
+            out.push('?');
+            out.push_str(q);
+        }
+        out
     }
 
     /// Returns env-var-based auth credentials for a given provider key, if configured.
@@ -288,5 +382,113 @@ mod tests {
             default_public_url("[2001:db8::1]", 8080),
             "http://[2001:db8::1]:8080"
         );
+    }
+
+    #[test]
+    fn parse_service_base_overrides_handles_multiple_entries() {
+        let map = parse_service_base_overrides(Some(
+            "api.github.com=http://127.0.0.1:9101,slack.com=http://127.0.0.1:9102",
+        ));
+        assert_eq!(
+            map.get("api.github.com"),
+            Some(&"http://127.0.0.1:9101".to_string())
+        );
+        assert_eq!(
+            map.get("slack.com"),
+            Some(&"http://127.0.0.1:9102".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_service_base_overrides_skips_malformed_entries() {
+        let map = parse_service_base_overrides(Some(
+            "api.github.com=http://127.0.0.1:9101,bad-no-equals,=http://x,foo=",
+        ));
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("api.github.com"));
+    }
+
+    #[test]
+    fn apply_base_overrides_swaps_host_keeping_path_and_query() {
+        let mut cfg = empty_test_config();
+        cfg.service_base_overrides
+            .insert("api.github.com".into(), "http://127.0.0.1:9101".into());
+        assert_eq!(
+            cfg.apply_base_overrides("https://api.github.com/repos/x/y?per_page=5"),
+            "http://127.0.0.1:9101/repos/x/y?per_page=5"
+        );
+    }
+
+    #[test]
+    fn apply_base_overrides_unchanged_when_host_not_listed() {
+        let mut cfg = empty_test_config();
+        cfg.service_base_overrides
+            .insert("api.github.com".into(), "http://127.0.0.1:9101".into());
+        assert_eq!(
+            cfg.apply_base_overrides("https://api.slack.com/x"),
+            "https://api.slack.com/x"
+        );
+    }
+
+    #[test]
+    fn apply_base_overrides_drops_non_loopback_target_without_ssrf_bypass() {
+        // Without OVERSLASH_SSRF_ALLOW_PRIVATE, a non-loopback override is
+        // silently ignored — guards prod deploys against accidentally-set vars.
+        let mut cfg = empty_test_config();
+        cfg.service_base_overrides.insert(
+            "api.github.com".into(),
+            "https://attacker.example.com".into(),
+        );
+        // Make sure the env var is NOT set for this test.
+        // SAFETY: tests run single-threaded inside this module.
+        // We deliberately do not use a temp guard — `cfg.apply_base_overrides`
+        // reads the env at call time.
+        unsafe {
+            env::remove_var("OVERSLASH_SSRF_ALLOW_PRIVATE");
+        }
+        assert_eq!(
+            cfg.apply_base_overrides("https://api.github.com/x"),
+            "https://api.github.com/x"
+        );
+    }
+
+    fn empty_test_config() -> Config {
+        Config {
+            host: "127.0.0.1".into(),
+            port: 0,
+            database_url: String::new(),
+            secrets_encryption_key: "ab".repeat(32),
+            signing_key: "cd".repeat(32),
+            approval_expiry_secs: 1800,
+            execution_pending_ttl_secs: 900,
+            execution_replay_timeout_secs: 30,
+            services_dir: "services".into(),
+            google_auth_client_id: None,
+            google_auth_client_secret: None,
+            github_auth_client_id: None,
+            github_auth_client_secret: None,
+            public_url: "http://localhost:0".into(),
+            dev_auth_enabled: false,
+            max_response_body_bytes: 0,
+            filter_timeout_ms: 0,
+            dashboard_url: "/".into(),
+            dashboard_origin: "*".into(),
+            redis_url: None,
+            default_rate_limit: 0,
+            default_rate_window_secs: 0,
+            allow_org_creation: true,
+            single_org_mode: None,
+            cloud_billing: false,
+            stripe_secret_key: None,
+            stripe_webhook_secret: None,
+            stripe_eur_lookup_key: "x".into(),
+            stripe_usd_lookup_key: "x".into(),
+            stripe_eur_price_id: None,
+            stripe_usd_price_id: None,
+            stripe_api_base: "https://api.stripe.com/v1".into(),
+            app_host_suffix: None,
+            session_cookie_domain: None,
+            service_base_overrides: HashMap::new(),
+        }
     }
 }

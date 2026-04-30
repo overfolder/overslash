@@ -64,6 +64,18 @@ pub fn load_config(host: String, port: u16) -> Config {
     if std::env::var("PUBLIC_URL").is_err() {
         config.public_url = default_public_url(&config.host, config.port);
     }
+    if !config.service_base_overrides.is_empty() {
+        let mut entries: Vec<_> = config
+            .service_base_overrides
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        entries.sort();
+        tracing::info!(
+            overrides = ?entries,
+            "OVERSLASH_SERVICE_BASE_OVERRIDES active — upstream hosts rewritten before each call",
+        );
+    }
     config
 }
 

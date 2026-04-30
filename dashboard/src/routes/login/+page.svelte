@@ -14,8 +14,12 @@
 		return `/auth/login/${encodeURIComponent(key)}`;
 	}
 
+	let devProfile = $state<'admin' | 'member' | 'readonly'>('admin');
+
 	async function devLogin() {
-		const res = await fetch('/auth/dev/token', { credentials: 'include' });
+		const res = await fetch(`/auth/dev/token?profile=${devProfile}`, {
+			credentials: 'include'
+		});
 		if (res.ok) {
 			await goto(returnTo);
 		}
@@ -61,9 +65,21 @@
 			<div class="providers">
 				{#each providers as p (p.key)}
 					{#if p.key === 'dev'}
-						<button class="btn {brandClass(p.key)}" onclick={devLogin}>
-							Continue with {p.display_name}
-						</button>
+						<div class="dev-row">
+							<button class="btn {brandClass(p.key)}" onclick={devLogin}>
+								Continue with {p.display_name}
+							</button>
+							<select
+								class="profile-select"
+								bind:value={devProfile}
+								aria-label="Dev login profile"
+								data-testid="dev-profile"
+							>
+								<option value="admin">admin</option>
+								<option value="member">member</option>
+								<option value="readonly">readonly</option>
+							</select>
+						</div>
 					{:else}
 						<a class="btn {brandClass(p.key)}" href={loginUrl(p.key)}>
 							Continue with {p.display_name}
@@ -174,6 +190,26 @@
 
 	.btn-dev:hover {
 		filter: brightness(0.95);
+	}
+
+	.dev-row {
+		display: flex;
+		gap: 0.4rem;
+		align-items: stretch;
+	}
+
+	.dev-row .btn {
+		flex: 1;
+	}
+
+	.profile-select {
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		padding: 0 0.5rem;
+		border-radius: 8px;
+		border: 1px solid var(--color-border);
+		background: var(--color-surface);
+		color: var(--color-text);
 	}
 
 	.empty {
