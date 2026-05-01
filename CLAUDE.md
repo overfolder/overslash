@@ -43,6 +43,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 
 - **Split integration tests by provider.** Provider-specific tests (OAuth flows, service actions) go in their own file under `crates/overslash-api/tests/` (e.g., `oauth_x.rs`, `google_calendar.rs`). Shared helpers live in `tests/common/mod.rs`. The main `integration.rs` keeps core/generic tests only.
 - **Use `--test-threads=4`** (or similar) when running the full suite locally to avoid Postgres connection pool exhaustion.
+- **PR screenshots use the scenarios library.** `dashboard/tests/scenarios/` is the canonical way to capture dashboard screenshots for PRs. Boot the real stack with `make e2e-up`, then run a `dashboard/scripts/screenshot-*.mjs` script — each one signs in via `/auth/dev/token` and seeds fixtures by hitting the real API, so the resulting PNGs reflect what the dashboard actually renders, not a hand-rolled JSON fake. Do not add new route-interception screenshot scripts; extend the scenarios library instead. See [dashboard/tests/scenarios/README.md](dashboard/tests/scenarios/README.md).
 
 ## Worktree Isolation
 
