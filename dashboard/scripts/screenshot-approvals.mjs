@@ -25,21 +25,27 @@ const snap = await makeSnapper(session);
 try {
 	// 1. Logged-out redirect: a fresh browser context with NO cookies. The
 	//    dashboard's auth guard should bounce to /login?return_to=...
+	//    Inner try/finally ensures the browser closes even if any of the
+	//    goto/waitForURL/screenshot calls throw — otherwise the script
+	//    would leak a chromium process per failed run.
 	{
 		const browser = await chromium.launch();
-		const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-		const page = await ctx.newPage();
-		await page.goto(`${session.dashboardUrl}/approvals/${approval.id}`, {
-			waitUntil: 'networkidle'
-		});
-		await page.waitForURL(/\/login\?return_to=/, { timeout: 10_000 });
-		await page.waitForTimeout(500);
-		await page.screenshot({
-			path: resolve('screenshots', 'logged-out-redirect.png'),
-			fullPage: true
-		});
-		console.log('[approvals] wrote logged-out-redirect.png');
-		await browser.close();
+		try {
+			const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+			const page = await ctx.newPage();
+			await page.goto(`${session.dashboardUrl}/approvals/${approval.id}`, {
+				waitUntil: 'networkidle'
+			});
+			await page.waitForURL(/\/login\?return_to=/, { timeout: 10_000 });
+			await page.waitForTimeout(500);
+			await page.screenshot({
+				path: resolve('screenshots', 'logged-out-redirect.png'),
+				fullPage: true
+			});
+			console.log('[approvals] wrote logged-out-redirect.png');
+		} finally {
+			await browser.close();
+		}
 	}
 
 	// 2. Pending state.
