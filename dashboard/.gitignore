@@ -7,4 +7,6 @@ dist/
 .env.*
 !.env.example
 screenshots/
+test-results/
+playwright-report/
 .vercel
