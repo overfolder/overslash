@@ -95,6 +95,20 @@ STRIPE_URL=$(python3    -c "import json,sys; print(json.load(open('$FAKES_STATE_
 MCP_URL=$(python3       -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['mcp'])")
 log "fakes ready: oauth_as=$OAUTH_AS_URL openapi=$OPENAPI_URL stripe=$STRIPE_URL mcp=$MCP_URL"
 
+# Repoint the GitHub oauth_provider row at the fake AS so the dashboard's
+# Connect button bounces through our local server. Migration 009 seeds these
+# columns with real github.com URLs — fine for production, useless for e2e.
+# `userinfo_endpoint` is fetched directly by the OAuth callback (no service
+# base override applies there), so it also needs the fake URL.
+log "seeding github oauth_provider endpoints at fake AS"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 >/dev/null <<SQL
+UPDATE oauth_providers SET
+  authorization_endpoint = '$OAUTH_AS_URL/oauth/authorize',
+  token_endpoint         = '$OAUTH_AS_URL/oauth/token',
+  userinfo_endpoint      = '$OAUTH_AS_URL/github/user'
+WHERE key = 'github';
+SQL
+
 # 4. Pick a free port and start the API.
 API_PORT=$(free_port)
 API_URL="http://127.0.0.1:$API_PORT"
@@ -111,6 +125,11 @@ log "starting API on $API_URL"
 DEV_AUTH=1 \
 OVERSLASH_SSRF_ALLOW_PRIVATE=1 \
 OVERSLASH_SERVICE_BASE_OVERRIDES="$OVERRIDES" \
+OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 \
+OAUTH_GITHUB_CLIENT_ID=e2e-github-client-id \
+OAUTH_GITHUB_CLIENT_SECRET=e2e-github-client-secret \
+GITHUB_AUTH_CLIENT_ID=e2e-github-client-id \
+GITHUB_AUTH_CLIENT_SECRET=e2e-github-client-secret \
 DATABASE_URL="$DATABASE_URL" \
 SECRETS_ENCRYPTION_KEY="$ENCRYPTION_KEY" \
 SIGNING_KEY="$SIGNING_KEY" \
