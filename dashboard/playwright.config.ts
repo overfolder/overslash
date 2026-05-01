@@ -34,11 +34,15 @@ for (const k of ['AUTH0_TENANT_URL', 'OKTA_TENANT_URL']) {
 	const v = process.env[k] ?? envFromFile[k];
 	if (v) process.env[k] = v;
 }
-// MCP_VARIANTS_JSON is the per-variant URL map written by overslash-fakes
-// (one fake per capability shape). Hoist it onto process.env so scenario
-// specs can resolve a URL by variant name.
-if (envFromFile.MCP_VARIANTS_JSON && !process.env.MCP_VARIANTS_JSON) {
-	process.env.MCP_VARIANTS_JSON = envFromFile.MCP_VARIANTS_JSON;
+// Per-variant MCP URLs are emitted as `MCP_VARIANT_<NAME>_URL` env vars
+// by the harness (one entry per capability shape). They're already
+// shell-safe to `source`, so no additional unmarshalling here — just
+// hoist anything starting with that prefix onto process.env so the
+// puppet fixture can read them by variant name.
+for (const [k, v] of Object.entries(envFromFile)) {
+	if (k.startsWith('MCP_VARIANT_') && !process.env[k]) {
+		process.env[k] = v;
+	}
 }
 
 export default defineConfig({

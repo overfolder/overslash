@@ -2,7 +2,8 @@
 //
 // The Rust side ships one upstream MCP fake per capability shape (see
 // `overslash_fakes::scenarios::McpVariant`). The harness exposes their URLs
-// in the per-worktree `MCP_VARIANTS_JSON` env. This fixture surfaces:
+// as individual `MCP_VARIANT_<NAME>_URL` env vars (shell-safe — keeps
+// `dashboard.env` sourceable from bash). This fixture surfaces:
 //
 //   1. `mcpUrlFor(variant)` — pick the upstream URL for a variant.
 //   2. `PuppetClient` / `startPuppet(...)` — minimal MCP-client driver over
@@ -30,18 +31,12 @@ export const ALL_VARIANTS: McpVariant[] = [
 ];
 
 export function mcpUrlFor(variant: McpVariant): string {
-	const raw = process.env.MCP_VARIANTS_JSON;
-	if (!raw) {
-		throw new Error(
-			'MCP_VARIANTS_JSON is not set — re-run the harness so overslash-fakes ' +
-				'writes the per-variant URL map to .e2e/dashboard.env.'
-		);
-	}
-	const map = JSON.parse(raw) as Record<string, string>;
-	const url = map[variant];
+	const envKey = `MCP_VARIANT_${variant.replace(/-/g, '_').toUpperCase()}_URL`;
+	const url = process.env[envKey];
 	if (!url) {
 		throw new Error(
-			`MCP variant "${variant}" not present in MCP_VARIANTS_JSON: ${Object.keys(map).join(', ')}`
+			`${envKey} is not set — re-run the harness so overslash-fakes writes ` +
+				`per-variant URLs into .e2e/dashboard.env.`
 		);
 	}
 	return url;

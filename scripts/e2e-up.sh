@@ -95,9 +95,20 @@ STRIPE_URL=$(python3    -c "import json,sys; print(json.load(open('$FAKES_STATE_
 MCP_URL=$(python3       -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['mcp'])")
 AUTH0_TENANT_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['auth0']['tenant_url'])")
 OKTA_TENANT_URL=$(python3  -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['okta']['tenant_url'])")
-MCP_VARIANTS_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('$FAKES_STATE_FILE'))['mcp_variants']))")
+# Per-variant URLs: emitted as `MCP_VARIANT_<NAME>_URL` env vars (kebab-case
+# names get uppercased + dashes-to-underscores) so the env file is safe to
+# `source` from bash without the JSON braces being mistaken for brace
+# expansion. Playwright reconstructs the map by scanning these.
+MCP_VARIANT_LINES=$(python3 -c "
+import json
+m = json.load(open('$FAKES_STATE_FILE'))['mcp_variants']
+for k, v in m.items():
+    name = k.replace('-', '_').upper()
+    print(f'MCP_VARIANT_{name}_URL={v}')
+")
 log "fakes ready: oauth_as=$OAUTH_AS_URL openapi=$OPENAPI_URL stripe=$STRIPE_URL mcp=$MCP_URL auth0=$AUTH0_TENANT_URL okta=$OKTA_TENANT_URL"
-log "  mcp variants: $MCP_VARIANTS_JSON"
+log "  mcp variants:"
+while IFS= read -r line; do log "    $line"; done <<< "$MCP_VARIANT_LINES"
 
 # Repoint the GitHub oauth_provider row at the fake AS so the dashboard's
 # Connect button bounces through our local server. Migration 009 seeds these
@@ -254,7 +265,7 @@ STRIPE_URL=$STRIPE_URL
 MCP_URL=$MCP_URL
 AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
-MCP_VARIANTS_JSON=$MCP_VARIANTS_JSON
+$MCP_VARIANT_LINES
 EOF
 
 # Suppress unused-var warnings for the host we computed but don't currently
