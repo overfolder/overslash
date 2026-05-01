@@ -1,4 +1,12 @@
 import { test, expect } from '../fixtures/auth';
+import {
+	loginViaOidcVariant,
+	ORG_A_AUTH0,
+	ORG_B_OKTA,
+	PROVIDER_AUTH0,
+	PROVIDER_OKTA,
+	SEEDED_PROFILES
+} from '../../scenarios/multi-idp';
 
 // Per-org multi-IdP tests. The harness (scripts/e2e-up.sh) registers two
 // fake-backed providers (`auth0_e2e`, `okta_e2e`) and attaches them to
@@ -54,53 +62,48 @@ test.describe('multi-IdP per-org', () => {
 			.get(`${auth0Tenant}/userinfo`, { headers: { authorization: 'Bearer x' } })
 			.then((r) => r.json());
 		expect(auth0User.groups).toBeUndefined();
-		expect(auth0User['https://overslash.test/groups']).toContain('org-a-admins');
+		expect(auth0User['https://overslash.test/groups']).toContain(SEEDED_PROFILES.auth0.groups[0]);
 
 		const oktaUser = await request
 			.get(`${oktaTenant}/v1/userinfo`, { headers: { authorization: 'Bearer x' } })
 			.then((r) => r.json());
-		expect(oktaUser.groups).toContain('org-b-members');
-		expect(oktaUser.preferred_username).toBe('bob@orgb.example');
+		expect(oktaUser.groups).toContain(SEEDED_PROFILES.okta.groups[0]);
+		expect(oktaUser.preferred_username).toBe(SEEDED_PROFILES.okta.email);
 	});
 
 	test('Org A advertises auth0_e2e only; Org B advertises okta_e2e only', async ({
 		apiBase,
 		request
 	}) => {
-		const orgA = await request.get(`${apiBase}/auth/providers?org=org-a-e2e`).then((r) => r.json());
+		const orgA = await request.get(`${apiBase}/auth/providers?org=${ORG_A_AUTH0}`).then((r) => r.json());
 		expect(orgA.scope).toBe('org');
 		const orgAKeys: string[] = orgA.providers.map((p: { key: string }) => p.key);
-		expect(orgAKeys).toContain('auth0_e2e');
-		expect(orgAKeys).not.toContain('okta_e2e');
+		expect(orgAKeys).toContain(PROVIDER_AUTH0);
+		expect(orgAKeys).not.toContain(PROVIDER_OKTA);
 
-		const orgB = await request.get(`${apiBase}/auth/providers?org=org-b-e2e`).then((r) => r.json());
+		const orgB = await request.get(`${apiBase}/auth/providers?org=${ORG_B_OKTA}`).then((r) => r.json());
 		expect(orgB.scope).toBe('org');
 		const orgBKeys: string[] = orgB.providers.map((p: { key: string }) => p.key);
-		expect(orgBKeys).toContain('okta_e2e');
-		expect(orgBKeys).not.toContain('auth0_e2e');
+		expect(orgBKeys).toContain(PROVIDER_OKTA);
+		expect(orgBKeys).not.toContain(PROVIDER_AUTH0);
 	});
 
 	test('Auth0 login provisions the upstream profile into Org A', async ({
 		page,
 		apiBase
 	}, testInfo) => {
-		// Drive the OIDC redirect chain through the browser so cookies
-		// (nonce / verifier / org / session) flow exactly as production. The
-		// callback's final redirect lands on the API origin (the harness sets
-		// DASHBOARD_URL=/), which 404s — that's expected and harmless; we
-		// only need the session cookie to land on 127.0.0.1.
-		const resp = await page.goto(`${apiBase}/auth/login/auth0_e2e?org=org-a-e2e`);
-		expect(resp, 'page.goto must return a final response').not.toBeNull();
+		await loginViaOidcVariant(page, apiBase, 'auth0');
 
 		// `page.request` shares cookies with the browser context — the global
 		// `request` fixture does not, so we'd see an unauth response there.
 		const me = await page.request.get(`${apiBase}/auth/me/identity`).then((r) => r.json());
-		expect(me.email).toBe('alice@orga.example');
+		const expected = SEEDED_PROFILES.auth0;
+		expect(me.email).toBe(expected.email);
 		// `/auth/me/identity` reads the org out of the session JWT — asserting
 		// org_slug here is what proves the Auth0 callback provisioned us into
 		// Org A specifically, rather than the dev org or a personal org.
-		expect(me.org_slug).toBe('org-a-e2e');
-		expect(me.external_id).toBe('auth0|e2e-admin');
+		expect(me.org_slug).toBe(expected.orgSlug);
+		expect(me.external_id).toBe(expected.sub);
 
 		// Drop a screenshot of the profile view after the Auth0 login so the
 		// PR description has visual proof. The cookies set by the redirect
@@ -119,12 +122,13 @@ test.describe('multi-IdP per-org', () => {
 		page,
 		apiBase
 	}, testInfo) => {
-		await page.goto(`${apiBase}/auth/login/okta_e2e?org=org-b-e2e`);
+		await loginViaOidcVariant(page, apiBase, 'okta');
 
 		const me = await page.request.get(`${apiBase}/auth/me/identity`).then((r) => r.json());
-		expect(me.email).toBe('bob@orgb.example');
-		expect(me.org_slug).toBe('org-b-e2e');
-		expect(me.external_id).toBe('00uOKTA-e2e-member');
+		const expected = SEEDED_PROFILES.okta;
+		expect(me.email).toBe(expected.email);
+		expect(me.org_slug).toBe(expected.orgSlug);
+		expect(me.external_id).toBe(expected.sub);
 
 		await page.goto('/account');
 		const png = await page.screenshot({ fullPage: true });
