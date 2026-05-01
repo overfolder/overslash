@@ -164,7 +164,11 @@ for _ in $(seq 1 150); do
     if curl -sf "$API_URL/health" >/dev/null 2>&1; then break; fi
     sleep 0.2
 done
-curl -sf "$API_URL/health" >/dev/null || fail "API at $API_URL did not become healthy within 30s — see $STATE_DIR/api.log"
+if ! curl -sf "$API_URL/health" >/dev/null 2>&1; then
+    log "api.log tail:"
+    tail -60 "$STATE_DIR/api.log" >&2 || true
+    fail "API at $API_URL did not become healthy within 30s — see $STATE_DIR/api.log"
+fi
 echo "$API_URL" > "$STATE_DIR/api.url"
 
 # 4a. Seed multi-IdP fixtures: register Auth0/Okta-shaped providers (pointing
