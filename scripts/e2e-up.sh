@@ -95,7 +95,9 @@ STRIPE_URL=$(python3    -c "import json,sys; print(json.load(open('$FAKES_STATE_
 MCP_URL=$(python3       -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['mcp'])")
 AUTH0_TENANT_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['auth0']['tenant_url'])")
 OKTA_TENANT_URL=$(python3  -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['okta']['tenant_url'])")
+MCP_VARIANTS_JSON=$(python3 -c "import json; print(json.dumps(json.load(open('$FAKES_STATE_FILE'))['mcp_variants']))")
 log "fakes ready: oauth_as=$OAUTH_AS_URL openapi=$OPENAPI_URL stripe=$STRIPE_URL mcp=$MCP_URL auth0=$AUTH0_TENANT_URL okta=$OKTA_TENANT_URL"
+log "  mcp variants: $MCP_VARIANTS_JSON"
 
 # Repoint the GitHub oauth_provider row at the fake AS so the dashboard's
 # Connect button bounces through our local server. Migration 009 seeds these
@@ -252,6 +254,7 @@ STRIPE_URL=$STRIPE_URL
 MCP_URL=$MCP_URL
 AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
+MCP_VARIANTS_JSON=$MCP_VARIANTS_JSON
 EOF
 
 # Suppress unused-var warnings for the host we computed but don't currently

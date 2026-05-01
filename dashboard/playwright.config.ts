@@ -34,6 +34,12 @@ for (const k of ['AUTH0_TENANT_URL', 'OKTA_TENANT_URL']) {
 	const v = process.env[k] ?? envFromFile[k];
 	if (v) process.env[k] = v;
 }
+// MCP_VARIANTS_JSON is the per-variant URL map written by overslash-fakes
+// (one fake per capability shape). Hoist it onto process.env so scenario
+// specs can resolve a URL by variant name.
+if (envFromFile.MCP_VARIANTS_JSON && !process.env.MCP_VARIANTS_JSON) {
+	process.env.MCP_VARIANTS_JSON = envFromFile.MCP_VARIANTS_JSON;
+}
 
 export default defineConfig({
 	testDir: './tests/e2e',
