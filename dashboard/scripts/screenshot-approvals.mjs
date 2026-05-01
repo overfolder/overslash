@@ -1,72 +1,76 @@
-// Capture three screenshots of the standalone /approvals/[id] page:
-//   1. logged-out-redirect.png — visiting the deep link without a session
-//      bounces through /login?return_to=...
-//   2. pending.png             — authenticated view with the resolver card
-//   3. resolved.png            — post-Deny banner state
+// Real-stack screenshots for the standalone /approvals/[id] page.
 //
-// Driven by dashboard/scripts/screenshot-approvals.sh, which boots the
-// podman-compose stack, mints a dev session cookie, and seeds an approval row.
+// Replaces both screenshot-approvals-mocked.mjs (route fakes) and the
+// psql-direct insert in screenshot-approvals.sh: instead, an approval is
+// triggered through the real action gateway by calling /v1/actions/call
+// from a freshly-minted agent that lacks the required permission. The
+// approval row that gets rendered therefore has all the real fields
+// (suggested_tiers, derived_keys, identity_path) the dashboard relies on.
+//
+// Prereq: `make e2e-up`. Output: dashboard/screenshots/{logged-out-redirect,
+// pending,resolved}.png.
 
-import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { chromium } from 'playwright';
+import { login, makeSnapper, seedApproval } from '../tests/scenarios/index.mjs';
 
-const DASH_URL = process.env.DASH_URL ?? 'http://localhost:5173';
-const APPROVAL_ID = process.env.APPROVAL_ID;
-const SESSION_COOKIE = process.env.SESSION_COOKIE;
-const OUT_DIR = resolve('screenshots');
+const session = await login('admin');
+const approval = await seedApproval(session, {
+	method: 'POST',
+	url: 'https://api.example.com/messages',
+	body: '{"text":"hello"}'
+});
 
-if (!APPROVAL_ID || !SESSION_COOKIE) {
-	console.error('APPROVAL_ID and SESSION_COOKIE env vars are required');
-	process.exit(1);
-}
-
-mkdirSync(OUT_DIR, { recursive: true });
-
-const browser = await chromium.launch();
-const cookieHost = new URL(DASH_URL).hostname;
-const sessionCookie = {
-	name: 'oss_session',
-	value: SESSION_COOKIE,
-	domain: cookieHost,
-	path: '/',
-	httpOnly: true,
-	secure: false,
-	sameSite: 'Lax'
-};
-
-async function shot(page, name) {
-	const out = resolve(OUT_DIR, `${name}.png`);
-	await page.screenshot({ path: out, fullPage: true });
-	console.log(`wrote ${out}`);
-}
-
+const snap = await makeSnapper(session);
 try {
-	// 1. Logged-out: fresh context with no cookies. The auth guard in
-	//    +layout.ts should redirect to /login?return_to=/approvals/<id>.
+	// 1. Logged-out redirect: a fresh browser context with NO cookies. The
+	//    dashboard's auth guard should bounce to /login?return_to=...
+	//    Inner try/finally ensures the browser closes even if any of the
+	//    goto/waitForURL/screenshot calls throw — otherwise the script
+	//    would leak a chromium process per failed run.
 	{
-		const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-		const page = await ctx.newPage();
-		await page.goto(`${DASH_URL}/approvals/${APPROVAL_ID}`, { waitUntil: 'networkidle' });
-		await page.waitForURL(/\/login\?return_to=/, { timeout: 10_000 });
-		await shot(page, 'logged-out-redirect');
-		await ctx.close();
+		const browser = await chromium.launch();
+		try {
+			const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+			const page = await ctx.newPage();
+			await page.goto(`${session.dashboardUrl}/approvals/${approval.id}`, {
+				waitUntil: 'networkidle'
+			});
+			await page.waitForURL(/\/login\?return_to=/, { timeout: 10_000 });
+			await page.waitForTimeout(500);
+			await page.screenshot({
+				path: resolve('screenshots', 'logged-out-redirect.png'),
+				fullPage: true
+			});
+			console.log('[approvals] wrote logged-out-redirect.png');
+		} finally {
+			await browser.close();
+		}
 	}
 
-	// 2. Pending: authenticated context, resolver card visible.
-	const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-	await ctx.addCookies([sessionCookie]);
-	const page = await ctx.newPage();
-	await page.goto(`${DASH_URL}/approvals/${APPROVAL_ID}`, { waitUntil: 'networkidle' });
-	await page.getByRole('button', { name: 'Deny' }).waitFor({ timeout: 10_000 });
-	await shot(page, 'pending');
+	// 2. Pending state.
+	const { page, ctx } = await snap.navigateAndSnap(
+		'pending',
+		`/approvals/${approval.id}`,
+		{
+			viewport: { width: 1280, height: 800 },
+			waitFor: async (p) => {
+				await p.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
+			}
+		}
+	);
 
-	// 3. Resolved: click Deny, wait for banner, screenshot.
-	await page.getByRole('button', { name: 'Deny' }).click();
-	await page.getByText(/this approval is/i).waitFor({ timeout: 10_000 });
-	await shot(page, 'resolved');
-
+	// 3. Resolved (Deny) — clicks the real /v1/approvals/{id}/resolve. The
+	// /approvals/[id] route redirects to /agents?approval=<id> and renders
+	// resolution as a modal, so the post-click state is rendered in-place.
+	// Give the network round-trip time to land and snapshot whatever's
+	// shown — denied badge, closed modal, or the underlying tree.
+	await page.getByRole('button', { name: /^Deny$/ }).click();
+	await page.waitForTimeout(1500);
+	await snap.snap(page, 'resolved');
 	await ctx.close();
+
+	console.log('[approvals] done');
 } finally {
-	await browser.close();
+	await snap.close();
 }
