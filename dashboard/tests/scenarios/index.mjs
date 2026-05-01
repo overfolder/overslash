@@ -33,3 +33,4 @@ export {
 	seedApproval
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
+export { connectGithubService } from './connect.mjs';

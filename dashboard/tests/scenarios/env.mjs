@@ -42,6 +42,7 @@ export function resolveEnv() {
 		}
 	}
 
+	/** @param {string} key */
 	const pick = (key) => process.env[key] ?? fileEnv[key];
 
 	const dashboardUrl = pick('DASHBOARD_URL');

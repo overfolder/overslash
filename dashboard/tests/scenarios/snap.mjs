@@ -46,6 +46,7 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 	mkdirSync(outDir, { recursive: true });
 	const browser = await chromium.launch();
 
+	/** @param {{ viewport?: ViewportSize, theme?: ColorScheme }} [opts] */
 	async function newPage(opts = {}) {
 		const ctx = await browser.newContext({
 			viewport: opts.viewport ?? { width: 1280, height: 800 }
@@ -62,6 +63,11 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 		return { ctx, page };
 	}
 
+	/**
+	 * @param {import('playwright').Page} page
+	 * @param {string} name
+	 * @param {{ fullPage?: boolean }} [opts]
+	 */
 	async function snap(page, name, opts = {}) {
 		const out = resolve(outDir, `${name}.png`);
 		await page.screenshot({ path: out, fullPage: opts.fullPage ?? true });
@@ -69,6 +75,16 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 		return out;
 	}
 
+	/**
+	 * @param {string} name
+	 * @param {string} path
+	 * @param {{
+	 *   viewport?: ViewportSize,
+	 *   theme?: ColorScheme,
+	 *   fullPage?: boolean,
+	 *   waitFor?: (page: import('playwright').Page) => Promise<void>,
+	 * }} [opts]
+	 */
 	async function navigateAndSnap(name, path, opts = {}) {
 		const { ctx, page } = await newPage({ viewport: opts.viewport, theme: opts.theme });
 		const url = path.startsWith('http') ? path : `${session.dashboardUrl}${path}`;

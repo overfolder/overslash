@@ -24,6 +24,10 @@ use crate::{Handle, bind, serve};
 pub struct State_ {
     pub webhooks: Vec<Value>,
     pub webhook_headers: Vec<Value>,
+    /// Every request the fallback `echo` handler serves is captured here so
+    /// e2e callers can assert that a Mode-C action call landed on the fake
+    /// (with the override applied) and carried the expected auth header.
+    pub received_requests: Vec<Value>,
 }
 
 pub type SharedState = Arc<Mutex<State_>>;
@@ -57,20 +61,55 @@ pub fn router(state: SharedState) -> Router {
         .route("/drive/files/content", get(drive_content))
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
+        .route(
+            "/__received_requests",
+            get(list_received_requests).delete(clear_received_requests),
+        )
         .fallback(echo)
         .with_state(state)
 }
 
-async fn echo(uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
+async fn echo(
+    State(s): State<SharedState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Json<Value> {
     let h: serde_json::Map<String, Value> = headers
         .iter()
         .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
         .collect();
-    Json(json!({
+    let body_str = String::from_utf8_lossy(&body).to_string();
+    let response = json!({
         "headers": h,
-        "body": String::from_utf8_lossy(&body).to_string(),
+        "body": body_str,
         "uri": uri.to_string(),
-    }))
+    });
+    // Record every echoed request (excluding the recorder paths themselves)
+    // so callers can poll `/__received_requests` to assert the call landed.
+    let path = uri.path();
+    if !path.starts_with("/__received_requests") {
+        let mut state = s.lock().await;
+        state.received_requests.push(json!({
+            "method": method.as_str(),
+            "uri": uri.to_string(),
+            "headers": response["headers"].clone(),
+            "body": body_str,
+        }));
+    }
+    Json(response)
+}
+
+async fn list_received_requests(State(s): State<SharedState>) -> Json<Value> {
+    let state = s.lock().await;
+    Json(json!({ "requests": state.received_requests.clone() }))
+}
+
+async fn clear_received_requests(State(s): State<SharedState>) -> &'static str {
+    let mut state = s.lock().await;
+    state.received_requests.clear();
+    "ok"
 }
 
 async fn receive_webhook(
