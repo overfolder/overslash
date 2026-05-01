@@ -279,6 +279,12 @@ export async function seedGroupMember(session, groupId, identityId) {
  * fields (suggested_tiers, derived_keys, identity_path) the dashboard
  * renders, instead of a hand-rolled subset.
  *
+ * Mode A raw-HTTP only triggers the approval gate when the request
+ * declares it injects something — `secrets[]`, `connection`, or
+ * template auth. We seed a throwaway secret and reference it so a
+ * default Mode A call always 202s instead of falling through to the
+ * upstream (which 502s when there's no fake registered).
+ *
  * @param {import('./auth.mjs').Session} session
  * @param {SeedApprovalInput} [input={}]
  * @returns {Promise<Approval>}
@@ -293,18 +299,33 @@ export async function seedApproval(session, input = {}) {
 	});
 	const apiKey = await seedAgentApiKey(session, agent.id, `${agentName}-key`);
 
-	const callBody =
-		input.templateKey && input.action
-			? {
-					service: input.templateKey,
-					action: input.action,
-					params: input.params ?? {}
+	let callBody;
+	if (input.templateKey && input.action) {
+		callBody = {
+			service: input.templateKey,
+			action: input.action,
+			params: input.params ?? {}
+		};
+	} else {
+		// Make sure the secret slot exists at the user level so the agent's
+		// call resolves it during request building. The gateway gates on
+		// secrets[] being non-empty even before it tries to resolve.
+		const secretName = `scenarios_demo_${Date.now()}`;
+		await seedSecret(session, { name: secretName, value: 'demo' });
+		callBody = {
+			method: input.method ?? 'POST',
+			url: input.url ?? 'https://api.example.com/messages',
+			body: input.body ?? '{}',
+			secrets: [
+				{
+					name: secretName,
+					inject_as: 'header',
+					header_name: 'X-Demo-Token',
+					prefix: 'Bearer '
 				}
-			: {
-					method: input.method ?? 'POST',
-					url: input.url ?? 'https://api.example.com/messages',
-					body: input.body ?? '{}'
-				};
+			]
+		};
+	}
 
 	const callRes = await fetch(`${session.apiUrl}/v1/actions/call`, {
 		method: 'POST',

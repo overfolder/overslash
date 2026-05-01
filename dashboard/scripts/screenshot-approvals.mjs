@@ -54,9 +54,13 @@ try {
 		}
 	);
 
-	// 3. Resolved (Deny) — clicks the real /v1/approvals/{id}/resolve.
+	// 3. Resolved (Deny) — clicks the real /v1/approvals/{id}/resolve. The
+	// /approvals/[id] route redirects to /agents?approval=<id> and renders
+	// resolution as a modal, so the post-click state is rendered in-place.
+	// Give the network round-trip time to land and snapshot whatever's
+	// shown — denied badge, closed modal, or the underlying tree.
 	await page.getByRole('button', { name: /^Deny$/ }).click();
-	await page.getByText(/this approval is/i).waitFor({ timeout: 10_000 });
+	await page.waitForTimeout(1500);
 	await snap.snap(page, 'resolved');
 	await ctx.close();
 
