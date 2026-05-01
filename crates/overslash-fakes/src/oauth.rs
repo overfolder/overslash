@@ -14,15 +14,12 @@
 
 use axum::{
     Form, Json, Router,
-    extract::Query,
     http::HeaderMap,
-    response::{IntoResponse, Redirect},
     routing::{get, post},
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
 
-use crate::{Handle, bind, serve};
+use crate::{Handle, authorize_redirect_with_mock_code, bind, serve};
 
 /// Boot the OAuth/OIDC fake on `127.0.0.1:0` (OS-assigned). Use
 /// [`start_on`] when you need a specific port.
@@ -38,7 +35,7 @@ pub async fn start_on(bind_addr: &str) -> Handle {
 
 pub fn router() -> Router {
     Router::new()
-        .route("/oauth/authorize", get(authorize))
+        .route("/oauth/authorize", get(authorize_redirect_with_mock_code))
         .route("/oauth/token", post(token))
         .route("/oidc/userinfo", get(oidc_userinfo))
         .route("/.well-known/openid-configuration", get(oidc_discovery))
@@ -48,23 +45,6 @@ pub fn router() -> Router {
             "/github/user/emails-none-verified",
             get(github_user_emails_none_verified),
         )
-}
-
-/// Fake authorize endpoint: redirects back to `redirect_uri` with a fixed
-/// `code` so e2e flows can complete without a consent UI.
-async fn authorize(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
-    let redirect_uri = params
-        .get("redirect_uri")
-        .cloned()
-        .unwrap_or_else(|| "http://localhost".into());
-    let state = params.get("state").cloned().unwrap_or_default();
-    let sep = if redirect_uri.contains('?') { '&' } else { '?' };
-    let target = if state.is_empty() {
-        format!("{redirect_uri}{sep}code=mock_code")
-    } else {
-        format!("{redirect_uri}{sep}code=mock_code&state={state}")
-    };
-    Redirect::temporary(&target)
 }
 
 async fn token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {

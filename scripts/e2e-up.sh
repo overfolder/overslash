@@ -93,7 +93,9 @@ OAUTH_AS_URL=$(python3 -c "import json,sys; print(json.load(open('$FAKES_STATE_F
 OPENAPI_URL=$(python3   -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['openapi'])")
 STRIPE_URL=$(python3    -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['stripe'])")
 MCP_URL=$(python3       -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['mcp'])")
-log "fakes ready: oauth_as=$OAUTH_AS_URL openapi=$OPENAPI_URL stripe=$STRIPE_URL mcp=$MCP_URL"
+AUTH0_TENANT_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['auth0']['tenant_url'])")
+OKTA_TENANT_URL=$(python3  -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['okta']['tenant_url'])")
+log "fakes ready: oauth_as=$OAUTH_AS_URL openapi=$OPENAPI_URL stripe=$STRIPE_URL mcp=$MCP_URL auth0=$AUTH0_TENANT_URL okta=$OKTA_TENANT_URL"
 
 # 4. Pick a free port and start the API.
 API_PORT=$(free_port)
@@ -132,6 +134,58 @@ for _ in $(seq 1 150); do
 done
 curl -sf "$API_URL/health" >/dev/null || fail "API at $API_URL did not become healthy within 30s — see $STATE_DIR/api.log"
 echo "$API_URL" > "$STATE_DIR/api.url"
+
+# 4a. Seed multi-IdP fixtures: register Auth0/Okta-shaped providers (pointing
+# at the fakes) and attach them to per-org IdP configs. The dev seed endpoint
+# is upsert-style so re-runs after `e2e-down` are safe.
+SEED_PAYLOAD=$(python3 - "$AUTH0_TENANT_URL" "$OKTA_TENANT_URL" <<'PY'
+import json, sys
+auth0, okta = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "providers": [
+        {
+            "key": "auth0_e2e",
+            "display_name": "Auth0 (e2e)",
+            "authorization_endpoint": f"{auth0}/authorize",
+            "token_endpoint": f"{auth0}/oauth/token",
+            "userinfo_endpoint": f"{auth0}/userinfo",
+            "issuer_url": auth0,
+        },
+        {
+            "key": "okta_e2e",
+            "display_name": "Okta (e2e)",
+            "authorization_endpoint": f"{okta}/v1/authorize",
+            "token_endpoint": f"{okta}/v1/token",
+            "userinfo_endpoint": f"{okta}/v1/userinfo",
+            "issuer_url": okta,
+        },
+    ],
+    "orgs": [
+        {
+            "slug": "org-a-e2e",
+            "name": "Org A (Auth0)",
+            "provider_key": "auth0_e2e",
+            "client_id": "auth0-e2e-client-id",
+            "client_secret": "auth0-e2e-client-secret",
+            "allowed_email_domains": ["orga.example"],
+        },
+        {
+            "slug": "org-b-e2e",
+            "name": "Org B (Okta)",
+            "provider_key": "okta_e2e",
+            "client_id": "okta-e2e-client-id",
+            "client_secret": "okta-e2e-client-secret",
+            "allowed_email_domains": ["orgb.example"],
+        },
+    ],
+}))
+PY
+)
+log "seeding e2e IdP fixtures"
+curl -sf -X POST -H 'content-type: application/json' \
+    -d "$SEED_PAYLOAD" "$API_URL/auth/dev/seed-e2e-idps" \
+    > "$STATE_DIR/seed.json" \
+    || fail "dev seed failed — see $STATE_DIR/api.log"
 
 # 5. Build the dashboard once with the chosen API base URL embedded, then run
 # `vite preview` on a free port.
@@ -177,6 +231,8 @@ OAUTH_AS_URL=$OAUTH_AS_URL
 OPENAPI_URL=$OPENAPI_URL
 STRIPE_URL=$STRIPE_URL
 MCP_URL=$MCP_URL
+AUTH0_TENANT_URL=$AUTH0_TENANT_URL
+OKTA_TENANT_URL=$OKTA_TENANT_URL
 EOF
 
 # Suppress unused-var warnings for the host we computed but don't currently

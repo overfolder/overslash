@@ -6,6 +6,7 @@ pub mod auth;
 pub mod billing;
 pub mod byoc_credentials;
 pub mod connections;
+pub mod dev_e2e;
 pub mod groups;
 pub mod health;
 pub mod identities;
