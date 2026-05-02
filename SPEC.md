@@ -1091,29 +1091,79 @@ When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is 
 
 ### `overslash_search`
 
-Discovery returns a structured payload with two distinct kinds of hits:
+Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list of `(service, action)` hits — actions are defined once on the template and never duplicated per instance. When a service has multiple connected instances (e.g., two Gmail accounts), they collapse onto a single row whose `auth.instances[]` enumerates them with the per-instance disambiguators an agent needs.
+
+**Inputs**
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `query` | string | — | Free-text query. Empty string triggers browse mode (services-only, no actions). |
+| `include_catalog` | bool | `false` | Default: only services with ≥1 active instance bound to the caller are returned. Set `true` to also surface the un-connected global/org catalog (handy when an agent is exploring what *could* be set up). |
+
+**Default scope is connected-only.** This applies to both browse (`query=""`) and keyword queries. The motivation is that an agent is much more often trying to use what it already has than browse a catalog it hasn't been authorized for.
+
+**Response shape**
 
 ```json
 {
-  "services": [
-    { "name": "google-calendar", "scope": "user", "status": "active",
-      "template_key": "google-calendar",
-      "auth": { "type": "oauth", "provider": "google", "connected": true },
-      "actions": [ { "key": "list_events", "risk": "read", "params": { ... } }, ... ] }
-  ],
-  "templates": [
-    { "key": "linear", "tier": "global", "display_name": "Linear",
-      "auth": { "type": "api_key" },
-      "actions_summary": ["list_issues", "create_issue", ...],
-      "instantiable": true }
+  "query": "send email",
+  "results": [
+    {
+      "service": "gmail",
+      "service_display_name": "Gmail",
+      "action": "send_message",
+      "description": "Send email as {userId}",
+      "risk": "write",
+      "tier": "global",
+      "auth": {
+        "type": "oauth",
+        "provider": "google",
+        "connected": true,
+        "instances": [
+          { "name": "gmail-work",     "account_email": "alice@example.com" },
+          { "name": "gmail-personal", "account_email": "alice@gmail.com" }
+        ]
+      },
+      "score": 0.78
+    },
+    {
+      "service": "resend",
+      "service_display_name": "Resend",
+      "action": "send_email",
+      "description": "Send email '{subject}' to {to}",
+      "risk": "write",
+      "tier": "global",
+      "auth": {
+        "type": "api_key",
+        "connected": true,
+        "instances": [
+          { "name": "resend-prod",    "secret_name": "resend_prod" },
+          { "name": "resend-staging", "secret_name": "resend_staging" }
+        ]
+      },
+      "score": 0.74
+    }
   ]
 }
 ```
 
-- **`services`** — service instances the calling identity can already use (gated by Layer 1 group ceiling and tier visibility).
-- **`templates`** — blueprints visible to the caller that have **no** corresponding instance yet, with `instantiable: true` if the caller has authority to create one (typically via `on_behalf_of` for an agent's owner-user). Templates are filtered by tier visibility (global / org / user with `allow_user_templates`).
+In browse mode (`query=""`), each row omits `action`, `description`, `risk`, and `score` — the response is a service-level directory.
 
-Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g., after `create_service_from_template` returns active).
+**Per-instance disambiguation**
+
+The `auth.instances[]` array carries the runtime identifiers an agent needs to pick the right instance when calling `overslash_call`:
+
+- **`name`** — the canonical, always-present identifier. Unique per `(org, owner, name)` and the value to pass as `overslash_call.service` for instance-keyed calls.
+- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time (e.g. `alice@gmail.com` vs `bob@gmail.com`). Sourced from `connections.account_email`. Absent for api-key services.
+- **`secret_name`** — for api-key-backed instances, the variable name of the secret that backs them (e.g. `resend_work`). The value, version, and encryption envelope are **never** exposed via this or any other API.
+
+When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, `name` is the only differentiator — it always disambiguates.
+
+**Action data is DRY across instances.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against an action surfaces a single `(service, action)` row regardless of how many instances of that service the caller has connected; the instances roll up under `auth.instances[]` on that one row.
+
+**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user with `allow_user_templates`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
+
+Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g. after `create_service_from_template` returns active).
 
 ### `overslash_auth`
 

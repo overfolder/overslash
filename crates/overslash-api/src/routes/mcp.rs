@@ -330,13 +330,18 @@ fn tools_list_response(id: Value) -> Response {
             "tools": [
                 {
                     "name": "overslash_search",
-                    "description": "Discover Overslash services and actions available to the caller. Pass an empty query to list all visible services without actions.",
+                    "description": "Discover Overslash services and actions available to the caller. Returns only services the caller has already connected; pass `include_catalog: true` to also surface the un-connected global/org catalog. Empty query lists connected services without actions.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Free-text query. Pass an empty string to list every visible service (no actions)."
+                                "description": "Free-text query. Pass an empty string to list every connected service (no actions)."
+                            },
+                            "include_catalog": {
+                                "type": "boolean",
+                                "default": false,
+                                "description": "When true, also search the un-connected global/org catalog. Default returns only services with at least one active instance bound to the caller."
                             }
                         },
                         "additionalProperties": false
@@ -745,10 +750,19 @@ fn normalize_stringified_params(args: &mut Value) {
 
 async fn dispatch_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     // Empty query is supported: it triggers browse mode in the REST handler,
-    // returning every visible service (without actions) so an agent can
-    // catalog what's available before issuing a scoped query.
+    // returning every visible *connected* service (without actions) so an
+    // agent can catalog what it can run right now before issuing a scoped
+    // query. `include_catalog=true` surfaces the un-connected catalog too.
     let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let path = format!("/v1/search?q={}", urlencoding::encode(q));
+    let include_catalog = args
+        .get("include_catalog")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let path = format!(
+        "/v1/search?q={}&include_catalog={}",
+        urlencoding::encode(q),
+        include_catalog,
+    );
     forward(state, bearer, Method::GET, &path, None).await
 }
 
