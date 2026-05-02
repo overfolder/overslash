@@ -9,7 +9,7 @@ pub mod services;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderValue, Method, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
 use tower_http::{
     compression::CompressionLayer,
@@ -337,7 +337,21 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("last-event-id"),
+        ])
+        // Browser-based MCP clients (e.g. MCP Inspector) need to read these
+        // back across origins: `Mcp-Session-Id` is part of Streamable HTTP,
+        // and `WWW-Authenticate` carries the `resource_metadata=` discovery
+        // hint emitted by `/mcp` 401s.
+        .expose_headers([
+            HeaderName::from_static("mcp-session-id"),
+            header::WWW_AUTHENTICATE,
+        ]);
 
     let app = Router::new()
         .merge(routes::health::router())
