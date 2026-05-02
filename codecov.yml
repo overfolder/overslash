@@ -29,5 +29,12 @@ comment:
 # right schema. Excluding from coverage stops these from dragging the
 # patch ratio under the 50% gate while the helpers around them are still
 # unit-tested.
+#
+# `overslash-fakes` is the e2e fake-upstream crate (Stripe, OAuth AS,
+# OpenAPI, MCP, multi-IdP). Its routes only run under the live
+# Playwright stack (`make e2e-up` + `npx playwright test`), so unit-test
+# coverage is structurally 0%; we measure correctness via the e2e specs
+# that drive these handlers.
 ignore:
   - "crates/overslash-metrics-exporter/src/queries.rs"
+  - "crates/overslash-fakes/**"
