@@ -666,6 +666,7 @@ where
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router());
 
@@ -791,6 +792,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::oauth_upstream::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
@@ -1270,6 +1272,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::search::router())
@@ -1483,6 +1486,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);

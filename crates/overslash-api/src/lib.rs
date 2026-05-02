@@ -340,11 +340,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // Everything else gets `cors_global`, scoped via a sibling subrouter
     // so the two CORS layers don't compose (an outer cors_global would
     // reject the Inspector origin during preflight before cors_mcp could
-    // see it).
+    // see it). `oauth::consent_router` lives here — even though it's
+    // part of the OAuth flow, it serves dashboard-only `/v1/oauth/consent/*`
+    // endpoints that leak pending-request metadata and must NOT be readable
+    // from the Inspector origin.
     let global_routes = Router::new()
         .merge(routes::health::router())
         .merge(routes::skill_md::router())
         .merge(routes::oauth_upstream::router())
+        .merge(routes::oauth::consent_router())
         .merge(stripe_webhook_routes)
         .merge(rate_limited_routes)
         .layer(cors_global);
