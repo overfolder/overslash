@@ -12,7 +12,10 @@ use clap::Parser;
 use serde_json::json;
 use std::path::PathBuf;
 
-use overslash_fakes::{mcp, oauth, openapi, stripe};
+use overslash_fakes::{
+    idp::{self, IdpProfile, IdpVariant},
+    mcp, oauth, openapi, stripe,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "overslash-fakes", version, about)]
@@ -42,11 +45,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mcp = mcp::start_on(&bind(0)).await;
     let stripe = stripe::start_on(&bind(0)).await;
 
+    // Per-org multi-IdP fixtures: Auth0-shaped tenant for Org A, Okta-shaped
+    // tenant for Org B. The harness (`scripts/e2e-up.sh`) reads these URLs
+    // from the state file and posts them to the dev-gated
+    // `POST /auth/dev/seed-e2e-idps` endpoint, which registers the matching
+    // `oauth_providers` + `org_idp_configs` rows.
+    let auth0 = idp::boot(
+        IdpVariant::Auth0,
+        IdpProfile::auth0_default(),
+        &cli.bind_host,
+    )
+    .await;
+    let okta = idp::boot(IdpVariant::Okta, IdpProfile::okta_default(), &cli.bind_host).await;
+
     let map = json!({
         "oauth_as": oauth.url,
         "openapi": openapi.handle.url,
         "mcp": mcp.url,
         "stripe": stripe.url,
+        "auth0": {
+            "tenant_url": auth0.issuer_url,
+            "discovery_url": auth0.discovery_url,
+        },
+        "okta": {
+            "tenant_url": okta.issuer_url,
+            "discovery_url": okta.discovery_url,
+        },
     });
 
     let line = serde_json::to_string(&map)?;
@@ -67,6 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         openapi = %openapi.handle.url,
         mcp = %mcp.url,
         stripe = %stripe.url,
+        auth0 = %auth0.issuer_url,
+        okta = %okta.issuer_url,
         "overslash-fakes ready",
     );
 
@@ -81,6 +107,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(openapi);
     drop(mcp);
     drop(stripe);
+    drop(auth0);
+    drop(okta);
 
     if let Some(path) = cli.state_file.as_ref() {
         let _ = std::fs::remove_file(path);

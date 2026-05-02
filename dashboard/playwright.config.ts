@@ -29,6 +29,11 @@ const apiURL = process.env.API_URL ?? envFromFile.API_URL ?? 'http://127.0.0.1:3
 // without needing access to the playwright config.
 process.env.DASHBOARD_URL = baseURL;
 process.env.API_URL = apiURL;
+// Multi-IdP fake URLs (Auth0/Okta variants) — needed by multi-idp.spec.ts.
+for (const k of ['AUTH0_TENANT_URL', 'OKTA_TENANT_URL']) {
+	const v = process.env[k] ?? envFromFile[k];
+	if (v) process.env[k] = v;
+}
 
 export default defineConfig({
 	testDir: './tests/e2e',

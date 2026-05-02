@@ -280,6 +280,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::byoc_credentials::router())
         .merge(routes::oauth_providers::router())
         .merge(routes::auth::router())
+        .merge(routes::dev_e2e::router())
         .merge(routes::preferences::router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())
