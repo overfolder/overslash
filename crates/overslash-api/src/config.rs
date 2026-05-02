@@ -361,6 +361,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests in this module mutate `OVERSLASH_SSRF_ALLOW_PRIVATE`; the env
+    /// is process-global so any two of them racing would produce nondeter-
+    /// ministic results under cargo's default parallel runner. Serialise
+    /// across the whole env-touching cohort with a single mutex.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_public_url_maps_wildcard_hosts_to_localhost() {
@@ -447,6 +454,34 @@ mod tests {
         );
     }
 
+    /// Resolve overrides under a stable env state and release the lock
+    /// before any assertion runs — a panic inside `assert_eq!` would
+    /// otherwise poison `ENV_LOCK` and convert sibling-test failures into
+    /// `PoisonError`s, hiding the real cause.
+    fn with_env_locked<R>(set_bypass: bool, f: impl FnOnce() -> R) -> R {
+        // Tolerate a prior poisoning so a single failing test doesn't
+        // cascade into "all env-touching tests fail" — `into_inner()`
+        // hands back the wrapped guard regardless of poisoning state.
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: ENV_LOCK serialises env mutations across this cohort,
+        // and `apply_base_overrides` reads the env at call time.
+        unsafe {
+            if set_bypass {
+                env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+            } else {
+                env::remove_var("OVERSLASH_SSRF_ALLOW_PRIVATE");
+            }
+        }
+        let out = f();
+        // Always reset to the unset state so subsequent acquirers don't
+        // observe leaked bypass enablement.
+        unsafe {
+            env::remove_var("OVERSLASH_SSRF_ALLOW_PRIVATE");
+        }
+        drop(guard);
+        out
+    }
+
     #[test]
     fn apply_base_overrides_drops_non_loopback_target_without_ssrf_bypass() {
         // Without OVERSLASH_SSRF_ALLOW_PRIVATE, a non-loopback override is
@@ -456,17 +491,58 @@ mod tests {
             "api.github.com".into(),
             "https://attacker.example.com".into(),
         );
-        // Make sure the env var is NOT set for this test.
-        // SAFETY: tests run single-threaded inside this module.
-        // We deliberately do not use a temp guard — `cfg.apply_base_overrides`
-        // reads the env at call time.
-        unsafe {
-            env::remove_var("OVERSLASH_SSRF_ALLOW_PRIVATE");
-        }
-        assert_eq!(
-            cfg.apply_base_overrides("https://api.github.com/x"),
-            "https://api.github.com/x"
+        let resolved = with_env_locked(false, || {
+            cfg.apply_base_overrides("https://api.github.com/x")
+        });
+        assert_eq!(resolved, "https://api.github.com/x");
+    }
+
+    #[test]
+    fn apply_base_overrides_mixed_matrix_keeps_loopback_drops_disallowed() {
+        // E2E real-stack scenario: a single override map combines both kinds
+        // of entries — the loopback fake target the e2e harness sets up and
+        // an extra entry that purposely points at a disallowed host. Without
+        // the SSRF bypass, the loopback entry must apply (override hits the
+        // fake) while the disallowed entry must be silently dropped (request
+        // would fall through to the original upstream — proving the gate
+        // rejected the override). The non-overridden host passes through
+        // unchanged regardless of the matrix.
+        let mut cfg = empty_test_config();
+        cfg.service_base_overrides
+            .insert("api.github.com".into(), "http://127.0.0.1:9101".into());
+        cfg.service_base_overrides.insert(
+            "api.attacker.test".into(),
+            "https://attacker.example.com".into(),
         );
+        let (allowed, rejected, untouched) = with_env_locked(false, || {
+            (
+                cfg.apply_base_overrides("https://api.github.com/repos/x/y?per_page=5"),
+                cfg.apply_base_overrides("https://api.attacker.test/foo"),
+                cfg.apply_base_overrides("https://api.slack.com/x"),
+            )
+        });
+        assert_eq!(allowed, "http://127.0.0.1:9101/repos/x/y?per_page=5");
+        assert_eq!(rejected, "https://api.attacker.test/foo");
+        assert_eq!(untouched, "https://api.slack.com/x");
+    }
+
+    #[test]
+    fn apply_base_overrides_keeps_non_loopback_target_with_ssrf_bypass() {
+        // Inverse of the rejection case: when OVERSLASH_SSRF_ALLOW_PRIVATE=1
+        // (the e2e profile turns this on so loopback fakes are reachable)
+        // the gate's loopback-only check is bypassed and *every* override
+        // entry applies — including non-loopback ones. The bypass is the
+        // single audited escape hatch for tests; the production binary never
+        // sets it.
+        let mut cfg = empty_test_config();
+        cfg.service_base_overrides.insert(
+            "api.attacker.test".into(),
+            "https://attacker.example.com".into(),
+        );
+        let resolved = with_env_locked(true, || {
+            cfg.apply_base_overrides("https://api.attacker.test/foo")
+        });
+        assert_eq!(resolved, "https://attacker.example.com/foo");
     }
 
     fn empty_test_config() -> Config {
