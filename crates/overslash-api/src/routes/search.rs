@@ -62,6 +62,12 @@ struct SearchQuery {
     q: String,
     #[serde(default)]
     limit: Option<usize>,
+    /// Opt-in: also surface un-connected catalog services. The default
+    /// (`false`) keeps the agent-facing tool focused on what the caller can
+    /// actually call right now; setting this to `true` brings the global
+    /// + org catalog back into both browse and keyword modes. See SPEC §10.
+    #[serde(default)]
+    include_catalog: bool,
 }
 
 #[derive(Serialize)]
@@ -103,7 +109,9 @@ struct AuthStatus {
     connected: bool,
     /// All visible active instances for this template. Multiple accounts
     /// of the same provider (e.g., work + personal Gmail) each surface
-    /// here with the owner's email so the agent can pick deterministically.
+    /// here with their distinct OAuth `account_email` (or, for api-key
+    /// services, their `secret_name`) so the agent can pick deterministically.
+    /// `name` always disambiguates — the email/secret label only assists.
     /// Omitted when `connected == false`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     instances: Vec<InstanceRef>,
@@ -112,13 +120,22 @@ struct AuthStatus {
 #[derive(Serialize, Clone)]
 struct InstanceRef {
     /// The instance's runtime name — the string to pass as
-    /// `overslash_call.service`.
+    /// `overslash_call.service`. Always the canonical disambiguator
+    /// (unique per `(org, owner, name)`).
     name: String,
-    /// Owner's email, resolved from `identities.email`. Never a raw UUID.
-    /// Absent for org-tier instances (no owner identity) and for users
-    /// whose profile didn't record an email.
+    /// OAuth account identifier, sourced from `connections.account_email`.
+    /// Two Gmail instances bound to two different Google accounts surface
+    /// here as e.g. `alice@gmail.com` and `bob@gmail.com`. Absent for
+    /// api-key services and for OAuth connections whose userinfo lookup
+    /// didn't return an email.
     #[serde(skip_serializing_if = "Option::is_none")]
-    owner_email: Option<String>,
+    account_email: Option<String>,
+    /// Variable name of the secret backing an api-key instance — the
+    /// label only, never the value. Two Resend instances using
+    /// `resend_work` vs `resend_personal` surface here distinctly.
+    /// Absent for OAuth services.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_name: Option<String>,
 }
 
 async fn search(
@@ -132,14 +149,28 @@ async fn search(
     let (templates, instances_by_template) =
         collect_visible_templates(&state, &auth, &scope).await?;
 
+    // Default behavior: hide templates with no active instance bound to
+    // the caller. `include_catalog=true` brings the global/org catalog
+    // back. Filter applies to both browse and keyword modes.
+    let template_iter: Box<dyn Iterator<Item = &TemplateCandidate>> = if params.include_catalog {
+        Box::new(templates.iter())
+    } else {
+        Box::new(
+            templates
+                .iter()
+                .filter(|t| instances_by_template.contains_key(&t.def.key)),
+        )
+    };
+    let visible_templates: Vec<&TemplateCandidate> = template_iter.collect();
+
     if q.is_empty() {
         overslash_metrics::search::record_query("browse", "ok");
         // Browse mode: list every visible service template with no actions.
         // The catalog is bounded (~dozens), so we deliberately skip the
         // limit clamp — truncating "show me everything available" defeats
         // the use case.
-        let mut results: Vec<SearchResult> = Vec::with_capacity(templates.len());
-        for t in &templates {
+        let mut results: Vec<SearchResult> = Vec::with_capacity(visible_templates.len());
+        for t in &visible_templates {
             let connected_instances = instances_by_template
                 .get(&t.def.key)
                 .cloned()
@@ -217,7 +248,7 @@ async fn search(
 
     // --- Score every (template, action) candidate ---
     let mut scored: Vec<SearchResult> = Vec::new();
-    for t in &templates {
+    for t in &visible_templates {
         let connected_instances = instances_by_template
             .get(&t.def.key)
             .cloned()
@@ -344,34 +375,33 @@ async fn collect_visible_templates(
         )
         .await?;
 
-    let owner_ids: Vec<Uuid> = instances
+    // Batch-load connections so we can surface `account_email` per
+    // instance without an N+1. Org-tier connections (no owning identity)
+    // still flow through the same scope-checked fetch.
+    let connection_ids: Vec<Uuid> = instances
         .iter()
-        .filter_map(|r| r.owner_identity_id)
+        .filter_map(|r| r.connection_id)
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let mut emails_by_owner: HashMap<Uuid, Option<String>> = HashMap::new();
-    for owner_id in owner_ids {
-        if let Some(row) = scope.get_identity(owner_id).await? {
-            emails_by_owner.insert(owner_id, row.email);
-        }
-    }
+    let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
 
     let mut instances_by_template: HashMap<String, Vec<InstanceRef>> = HashMap::new();
     for r in instances {
         if r.status != "active" {
             continue;
         }
-        let owner_email = r
-            .owner_identity_id
-            .and_then(|id| emails_by_owner.get(&id).cloned())
-            .flatten();
+        let account_email = r
+            .connection_id
+            .and_then(|id| connections_by_id.get(&id))
+            .and_then(|c| c.account_email.clone());
         instances_by_template
             .entry(r.template_key.clone())
             .or_default()
             .push(InstanceRef {
                 name: r.name,
-                owner_email,
+                account_email,
+                secret_name: r.secret_name,
             });
     }
 
