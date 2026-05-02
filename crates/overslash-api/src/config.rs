@@ -27,6 +27,14 @@ pub struct Config {
     pub filter_timeout_ms: u64,
     pub dashboard_url: String,
     pub dashboard_origin: String,
+    /// Additional CORS origins allowed *only* on MCP transport
+    /// (`/mcp`) and the OAuth metadata / DCR / token endpoints
+    /// (`/.well-known/oauth-*`, `/oauth/*`). Comma-separated.
+    /// Used to let a locally-run MCP Inspector at e.g.
+    /// `http://localhost:6274` complete the OAuth handshake against a
+    /// deployed API without widening CORS on the rest of the surface
+    /// (`/v1/*` etc.). Default empty.
+    pub mcp_extra_origins: String,
     pub redis_url: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
@@ -204,6 +212,7 @@ impl Config {
             // origin so that worktrees with dynamic dashboard ports work out of the box.
             // In production set this to a comma-separated list of explicit origins.
             dashboard_origin: env::var("DASHBOARD_ORIGIN").unwrap_or_else(|_| "*localhost*".into()),
+            mcp_extra_origins: env::var("MCP_EXTRA_ORIGINS").unwrap_or_default(),
             redis_url: env::var("REDIS_URL").ok(),
             default_rate_limit: env::var("DEFAULT_RATE_LIMIT")
                 .ok()
@@ -566,6 +575,7 @@ mod tests {
             filter_timeout_ms: 0,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),
+            mcp_extra_origins: String::new(),
             redis_url: None,
             default_rate_limit: 0,
             default_rate_window_secs: 0,

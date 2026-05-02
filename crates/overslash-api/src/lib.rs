@@ -9,7 +9,7 @@ pub mod services;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderValue, Method, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
 use tower_http::{
     compression::CompressionLayer,
@@ -294,60 +294,68 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             middleware::rate_limit::rate_limit_middleware,
         ));
 
-    // Build allowed-origin matcher. `DASHBOARD_ORIGIN` accepts:
-    //   - "*localhost*" (default): any http(s) localhost / 127.0.0.1 origin on any port
-    //     — needed because worktrees pick dynamic dashboard ports.
-    //   - a comma-separated list of explicit origins (e.g. "https://app.example.com")
-    let allow_origin = {
-        let raw = state.config.dashboard_origin.trim().to_string();
-        if raw == "*localhost*" {
-            AllowOrigin::predicate(|origin: &HeaderValue, _req| {
-                origin
-                    .to_str()
-                    .map(|o| {
-                        o.starts_with("http://localhost:")
-                            || o.starts_with("http://127.0.0.1:")
-                            || o == "http://localhost"
-                            || o == "http://127.0.0.1"
-                    })
-                    .unwrap_or(false)
-            })
+    // CORS is split in two:
+    //
+    //   * `cors_global` — covers the dashboard API surface (`/v1/*`,
+    //     auth, billing, etc.). Allows only the dashboard origin(s).
+    //     `DASHBOARD_ORIGIN` accepts:
+    //       - "*localhost*" (default): any http localhost / 127.0.0.1
+    //         origin on any port — needed because worktrees pick
+    //         dynamic dashboard ports.
+    //       - a comma-separated list of explicit origins.
+    //
+    //   * `cors_mcp` — covers `/mcp` and the OAuth metadata / DCR /
+    //     token endpoints. Allows the dashboard origin(s) PLUS any
+    //     entries in `MCP_EXTRA_ORIGINS`. This is where we let a
+    //     locally-run MCP Inspector (e.g. `http://localhost:6274`)
+    //     complete the OAuth handshake without giving it the ability
+    //     to read `/v1/*` cross-origin (which would expose secrets and
+    //     connections from a logged-in user's session).
+    let dashboard_allow_origin =
+        build_allow_origin(&state.config.dashboard_origin, "DASHBOARD_ORIGIN")?;
+    let mcp_allow_origin = {
+        let combined = if state.config.mcp_extra_origins.trim().is_empty() {
+            state.config.dashboard_origin.clone()
         } else {
-            let origins: Vec<HeaderValue> = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| {
-                    s.parse::<HeaderValue>()
-                        .map_err(|e| anyhow::anyhow!("invalid DASHBOARD_ORIGIN entry {s:?}: {e}"))
-                })
-                .collect::<anyhow::Result<_>>()?;
-            AllowOrigin::list(origins)
-        }
+            format!(
+                "{},{}",
+                state.config.dashboard_origin.trim(),
+                state.config.mcp_extra_origins.trim()
+            )
+        };
+        build_allow_origin(&combined, "DASHBOARD_ORIGIN+MCP_EXTRA_ORIGINS")?
     };
 
-    let cors = CorsLayer::new()
-        .allow_origin(allow_origin)
-        .allow_credentials(true)
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-        ])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+    let cors_global = base_cors_layer().allow_origin(dashboard_allow_origin);
+    let cors_mcp = base_cors_layer().allow_origin(mcp_allow_origin);
 
-    let app = Router::new()
-        .merge(routes::health::router())
-        .merge(routes::skill_md::router())
+    // MCP transport + OAuth handshake. `cors_mcp` is wider (allows the
+    // Inspector origin); the layer is attached to this subrouter only.
+    let mcp_oauth_routes = Router::new()
         .merge(routes::oauth_as::router())
         .merge(routes::oauth::router())
-        .merge(routes::oauth_upstream::router())
         .merge(routes::mcp::router())
+        .layer(cors_mcp);
+
+    // Everything else gets `cors_global`, scoped via a sibling subrouter
+    // so the two CORS layers don't compose (an outer cors_global would
+    // reject the Inspector origin during preflight before cors_mcp could
+    // see it). `oauth::consent_router` lives here — even though it's
+    // part of the OAuth flow, it serves dashboard-only `/v1/oauth/consent/*`
+    // endpoints that leak pending-request metadata and must NOT be readable
+    // from the Inspector origin.
+    let global_routes = Router::new()
+        .merge(routes::health::router())
+        .merge(routes::skill_md::router())
+        .merge(routes::oauth_upstream::router())
+        .merge(routes::oauth::consent_router())
         .merge(stripe_webhook_routes)
         .merge(rate_limited_routes)
+        .layer(cors_global);
+
+    let app = Router::new()
+        .merge(mcp_oauth_routes)
+        .merge(global_routes)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::subdomain::subdomain_middleware,
@@ -360,10 +368,80 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .layer(axum::middleware::from_fn(
             overslash_metrics::http::middleware,
         ))
-        .layer(TraceLayer::new_for_http())
-        .layer(cors);
+        .layer(TraceLayer::new_for_http());
 
     Ok(app)
+}
+
+/// Parse a comma-separated CORS origin spec into a tower-http `AllowOrigin`.
+///
+/// Accepts either the `*localhost*` sentinel (any http localhost / 127.0.0.1
+/// origin on any port — used in local/worktree dev where the dashboard port
+/// is dynamic) or a list of explicit origins. The two forms can be mixed:
+/// `https://app.example.com,*localhost*` allows the explicit origin and any
+/// localhost origin.
+fn build_allow_origin(raw: &str, env_var: &str) -> anyhow::Result<AllowOrigin> {
+    let mut allow_localhost = false;
+    let mut explicit: Vec<HeaderValue> = Vec::new();
+    for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if entry == "*localhost*" {
+            allow_localhost = true;
+        } else {
+            explicit.push(
+                entry
+                    .parse::<HeaderValue>()
+                    .map_err(|e| anyhow::anyhow!("invalid {env_var} entry {entry:?}: {e}"))?,
+            );
+        }
+    }
+    Ok(AllowOrigin::predicate(move |origin: &HeaderValue, _req| {
+        if explicit.iter().any(|e| e == origin) {
+            return true;
+        }
+        if allow_localhost {
+            return origin
+                .to_str()
+                .map(|o| {
+                    o.starts_with("http://localhost:")
+                        || o.starts_with("http://127.0.0.1:")
+                        || o == "http://localhost"
+                        || o == "http://127.0.0.1"
+                })
+                .unwrap_or(false);
+        }
+        false
+    }))
+}
+
+/// Shared `CorsLayer` config for both the global and MCP/OAuth route groups.
+/// Only the allowed-origin set differs between the two — everything else
+/// (methods, headers, credentials, exposed response headers) is identical.
+fn base_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_credentials(true)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("last-event-id"),
+        ])
+        // Browser-based MCP clients (e.g. MCP Inspector) need to read these
+        // back across origins: `Mcp-Session-Id` is part of Streamable HTTP,
+        // and `WWW-Authenticate` carries the `resource_metadata=` discovery
+        // hint emitted by `/mcp` 401s.
+        .expose_headers([
+            HeaderName::from_static("mcp-session-id"),
+            header::WWW_AUTHENTICATE,
+        ])
 }
 
 /// Run one background-loop step and emit the matching metrics. `task` becomes

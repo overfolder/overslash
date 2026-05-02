@@ -37,12 +37,30 @@ use overslash_db::repos::{
 };
 use overslash_db::scopes::OrgScope;
 
+/// Public OAuth Authorization Server endpoints (RFC 7591 / OAuth 2.1).
+///
+/// These are reached cross-origin by external OAuth clients — including
+/// browser-based debug tools like MCP Inspector — so they sit under the
+/// wider `cors_mcp` layer in `lib.rs` (origins = `dashboard_origin` ∪
+/// `mcp_extra_origins`). Nothing here returns user data without a
+/// preceding consent step, which is gated by `consent_router` below
+/// under the tighter `cors_global` layer.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/register", post(register))
         .route("/oauth/authorize", get(authorize))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
+}
+
+/// Dashboard-facing consent UI helpers. The dashboard fetches the
+/// consent context and posts the user's decision back here while a
+/// `/oauth/authorize` request is paused mid-flow. These leak the
+/// pending request's metadata to whoever can read the response, so
+/// they MUST stay behind the tight `cors_global` layer that only
+/// trusts the dashboard origin — never the MCP Inspector origin.
+pub fn consent_router() -> Router<AppState> {
+    Router::new()
         .route("/v1/oauth/consent/{request_id}", get(consent_context))
         .route(
             "/v1/oauth/consent/{request_id}/finish",

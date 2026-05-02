@@ -134,10 +134,11 @@ module "cloud_run" {
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain           = var.domain
-  dashboard_origin = var.dashboard_origin
-  dashboard_url    = var.dashboard_url
-  enable_dev_auth  = var.enable_dev_auth
+  domain            = var.domain
+  dashboard_origin  = var.dashboard_origin
+  mcp_extra_origins = var.mcp_extra_origins
+  dashboard_url     = var.dashboard_url
+  enable_dev_auth   = var.enable_dev_auth
 
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""

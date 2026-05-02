@@ -102,6 +102,12 @@ variable "dashboard_origin" {
   default = "*localhost*"
 }
 
+variable "mcp_extra_origins" {
+  type        = string
+  default     = ""
+  description = "Comma-separated origins allowed only on /mcp + /.well-known/oauth-* + /oauth/* (additional to dashboard_origin)."
+}
+
 variable "dashboard_url" {
   type    = string
   default = "/"
@@ -173,6 +179,7 @@ locals {
       APPROVAL_EXPIRY_SECS      = "1800"
       CLOUD_SQL_CONNECTION_NAME = var.cloud_sql_connection_name
       DASHBOARD_ORIGIN          = var.dashboard_origin
+      MCP_EXTRA_ORIGINS         = var.mcp_extra_origins
       DASHBOARD_URL             = var.dashboard_url
       DB_NAME                   = var.db_name
       DB_USER                   = var.db_user

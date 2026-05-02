@@ -4,8 +4,12 @@ env        = "dev"
 
 domain           = "api.dev.overslash.com"
 dashboard_origin = "https://app.dev.overslash.com"
-dashboard_url    = "https://app.dev.overslash.com"
-enable_dev_auth  = false
+# Lets a locally-run MCP Inspector (default port 6274) complete the OAuth
+# handshake against the dev API. Scoped to /mcp + /.well-known/oauth-* +
+# /oauth/* only — does NOT widen CORS on /v1/*.
+mcp_extra_origins = "http://localhost:6274"
+dashboard_url     = "https://app.dev.overslash.com"
+enable_dev_auth   = false
 
 # Cloud SQL — minimum viable
 cloud_sql_tier         = "db-f1-micro"

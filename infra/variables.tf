@@ -27,6 +27,12 @@ variable "dashboard_origin" {
   default     = "*localhost*"
 }
 
+variable "mcp_extra_origins" {
+  description = "Additional CORS origins allowed only on /mcp + /.well-known/oauth-* + /oauth/* (e.g. http://localhost:6274 for MCP Inspector). Does NOT widen CORS on the rest of the API."
+  type        = string
+  default     = ""
+}
+
 variable "dashboard_url" {
   description = "URL to redirect to after OAuth login (e.g. https://app.overslash.com)"
   type        = string
