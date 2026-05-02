@@ -1146,6 +1146,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
