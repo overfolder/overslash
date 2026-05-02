@@ -12,6 +12,7 @@ COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
 COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
 COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
+COPY crates/overslash-fakes/Cargo.toml crates/overslash-fakes/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 
 # Create dummy source files to cache dependency compilation
@@ -32,6 +33,9 @@ RUN mkdir -p crates/overslash-core/src \
     && echo "pub fn _dummy() {}" > crates/overslash-metrics/src/lib.rs \
     && mkdir -p crates/overslash-metrics-exporter/src \
     && echo "fn main() {}" > crates/overslash-metrics-exporter/src/main.rs \
+    && mkdir -p crates/overslash-fakes/src/bin \
+    && echo "pub fn _dummy() {}" > crates/overslash-fakes/src/lib.rs \
+    && echo "fn main() {}" > crates/overslash-fakes/src/bin/overslash_fakes.rs \
     && mkdir -p tests/mock-target/src \
     && echo "fn main() {}" > tests/mock-target/src/main.rs
 
