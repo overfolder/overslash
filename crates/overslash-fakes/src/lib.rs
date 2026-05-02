@@ -19,6 +19,7 @@ pub mod idp;
 pub mod mcp;
 pub mod oauth;
 pub mod openapi;
+pub mod scenarios;
 pub mod stripe;
 
 /// Shared OAuth `authorize` handler used by every fake IdP module: ignore the

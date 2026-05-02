@@ -7,14 +7,23 @@
 //! On boot, writes one JSON line to stdout *and* (when `--state-file` is set)
 //! atomically writes the same map to the file. Holds the listeners until
 //! SIGTERM / SIGINT, then shuts down gracefully.
+//!
+//! For e2e scenarios, the binary boots one MCP fake per
+//! [`overslash_fakes::scenarios::McpVariant`] simultaneously (each on its own
+//! port). Tests can target whichever capability shape they need without
+//! restarting the stack. The `mcp` field of the state file is the variant
+//! selected by `--mcp-variant` (default), and `mcp_variants` is the full
+//! map keyed by variant name.
 
 use clap::Parser;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 use overslash_fakes::{
     idp::{self, IdpProfile, IdpVariant},
-    mcp, oauth, openapi, stripe,
+    mcp, oauth, openapi,
+    scenarios::McpVariant,
+    stripe,
 };
 
 #[derive(Parser, Debug)]
@@ -27,6 +36,12 @@ struct Cli {
     /// Bind address. Default `127.0.0.1` — port 0 (OS-assigned) per fake.
     #[arg(long, default_value = "127.0.0.1")]
     bind_host: String,
+    /// Capability shape advertised by the MCP fake. Selects which
+    /// `initialize.capabilities`, `tools/list`, and `resources/list` shape
+    /// the upstream returns. Defaults to `default` (tools-only with two
+    /// tools), matching the foundation PR.
+    #[arg(long, env = "OVERSLASH_FAKES_MCP_VARIANT", default_value = "default")]
+    mcp_variant: McpVariant,
 }
 
 #[tokio::main]
@@ -42,7 +57,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let oauth = oauth::start_on(&bind(0)).await;
     let openapi = openapi::start_on(&bind(0)).await;
-    let mcp = mcp::start_on(&bind(0)).await;
     let stripe = stripe::start_on(&bind(0)).await;
 
     // Per-org multi-IdP fixtures: Auth0-shaped tenant for Org A, Okta-shaped
@@ -58,10 +72,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     let okta = idp::boot(IdpVariant::Okta, IdpProfile::okta_default(), &cli.bind_host).await;
 
+    // One MCP fake per variant, all running concurrently. Selecting which
+    // shape a given test exercises is then just a matter of picking the
+    // matching URL from the state file — no harness restart needed.
+    let mut mcp_handles = Vec::new();
+    let mut mcp_variants = serde_json::Map::new();
+    for variant in [
+        McpVariant::Default,
+        McpVariant::NoElicitation,
+        McpVariant::FullElicitation,
+        McpVariant::PartialTools,
+        McpVariant::ResourcesOnly,
+    ] {
+        let h = mcp::start_on_with(&bind(0), variant).await;
+        let key = serde_json::to_value(variant)?
+            .as_str()
+            .expect("variant serialises to a string")
+            .to_string();
+        mcp_variants.insert(key, json!(h.url));
+        mcp_handles.push(h);
+    }
+    // The selected variant's URL also goes under the legacy `mcp` key so
+    // existing callers (e2e-up.sh, tests/common) keep working unchanged.
+    let selected_variant_key = serde_json::to_value(cli.mcp_variant)?
+        .as_str()
+        .expect("variant serialises to a string")
+        .to_string();
+    let selected_mcp_url = mcp_variants
+        .get(&selected_variant_key)
+        .cloned()
+        .expect("selected variant is in the map");
+
     let map = json!({
         "oauth_as": oauth.url,
         "openapi": openapi.handle.url,
-        "mcp": mcp.url,
+        "mcp": selected_mcp_url,
+        "mcp_variant": selected_variant_key,
+        "mcp_variants": Value::Object(mcp_variants),
         "stripe": stripe.url,
         "auth0": {
             "tenant_url": auth0.issuer_url,
@@ -89,7 +136,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         oauth_as = %oauth.url,
         openapi = %openapi.handle.url,
-        mcp = %mcp.url,
+        mcp_selected = ?selected_mcp_url,
+        mcp_variants = mcp_handles.len(),
         stripe = %stripe.url,
         auth0 = %auth0.issuer_url,
         okta = %okta.issuer_url,
@@ -105,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     drop(oauth);
     drop(openapi);
-    drop(mcp);
+    drop(mcp_handles);
     drop(stripe);
     drop(auth0);
     drop(okta);

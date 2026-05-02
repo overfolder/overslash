@@ -34,6 +34,16 @@ for (const k of ['AUTH0_TENANT_URL', 'OKTA_TENANT_URL']) {
 	const v = process.env[k] ?? envFromFile[k];
 	if (v) process.env[k] = v;
 }
+// Per-variant MCP URLs are emitted as `MCP_VARIANT_<NAME>_URL` env vars
+// by the harness (one entry per capability shape). They're already
+// shell-safe to `source`, so no additional unmarshalling here — just
+// hoist anything starting with that prefix onto process.env so the
+// puppet fixture can read them by variant name.
+for (const [k, v] of Object.entries(envFromFile)) {
+	if (k.startsWith('MCP_VARIANT_') && !process.env[k]) {
+		process.env[k] = v;
+	}
+}
 
 export default defineConfig({
 	testDir: './tests/e2e',
