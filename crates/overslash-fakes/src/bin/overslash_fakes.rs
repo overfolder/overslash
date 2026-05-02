@@ -57,7 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let oauth = oauth::start_on(&bind(0)).await;
     let openapi = openapi::start_on(&bind(0)).await;
-    let stripe = stripe::start_on(&bind(0)).await;
+    // Signing secret is shared with the API via STRIPE_WEBHOOK_SECRET. The
+    // webhook target URL is set later via `POST /__admin/webhook-target` once
+    // the API is up.
+    let stripe_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "whsec_e2e_fake".into());
+    let stripe = stripe::start_with(&bind(0), &stripe_secret, None).await;
 
     // Per-org multi-IdP fixtures: Auth0-shaped tenant for Org A, Okta-shaped
     // tenant for Org B. The harness (`scripts/e2e-up.sh`) reads these URLs
@@ -109,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "mcp": selected_mcp_url,
         "mcp_variant": selected_variant_key,
         "mcp_variants": Value::Object(mcp_variants),
-        "stripe": stripe.url,
+        "stripe": stripe.handle.url,
         "auth0": {
             "tenant_url": auth0.issuer_url,
             "discovery_url": auth0.discovery_url,
@@ -138,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         openapi = %openapi.handle.url,
         mcp_selected = ?selected_mcp_url,
         mcp_variants = mcp_handles.len(),
-        stripe = %stripe.url,
+        stripe = %stripe.handle.url,
         auth0 = %auth0.issuer_url,
         okta = %okta.issuer_url,
         "overslash-fakes ready",

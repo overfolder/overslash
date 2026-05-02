@@ -73,10 +73,14 @@ fi
 log "building binaries"
 ( cd "$REPO_ROOT" && SQLX_OFFLINE=true cargo build -p overslash-fakes -p overslash-cli --release >/dev/null )
 
-# 3. Start overslash-fakes (OS-assigned ports + state file).
+# 3. Start overslash-fakes (OS-assigned ports + state file). The Stripe fake
+#    reads STRIPE_WEBHOOK_SECRET so the HMAC over outbound webhook deliveries
+#    matches what the API verifies; we pin the same value into the API env.
+STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-whsec_e2e_fake}
 FAKES_STATE_FILE="$STATE_DIR/fakes.ports.json"
 rm -f "$FAKES_STATE_FILE"
 log "starting overslash-fakes"
+STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
 "$REPO_ROOT/target/release/overslash-fakes" \
     --state-file "$FAKES_STATE_FILE" \
     > "$STATE_DIR/fakes.log" 2>&1 &
@@ -124,9 +128,14 @@ UPDATE oauth_providers SET
 WHERE key = 'github';
 SQL
 
-# 4. Pick a free port and start the API.
+# 4. Pick free ports for the API and dashboard up-front. The dashboard URL
+#    must be known when the API starts so cloud-billing success/cancel URLs
+#    point at the real dashboard host (the Stripe fake redirects to them
+#    after simulated checkout).
 API_PORT=$(free_port)
 API_URL="http://127.0.0.1:$API_PORT"
+DASH_PORT=$(free_port)
+DASH_URL="http://127.0.0.1:$DASH_PORT"
 
 # Build OVERSLASH_SERVICE_BASE_OVERRIDES from the fakes' resolved URLs, keyed by
 # the upstream hostnames the shipped service templates use. Add more as needed.
@@ -135,7 +144,9 @@ OVERRIDES="api.github.com=$OPENAPI_URL,api.slack.com=$OPENAPI_URL,api.stripe.com
 # Hex 32-byte secrets (deterministic — these are local-only).
 ENCRYPTION_KEY="ab$(printf 'cd%.0s' $(seq 1 31))"
 SIGNING_KEY="ef$(printf '01%.0s' $(seq 1 31))"
-
+# Cloud billing: turn it on in the e2e stack so the Checkout/portal/webhook
+# routes are mounted. STRIPE_WEBHOOK_SECRET (set above) is shared with the
+# Stripe fake so the HMAC matches.
 log "starting API on $API_URL"
 DEV_AUTH=1 \
 OVERSLASH_SSRF_ALLOW_PRIVATE=1 \
@@ -151,8 +162,12 @@ SIGNING_KEY="$SIGNING_KEY" \
 HOST=127.0.0.1 \
 PORT="$API_PORT" \
 PUBLIC_URL="$API_URL" \
-DASHBOARD_URL="/" \
+DASHBOARD_URL="$DASH_URL" \
 DASHBOARD_ORIGIN="*localhost*" \
+CLOUD_BILLING=1 \
+STRIPE_SECRET_KEY="sk_test_e2e" \
+STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
+STRIPE_API_BASE="$STRIPE_URL/v1" \
 SQLX_OFFLINE=true \
 "$REPO_ROOT/target/release/overslash" serve \
     > "$STATE_DIR/api.log" 2>&1 &
@@ -223,11 +238,15 @@ curl -sf -X POST -H 'content-type: application/json' \
     > "$STATE_DIR/seed.json" \
     || fail "dev seed failed — see $STATE_DIR/api.log"
 
-# 5. Build the dashboard once with the chosen API base URL embedded, then run
-# `vite preview` on a free port.
-DASH_PORT=$(free_port)
-DASH_URL="http://127.0.0.1:$DASH_PORT"
+# Tell the Stripe fake where to deliver webhooks now that the API is up.
+log "configuring Stripe fake webhook target"
+curl -sf -X POST "$STRIPE_URL/__admin/webhook-target" \
+    -H 'content-type: application/json' \
+    -d "{\"url\":\"$API_URL/v1/webhooks/stripe\",\"signing_secret\":\"$STRIPE_WEBHOOK_SECRET\"}" \
+    >/dev/null || fail "failed to configure Stripe fake webhook target"
 
+# 5. Build the dashboard once with the chosen API base URL embedded, then run
+# `vite preview` on the port chosen in step 4.
 log "building dashboard against $API_URL"
 # build:static so `vite preview` serves the SPA bundle from `build/`. The
 # Vercel adapter (default `npm run build`) emits a serverless layout that

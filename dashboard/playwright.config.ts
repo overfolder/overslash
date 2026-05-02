@@ -29,10 +29,18 @@ const apiURL = process.env.API_URL ?? envFromFile.API_URL ?? 'http://127.0.0.1:3
 // without needing access to the playwright config.
 process.env.DASHBOARD_URL = baseURL;
 process.env.API_URL = apiURL;
-// Multi-IdP fake URLs (Auth0/Okta variants) — needed by multi-idp.spec.ts.
-for (const k of ['AUTH0_TENANT_URL', 'OKTA_TENANT_URL']) {
-	const v = process.env[k] ?? envFromFile[k];
-	if (v) process.env[k] = v;
+// Per-fake URLs from .e2e/dashboard.env hoisted into process.env so flows
+// that drive the fakes' admin endpoints directly (Stripe webhooks, multi-
+// IdP variants, etc.) can read them via `process.env.<NAME>`.
+for (const k of [
+	'STRIPE_URL',
+	'OAUTH_AS_URL',
+	'OPENAPI_URL',
+	'MCP_URL',
+	'AUTH0_TENANT_URL',
+	'OKTA_TENANT_URL'
+]) {
+	if (!process.env[k] && envFromFile[k]) process.env[k] = envFromFile[k];
 }
 // Per-variant MCP URLs are emitted as `MCP_VARIANT_<NAME>_URL` env vars
 // by the harness (one entry per capability shape). They're already

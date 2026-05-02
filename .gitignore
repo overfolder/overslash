@@ -24,6 +24,12 @@ Thumbs.db
 
 # Playwright
 .playwright-mcp/
+dashboard/test-results/
+dashboard/playwright-report/
+dashboard/tests/e2e/screenshots/
+
+# E2E harness runtime state (per-worktree, written by scripts/e2e-up.sh)
+.e2e/
 
 # Dashboard (SvelteKit)
 dashboard/node_modules/*
