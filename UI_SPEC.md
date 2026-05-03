@@ -317,7 +317,6 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
 - **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
-- User avatar (32px circle) + name at the bottom.
 - Collapse button (chevron «) at the bottom or top-right of the sidebar.
 
 **Collapsed** (64px): same background and border. Contains:
@@ -325,10 +324,9 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
 - Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
-- User avatar only (no name), centered.
 - Expand button (chevron ») to restore.
 
-**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). Notification bell + badge on right.
+**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. Clicking the user badge opens the User Profile view.
 
 **Notification badge**: Error-red circle (16px) overlapping the bell icon, with white bold count text.
 
@@ -378,7 +376,7 @@ Under an "ADMIN" label (org-admins only): **Users**, **Groups**.
 
 At the bottom of the sidebar: **Settings** (gear icon) — opens user settings. For org-admins, a second settings link or sub-menu provides org settings.
 
-**Profile is NOT a nav item.** The logged-in user's avatar and name appear at the bottom of the sidebar (desktop) or top-right (mobile). Clicking opens the User Profile view.
+**Profile is NOT a nav item.** The logged-in user's avatar and name appear in the top bar (desktop) or top-right (mobile). Clicking opens the User Profile view, which is also the only place to sign out.
 
 **Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Agents view tree.
 
@@ -606,7 +604,7 @@ After approval, shows a success message. The agent picks up its API key via poll
 
 ## User Profile view
 
-Accessible by clicking the user's avatar/name at the bottom of the sidebar. Shows the authenticated user's identity and preferences. Not a nav item — it's a profile overlay or view.
+Accessible by clicking the user badge in the top bar. Shows the authenticated user's identity and preferences. Not a nav item — it's a profile overlay or view.
 
 ### Identity
 
@@ -615,6 +613,7 @@ Accessible by clicking the user's avatar/name at the bottom of the sidebar. Show
 - **Org**: which org the user belongs to, and their role (admin, member, read-only)
 - **Login method**: which IDP was used (Google, GitHub, corporate SSO, dev login)
 - **Created / Last login** timestamps
+- **`[Sign out]`** — danger-styled button in the identity header. Posts `/auth/logout` and redirects to `/login`. This is the only sign-out affordance in the app; the top bar no longer carries one.
 
 Users authenticate to Overslash via OAuth/OIDC only — there are no user API keys for dashboard access.
 
@@ -943,16 +942,16 @@ Template Catalog
 
 Template            Source          Actions   Category
 ──────────────────────────────────────────────────────────────
-GitHub              Overslash       12        Dev Tools         [View] [Create Service]
-Google Calendar     Overslash       8         Productivity      [View] [Create Service]
-Stripe              Overslash       15        Payments          [View] [Create Service]
-Internal CRM        Org             3         Custom            [View] [Create Service]
-My Scraper API      You             2         Custom            [View] [Edit] [Share]
+GitHub              Overslash       12        Dev Tools         [+ New] [View]
+Google Calendar     Overslash       8         Productivity      [+ New] [View]
+Stripe              Overslash       15        Payments          [+ New] [View]
+Internal CRM        Org             3         Custom            [+ New] [View]
+My Scraper API      You             2         Custom            [+ New] [Edit] [Share]
 ```
 
 - **Source**: Overslash (global, read-only), Org (org-admin managed), You (user-created)
+- **`[+ New]`** — opens the service creation flow with this template pre-selected. Routes to `/services/new?template=<key>`, which auto-skips the picker step and lands directly on the configure form. Available for every tier, including read-only `global` templates.
 - **`[View]`** — opens the Template Editor in read-only mode
-- **`[Create Service]`** — starts the service creation flow with this template pre-selected
 - **`[Edit]`** — opens the Template Editor (only for user/org templates)
 - **`[Share]`** — proposes sharing a user template to org level
 
@@ -1041,6 +1040,8 @@ The editing view for user-defined and org-defined templates. Two tabs.
 - **`Archived`** (muted gray) — retired template, hidden from catalogs but still referenced by historical services.
 
 The pill is omitted if the template has no special status. Changing status happens via the kebab menu in the header (`Publish`, `Unpublish`, `Archive`).
+
+**Header action — `[+ New service]`**: a primary button on the right side of the header that opens the create-service flow with this template pre-selected (routes to `/services/new?template=<key>`). Visible for every tier, including read-only `global` templates — the editor is read-only on globals, but instantiation is always allowed.
 
 #### OpenAPI YAML editor
 

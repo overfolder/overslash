@@ -2,7 +2,7 @@
 	import { session, type MeIdentity, type SecretMetadata, type PermissionRule, type UserPreferences } from '$lib/session';
 	import { theme, timeFormat } from '$lib/stores/shell';
 	import { formatTime, ttlRemaining } from '$lib/utils/time';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let { data } = $props<{
@@ -75,6 +75,18 @@
 		);
 	}
 
+	let signingOut = $state(false);
+
+	async function signOut() {
+		signingOut = true;
+		try {
+			await session.post('/auth/logout');
+		} catch {
+			/* ignore */
+		}
+		await goto('/login');
+	}
+
 	function revokePermission(id: string) {
 		openConfirm(
 			'Revoke remembered approval?',
@@ -130,6 +142,14 @@
 				{/if}
 			</div>
 		</div>
+		<button
+			class="btn btn-danger sign-out"
+			type="button"
+			disabled={signingOut}
+			onclick={signOut}
+		>
+			{signingOut ? 'Signing out…' : 'Sign out'}
+		</button>
 	</div>
 
 	<!-- 2. Secrets -->
@@ -272,6 +292,10 @@
 		display: flex;
 		gap: 1.25rem;
 		align-items: center;
+	}
+	.sign-out {
+		margin-left: auto;
+		flex-shrink: 0;
 	}
 	.avatar {
 		width: 72px;

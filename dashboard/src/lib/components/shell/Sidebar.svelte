@@ -4,18 +4,15 @@
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
-	import ProfileAvatar from './ProfileAvatar.svelte';
 	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
 	import type { MembershipSummary } from '$lib/session';
 
 	let {
-		user,
 		isAdmin = false,
 		isInstanceAdmin = false,
 		memberships = [],
 		currentOrgId = ''
 	}: {
-		user: { name?: string; email?: string } | null;
 		isAdmin?: boolean;
 		isInstanceAdmin?: boolean;
 		memberships?: MembershipSummary[];
@@ -74,14 +71,6 @@
 		<button class="collapse-btn" type="button" onclick={toggle} aria-label="Toggle sidebar">
 			{collapsed ? '»' : '«'}
 		</button>
-		{#if user}
-			<div class="profile-row">
-				<ProfileAvatar name={user.name ?? ''} email={user.email ?? ''} showName={!collapsed} />
-				{#if isInstanceAdmin && !collapsed}
-					<span class="instance-badge" title="Instance admin">⚡ Instance</span>
-				{/if}
-			</div>
-		{/if}
 	</div>
 </aside>
 
@@ -164,22 +153,6 @@
 	.create-org-btn:hover {
 		background: var(--color-neutral-100, var(--color-border));
 	}
-	.profile-row {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-	}
-	.instance-badge {
-		font-size: 0.65rem;
-		font-weight: 600;
-		letter-spacing: 0.04em;
-		padding: 2px 6px;
-		border-radius: 999px;
-		background: var(--color-neutral-100, var(--color-border));
-		color: var(--color-text-muted);
-		white-space: nowrap;
-	}
-
 	@media (max-width: 768px) {
 		.sidebar {
 			display: none;
