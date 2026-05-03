@@ -78,7 +78,11 @@
 		} else if (e.key === 'Enter') {
 			if (matches.length === 0) return;
 			e.preventDefault();
-			pick(matches[highlight].name);
+			// `highlight` may be stale relative to `matches` — typing narrows
+			// the list synchronously, but the $effect that resets highlight=0
+			// runs on the microtask queue and can lose the race against Enter.
+			const idx = Math.min(highlight, matches.length - 1);
+			pick(matches[idx].name);
 		} else if (e.key === 'Escape') {
 			focused = false;
 		}
