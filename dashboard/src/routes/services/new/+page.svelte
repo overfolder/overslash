@@ -13,13 +13,16 @@
 	import type {
 		ConnectionSummary,
 		OAuthProviderInfo,
+		SecretSummary,
 		TemplateDetail,
 		TemplateSummary
 	} from '$lib/types';
+	import { listSecrets } from '$lib/api/secrets';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
@@ -51,6 +54,10 @@
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
 	let oauthAbort: AbortController | null = null;
+
+	let availableSecrets = $state<SecretSummary[]>([]);
+	let secretsLoading = $state(false);
+	let secretsLoaded = false;
 
 	// MCP-derived helpers
 	const isMcp = $derived(selectedDetail?.runtime === 'mcp');
@@ -162,6 +169,26 @@
 		// connection) is the whole point of this feature, so stay quiet there.
 		return c.used_by_service_templates.includes(tplKey) ? '(already connected)' : '';
 	}
+	// Lazy-fetch the secrets list the first time the secret-name field would
+	// render. Soft-fails: on error the picker still works as free-text entry.
+	$effect(() => {
+		if (step !== 'configure') return;
+		if (secretsLoaded) return;
+		if (!((usesApiKey && !usesOAuth) || mcpNeedsSecret)) return;
+		secretsLoaded = true;
+		secretsLoading = true;
+		listSecrets()
+			.then((s) => {
+				availableSecrets = s;
+			})
+			.catch(() => {
+				/* leave list empty — picker still works as free-text input */
+			})
+			.finally(() => {
+				secretsLoading = false;
+			});
+	});
+
 	// When we enter the configure step with matching connections available,
 	// default to the existing-connection path and pre-select the best match.
 	$effect(() => {
@@ -576,17 +603,22 @@
 			{/if}
 
 			{#if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
-				<label class="field">
-					<span class="label">
+				<div class="field">
+					<label class="label" for="new-service-secret">
 						{mcpNeedsSecret ? 'Bearer token secret name' : 'API key secret name'}
-					</span>
-					<input type="text" bind:value={secretName} placeholder="my-api-key" />
+					</label>
+					<SecretNamePicker
+						id="new-service-secret"
+						bind:value={secretName}
+						available={availableSecrets}
+						loading={secretsLoading}
+					/>
 					{#if mcpNeedsSecret}
 						<small>Vault key holding the MCP server's bearer token. Required — this template has no default.</small>
 					{:else}
-						<small>The name of a secret previously stored in the vault.</small>
+						<small>Pick an existing secret from your vault, or type a new name to use later.</small>
 					{/if}
-				</label>
+				</div>
 			{/if}
 
 			<div class="actions">

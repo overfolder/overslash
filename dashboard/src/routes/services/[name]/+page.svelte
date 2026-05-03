@@ -21,13 +21,16 @@
 		ActionSummary,
 		ConnectionSummary,
 		Identity,
+		SecretSummary,
 		ServiceGroupRef,
 		ServiceInstanceDetail,
 		ServiceStatus,
 		TemplateDetail
 	} from '$lib/types';
+	import { listSecrets } from '$lib/api/secrets';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
+	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 
 	const name = $derived($page.params.name ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -47,6 +50,9 @@
 	let editConnection = $state('');
 	let editSecret = $state('');
 	let editUrl = $state('');
+	let availableSecrets = $state<SecretSummary[]>([]);
+	let secretsLoading = $state(false);
+	let secretsLoaded = false;
 	let saving = $state(false);
 	let connecting = $state(false);
 	let reconnectAbort: AbortController | null = null;
@@ -460,8 +466,33 @@
 	$effect(() => {
 		// Re-run when the route param changes (client-side nav between services).
 		if (name && !destroyed) {
+			secretsLoaded = false;
+			availableSecrets = [];
 			void load();
 		}
+	});
+
+	// Lazy-fetch secrets list once the loaded template indicates the secret-name
+	// field will render. Soft-fails: on error the picker still works as
+	// free-text entry.
+	$effect(() => {
+		if (secretsLoaded || !svc || isSystem) return;
+		const fieldVisible =
+			(usesApiKey && !usesOAuth) ||
+			(isMcp && template?.mcp?.auth_kind === 'bearer');
+		if (!fieldVisible) return;
+		secretsLoaded = true;
+		secretsLoading = true;
+		listSecrets()
+			.then((s) => {
+				availableSecrets = s;
+			})
+			.catch(() => {
+				/* leave empty — picker still works as free-text input */
+			})
+			.finally(() => {
+				secretsLoading = false;
+			});
 	});
 
 	$effect(() => {
@@ -557,10 +588,15 @@
 					</label>
 				{/if}
 				{#if (usesApiKey && !usesOAuth && !isSystem) || (isMcp && template?.mcp?.auth_kind === 'bearer' && !isSystem)}
-					<label class="field">
-						<span class="label">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</span>
-						<input type="text" bind:value={editSecret} placeholder="my-api-key" />
-					</label>
+					<div class="field">
+						<label class="label" for="edit-service-secret">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</label>
+						<SecretNamePicker
+							id="edit-service-secret"
+							bind:value={editSecret}
+							available={availableSecrets}
+							loading={secretsLoading}
+						/>
+					</div>
 				{/if}
 				<div class="row">
 					<span class="label">Owner</span>
@@ -755,10 +791,15 @@
 						</button>
 					</div>
 				{:else if usesApiKey || (isMcp && template?.mcp?.auth_kind === 'bearer')}
-					<label class="field">
-						<span class="label">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</span>
-						<input type="text" bind:value={editSecret} />
-					</label>
+					<div class="field">
+						<label class="label" for="edit-service-secret">{isMcp ? 'Bearer token secret name' : 'API key secret name'}</label>
+						<SecretNamePicker
+							id="edit-service-secret"
+							bind:value={editSecret}
+							available={availableSecrets}
+							loading={secretsLoading}
+						/>
+					</div>
 					<div class="actions">
 						<button type="button" class="btn primary" onclick={save} disabled={saving}>
 							{saving ? 'Saving…' : 'Save'}
