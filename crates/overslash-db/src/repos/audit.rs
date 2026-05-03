@@ -108,10 +108,12 @@ pub(crate) async fn query_filtered(
                 OR a.id = $9
                 OR a.identity_id = $9
                 OR a.resource_id = $9
-                OR (a.detail->>'execution_id' ~ '^[0-9a-fA-F-]{36}$'
-                    AND (a.detail->>'execution_id')::uuid = $9)
-                OR (a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'
-                    AND (a.detail->>'replayed_from_approval')::uuid = $9))
+                OR CASE WHEN a.detail->>'execution_id' ~ '^[0-9a-fA-F-]{36}$'
+                        THEN (a.detail->>'execution_id')::uuid = $9
+                        ELSE FALSE END
+                OR CASE WHEN a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'
+                        THEN (a.detail->>'replayed_from_approval')::uuid = $9
+                        ELSE FALSE END)
          ORDER BY a.created_at DESC
          LIMIT $10 OFFSET $11",
         filter.org_id,
