@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict V3oIUzl0Ide5Rz5vrcBFuY6chxVbbHYv3C9NEmeKMUEMNRfWuPoh3dUojYUYBJx
+\restrict zdyJRngZhW0MOaFReyj9D36zfs1viXGiUKR9BvHzTQ0DKX6PeuCSKyDkbHOPdQx
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -396,6 +396,7 @@ CREATE TABLE public.org_idp_configs (
     allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
     CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
 );
 
@@ -1541,6 +1542,13 @@ CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btr
 
 
 --
+-- Name: org_idp_configs_one_default_per_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_idp_configs_one_default_per_org ON public.org_idp_configs USING btree (org_id) WHERE is_default;
+
+
+--
 -- Name: service_action_embeddings_global_unique; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2170,5 +2178,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict V3oIUzl0Ide5Rz5vrcBFuY6chxVbbHYv3C9NEmeKMUEMNRfWuPoh3dUojYUYBJx
+\unrestrict zdyJRngZhW0MOaFReyj9D36zfs1viXGiUKR9BvHzTQ0DKX6PeuCSKyDkbHOPdQx
 

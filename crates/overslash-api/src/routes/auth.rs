@@ -335,10 +335,57 @@ async fn provider_callback(
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
 
-    let redirect_target = extract_cookie(&headers, "oss_auth_next")
+    let next_path = extract_cookie(&headers, "oss_auth_next")
         .and_then(|v| sanitize_next(&v))
         .unwrap_or_else(|| state.config.dashboard_url.clone());
+
+    // When login kicks off on `<slug>.<apex>` but the OAuth callback lands
+    // at `state.config.public_url/auth/callback/<provider>` (typical: a
+    // single Google OAuth app's redirect_uri is the API apex), a path-only
+    // redirect resolves against the apex and leaves the user stranded
+    // outside the org subdomain. The `oss_auth_org` cookie was carried
+    // across the bounce on the shared `session_cookie_domain`; combine it
+    // with `app_host_suffix` to reconstruct the original origin and turn
+    // the redirect absolute.
+    let redirect_target = absolute_redirect_for_org(&state, &headers, &next_path);
     Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
+}
+
+/// If login originated on a corp subdomain, build an absolute redirect to
+/// `<scheme>://<slug>.<app-apex><path>` so the user lands back where they
+/// started. Returns `path` unchanged when there's no subdomain context.
+///
+/// Mirrors `public_url`'s port suffix when present so the e2e harness
+/// (which boots the API on a random loopback port) lands on the right
+/// listener. In prod `public_url` has no port (default 443/80) so this is
+/// a no-op.
+fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) -> String {
+    let Some(slug) = extract_cookie(headers, "oss_auth_org").filter(|s| s != "none") else {
+        return path.to_string();
+    };
+    let Some(apex) = state.config.app_host_suffix.as_deref() else {
+        return path.to_string();
+    };
+    let scheme = if state.config.public_url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    let port_suffix = state
+        .config
+        .public_url
+        .rsplit_once('/')
+        .map(|(_, host)| host)
+        .unwrap_or(state.config.public_url.as_str())
+        .rsplit_once(':')
+        .map(|(_, port)| format!(":{port}"))
+        .unwrap_or_default();
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("{scheme}://{slug}.{apex}{port_suffix}{path}")
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +472,7 @@ async fn list_auth_providers(
                 "key": config.provider_key,
                 "display_name": display_name,
                 "source": "db",
+                "is_default": config.is_default,
             }));
         }
         // Intentional: no env-level providers here. The org IdP is the only
@@ -1063,22 +1111,34 @@ async fn dev_token(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve auth credentials for a provider. Precedence:
-/// 1. Environment variables (e.g. GOOGLE_AUTH_CLIENT_ID)
-/// 2. DB-stored org_idp_config (requires org context via slug). When the
-///    config has NULL `encrypted_client_*` fields, it defers to the org's
-///    OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
+/// Resolve auth credentials for a provider. Trust-domain rule
+/// (DECISIONS.md D12, docs/design/multi_org_auth.md): when an org is in
+/// scope (corp subdomain or legacy `?org=<slug>` on the apex), only the
+/// org's own `org_idp_configs` row may grant admission — Overslash-managed
+/// env-var creds are root-apex-only. When no org is in scope, env vars are
+/// the only path (root sign-up / personal-org creation).
+///
+/// When the IdP config has NULL `encrypted_client_*` fields, it defers to
+/// the org's OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
 async fn resolve_auth_credentials(
     state: &AppState,
     provider_key: &str,
     org_slug: Option<&str>,
 ) -> Result<(String, String), AppError> {
-    // 1. Env vars take precedence
-    if let Some(creds) = state.config.env_auth_credentials(provider_key) {
-        return Ok(creds);
+    // No org in scope → env-only path. This is the apex (root) login surface
+    // for personal orgs / org-creator bootstrap.
+    if org_slug.is_none() {
+        return state
+            .config
+            .env_auth_credentials(provider_key)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "provider {provider_key} is not configured at the root level"
+                ))
+            });
     }
 
-    // 2. DB config — need org context
+    // Org in scope → DB-config-only. Strict isolation.
     if let Some(slug) = org_slug {
         let org_row = org::get_by_slug(&state.db, slug)
             .await?

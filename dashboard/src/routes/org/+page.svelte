@@ -418,6 +418,30 @@
 		}
 	}
 
+	// "Default for sign-in" — the org's chosen IdP for the OAuth authorize
+	// bounce. Setting one here clears the previous default in the same
+	// transaction. MCP clients on `<slug>.api.overslash.com` and human users
+	// on `<slug>.app.overslash.com` both follow this default.
+	async function setDefaultIdp(cfg: IdpConfig) {
+		if (!cfg.id || cfg.is_default) return;
+		try {
+			await session.put(`/v1/org-idp-configs/${cfg.id}`, { is_default: true });
+			await refetchIdp();
+		} catch (err) {
+			alert(asMessage(err));
+		}
+	}
+
+	async function clearDefaultIdp(cfg: IdpConfig) {
+		if (!cfg.id || !cfg.is_default) return;
+		try {
+			await session.put(`/v1/org-idp-configs/${cfg.id}`, { is_default: false });
+			await refetchIdp();
+		} catch (err) {
+			alert(asMessage(err));
+		}
+	}
+
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
 		if (!org || !secretRequestSettings) return;
 		const next = nextValue ?? !secretRequestSettings.allow_unsigned_secret_provide;
@@ -644,6 +668,7 @@
 							<th>Provider</th>
 							<th>Type</th>
 							<th>Status</th>
+							<th>Default</th>
 							<th class="actions-col">Actions</th>
 						</tr>
 					</thead>
@@ -664,11 +689,27 @@
 										<span class="badge badge-on">enabled</span>
 									{/if}
 								</td>
+								<td>
+									{#if cfg.is_default}
+										<span class="badge badge-on">default</span>
+									{:else}
+										<span class="muted small">—</span>
+									{/if}
+								</td>
 								<td class="actions-col">
 									{#if cfg.source === 'db'}
 										<button type="button" class="btn-link" onclick={() => toggleIdp(cfg)}>
 											{cfg.enabled ? 'Disable' : 'Enable'}
 										</button>
+										{#if cfg.is_default}
+											<button type="button" class="btn-link" onclick={() => clearDefaultIdp(cfg)}>
+												Unset default
+											</button>
+										{:else if cfg.enabled !== false}
+											<button type="button" class="btn-link" onclick={() => setDefaultIdp(cfg)}>
+												Set default
+											</button>
+										{/if}
 										<button type="button" class="btn-link danger" onclick={() => deleteIdp(cfg)}>
 											Delete
 										</button>

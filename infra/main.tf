@@ -134,11 +134,15 @@ module "cloud_run" {
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain            = var.domain
-  dashboard_origin  = var.dashboard_origin
-  mcp_extra_origins = var.mcp_extra_origins
-  dashboard_url     = var.dashboard_url
-  enable_dev_auth   = var.enable_dev_auth
+  domain                    = var.domain
+  app_host_suffix           = var.app_host_suffix
+  api_host_suffix           = var.api_host_suffix
+  session_cookie_domain     = var.session_cookie_domain
+  dashboard_origin          = var.dashboard_origin
+  mcp_extra_origins         = var.mcp_extra_origins
+  dashboard_url             = var.dashboard_url
+  enable_dev_auth           = var.enable_dev_auth
+  extra_api_domain_mappings = var.extra_api_domain_mappings
 
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
@@ -170,6 +174,35 @@ module "monitoring" {
     google_project_service.apis,
     module.cloud_run,
     module.cloud_sql,
+  ]
+}
+
+# --- API Load Balancer (global HTTPS LB with wildcard managed cert) ---
+#
+# Required for `*.api.<apex>` routing at scale — Cloud Run's native domain
+# mapping is single-domain and DNS-TXT-validated, which doesn't grow with
+# tens of orgs. When `enable_api_lb=true` this module fronts Cloud Run with
+# a global HTTPS LB + wildcard managed cert (and the operator should leave
+# `domain=""` on the cloud-run module).
+#
+# When `enable_api_lb=false` (dev), the cloud-run module instead provisions
+# 1-1 `google_cloud_run_domain_mapping` resources for each entry in
+# `extra_api_domain_mappings` (plus the apex `domain` if non-empty), which
+# keeps the bill at zero for a small dogfood-org count.
+module "api_lb" {
+  count = var.enable_api_lb ? 1 : 0
+
+  source      = "./modules/api-lb"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  cloud_run_service = module.cloud_run.service_name
+  api_apex          = var.api_host_suffix
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
   ]
 }
 

@@ -59,6 +59,13 @@ struct CreateIdpConfigRequest {
     enabled: bool,
     #[serde(default)]
     allowed_email_domains: Vec<String>,
+    /// Mark this newly-created config as the org's default IdP. The
+    /// `/oauth/authorize` flow on a corp subdomain bounces unauthenticated
+    /// callers straight through the default IdP. Mutually exclusive at the
+    /// org level — flipping a new row to default clears the previous one
+    /// in the same transaction.
+    #[serde(default)]
+    is_default: bool,
 }
 
 fn default_true() -> bool {
@@ -76,6 +83,10 @@ struct UpdateIdpConfigRequest {
     use_org_credentials: Option<bool>,
     enabled: Option<bool>,
     allowed_email_domains: Option<Vec<String>>,
+    /// Tri-state: `Some(true)` makes this row the org's default (clearing
+    /// the prior default), `Some(false)` clears the default flag on this
+    /// row, `None` leaves it untouched.
+    is_default: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -89,6 +100,9 @@ struct IdpConfigResponse {
     source: &'static str,
     /// True when this IdP defers to the org's OAuth App Credentials.
     uses_org_credentials: bool,
+    /// True when this IdP is the org's designated default for the OAuth
+    /// authorize flow.
+    is_default: bool,
     created_at: String,
     updated_at: String,
 }
@@ -221,7 +235,7 @@ async fn create_idp_config(
         )
     };
 
-    let row = scope
+    let mut row = scope
         .create_org_idp_config(
             &provider_key,
             encrypted_client_id.as_deref(),
@@ -240,6 +254,15 @@ async fn create_idp_config(
             }
             AppError::Database(e)
         })?;
+
+    // Apply the default flag in a follow-up so the prior default in the
+    // same org is cleared atomically. Skip when it would be a no-op so we
+    // don't trample an unrelated existing default.
+    if req.is_default {
+        if let Some(updated) = scope.set_default_org_idp_config(row.id).await? {
+            row = updated;
+        }
+    }
 
     let display_name = oauth_provider::get_by_key(&state.db, &provider_key)
         .await?
@@ -271,6 +294,7 @@ async fn create_idp_config(
         allowed_email_domains: row.allowed_email_domains,
         source: "db",
         uses_org_credentials,
+        is_default: row.is_default,
         created_at: fmt_time(row.created_at),
         updated_at: fmt_time(row.updated_at),
     }))
@@ -318,6 +342,7 @@ async fn list_idp_configs(
             "enabled": config.enabled,
             "allowed_email_domains": config.allowed_email_domains,
             "uses_org_credentials": config.encrypted_client_id.is_none(),
+            "is_default": config.is_default,
             "created_at": fmt_time(config.created_at),
             "updated_at": fmt_time(config.updated_at),
         }));
@@ -409,10 +434,27 @@ async fn update_idp_config(
         }
     };
 
-    let updated = scope
+    let mut updated = scope
         .update_org_idp_config(id, creds, req.enabled, req.allowed_email_domains.as_deref())
         .await?
         .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
+
+    // Apply the default flag tri-state after the main update so the
+    // partial unique index swap is one transaction independent of the
+    // credential/enabled/domain churn.
+    match req.is_default {
+        Some(true) => {
+            if let Some(row) = scope.set_default_org_idp_config(id).await? {
+                updated = row;
+            }
+        }
+        Some(false) => {
+            if let Some(row) = scope.clear_default_org_idp_config(id).await? {
+                updated = row;
+            }
+        }
+        None => {}
+    }
 
     let display_name = oauth_provider::get_by_key(&state.db, &updated.provider_key)
         .await?
@@ -444,6 +486,7 @@ async fn update_idp_config(
         allowed_email_domains: updated.allowed_email_domains,
         source: "db",
         uses_org_credentials,
+        is_default: updated.is_default,
         created_at: fmt_time(updated.created_at),
         updated_at: fmt_time(updated.updated_at),
     }))

@@ -148,6 +148,16 @@ SIGNING_KEY="ef$(printf '01%.0s' $(seq 1 31))"
 # Cloud billing: turn it on in the e2e stack so the Checkout/portal/webhook
 # routes are mounted. STRIPE_WEBHOOK_SECRET (set above) is shared with the
 # Stripe fake so the HMAC matches.
+
+# Subdomain suffixes for e2e. `localtest.me` is a public DNS wildcard that
+# resolves any subdomain to 127.0.0.1, so the subdomain middleware treats
+# requests as `<slug>.app.localtest.me` / `<slug>.api.localtest.me`
+# without any /etc/hosts plumbing. Tests that don't care about subdomains
+# keep working because the middleware falls through to `Root` context when
+# the host doesn't match either suffix.
+APP_HOST_SUFFIX="app.localtest.me"
+API_HOST_SUFFIX="api.localtest.me"
+
 log "starting API on $API_URL"
 DEV_AUTH=1 \
 OVERSLASH_SSRF_ALLOW_PRIVATE=1 \
@@ -169,6 +179,8 @@ CLOUD_BILLING=1 \
 STRIPE_SECRET_KEY="sk_test_e2e" \
 STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
 STRIPE_API_BASE="$STRIPE_URL/v1" \
+APP_HOST_SUFFIX="$APP_HOST_SUFFIX" \
+API_HOST_SUFFIX="$API_HOST_SUFFIX" \
 SQLX_OFFLINE=true \
 "$REPO_ROOT/target/release/overslash" serve \
     > "$STATE_DIR/api.log" 2>&1 &
@@ -313,6 +325,8 @@ MCP_URL=$MCP_URL
 MCP_PUPPET_URL=$MCP_PUPPET_URL
 AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
+APP_HOST_SUFFIX=$APP_HOST_SUFFIX
+API_HOST_SUFFIX=$API_HOST_SUFFIX
 $MCP_VARIANT_LINES
 EOF
 

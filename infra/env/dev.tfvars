@@ -2,14 +2,29 @@ project_id = "overslash-dev"
 region     = "europe-west1"
 env        = "dev"
 
-domain           = "api.dev.overslash.com"
-dashboard_origin = "https://app.dev.overslash.com"
+# Apex API host. Kept as a real Cloud Run domain mapping so the apex stays
+# reachable when `enable_api_lb = false` (dev runs without GCLB to save cost).
+domain = "api.dev.overslash.com"
+
+app_host_suffix       = "app.dev.overslash.com"
+api_host_suffix       = "api.dev.overslash.com"
+session_cookie_domain = ".app.dev.overslash.com"
+
+# Dev runs without the wildcard-cert GCLB. Per-org API subdomains are
+# instead created as 1-1 Cloud Run domain mappings via
+# `extra_api_domain_mappings` below, which keeps cost at zero and avoids
+# provisioning a global LB just to host a couple of dogfood orgs.
+enable_api_lb             = false
+extra_api_domain_mappings = []
+
 # Lets a locally-run MCP Inspector (default port 6274) complete the OAuth
 # handshake against the dev API. Scoped to /mcp + /.well-known/oauth-* +
 # /oauth/* only — does NOT widen CORS on /v1/*.
 mcp_extra_origins = "http://localhost:6274"
-dashboard_url     = "https://app.dev.overslash.com"
-enable_dev_auth   = false
+
+dashboard_origin = "https://app.dev.overslash.com,https://*.app.dev.overslash.com"
+dashboard_url    = "https://app.dev.overslash.com"
+enable_dev_auth  = false
 
 # Cloud SQL — minimum viable
 cloud_sql_tier         = "db-f1-micro"

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, created_at, updated_at\n         FROM org_idp_configs WHERE $1 = ANY(allowed_email_domains) AND enabled = true\n         ORDER BY created_at",
+  "query": "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at\n         FROM org_idp_configs WHERE org_id = $1 AND is_default = true AND enabled = true",
   "describe": {
     "columns": [
       {
@@ -40,18 +40,23 @@
       },
       {
         "ordinal": 7,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -63,8 +68,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "ca9690c7fd09e411721cf0fc3a4e6bbd27cce2e97a6a7bf1ad478a6db0a5b8e0"
+  "hash": "dd0aed3b642df7a9251e6961648c5e29fa44723ac96b1d53aac6729459108f2a"
 }
