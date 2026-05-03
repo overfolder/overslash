@@ -69,6 +69,14 @@ pub struct AuditFilter {
     /// `description`, and the joined identity name. Powers the audit log
     /// search bar.
     pub q: Option<String>,
+    /// Exact match on `audit_log.id`. Used by the dashboard deep-link
+    /// (`/audit?event=<uuid>`) to confirm a target event exists outside the
+    /// active filter set.
+    pub event_id: Option<Uuid>,
+    /// Match a UUID across the row id, actor id, resource id, and the JSONB
+    /// `detail` keys `execution_id` / `replayed_from_approval`. Powers the
+    /// `uuid =` search bar key.
+    pub uuid: Option<Uuid>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -95,8 +103,17 @@ pub(crate) async fn query_filtered(
                 OR a.action ILIKE $7
                 OR a.description ILIKE $7
                 OR i.name ILIKE $7)
+           AND ($8::uuid IS NULL OR a.id = $8)
+           AND ($9::uuid IS NULL
+                OR a.id = $9
+                OR a.identity_id = $9
+                OR a.resource_id = $9
+                OR (a.detail->>'execution_id' ~ '^[0-9a-fA-F-]{36}$'
+                    AND (a.detail->>'execution_id')::uuid = $9)
+                OR (a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'
+                    AND (a.detail->>'replayed_from_approval')::uuid = $9))
          ORDER BY a.created_at DESC
-         LIMIT $8 OFFSET $9",
+         LIMIT $10 OFFSET $11",
         filter.org_id,
         filter.action,
         filter.resource_type,
@@ -104,6 +121,8 @@ pub(crate) async fn query_filtered(
         filter.since,
         filter.until,
         like,
+        filter.event_id,
+        filter.uuid,
         filter.limit,
         filter.offset,
     )

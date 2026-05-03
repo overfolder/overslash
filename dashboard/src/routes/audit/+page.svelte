@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { replaceState } from '$app/navigation';
+	import { tick } from 'svelte';
 	import { session, ApiError } from '$lib/session';
 	import SearchBar, { type SearchValue } from '$lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
@@ -31,9 +32,18 @@
 	let loading = $state(false);
 	// svelte-ignore state_referenced_locally
 	let loadError = $state<string | null>(data.error?.message ?? null);
-	let expandedId = $state<string | null>(null);
+	// Deep-link: `?event=<uuid>` selects an event to expand. If that event is
+	// already in the visible page we just scroll-and-expand; if it's outside
+	// the current filter set we keep the anchor row pinned above the table.
+	// svelte-ignore state_referenced_locally
+	let eventId = $state<string | null>(data.eventId);
+	// svelte-ignore state_referenced_locally
+	let anchor = $state<AuditEntry | null>(data.anchor);
+	// svelte-ignore state_referenced_locally
+	let expandedId = $state<string | null>(eventId);
 
 	let sentinel: HTMLDivElement | undefined = $state();
+	let tableWrap: HTMLDivElement | undefined = $state();
 	// Tracks the in-flight audit fetch so a filter change can cancel any
 	// scroll-triggered request that would otherwise overwrite the new page
 	// with stale data.
@@ -79,12 +89,23 @@
 		}
 	}
 
+	function buildUrl(next: AuditFilters): string {
+		const base = `/audit${filtersToSearchString(next)}`;
+		// Preserve `?event=<uuid>` across filter changes when the anchor is
+		// still useful — i.e. the targeted event still exists. Drop it when
+		// the user has explicitly cleared the deep-link via the anchor's
+		// "Clear" affordance.
+		if (!eventId) return base;
+		const sep = base.includes('?') ? '&' : '?';
+		return `${base}${sep}event=${eventId}`;
+	}
+
 	function applyFilters(next: AuditFilters) {
 		filters = next;
 		// Update the URL in place so filters are shareable, without re-running
 		// the page `load` function (which would duplicate the network request
 		// triggered by fetchPage below).
-		replaceState(`/audit${filtersToSearchString(next)}`, {});
+		replaceState(buildUrl(next), {});
 		fetchPage(true);
 	}
 
@@ -100,6 +121,30 @@
 	function toggleExpand(id: string) {
 		expandedId = expandedId === id ? null : id;
 	}
+
+	function clearAnchor() {
+		eventId = null;
+		anchor = null;
+		expandedId = null;
+		replaceState(`/audit${filtersToSearchString(filters)}`, {});
+	}
+
+	async function scrollToEvent(id: string) {
+		await tick();
+		const el = tableWrap?.querySelector<HTMLTableRowElement>(`tr[data-event-id="${id}"]`);
+		if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+	}
+
+	// Suppress the anchor row when the deep-linked event is already in the
+	// filtered list — rendering it twice would be confusing. We still keep
+	// `anchor` in state so toggling filters can re-evaluate.
+	const anchorVisible = $derived(
+		!!anchor && !entries.some((e) => e.id === anchor!.id)
+	);
+
+	$effect(() => {
+		if (eventId) scrollToEvent(eventId);
+	});
 
 	$effect(() => {
 		if (!sentinel) return;
@@ -140,6 +185,26 @@
 		/>
 	</div>
 
+	{#if anchorVisible && anchor}
+		<div class="anchor-wrap" data-test="audit-anchor">
+			<div class="anchor-banner">
+				<span>Anchored to event <code class="mono">{anchor.id}</code> — outside the current filters.</span>
+				<button type="button" onclick={clearAnchor}>Clear</button>
+			</div>
+			<div class="table-wrap anchor-table">
+				<table>
+					<tbody>
+						<AuditRow
+							entry={anchor}
+							expanded={expandedId === anchor.id}
+							ontoggle={() => toggleExpand(anchor!.id)}
+						/>
+					</tbody>
+				</table>
+			</div>
+		</div>
+	{/if}
+
 	{#if loadError && entries.length === 0}
 		<div class="state error">
 			{loadError}
@@ -148,7 +213,7 @@
 	{:else if entries.length === 0 && !loading}
 		<div class="state muted">No audit events match the current filters.</div>
 	{:else}
-		<div class="table-wrap">
+		<div class="table-wrap" bind:this={tableWrap}>
 			<table>
 				<thead>
 					<tr>
@@ -277,5 +342,35 @@
 	}
 	.sentinel {
 		height: 1px;
+	}
+	.anchor-wrap {
+		margin-bottom: var(--space-4);
+	}
+	.anchor-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-3);
+		border: 1px solid var(--color-border);
+		border-bottom: none;
+		border-top-left-radius: var(--radius-md, 8px);
+		border-top-right-radius: var(--radius-md, 8px);
+		background: color-mix(in srgb, var(--color-primary, #3b82f6) 8%, transparent);
+		font-size: 0.85rem;
+	}
+	.anchor-banner button {
+		padding: 4px 10px;
+		border: 1px solid var(--color-border);
+		background: var(--color-bg);
+		border-radius: var(--radius-sm, 4px);
+		cursor: pointer;
+	}
+	.anchor-table {
+		border-top-left-radius: 0;
+		border-top-right-radius: 0;
+	}
+	.mono {
+		font-family: var(--font-mono, monospace);
 	}
 </style>

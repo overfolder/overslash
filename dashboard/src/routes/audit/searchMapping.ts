@@ -35,6 +35,12 @@ export function buildAuditSearchKeys(identities: IdentitySummary[]): SearchKey[]
 			hint: 'identity name'
 		},
 		{ name: 'event', operators: ['='], values: EVENT_VALUES, hint: 'event type' },
+		{
+			name: 'uuid',
+			operators: ['='],
+			values: [],
+			hint: 'event id, execution id, approval id, …'
+		},
 		{ name: 'time', operators: ['='], values: Object.keys(TIME_PRESETS), hint: 'time range' }
 	];
 }
@@ -69,6 +75,8 @@ export function searchToFilters(value: SearchValue, identities: IdentitySummary[
 			} else {
 				qTerms.push(expr.value);
 			}
+		} else if (expr.key === 'uuid') {
+			filters.uuid = expr.value;
 		} else if (expr.key === 'time') {
 			const ms = TIME_PRESETS[expr.value];
 			if (ms !== undefined) {
@@ -89,6 +97,7 @@ export function filtersToSearch(filters: AuditFilters, identities: IdentitySumma
 		const match = identities.find((i) => i.id === filters.identity_id);
 		expressions.push({ key: 'identity', op: '=', value: match?.name ?? filters.identity_id });
 	}
+	if (filters.uuid) expressions.push({ key: 'uuid', op: '=', value: filters.uuid });
 	// We can't reliably reverse `time` from since/until alone (presets are
 	// snapshotted to ISO timestamps); leave it out and let the user re-pick.
 	return { expressions, freeText: filters.q ?? '' };
