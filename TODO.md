@@ -148,6 +148,7 @@ Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-
 - [ ] Add tests for edge cases in OAuth token refresh and BYOC fallback
 - [ ] Dashboard component tests
 - [ ] E2E tests for MCP OAuth enrollment (full `/oauth/authorize` → `/oauth/consent` → `/oauth/token` flow driven by an MCP client)
+- [ ] MCP approval-bubbling and elicitation full-chain specs — the puppet (`crates/overslash-mcp-puppet`) and the two scaffold specs (`mcp-approval-bubbling.spec.ts`, `mcp-elicitation.spec.ts`) are in. Extend each to drive the real gap → resolve → replay path once a deterministic gap-trigger via `overslash_call({ service, action })` is wired (probably via a seeded service template + a no-permissions SubAgent).
 
 ---
 

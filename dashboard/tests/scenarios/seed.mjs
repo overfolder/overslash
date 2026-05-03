@@ -348,3 +348,22 @@ export async function seedApproval(session, input = {}) {
 	}
 	return api(session, `/v1/approvals/${payload.approval_id}`);
 }
+
+/**
+ * Resolve an approval out-of-band (as the admin / parent). Used by MCP e2e
+ * tests where the puppet (acting as a SubAgent) is blocked behind a gap and
+ * something else needs to push the approval through.
+ *
+ * `resolution` matches the API: `'allow' | 'deny' | 'allow_remember' | 'bubble_up'`.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {string} approvalId
+ * @param {'allow' | 'deny' | 'allow_remember' | 'bubble_up'} resolution
+ * @returns {Promise<unknown>}
+ */
+export async function seedApprovalResolution(session, approvalId, resolution) {
+	return api(session, `/v1/approvals/${approvalId}/resolve`, {
+		method: 'POST',
+		body: { resolution }
+	});
+}
