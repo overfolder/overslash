@@ -134,6 +134,14 @@ struct CallRequest {
     // original `body` is always preserved.
     #[serde(default)]
     filter: Option<ResponseFilter>,
+
+    // Caller-asserted risk class. Today only `read` is meaningful: when set
+    // to `read`, the resolved action's risk must be `Read` or the call is
+    // rejected with 400. `write` / `delete` are accepted by the parser but
+    // do not gate anything (no caller currently asks for them). Set by the
+    // MCP `overslash_read` tool to enforce its readOnlyHint.
+    #[serde(default)]
+    require_risk: Option<Risk>,
 }
 
 #[derive(Serialize)]
@@ -240,6 +248,26 @@ async fn call_action_impl(
     // the identity lookup above so Mode C name resolution doesn't re-fetch it.
     let (action_req, meta) =
         resolve_request(&state, &auth, &scope, identity_id, ceiling_user_id, &req).await?;
+
+    // Caller-asserted risk gate (MCP `overslash_read`): reject before any
+    // permission/approval work if the resolved action mutates. We use the
+    // template-declared `risk` for Mode C and fall back to the HTTP-method
+    // inference for Mode A/B — same logic as the ceiling check below.
+    if let Some(required) = req.require_risk {
+        let effective = meta
+            .risk
+            .unwrap_or_else(|| Risk::from_http_method(&action_req.method));
+        if required == Risk::Read && effective.is_mutating() {
+            let action_label = req
+                .action
+                .as_deref()
+                .or(req.service.as_deref())
+                .unwrap_or(&action_req.url);
+            return Err(AppError::BadRequest(format!(
+                "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
+            )));
+        }
+    }
 
     let perm_keys = if let Some(ref scope) = meta.service_scope {
         PermissionKey::from_service_action(

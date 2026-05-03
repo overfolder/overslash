@@ -54,12 +54,13 @@ Configure the client to use the stdio shim — it auto-refreshes tokens:
 
 ## After enrollment
 
-You have three MCP tools:
+You have four MCP tools:
 
 | Tool | Purpose |
 |---|---|
 | `overslash_search` | Discover services and actions available to you |
-| `overslash_call` | Call an action, resume a pending approval, or invoke a platform action |
+| `overslash_read` | Call a read-class action — the server rejects writes/deletes routed through it. Prefer this over `overslash_call` for read-only operations: clients can skip the confirmation prompt because the tool is annotated `readOnlyHint: true`. |
+| `overslash_call` | Call any action (read, write, or delete), resume a pending approval, or invoke a platform action |
 | `overslash_auth` | `whoami` · `service_status` |
 
 See `SPEC.md` for the full API reference.
