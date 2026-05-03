@@ -12,6 +12,7 @@ COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
 COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml
 COPY crates/overslash-mcp/Cargo.toml crates/overslash-mcp/Cargo.toml
+COPY crates/overslash-mcp-puppet/Cargo.toml crates/overslash-mcp-puppet/Cargo.toml
 COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
 COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
@@ -27,6 +28,9 @@ RUN mkdir -p crates/overslash-core/src \
     && echo "pub fn _dummy() {}" > crates/overslash-api/src/lib.rs \
     && mkdir -p crates/overslash-mcp/src \
     && echo "pub fn _dummy() {}" > crates/overslash-mcp/src/lib.rs \
+    && mkdir -p crates/overslash-mcp-puppet/src/bin \
+    && echo "pub fn _dummy() {}" > crates/overslash-mcp-puppet/src/lib.rs \
+    && echo "fn main() {}" > crates/overslash-mcp-puppet/src/bin/overslash-mcp-puppet.rs \
     && mkdir -p crates/overslash-cli/src \
     && echo "fn main() {}" > crates/overslash-cli/src/main.rs \
     && mkdir -p crates/oversla-sh/src \
