@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { ApiError, type MeIdentity } from '$lib/session';
 	import {
@@ -387,7 +388,17 @@
 		}
 	}
 
-	onMount(loadTemplates);
+	onMount(async () => {
+		await loadTemplates();
+		const presetKey = $page.url.searchParams.get('template');
+		if (presetKey) {
+			const match = templates.find((t) => t.key === presetKey);
+			if (match) {
+				await selectTemplate(match);
+				if (selectedDetail) step = 'configure';
+			}
+		}
+	});
 </script>
 
 <svelte:head><title>New service - Overslash</title></svelte:head>

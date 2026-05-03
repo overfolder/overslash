@@ -82,30 +82,6 @@ export interface McpConnection {
   elicitation_supported: boolean;
 }
 
-export interface UpstreamConnection {
-  id: string;
-  upstream_resource: string;
-  status: 'pending_auth' | 'ready' | 'revoked' | 'error';
-  has_token: boolean;
-  access_token_expires_at: string | null;
-  created_at: string;
-  last_refreshed_at: string | null;
-}
-
-export interface InitiateUpstreamResponse {
-  status: 'ready' | 'pending_auth';
-  flow_id?: string;
-  expires_at?: string;
-  authorize_urls?: {
-    proxied: string;
-    short?: string | null;
-    raw?: string | null;
-  };
-  connection_id?: string;
-  upstream_resource?: string;
-  access_token_expires_at?: string | null;
-}
-
 /**
  * Long-lived `osk_…` API key minted from Org Settings → Service keys.
  * Always carries the `service` pseudo-scope; carries `impersonate` when

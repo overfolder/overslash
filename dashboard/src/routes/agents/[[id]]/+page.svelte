@@ -14,10 +14,8 @@
 	} from '$lib/identityApi';
 	import type {
 		Identity,
-		InitiateUpstreamResponse,
 		McpConnection,
-		PermissionRule,
-		UpstreamConnection
+		PermissionRule
 	} from '$lib/types';
 	import { session, ApiError, type ApprovalResponse } from '$lib/session';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
@@ -54,13 +52,6 @@
 		disconnectError: string | null;
 		deleteModalOpen: boolean;
 		deleteModalBusy: boolean;
-		upstreamConnections: UpstreamConnection[];
-		upstreamError: string | null;
-		initiateBusy: boolean;
-		initiateError: string | null;
-		initiateResult: InitiateUpstreamResponse | null;
-		initiateResource: string;
-		initiateAsIssuer: string;
 	}
 
 	function freshDetail(agentId: string): AgentDetailState {
@@ -78,14 +69,7 @@
 			disconnecting: false,
 			disconnectError: null,
 			deleteModalOpen: false,
-			deleteModalBusy: false,
-			upstreamConnections: [],
-			upstreamError: null,
-			initiateBusy: false,
-			initiateError: null,
-			initiateResult: null,
-			initiateResource: '',
-			initiateAsIssuer: ''
+			deleteModalBusy: false
 		};
 	}
 
@@ -158,7 +142,7 @@
 		detail.elicitationError = null;
 		detail.disconnectError = null;
 		try {
-			const [rules, apr, mcpResp, upstreamResp] = await Promise.all([
+			const [rules, apr, mcpResp] = await Promise.all([
 				listPermissions(id),
 				listApprovals(id),
 				session
@@ -166,12 +150,6 @@
 						`/v1/identities/${encodeURIComponent(id)}/mcp-connection`
 					)
 					.then((r) => ({ ok: true as const, connection: r.connection }))
-					.catch((e) => ({ ok: false as const, error: e })),
-				session
-					.get<UpstreamConnection[]>(
-						`/v1/identities/${encodeURIComponent(id)}/mcp_upstream_connections`
-					)
-					.then((r) => ({ ok: true as const, connections: r }))
 					.catch((e) => ({ ok: false as const, error: e }))
 			]);
 			if (detail?.agentId !== id) return;
@@ -191,21 +169,6 @@
 				detail.mcpError =
 					mcpResp.error instanceof ApiError
 						? `Error ${mcpResp.error.status}`
-						: 'Network error';
-			}
-			if (upstreamResp.ok) {
-				detail.upstreamConnections = upstreamResp.connections;
-				detail.upstreamError = null;
-			} else if (
-				upstreamResp.error instanceof ApiError &&
-				(upstreamResp.error.status === 404 || upstreamResp.error.status === 403)
-			) {
-				detail.upstreamConnections = [];
-				detail.upstreamError = null;
-			} else {
-				detail.upstreamError =
-					upstreamResp.error instanceof ApiError
-						? `Error ${upstreamResp.error.status}`
 						: 'Network error';
 			}
 		} catch (e) {
@@ -302,75 +265,6 @@
 			return new Date(iso).toLocaleString();
 		} catch {
 			return iso;
-		}
-	}
-
-	async function refreshUpstreamConnections() {
-		if (!detail) return;
-		const id = detail.agentId;
-		try {
-			const list = await session.get<UpstreamConnection[]>(
-				`/v1/identities/${encodeURIComponent(id)}/mcp_upstream_connections`
-			);
-			if (detail?.agentId === id) detail.upstreamConnections = list;
-		} catch (e) {
-			console.error('refresh upstream connections failed', e);
-		}
-	}
-
-	async function initiateUpstream() {
-		if (!detail) return;
-		const id = detail.agentId;
-		detail.initiateBusy = true;
-		detail.initiateError = null;
-		detail.initiateResult = null;
-		try {
-			const body: Record<string, unknown> = {
-				upstream_resource: detail.initiateResource,
-				identity_id: id
-			};
-			if (detail.initiateAsIssuer.trim()) {
-				body.as_issuer = detail.initiateAsIssuer.trim();
-			} else {
-				body.resource_metadata_url = `${detail.initiateResource.replace(/\/+$/, '')}/.well-known/oauth-protected-resource`;
-			}
-			const result = await session.post<InitiateUpstreamResponse>(
-				'/v1/mcp_upstream/initiate',
-				body
-			);
-			if (detail?.agentId === id) {
-				detail.initiateResult = result;
-				await refreshUpstreamConnections();
-			}
-		} catch (e) {
-			if (detail?.agentId === id) {
-				detail.initiateError =
-					e instanceof ApiError ? `Error ${e.status}: ${e.message}` : 'Network error';
-			}
-		} finally {
-			if (detail?.agentId === id) detail.initiateBusy = false;
-		}
-	}
-
-	async function revokeUpstream(conn: UpstreamConnection) {
-		if (!detail) return;
-		const id = detail.agentId;
-		try {
-			await session.post(
-				`/v1/identities/${encodeURIComponent(id)}/mcp_upstream_connections/${encodeURIComponent(conn.id)}/revoke`,
-				{}
-			);
-			await refreshUpstreamConnections();
-		} catch (e) {
-			console.error('revoke upstream failed', e);
-		}
-	}
-
-	async function copyShareUrl(text: string) {
-		try {
-			await navigator.clipboard.writeText(text);
-		} catch (e) {
-			console.error('clipboard write failed', e);
 		}
 	}
 
@@ -835,122 +729,6 @@
 									onchange={(v) => setElicitation(v)}
 								/>
 							</div>
-						</div>
-					{/if}
-
-					<!-- Upstream MCP Connections -->
-					<h3 class="section-title">Upstream MCP Connections</h3>
-					<p class="muted small">
-						OAuth tokens this agent holds for upstream MCP servers. Each connection is bound
-						to the initiating Overslash account so a leaked authorize URL cannot be used by
-						anyone else to grant access.
-					</p>
-					{#if detail?.upstreamError}
-						<div class="mcp-empty mcp-error">
-							<p>Could not load upstream connections: {detail.upstreamError}</p>
-						</div>
-					{/if}
-					{#if (detail?.upstreamConnections ?? []).length === 0}
-						<div class="mcp-empty">
-							<p>No upstream MCP servers connected yet.</p>
-						</div>
-					{:else}
-						<ul class="upstream-list">
-							{#each detail?.upstreamConnections ?? [] as conn (conn.id)}
-								<li>
-									<code class="mono">{conn.upstream_resource}</code>
-									<span class="pill" class:pill-active={conn.status === 'ready'}>
-										{conn.status}
-									</span>
-									{#if conn.access_token_expires_at}
-										<span class="muted small">
-											· token expires {fmtDate(conn.access_token_expires_at)}
-										</span>
-									{/if}
-									<button
-										type="button"
-										class="btn-delete"
-										onclick={() => revokeUpstream(conn)}
-									>
-										Revoke
-									</button>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-					<form
-						class="upstream-form"
-						onsubmit={(e) => {
-							e.preventDefault();
-							initiateUpstream();
-						}}
-					>
-						<label for="upstream-resource">Upstream MCP server URL</label>
-						<input
-							id="upstream-resource"
-							type="url"
-							class="mono"
-							value={detail?.initiateResource ?? ''}
-							oninput={(e) => {
-								if (detail) detail.initiateResource = (e.target as HTMLInputElement).value;
-							}}
-							placeholder="https://mcp.example.com/mcp"
-							required
-						/>
-						<label for="upstream-as-issuer">
-							AS issuer (optional — falls back to RFC 9728 discovery)
-						</label>
-						<input
-							id="upstream-as-issuer"
-							type="url"
-							class="mono"
-							value={detail?.initiateAsIssuer ?? ''}
-							oninput={(e) => {
-								if (detail) detail.initiateAsIssuer = (e.target as HTMLInputElement).value;
-							}}
-							placeholder="https://auth.example.com"
-						/>
-						<button
-							type="submit"
-							class="btn"
-							disabled={!detail?.initiateResource || detail.initiateBusy}
-						>
-							{detail?.initiateBusy ? 'Initiating…' : 'Connect upstream MCP'}
-						</button>
-						{#if detail?.initiateError}
-							<div class="opt-warn">{detail.initiateError}</div>
-						{/if}
-					</form>
-					{#if detail?.initiateResult}
-						<div class="mcp-card">
-							{#if detail.initiateResult.status === 'ready'}
-								<p>Connection ready — token already valid.</p>
-							{:else if detail.initiateResult.authorize_urls}
-								<p>
-									Share this URL with the user who owns the upstream account. Clicking it
-									while logged in to this Overslash account redirects to the upstream
-									authorization server.
-								</p>
-								<div class="row">
-									<code class="mono share-url">
-										{detail.initiateResult.authorize_urls.short ??
-											detail.initiateResult.authorize_urls.proxied}
-									</code>
-									<button
-										type="button"
-										class="btn"
-										onclick={() => {
-											const u =
-												detail?.initiateResult?.authorize_urls?.short ??
-												detail?.initiateResult?.authorize_urls?.proxied ??
-												'';
-											copyShareUrl(u);
-										}}
-									>
-										Copy
-									</button>
-								</div>
-							{/if}
 						</div>
 					{/if}
 

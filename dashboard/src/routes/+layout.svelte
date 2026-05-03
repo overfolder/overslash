@@ -2,8 +2,7 @@
 	import '../app.css';
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
-	import { session, type MeIdentity } from '$lib/session';
+	import { type MeIdentity } from '$lib/session';
 	import {
 		sidebarCollapsed,
 		theme,
@@ -47,15 +46,6 @@
 		}
 		return () => stopNotificationPolling();
 	});
-
-	async function signOut() {
-		try {
-			await session.post('/auth/logout');
-		} catch {
-			/* ignore */
-		}
-		await goto('/login');
-	}
 </script>
 
 {#if standalone}
@@ -68,14 +58,13 @@
 			: 'var(--sidebar-width-expanded, 240px)'}
 	>
 		<Sidebar
-			user={data?.user ?? null}
 			{isAdmin}
 			{isInstanceAdmin}
 			memberships={data?.user?.memberships ?? []}
 			currentOrgId={data?.user?.org_id ?? ''}
 		/>
 		<div class="main-col">
-			<TopBar onSignOut={signOut} />
+			<TopBar user={data?.user ?? null} {isInstanceAdmin} />
 			<main class="content">
 				{@render children()}
 			</main>
