@@ -175,6 +175,7 @@
   - `overslash_approve` → `POST /v1/approvals/{id}/resolve` — no longer "MCP only"; usable from any user-mode surface.
 - `overslash web` + `embed-dashboard` Cargo feature embeds `dashboard/build/` (built with `@sveltejs/adapter-static`) via `rust-embed`. Cloud Vercel build path unchanged.
 - Infra image still tagged `overslash-api:*` to keep Artifact Registry stable; only the in-container entrypoint changed (`overslash serve`).
+- **MCP puppet client** (`crates/overslash-mcp-puppet`) — generic Streamable-HTTP MCP client with full SSE handling, used as the puppet for e2e flows. Ships as: a Rust library, a REST server (binary `overslash-mcp-puppet`) that the harness boots alongside the API, and a thin TS wrapper in `dashboard/tests/scenarios/mcp-puppet.mjs`. Per-call elicitation answers (FIFO queue) plus a suspend/resume API for inspect-then-answer tests. Replaces the slim fetch-based driver under `dashboard/tests/e2e/fixtures/`. Verified by 9 unit + integration tests against an in-test mock server, plus three Playwright specs (`mcp-capabilities`, `mcp-approval-bubbling`, `mcp-elicitation`).
 
 ## What's Deployed
 

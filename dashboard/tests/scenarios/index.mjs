@@ -30,7 +30,9 @@ export {
 	seedGroup,
 	seedGroupGrant,
 	seedGroupMember,
-	seedApproval
+	seedApproval,
+	seedApprovalResolution
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
 export { connectGithubService } from './connect.mjs';
+export { openMcpSession, mcpUrlFor, ALL_VARIANTS } from './mcp-puppet.mjs';

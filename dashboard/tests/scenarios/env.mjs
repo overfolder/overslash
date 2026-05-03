@@ -17,6 +17,7 @@ import { resolve } from 'node:path';
  *   openapiUrl?: string,
  *   stripeUrl?: string,
  *   mcpUrl?: string,
+ *   mcpPuppetUrl?: string,
  * }} ResolvedEnv
  */
 
@@ -60,7 +61,8 @@ export function resolveEnv() {
 		oauthAsUrl: pick('OAUTH_AS_URL'),
 		openapiUrl: pick('OPENAPI_URL'),
 		stripeUrl: pick('STRIPE_URL'),
-		mcpUrl: pick('MCP_URL')
+		mcpUrl: pick('MCP_URL'),
+		mcpPuppetUrl: pick('MCP_PUPPET_URL')
 	};
 
 	process.env.DASHBOARD_URL = cached.dashboardUrl;

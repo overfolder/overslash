@@ -58,6 +58,9 @@ The same helpers work inside `tests/e2e/flows/*.spec.ts`. Import from `../scenar
 | `seedGroupGrant(s, groupId, input)` | POST `/v1/groups/{id}/grants` |
 | `seedGroupMember(s, groupId, identityId)` | POST `/v1/groups/{id}/members` |
 | `seedApproval(s, input?)` | Mints an agent without permissions, calls `/v1/actions/call` to trigger a gap, returns the resulting approval row |
+| `seedApprovalResolution(s, id, resolution)` | Resolves an approval out-of-band (`'allow'` / `'deny'` / `'allow_remember'` / `'bubble_up'`) from the signed-in resolver |
+| `openMcpSession({ baseUrl?, auth, declareCapabilities? })` | Opens an MCP session via the Rust puppet REST server. `callTool` returns a `CallStep` (`Final` with the result, or `Suspended` with a `resume(answer)` closure). See "MCP puppet" below |
+| `mcpUrlFor(variant)` | Look up the upstream-fake URL for a `McpVariant`; pair with `auth: { kind: 'none' }` for capability-shape tests |
 | `makeSnapper(session, outDir?)` | Returns `{ navigateAndSnap, page, snap, close }` for screenshot capture |
 | `api(s, path, opts)` | Low-level typed `fetch` for routes the lib doesn't wrap yet |
 
@@ -66,6 +69,45 @@ The same helpers work inside `tests/e2e/flows/*.spec.ts`. Import from `../scenar
 - Helpers are **idempotent where the API allows it**. Service creation degrades to find-and-return on 409 so re-runs against a long-lived stack don't fail. Group creation does not (group names are unique per org); use `${name}-${Date.now()}` if you need multiple runs.
 - Helpers return the **canonical API response shape**, not a hand-rolled subset. Chain freely.
 - For approvals, never insert directly via psql or hand-roll `permission_keys` / `suggested_tiers`. `seedApproval` walks the real action gateway so all derived fields are populated.
+
+## MCP puppet
+
+`openMcpSession` drives an MCP server (Overslash's own `/mcp` by default, or an upstream-fake URL via `baseUrl`) through a Rust REST server (`overslash-mcp-puppet`). The harness boots the puppet on a free port and writes `MCP_PUPPET_URL=...` into `.e2e/dashboard.env`.
+
+```js
+import { login, openMcpSession, seedAgent, seedAgentApiKey } from '../tests/scenarios/index.mjs';
+
+const session = await login('admin');
+const sub = await seedAgent(session, { name: 'mcp-sub', inheritPermissions: false });
+const key = await seedAgentApiKey(session, sub.id);
+
+const mcp = await openMcpSession({
+  auth: { kind: 'bearer', value: key.key },
+  declareCapabilities: { elicitation: true } // declare on initialize
+});
+try {
+  // Scripted: pre-can the answers and read CallStep.Final in one await.
+  const step = await mcp.callTool('overslash_call', { service: 'github', action: 'list_repos' }, {
+    elicitations: [{ action: 'accept', content: { decision: 'allow' } }]
+  });
+  if (step.kind === 'final') {
+    // step.result, step.error, step.elicitations[]
+  }
+
+  // Interactive: leave the queue empty, inspect, then resume.
+  let s = await mcp.callTool('overslash_call', { service: 'github', action: 'list_repos' });
+  while (s.kind === 'suspended') {
+    console.log('elicitation prompt:', s.request.message);
+    s = await s.resume({ action: 'accept', content: { decision: 'allow' } });
+  }
+} finally {
+  await mcp.close();
+}
+```
+
+Per-call `elicitations` are dequeued in arrival order — *no* session-level handler. This deliberately diverges from `@modelcontextprotocol/sdk`'s `setRequestHandler` convention: the queue gives free "elicitation actually fired" assertions and crosses the REST boundary without serialising closures. See `crates/overslash-mcp-puppet/src/lib.rs` for the rationale.
+
+For upstream-fake variant tests (`mcp-capabilities.spec.ts`), pair `mcpUrlFor(variant)` with `auth: { kind: 'none' }`.
 
 ## Adding a new helper
 

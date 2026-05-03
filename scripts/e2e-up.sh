@@ -69,9 +69,10 @@ else
     log "sqlx CLI not found — assuming the DB is already migrated"
 fi
 
-# 2. Build the fakes + API binaries up-front so the stack is fast to boot.
+# 2. Build the fakes + API + puppet binaries up-front so the stack is fast
+# to boot.
 log "building binaries"
-( cd "$REPO_ROOT" && SQLX_OFFLINE=true cargo build -p overslash-fakes -p overslash-cli --release >/dev/null )
+( cd "$REPO_ROOT" && SQLX_OFFLINE=true cargo build -p overslash-fakes -p overslash-cli -p overslash-mcp-puppet --release >/dev/null )
 
 # 3. Start overslash-fakes (OS-assigned ports + state file). The Stripe fake
 #    reads STRIPE_WEBHOOK_SECRET so the HMAC over outbound webhook deliveries
@@ -278,6 +279,29 @@ if ! curl -sf "$DASH_URL" >/dev/null 2>&1; then
 fi
 echo "$DASH_URL" > "$STATE_DIR/dashboard.url"
 
+# 5b. Start the MCP puppet REST server (Rust). Tests drive Overslash's /mcp
+# through this on the TS side, so they don't reimplement the wire format.
+# The binary prints `MCP_PUPPET_URL=...` on stdout — capture the first line.
+log "starting overslash-mcp-puppet"
+PUPPET_LOG="$STATE_DIR/mcp-puppet.log"
+"$REPO_ROOT/target/release/overslash-mcp-puppet" --port 0 \
+    > "$PUPPET_LOG" 2>&1 &
+PUPPET_PID=$!
+record_pid "$PUPPET_PID"
+MCP_PUPPET_URL=""
+for _ in $(seq 1 50); do
+    if [ -s "$PUPPET_LOG" ]; then
+        line=$(grep -E '^MCP_PUPPET_URL=' "$PUPPET_LOG" | head -1 | cut -d= -f2-)
+        if [ -n "$line" ]; then
+            MCP_PUPPET_URL="$line"
+            break
+        fi
+    fi
+    sleep 0.2
+done
+[ -n "$MCP_PUPPET_URL" ] || fail "overslash-mcp-puppet did not announce a URL within 10s — see $PUPPET_LOG"
+log "puppet ready: $MCP_PUPPET_URL"
+
 # 6. Write the unified env file Playwright reads.
 cat > "$STATE_DIR/dashboard.env" <<EOF
 DASHBOARD_URL=$DASH_URL
@@ -286,6 +310,7 @@ OAUTH_AS_URL=$OAUTH_AS_URL
 OPENAPI_URL=$OPENAPI_URL
 STRIPE_URL=$STRIPE_URL
 MCP_URL=$MCP_URL
+MCP_PUPPET_URL=$MCP_PUPPET_URL
 AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
 $MCP_VARIANT_LINES
