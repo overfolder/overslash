@@ -151,6 +151,22 @@ impl PuppetClient {
             .ok()
             .and_then(|g| g.as_ref().cloned());
 
+        // Per MCP spec: clients MUST send `notifications/initialized` after a
+        // successful initialize handshake to signal end-of-init. Strict
+        // servers reject `tools/list` / `tools/call` until they see it.
+        // Fire-and-forget; failures here don't invalidate the session.
+        let notify = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        });
+        let _ = inner
+            .http
+            .post(inner.mcp_url()?)
+            .headers(inner.build_headers(false))
+            .body(notify.to_string())
+            .send()
+            .await;
+
         Ok((
             Self {
                 inner: inner.clone(),
