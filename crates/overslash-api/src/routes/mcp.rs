@@ -863,13 +863,25 @@ async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<V
         };
     }
 
-    let body = json!({
-        "service": service,
-        "action": action,
-        "params": args.get("params").cloned().unwrap_or(Value::Null),
-        "require_risk": "read",
-    });
-    forward(state, bearer, Method::POST, "/v1/actions/call", Some(body)).await
+    let mut body = serde_json::Map::new();
+    body.insert("service".into(), Value::String(service.into()));
+    body.insert("action".into(), Value::String(action.into()));
+    body.insert("require_risk".into(), Value::String("read".into()));
+    // Forward `params` only when the caller actually supplied a map. The
+    // receiving CallRequest's `params: HashMap<...>` deserializer rejects an
+    // explicit `null` (it expects a map), even though `#[serde(default)]`
+    // would happily fill in an empty map for an absent key.
+    if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
+        body.insert("params".into(), p.clone());
+    }
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        "/v1/actions/call",
+        Some(Value::Object(body)),
+    )
+    .await
 }
 
 async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
@@ -901,12 +913,22 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
         return dispatch_overslash_platform(state, bearer, action, args).await;
     }
 
-    let body = json!({
-        "service": service,
-        "action": action,
-        "params": args.get("params").cloned().unwrap_or(Value::Null),
-    });
-    forward(state, bearer, Method::POST, "/v1/actions/call", Some(body)).await
+    let mut body = serde_json::Map::new();
+    body.insert("service".into(), Value::String(service.into()));
+    body.insert("action".into(), Value::String(action.into()));
+    // See `dispatch_read` — explicit `null` would 422 the action handler;
+    // omit when the caller didn't supply a map.
+    if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
+        body.insert("params".into(), p.clone());
+    }
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        "/v1/actions/call",
+        Some(Value::Object(body)),
+    )
+    .await
 }
 
 async fn dispatch_overslash_platform(

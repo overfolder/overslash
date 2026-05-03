@@ -75,6 +75,61 @@ async fn require_risk_read_rejects_delete_method_in_raw_http_mode() {
     );
 }
 
+/// Regression for the "params: null → 422" bug surfaced by the PR review.
+///
+/// `CallRequest.params: HashMap<String, _>` with `#[serde(default)]` fills an
+/// empty map only when the key is *absent* — an explicit `null` is rejected
+/// with `invalid type: null, expected a map`. The MCP `dispatch_read` /
+/// `dispatch_call` therefore must not forward `"params": null`; they omit
+/// the key entirely when the caller didn't supply a map. This test guards
+/// the receiving end so a future contributor doesn't reintroduce a
+/// `"params": null` forward and break parameterless tool calls.
+#[tokio::test]
+async fn actions_call_rejects_explicit_null_params() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let (api_addr, client) = common::start_api(pool).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, agent_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "params": null,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        422,
+        "explicit `params: null` is the failure mode dispatch_read/_call avoid by omitting the key"
+    );
+
+    // Counter-test: omitting `params` entirely succeeds. Together these two
+    // assertions pin down the contract: keys must be absent, not null.
+    let resp_ok = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp_ok.status();
+    let body = resp_ok.text().await.unwrap();
+    assert!(
+        status.is_success() || status.as_u16() == 202,
+        "absent params must be accepted; status={status} body={body}"
+    );
+}
+
 #[tokio::test]
 async fn require_risk_read_does_not_block_get_method() {
     let pool = common::test_pool().await;
