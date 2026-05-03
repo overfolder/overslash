@@ -45,7 +45,12 @@ pub struct ClientInner {
 
 impl ClientInner {
     fn mcp_url(&self) -> Result<Url> {
-        Ok(self.base_url.join("/mcp")?)
+        // Append `/mcp` to the base URL's existing path. `Url::join("/mcp")`
+        // is wrong here: a leading slash treats it as a root-absolute path
+        // and discards `base_url`'s prefix, so `http://host/api/` would
+        // resolve to `http://host/mcp` instead of `http://host/api/mcp`.
+        let trimmed = self.base_url.as_str().trim_end_matches('/');
+        Ok(Url::parse(&format!("{trimmed}/mcp"))?)
     }
 
     fn build_headers(&self, accept_sse: bool) -> HeaderMap {
@@ -415,5 +420,39 @@ fn parse_final_jsonrpc(
         result,
         error,
         elicitations,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk(url: &str) -> ClientInner {
+        ClientInner {
+            base_url: Url::parse(url).unwrap(),
+            http: reqwest::Client::new(),
+            auth: Auth::None,
+            session_id: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn mcp_url_preserves_base_path() {
+        assert_eq!(
+            mk("http://host/").mcp_url().unwrap().as_str(),
+            "http://host/mcp"
+        );
+        assert_eq!(
+            mk("http://host").mcp_url().unwrap().as_str(),
+            "http://host/mcp"
+        );
+        assert_eq!(
+            mk("http://host/api/").mcp_url().unwrap().as_str(),
+            "http://host/api/mcp"
+        );
+        assert_eq!(
+            mk("http://host/api").mcp_url().unwrap().as_str(),
+            "http://host/api/mcp"
+        );
     }
 }
