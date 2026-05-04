@@ -118,9 +118,18 @@ pub struct Config {
 /// None and the preview-handoff feature stays off. We also log the
 /// failure so an operator who fat-fingers the regex notices instead of
 /// silently disabling the feature.
+///
+/// Wraps the user pattern in `^(?:<pat>)$` so `is_match` does a
+/// full-string match. Without this, an unanchored config like
+/// `overslash\.vercel\.app` would let `overslash.vercel.app.attacker.com`
+/// pass — the partial-match default would be a session-theft footgun.
+/// Wrapping is idempotent for already-anchored patterns: `^foo$` becomes
+/// `^(?:^foo$)$`, which the regex engine collapses to the same
+/// language as `^foo$`.
 fn parse_preview_origin_allowlist(raw: Option<&str>) -> Option<regex::Regex> {
     let pattern = raw.map(str::trim).filter(|s| !s.is_empty())?;
-    match regex::Regex::new(pattern) {
+    let anchored = format!("^(?:{pattern})$");
+    match regex::Regex::new(&anchored) {
         Ok(re) => Some(re),
         Err(e) => {
             tracing::warn!(
@@ -636,6 +645,47 @@ mod tests {
                 .expect("compiles");
         assert!(re.is_match("https://overslash-feat-x.vercel.app"));
         assert!(!re.is_match("https://attacker.example.com"));
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_full_string_matches_even_unanchored_input() {
+        // An operator who forgets to anchor their regex must not create a
+        // session-theft hole. Substring matches like "...vercel.app..."
+        // could otherwise pass.
+        let re = parse_preview_origin_allowlist(Some(r"https://allowed\.preview\.test"))
+            .expect("compiles");
+        assert!(re.is_match("https://allowed.preview.test"));
+        assert!(
+            !re.is_match("https://allowed.preview.test.attacker.com"),
+            "unanchored pattern must not be exploitable via suffix injection"
+        );
+        assert!(
+            !re.is_match("https://prefix.allowed.preview.test"),
+            "unanchored pattern must not be exploitable via prefix injection"
+        );
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_anchoring_is_idempotent() {
+        // Already-anchored input must keep working — the wrapper is
+        // `^(?:<pat>)$`, so `^foo$` becomes `^(?:^foo$)$` which is the
+        // same language as `^foo$`.
+        let re = parse_preview_origin_allowlist(Some(r"^foo$")).expect("compiles");
+        assert!(re.is_match("foo"));
+        assert!(!re.is_match("foofoo"));
+        assert!(!re.is_match("xfoo"));
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_alternation_anchors_each_branch() {
+        // `foo|bar` becomes `^(?:foo|bar)$` — both branches must be
+        // full-string-matched, not just the first.
+        let re = parse_preview_origin_allowlist(Some("foo|bar")).expect("compiles");
+        assert!(re.is_match("foo"));
+        assert!(re.is_match("bar"));
+        assert!(!re.is_match("foobar"));
+        assert!(!re.is_match("xfoo"));
+        assert!(!re.is_match("barx"));
     }
 
     #[test]
