@@ -17,6 +17,19 @@ pub struct PreviewOriginRow {
     pub preview_id: Uuid,
     pub origin: String,
     pub expires_at: OffsetDateTime,
+    /// CSRF nonce echoed in the OAuth `state` param. Validated against
+    /// `state` on callback in lieu of a cookie — the auth-state cookies
+    /// would carry `Domain=.app.<apex>` and the browser rejects them on a
+    /// `*.vercel.app` preview origin (no shared parent).
+    pub nonce: String,
+    /// PKCE verifier minted alongside the challenge. None when the
+    /// provider doesn't support PKCE.
+    pub pkce_verifier: Option<String>,
+    /// Org slug carried across the IdP bounce so DB-stored credentials
+    /// resolve correctly on subdomain-initiated logins.
+    pub org_slug: Option<String>,
+    /// Path-only `next` to redirect to after handoff redemption.
+    pub next_path: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -30,11 +43,20 @@ pub struct HandoffCodeRow {
 }
 
 /// Persist a preview origin keyed by `preview_id` for `ttl_secs` from now.
-/// `preview_id` is the opaque token embedded in the OAuth state param.
+/// `preview_id` is the opaque token embedded in the OAuth state param;
+/// `nonce`, `pkce_verifier`, `org_slug`, and `next_path` are the auth-state
+/// the callback would normally pull from `oss_auth_*` cookies — those don't
+/// survive the `*.vercel.app` ↔ `api.<apex>` cookie-domain gap, so we keep
+/// them server-side instead.
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_preview_origin(
     pool: &PgPool,
     preview_id: Uuid,
     origin: &str,
+    nonce: &str,
+    pkce_verifier: Option<&str>,
+    org_slug: Option<&str>,
+    next_path: Option<&str>,
     ttl_secs: i64,
 ) -> Result<(), sqlx::Error> {
     let expires_at = OffsetDateTime::now_utc() + time::Duration::seconds(ttl_secs);
@@ -44,10 +66,15 @@ pub async fn insert_preview_origin(
         .execute(pool)
         .await?;
     sqlx::query!(
-        "INSERT INTO oauth_preview_origins (preview_id, origin, expires_at)
-         VALUES ($1, $2, $3)",
+        "INSERT INTO oauth_preview_origins
+            (preview_id, origin, nonce, pkce_verifier, org_slug, next_path, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
         preview_id,
         origin,
+        nonce,
+        pkce_verifier,
+        org_slug,
+        next_path,
         expires_at,
     )
     .execute(pool)
@@ -64,7 +91,8 @@ pub async fn get_preview_origin(
 ) -> Result<Option<PreviewOriginRow>, sqlx::Error> {
     sqlx::query_as!(
         PreviewOriginRow,
-        "SELECT preview_id, origin, expires_at FROM oauth_preview_origins
+        "SELECT preview_id, origin, expires_at, nonce, pkce_verifier, org_slug, next_path
+         FROM oauth_preview_origins
          WHERE preview_id = $1 AND expires_at > now()",
         preview_id,
     )

@@ -376,14 +376,27 @@ async fn preview_origin_round_trip_and_expiry() {
     let pool = common::test_pool().await;
 
     let id = Uuid::new_v4();
-    oauth_preview_handoff::insert_preview_origin(&pool, id, "https://x.test", 60)
-        .await
-        .unwrap();
+    oauth_preview_handoff::insert_preview_origin(
+        &pool,
+        id,
+        "https://x.test",
+        "test-nonce",
+        Some("test-verifier"),
+        Some("acme"),
+        Some("/dashboard"),
+        60,
+    )
+    .await
+    .unwrap();
     let got = oauth_preview_handoff::get_preview_origin(&pool, id)
         .await
         .unwrap()
         .expect("row present");
     assert_eq!(got.origin, "https://x.test");
+    assert_eq!(got.nonce, "test-nonce");
+    assert_eq!(got.pkce_verifier.as_deref(), Some("test-verifier"));
+    assert_eq!(got.org_slug.as_deref(), Some("acme"));
+    assert_eq!(got.next_path.as_deref(), Some("/dashboard"));
 
     // Insert an already-stale row, then a fresh insert should GC it.
     let past = OffsetDateTime::now_utc() - Duration::seconds(1);
@@ -399,11 +412,118 @@ async fn preview_origin_round_trip_and_expiry() {
     .await
     .unwrap();
     // Trigger the lazy GC.
-    oauth_preview_handoff::insert_preview_origin(&pool, Uuid::new_v4(), "https://y.test", 60)
-        .await
-        .unwrap();
+    oauth_preview_handoff::insert_preview_origin(
+        &pool,
+        Uuid::new_v4(),
+        "https://y.test",
+        "gc-nonce",
+        None,
+        None,
+        None,
+        60,
+    )
+    .await
+    .unwrap();
     let after_gc = oauth_preview_handoff::get_preview_origin(&pool, stale_id)
         .await
         .unwrap();
     assert!(after_gc.is_none(), "stale row should have been GCed");
+}
+
+// ---------------------------------------------------------------------------
+// Callback path — preview branch must not require any auth-state cookies
+// ---------------------------------------------------------------------------
+
+/// Regression for the "preview deployment OAuth handoff doesn't work, error
+/// missing auth nonce cookie" report: when login starts on a Vercel preview,
+/// the response's effective host is `*.vercel.app` and the browser rejects
+/// any `Set-Cookie: ... Domain=.app.<apex>`. So no `oss_auth_nonce` ever
+/// makes it back. The callback's preview branch must source the nonce
+/// (and verifier / org / next) from the `oauth_preview_origins` row instead
+/// — the cookie check is only correct for the non-preview path.
+///
+/// We can't run the full IdP round-trip here (would need a Google fake), so
+/// we plant a row directly and assert the callback gets *past* the cookie
+/// gate. The token exchange will then fail because `google` has no client
+/// configured in the test config — that's fine; the proof point is the
+/// failure mode is NOT "missing auth nonce cookie".
+#[tokio::test]
+async fn callback_preview_branch_does_not_require_nonce_cookie() {
+    let pool = common::test_pool().await;
+
+    let preview_id = Uuid::new_v4();
+    let nonce = "preview-nonce-abc123";
+    oauth_preview_handoff::insert_preview_origin(
+        &pool,
+        preview_id,
+        ALLOWED_ORIGIN,
+        nonce,
+        None,
+        None,
+        None,
+        60,
+    )
+    .await
+    .expect("insert preview origin");
+
+    let (addr, _) = start_with_handoff_enabled(pool).await;
+    let client = no_redirect_client();
+
+    // 4-segment state, no cookies. Before the fix, the unconditional
+    // `extract_cookie("oss_auth_nonce")` 400d here with the exact message
+    // the user reported.
+    let resp = client
+        .get(format!(
+            "http://{addr}/auth/callback/google?code=irrelevant&state=login%3Agoogle%3A{nonce}%3A{preview_id}"
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        !body.contains("missing auth nonce cookie"),
+        "preview branch must not require the nonce cookie; got status={status} body={body}"
+    );
+}
+
+/// Symmetric assertion: a 4-segment `state` whose nonce doesn't match the
+/// stored row must still fail closed — the row's nonce is the CSRF anchor
+/// once we move off cookies.
+#[tokio::test]
+async fn callback_preview_branch_rejects_nonce_mismatch() {
+    let pool = common::test_pool().await;
+
+    let preview_id = Uuid::new_v4();
+    oauth_preview_handoff::insert_preview_origin(
+        &pool,
+        preview_id,
+        ALLOWED_ORIGIN,
+        "real-nonce",
+        None,
+        None,
+        None,
+        60,
+    )
+    .await
+    .expect("insert preview origin");
+
+    let (addr, _) = start_with_handoff_enabled(pool).await;
+    let client = no_redirect_client();
+
+    let resp = client
+        .get(format!(
+            "http://{addr}/auth/callback/google?code=irrelevant&state=login%3Agoogle%3Awrong-nonce%3A{preview_id}"
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        body.contains("nonce mismatch"),
+        "expected nonce mismatch on tampered state, got body={body}"
+    );
 }
