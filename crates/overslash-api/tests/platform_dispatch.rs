@@ -102,7 +102,7 @@ async fn ping_with_permission_returns_ok() {
     assert_eq!(result_body["ok"], true);
 }
 
-/// An agent with `overslash:manage_templates:*` can list_templates and gets a JSON array.
+/// An agent with `overslash:manage_templates_own:*` can list_templates and gets a JSON array.
 #[tokio::test]
 async fn list_templates_with_permission_returns_array() {
     let pool = common::test_pool().await;
@@ -115,7 +115,7 @@ async fn list_templates_with_permission_returns_array() {
         &base,
         &admin_key,
         agent_id,
-        "overslash:manage_templates:*",
+        "overslash:manage_templates_own:*",
     )
     .await;
 
@@ -144,7 +144,7 @@ async fn list_templates_with_permission_returns_array() {
 }
 
 /// The approval permission_keys use the `permission` anchor
-/// (`overslash:manage_templates:*`) not the raw action key (`list_templates`).
+/// (`overslash:manage_templates_own:*`) not the raw action key (`list_templates`).
 #[tokio::test]
 async fn permission_key_uses_anchor_not_action_key() {
     let pool = common::test_pool().await;
@@ -180,8 +180,8 @@ async fn permission_key_uses_anchor_not_action_key() {
         .expect("permission_keys must be an array");
     assert!(
         keys.iter()
-            .any(|k| k.as_str() == Some("overslash:manage_templates:*")),
-        "approval must include overslash:manage_templates:*, got: {keys:?}"
+            .any(|k| k.as_str() == Some("overslash:manage_templates_own:*")),
+        "approval must include overslash:manage_templates_own:*, got: {keys:?}"
     );
     assert!(
         !keys

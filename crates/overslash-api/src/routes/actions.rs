@@ -616,7 +616,11 @@ async fn call_action_impl(
         };
         let ctx = crate::services::platform_caller::PlatformCallContext {
             org_id: auth.org_id,
-            identity_id,
+            // The action gateway already requires an identity-bound key
+            // (see `BadRequest("api key must be bound to an identity")`
+            // earlier in this function), so `Some(identity_id)` here is
+            // always populated.
+            identity_id: Some(identity_id),
             access_level: platform_access_level,
             db: state.db.clone(),
             registry: std::sync::Arc::clone(&state.registry),
@@ -1292,7 +1296,7 @@ async fn resolve_request(
         if svc.runtime == Runtime::Platform {
             // Use the permission field as the action_key for PermissionKey derivation
             // so `list_templates`/`get_template`/`create_template` all resolve to
-            // the `overslash:manage_templates:*` permission anchor.
+            // the `overslash:manage_templates_own:*` permission anchor.
             let perm_action_key = action
                 .permission
                 .as_deref()

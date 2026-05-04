@@ -60,7 +60,9 @@ fn ctx_from_acl(state: &AppState, acl: &OrgAcl) -> Result<PlatformCallContext> {
     })?;
     Ok(PlatformCallContext {
         org_id: acl.org_id,
-        identity_id,
+        // Always identity-bound at this entry point — the `?` above guarantees
+        // it. Wrap with `Some` to match the kernel's `Option<Uuid>` shape.
+        identity_id: Some(identity_id),
         access_level: acl.access_level,
         db: state.db.clone(),
         registry: state.registry.clone(),
@@ -112,7 +114,7 @@ async fn list_services(
 
     let ctx = PlatformCallContext {
         org_id: auth.org_id,
-        identity_id: auth.identity_id.unwrap(),
+        identity_id: auth.identity_id,
         access_level: overslash_core::permissions::AccessLevel::Read,
         db: state.db.clone(),
         registry: state.registry.clone(),
@@ -172,7 +174,10 @@ async fn get_service(
 
     let ctx = PlatformCallContext {
         org_id: auth.org_id,
-        identity_id,
+        // The early-return above already extracted `identity_id` from
+        // `auth.identity_id`; the kernel signature wants the original
+        // `Option<Uuid>` shape so wrap with `Some`.
+        identity_id: Some(identity_id),
         access_level: overslash_core::permissions::AccessLevel::Read,
         db: state.db.clone(),
         registry: state.registry.clone(),
