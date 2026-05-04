@@ -78,11 +78,27 @@ struct SearchResponse {
 
 #[derive(Serialize)]
 struct SearchResult {
-    /// Template key (same across all instances). Agents use this to call
-    /// `overslash_call` in template-keyed mode, or pick an
-    /// `auth.instances[i].name` for instance-keyed mode.
-    service: String,
+    /// Instance name — the value to pass directly as `overslash_call.service`.
+    /// Absent for catalog rows (`setup_required: true`), where no instance
+    /// is configured for the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+    /// Template key. Always present, for traceability and to let agents
+    /// recognise that two rows (e.g. `gmail_work` and `gmail_personal`) come
+    /// from the same template.
+    template: String,
     service_display_name: String,
+    /// OAuth account identifier sourced from `connections.account_email`
+    /// (e.g. `alice@gmail.com`). Hoisted to the top level since each row is
+    /// already a single instance. Absent for api-key rows and for OAuth
+    /// connections whose userinfo lookup didn't return an email.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_email: Option<String>,
+    /// Variable name of the secret backing an api-key instance — the label
+    /// only, never the value. Hoisted to the top level since each row is a
+    /// single instance. Absent for OAuth rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_name: Option<String>,
     /// Action fields and `score` are absent in browse mode (empty query),
     /// where each result represents a service-level entry.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,6 +111,12 @@ struct SearchResult {
     auth: AuthStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     score: Option<f32>,
+    /// `true` for catalog rows whose template has no configured instance for
+    /// the caller. Only present when `include_catalog=true` in the request.
+    /// Agents must call `overslash_auth.create_service_from_template` before
+    /// this row becomes callable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup_required: Option<bool>,
 }
 
 #[derive(Serialize, Clone)]
@@ -106,35 +128,20 @@ struct AuthStatus {
     /// OAuth provider key when `kind == "oauth"`. Absent for api-key auth.
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
+    /// `true` when this row represents a configured instance the caller can
+    /// call now; `false` for `setup_required` catalog rows.
     connected: bool,
-    /// All visible active instances for this template. Multiple accounts
-    /// of the same provider (e.g., work + personal Gmail) each surface
-    /// here with their distinct OAuth `account_email` (or, for api-key
-    /// services, their `secret_name`) so the agent can pick deterministically.
-    /// `name` always disambiguates — the email/secret label only assists.
-    /// Omitted when `connected == false`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    instances: Vec<InstanceRef>,
 }
 
-#[derive(Serialize, Clone)]
-struct InstanceRef {
-    /// The instance's runtime name — the string to pass as
-    /// `overslash_call.service`. Always the canonical disambiguator
-    /// (unique per `(org, owner, name)`).
+/// Per-instance data carried from `collect_visible_templates` into the
+/// fan-out loops. One of these becomes one search result row.
+#[derive(Clone)]
+struct InstanceRow {
+    /// The instance's runtime name — passed verbatim as `overslash_call.service`.
     name: String,
-    /// OAuth account identifier, sourced from `connections.account_email`.
-    /// Two Gmail instances bound to two different Google accounts surface
-    /// here as e.g. `alice@gmail.com` and `bob@gmail.com`. Absent for
-    /// api-key services and for OAuth connections whose userinfo lookup
-    /// didn't return an email.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// OAuth account identifier (when applicable).
     account_email: Option<String>,
-    /// Variable name of the secret backing an api-key instance — the
-    /// label only, never the value. Two Resend instances using
-    /// `resend_work` vs `resend_personal` surface here distinctly.
-    /// Absent for OAuth services.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Secret-name label for api-key instances (when applicable).
     secret_name: Option<String>,
 }
 
@@ -165,38 +172,70 @@ async fn search(
 
     if q.is_empty() {
         overslash_metrics::search::record_query("browse", "ok");
-        // Browse mode: list every visible service template with no actions.
-        // The catalog is bounded (~dozens), so we deliberately skip the
-        // limit clamp — truncating "show me everything available" defeats
-        // the use case.
-        let mut results: Vec<SearchResult> = Vec::with_capacity(visible_templates.len());
+        // Browse mode: list every visible service with no actions, fanned
+        // out one row per instance so each row is directly callable. The
+        // catalog is bounded (~dozens of templates × a few instances each),
+        // so we deliberately skip the limit clamp — truncating "show me
+        // everything available" defeats the use case.
+        let mut results: Vec<SearchResult> = Vec::new();
         for t in &visible_templates {
             let connected_instances = instances_by_template
                 .get(&t.def.key)
                 .cloned()
                 .unwrap_or_default();
-            let connected = !connected_instances.is_empty();
-            let auth_status = build_auth_status(&t.def, connected, connected_instances);
-            results.push(SearchResult {
-                service: t.def.key.clone(),
-                service_display_name: t.def.display_name.clone(),
-                action: None,
-                description: None,
-                risk: None,
-                tier: t.tier.into(),
-                auth: auth_status,
-                score: None,
-            });
+            if connected_instances.is_empty() {
+                // Un-connected catalog row — only emitted under
+                // include_catalog=true (the visible_templates filter
+                // already enforced that).
+                if !params.include_catalog {
+                    continue;
+                }
+                results.push(SearchResult {
+                    service: None,
+                    template: t.def.key.clone(),
+                    service_display_name: t.def.display_name.clone(),
+                    account_email: None,
+                    secret_name: None,
+                    action: None,
+                    description: None,
+                    risk: None,
+                    tier: t.tier.into(),
+                    auth: build_auth_status(&t.def, false),
+                    score: None,
+                    setup_required: Some(true),
+                });
+            } else {
+                for inst in connected_instances {
+                    results.push(SearchResult {
+                        service: Some(inst.name),
+                        template: t.def.key.clone(),
+                        service_display_name: t.def.display_name.clone(),
+                        account_email: inst.account_email,
+                        secret_name: inst.secret_name,
+                        action: None,
+                        description: None,
+                        risk: None,
+                        tier: t.tier.into(),
+                        auth: build_auth_status(&t.def, true),
+                        score: None,
+                        setup_required: None,
+                    });
+                }
+            }
         }
-        // Connected-first, then alphabetical by display name. Mirrors the
-        // CONNECTED_BONUS intent in scored mode: things the caller can run
-        // right now should surface first.
+        // Connected-first, then alphabetical by display name, then by
+        // instance `service` to keep fan-out rows of the same template in a
+        // stable order. Mirrors the CONNECTED_BONUS intent in scored mode.
         results.sort_by(|a, b| {
-            b.auth.connected.cmp(&a.auth.connected).then_with(|| {
-                a.service_display_name
-                    .to_lowercase()
-                    .cmp(&b.service_display_name.to_lowercase())
-            })
+            b.auth
+                .connected
+                .cmp(&a.auth.connected)
+                .then_with(|| {
+                    a.service_display_name
+                        .to_lowercase()
+                        .cmp(&b.service_display_name.to_lowercase())
+                })
+                .then_with(|| a.service.cmp(&b.service))
         });
         return Ok(Json(SearchResponse {
             query: q.to_string(),
@@ -246,7 +285,7 @@ async fn search(
         }
     }
 
-    // --- Score every (template, action) candidate ---
+    // --- Score every (template, action) candidate, then fan-out per instance ---
     let mut scored: Vec<SearchResult> = Vec::new();
     for t in &visible_templates {
         let connected_instances = instances_by_template
@@ -254,7 +293,7 @@ async fn search(
             .cloned()
             .unwrap_or_default();
         let connected = !connected_instances.is_empty();
-        let auth_status = build_auth_status(&t.def, connected, connected_instances);
+        let auth_status = build_auth_status(&t.def, connected);
 
         for (action_key, action) in t.def.actions.iter() {
             let cand = Candidate {
@@ -280,16 +319,49 @@ async fn search(
             if final_score < MIN_SCORE {
                 continue;
             }
-            scored.push(SearchResult {
-                service: t.def.key.clone(),
-                service_display_name: t.def.display_name.clone(),
-                action: Some(action_key.clone()),
-                description: Some(action.description.clone()),
-                risk: Some(action.risk),
-                tier: t.tier.into(),
-                auth: auth_status.clone(),
-                score: Some(final_score),
-            });
+
+            if connected_instances.is_empty() {
+                // Catalog candidate — only emit when include_catalog=true
+                // (visible_templates already enforced that filter; this
+                // branch is the un-connected case under that flag).
+                if !params.include_catalog {
+                    continue;
+                }
+                scored.push(SearchResult {
+                    service: None,
+                    template: t.def.key.clone(),
+                    service_display_name: t.def.display_name.clone(),
+                    account_email: None,
+                    secret_name: None,
+                    action: Some(action_key.clone()),
+                    description: Some(action.description.clone()),
+                    risk: Some(action.risk),
+                    tier: t.tier.into(),
+                    auth: auth_status.clone(),
+                    score: Some(final_score),
+                    setup_required: Some(true),
+                });
+            } else {
+                // Fan-out: one row per (action × instance). Score is the
+                // same across instances of the same (template, action) —
+                // tie-break sort below stabilises by service name.
+                for inst in &connected_instances {
+                    scored.push(SearchResult {
+                        service: Some(inst.name.clone()),
+                        template: t.def.key.clone(),
+                        service_display_name: t.def.display_name.clone(),
+                        account_email: inst.account_email.clone(),
+                        secret_name: inst.secret_name.clone(),
+                        action: Some(action_key.clone()),
+                        description: Some(action.description.clone()),
+                        risk: Some(action.risk),
+                        tier: t.tier.into(),
+                        auth: auth_status.clone(),
+                        score: Some(final_score),
+                        setup_required: None,
+                    });
+                }
+            }
         }
     }
 
@@ -297,6 +369,7 @@ async fn search(
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.service.cmp(&b.service))
     });
     scored.truncate(limit);
 
@@ -319,7 +392,7 @@ async fn collect_visible_templates(
     state: &AppState,
     auth: &AuthContext,
     scope: &OrgScope,
-) -> Result<(Vec<TemplateCandidate>, HashMap<String, Vec<InstanceRef>>)> {
+) -> Result<(Vec<TemplateCandidate>, HashMap<String, Vec<InstanceRow>>)> {
     let global_filter = visible_global_filter(state, auth.org_id).await?;
     let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
         .await?
@@ -386,7 +459,7 @@ async fn collect_visible_templates(
         .collect();
     let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
 
-    let mut instances_by_template: HashMap<String, Vec<InstanceRef>> = HashMap::new();
+    let mut instances_by_template: HashMap<String, Vec<InstanceRow>> = HashMap::new();
     for r in instances {
         if r.status != "active" {
             continue;
@@ -398,7 +471,7 @@ async fn collect_visible_templates(
         instances_by_template
             .entry(r.template_key.clone())
             .or_default()
-            .push(InstanceRef {
+            .push(InstanceRow {
                 name: r.name,
                 account_email,
                 secret_name: r.secret_name,
@@ -413,11 +486,7 @@ struct TemplateCandidate {
     def: ServiceDefinition,
 }
 
-fn build_auth_status(
-    def: &ServiceDefinition,
-    connected: bool,
-    instances: Vec<InstanceRef>,
-) -> AuthStatus {
+fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
     // Pick the first declared auth method as the primary face the caller
     // sees. Templates that mix auth methods (rare) still surface here with
     // the preferred one first — exactly how the dashboard displays them.
@@ -430,7 +499,6 @@ fn build_auth_status(
         kind,
         provider,
         connected,
-        instances: if connected { instances } else { Vec::new() },
     }
 }
 

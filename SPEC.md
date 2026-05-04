@@ -1091,16 +1091,16 @@ When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is 
 
 ### `overslash_search`
 
-Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list of `(service, action)` hits — actions are defined once on the template and never duplicated per instance. When a service has multiple connected instances (e.g., two Gmail accounts), they collapse onto a single row whose `auth.instances[]` enumerates them with the per-instance disambiguators an agent needs.
+Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list of rows where **each row corresponds to one configured instance**: the top-level `service` field is always the instance name to pass back as `overslash_call.service`. When a template has multiple connected instances (e.g. two Gmail accounts), it fans out into one row per instance so the agent picks the callable identifier directly without nested lookups.
 
 **Inputs**
 
 | Field | Type | Default | Behavior |
 |---|---|---|---|
-| `query` | string | — | Free-text query. Empty string triggers browse mode (services-only, no actions). |
-| `include_catalog` | bool | `false` | Default: only services with ≥1 active instance bound to the caller are returned. Set `true` to also surface the un-connected global/org catalog (handy when an agent is exploring what *could* be set up). |
+| `query` | string | — | Free-text query. Empty string triggers browse mode (instances-only, no actions). |
+| `include_catalog` | bool | `false` | Default: only configured instances bound to the caller are returned. Set `true` to also surface un-connected templates as `setup_required: true` rows (handy when an agent is exploring what *could* be set up). |
 
-**Default scope is connected-only.** This applies to both browse (`query=""`) and keyword queries. The motivation is that an agent is much more often trying to use what it already has than browse a catalog it hasn't been authorized for.
+**Default scope is connected-only.** This applies to both browse (`query=""`) and keyword queries. The motivation is that an agent is much more often trying to use what it already has than browse a catalog it hasn't been authorized for. `setup_required: true` rows only ever appear under `include_catalog=true`.
 
 **Response shape**
 
@@ -1109,57 +1109,61 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
   "query": "send email",
   "results": [
     {
-      "service": "gmail",
+      "service": "gmail_work",
+      "template": "gmail",
       "service_display_name": "Gmail",
+      "account_email": "alice@example.com",
       "action": "send_message",
       "description": "Send email as {userId}",
       "risk": "write",
       "tier": "global",
-      "auth": {
-        "type": "oauth",
-        "provider": "google",
-        "connected": true,
-        "instances": [
-          { "name": "gmail-work",     "account_email": "alice@example.com" },
-          { "name": "gmail-personal", "account_email": "alice@gmail.com" }
-        ]
-      },
+      "auth": { "type": "oauth", "provider": "google", "connected": true },
       "score": 0.78
     },
     {
-      "service": "resend",
+      "service": "gmail_personal",
+      "template": "gmail",
+      "service_display_name": "Gmail",
+      "account_email": "alice@gmail.com",
+      "action": "send_message",
+      "description": "Send email as {userId}",
+      "risk": "write",
+      "tier": "global",
+      "auth": { "type": "oauth", "provider": "google", "connected": true },
+      "score": 0.78
+    },
+    {
+      "service": "resend_prod",
+      "template": "resend",
       "service_display_name": "Resend",
+      "secret_name": "resend_prod",
       "action": "send_email",
       "description": "Send email '{subject}' to {to}",
       "risk": "write",
       "tier": "global",
-      "auth": {
-        "type": "api_key",
-        "connected": true,
-        "instances": [
-          { "name": "resend-prod",    "secret_name": "resend_prod" },
-          { "name": "resend-staging", "secret_name": "resend_staging" }
-        ]
-      },
+      "auth": { "type": "api_key", "connected": true },
       "score": 0.74
     }
   ]
 }
 ```
 
-In browse mode (`query=""`), each row omits `action`, `description`, `risk`, and `score` — the response is a service-level directory.
+In browse mode (`query=""`), each row omits `action`, `description`, `risk`, and `score` — the response is an instance-level directory.
 
-**Per-instance disambiguation**
+**Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: they omit `service` and `account_email`/`secret_name`, set `auth.connected: false`, and carry `"setup_required": true`. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
 
-The `auth.instances[]` array carries the runtime identifiers an agent needs to pick the right instance when calling `overslash_call`:
+**Per-row disambiguation**
 
-- **`name`** — the canonical, always-present identifier. Unique per `(org, owner, name)` and the value to pass as `overslash_call.service` for instance-keyed calls.
-- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time (e.g. `alice@gmail.com` vs `bob@gmail.com`). Sourced from `connections.account_email`. Absent for api-key services.
-- **`secret_name`** — for api-key-backed instances, the variable name of the secret that backs them (e.g. `resend_work`). The value, version, and encryption envelope are **never** exposed via this or any other API.
+Each callable row carries everything an agent needs to pick the right instance:
 
-When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, `name` is the only differentiator — it always disambiguates.
+- **`service`** — the instance's runtime name (e.g. `gmail_work`). Unique per `(org, owner, name)`. Pass it verbatim as `overslash_call.service`.
+- **`template`** — the underlying template key (e.g. `gmail`). Lets the agent recognise that `gmail_work` and `gmail_personal` are siblings.
+- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for api-key services.
+- **`secret_name`** — for api-key-backed instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
 
-**Action data is DRY across instances.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against an action surfaces a single `(service, action)` row regardless of how many instances of that service the caller has connected; the instances roll up under `auth.instances[]` on that one row.
+When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the row.
+
+**Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
 
 **Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user with `allow_user_templates`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
 

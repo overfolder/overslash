@@ -1384,6 +1384,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::search::router())
+        .merge(overslash_api::routes::actions::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
         .with_state(state);
