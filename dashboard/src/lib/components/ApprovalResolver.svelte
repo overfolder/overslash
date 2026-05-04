@@ -52,10 +52,10 @@
 	/** Execution lifecycle — populated once approval is allowed. */
 	const execution = $derived(current.execution ?? null);
 	const executionPending = $derived(execution?.status === 'pending');
-	const executionRunning = $derived(execution?.status === 'calling');
+	const executionRunning = $derived(execution?.status === 'executing');
 	const executionTerminal = $derived(
 		!!execution &&
-			(execution.status === 'called' ||
+			(execution.status === 'executed' ||
 				execution.status === 'failed' ||
 				execution.status === 'cancelled' ||
 				execution.status === 'expired')
@@ -368,7 +368,7 @@
 	{:else if !isPending && executionTerminal && execution}
 		<div role="status" aria-live="polite">
 			<div class="banner banner-{execution.status}">
-				{#if execution.status === 'called'}
+				{#if execution.status === 'executed'}
 					Called successfully.
 				{:else if execution.status === 'failed'}
 					Call failed{execution.error ? `: ${execution.error}` : ''}.
@@ -378,7 +378,7 @@
 					Pending call expired before it ran.
 				{/if}
 			</div>
-			{#if execution.status === 'called' && (current.cascaded_approval_ids?.length ?? 0) > 0}
+			{#if execution.status === 'executed' && (current.cascaded_approval_ids?.length ?? 0) > 0}
 				{@const n = current.cascaded_approval_ids!.length}
 				<div class="banner banner-cascade">
 					Also resolved {n} related {n === 1 ? 'approval' : 'approvals'} that the new
@@ -386,7 +386,7 @@
 				</div>
 			{/if}
 		</div>
-		{#if execution.status === 'called' && execution.result}
+		{#if execution.status === 'executed' && execution.result}
 			<details class="raw-payload">
 				<summary>Result</summary>
 				<pre class="code">{@html highlightJson(execution.result)}</pre>
@@ -709,7 +709,7 @@
 		color: #d14343;
 		background: rgba(209, 67, 67, 0.06);
 	}
-	.banner-called {
+	.banner-executed {
 		border-color: #2e7d32;
 		color: #2e7d32;
 		background: rgba(46, 125, 50, 0.06);

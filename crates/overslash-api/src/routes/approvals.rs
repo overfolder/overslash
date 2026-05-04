@@ -48,9 +48,10 @@ pub fn router() -> Router<AppState> {
 #[derive(Serialize)]
 struct ExecutionSummary {
     id: Uuid,
-    /// One of: `pending`, `calling`, `called`, `failed`, `cancelled`, `expired`.
+    /// One of: `pending`, `executing`, `executed`, `failed`, `cancelled`, `expired`.
+    /// Passed through verbatim from the `executions.status` column.
     status: String,
-    /// Populated when `status='called'`. Truncated at `MAX_EXECUTION_RESULT_BYTES`.
+    /// Populated when `status='executed'`. Truncated at `MAX_EXECUTION_RESULT_BYTES`.
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
