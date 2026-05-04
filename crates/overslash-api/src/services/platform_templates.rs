@@ -322,8 +322,23 @@ pub async fn kernel_delete_template(
         }
     };
 
+    // Snapshot the owner identity *before* the row is consumed by the
+    // deleter — the embedding-cleanup call needs the same scope tuple the
+    // HTTP path uses (tier, org_id, owner_identity_id, key).
+    let owner_identity_id = row.owner_identity_id;
     let (deleted_key, tier, _id) =
         delete_active_template_inner(&ctx.db, row, ctx.identity_id, ctx.access_level).await?;
+
+    // Mirror the HTTP delete path so MCP-driven deletions don't leave
+    // orphaned embeddings degrading vector search over time.
+    crate::services::embedding_backfill::delete_template_embeddings(
+        &ctx.db,
+        tier,
+        Some(ctx.org_id),
+        owner_identity_id,
+        &deleted_key,
+    )
+    .await;
 
     Ok(serde_json::json!({"deleted": true, "key": deleted_key, "tier": tier}))
 }
