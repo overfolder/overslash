@@ -47,6 +47,8 @@
 		mcpError: string | null;
 		togglingElicitation: boolean;
 		elicitationError: string | null;
+		togglingAutoCall: boolean;
+		autoCallError: string | null;
 		confirmDisconnect: boolean;
 		disconnecting: boolean;
 		disconnectError: string | null;
@@ -65,6 +67,8 @@
 			mcpError: null,
 			togglingElicitation: false,
 			elicitationError: null,
+			togglingAutoCall: false,
+			autoCallError: null,
 			confirmDisconnect: false,
 			disconnecting: false,
 			disconnectError: null,
@@ -140,6 +144,7 @@
 		// otherwise healthy card after a polling tick fixes things up.
 		detail.mcpError = null;
 		detail.elicitationError = null;
+		detail.autoCallError = null;
 		detail.disconnectError = null;
 		try {
 			const [rules, apr, mcpResp] = await Promise.all([
@@ -176,6 +181,45 @@
 			detail.error = e instanceof Error ? e.message : String(e);
 		} finally {
 			if (detail?.agentId === id) detail.loading = false;
+		}
+	}
+
+	async function setAutoCallOnApprove(next: boolean) {
+		if (!detail || !detail.mcp) return;
+		const targetId = detail.agentId;
+		detail.togglingAutoCall = true;
+		detail.autoCallError = null;
+		try {
+			const resp = await session.patch<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
+				{ auto_call_on_approve: next }
+			);
+			if (detail?.agentId === targetId) {
+				if (resp.connection) {
+					detail.mcp = resp.connection;
+				} else {
+					// Same vanished-binding case as setElicitation — surface via
+					// mcpError rather than an inline warning so the user sees the
+					// connection card collapse instead of a stale toggle state.
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+				}
+			}
+		} catch (e) {
+			if (detail?.agentId === targetId) {
+				if (e instanceof ApiError && e.status === 404) {
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+					detail.autoCallError = null;
+				} else {
+					detail.autoCallError =
+						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+				}
+			}
+		} finally {
+			if (detail?.agentId === targetId) {
+				detail.togglingAutoCall = false;
+			}
 		}
 	}
 
@@ -727,6 +771,25 @@
 									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
 									labelledby="opt-elicitation-label"
 									onchange={(v) => setElicitation(v)}
+								/>
+							</div>
+							<div class="mcp-option">
+								<div class="mcp-option-text">
+									<div class="opt-title" id="opt-auto-call-label">Auto-call on approve</div>
+									<div class="opt-desc">
+										Automatically execute approved actions without waiting for the agent to
+										retry. Results land on the call's execution record — agents pull them via
+										a follow-up read.
+									</div>
+									{#if detail.autoCallError}
+										<div class="opt-warn">{detail.autoCallError}</div>
+									{/if}
+								</div>
+								<ToggleSwitch
+									checked={detail.mcp.auto_call_on_approve}
+									disabled={detail.togglingAutoCall}
+									labelledby="opt-auto-call-label"
+									onchange={(v) => setAutoCallOnApprove(v)}
 								/>
 							</div>
 						</div>

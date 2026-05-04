@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO executions (approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, expires_at)\n         VALUES ($1, $2, 'pending', $3, $4, $5, $6)\n         RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+  "query": "UPDATE executions\n            SET status = 'executing',\n                triggered_by = $3,\n                started_at = now()\n          WHERE approval_id = $1\n            AND org_id = $2\n            AND status = 'pending'\n            AND expires_at > now()\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
   "describe": {
     "columns": [
       {
@@ -72,16 +72,18 @@
         "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "result_viewed_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
         "Uuid",
-        "Bool",
-        "TextArray",
-        "Timestamptz",
-        "Timestamptz"
+        "Text"
       ]
     },
     "nullable": [
@@ -98,8 +100,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "2f97f102504f25a57bd3b1a23e91296644ae92148bda832ee757e8fbe4a15bc1"
+  "hash": "f1dba2b15c803f0fa1680f75c37ecc9e2f5dbac5798556ff3931fa512e14f3bc"
 }

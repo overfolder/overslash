@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at\n         FROM executions\n         WHERE org_id = $1 AND approval_id = ANY($2)",
+  "query": "UPDATE executions\n            SET status = 'failed',\n                error = $3,\n                completed_at = now()\n          WHERE id = $1\n            AND org_id = $2\n            AND status = 'executing'\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
   "describe": {
     "columns": [
       {
@@ -72,12 +72,18 @@
         "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "result_viewed_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "UuidArray"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -94,8 +100,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "a3803825321c6a958e3a72071a0cc96dcd9bf2265f8be7230dc6a242765a93e1"
+  "hash": "1794296498cd5bc9f9965f49c7fd9bf87834b0d47e1bed4a8cce8f31bcf9f408"
 }

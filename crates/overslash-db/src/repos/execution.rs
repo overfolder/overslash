@@ -27,6 +27,10 @@ pub struct ExecutionRow {
     pub completed_at: Option<OffsetDateTime>,
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
+    /// Set the first time the requesting agent fetches the result. Drives the
+    /// "called but output unread" surfaces on the dashboard's pending-calls
+    /// list — NULL means the agent hasn't seen the upstream response yet.
+    pub result_viewed_at: Option<OffsetDateTime>,
 }
 
 pub(crate) async fn create_pending(
@@ -42,7 +46,7 @@ pub(crate) async fn create_pending(
         ExecutionRow,
         "INSERT INTO executions (approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, expires_at)
          VALUES ($1, $2, 'pending', $3, $4, $5, $6)
-         RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+         RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
         approval_id,
         org_id,
         remember,
@@ -74,7 +78,7 @@ pub(crate) async fn claim_for_execution(
             AND org_id = $2
             AND status = 'pending'
             AND expires_at > now()
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
         approval_id,
         org_id,
         triggered_by,
@@ -98,7 +102,7 @@ pub(crate) async fn finalize_executed(
           WHERE id = $1
             AND org_id = $2
             AND status = 'executing'
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
         id,
         org_id,
         result,
@@ -122,7 +126,7 @@ pub(crate) async fn finalize_failed(
           WHERE id = $1
             AND org_id = $2
             AND status = 'executing'
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
         id,
         org_id,
         error,
@@ -146,7 +150,7 @@ pub(crate) async fn cancel_if_pending(
           WHERE approval_id = $1
             AND org_id = $2
             AND status = 'pending'
-          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
         approval_id,
         org_id,
     )
@@ -161,7 +165,7 @@ pub(crate) async fn find_by_approval(
 ) -> Result<Option<ExecutionRow>, sqlx::Error> {
     sqlx::query_as!(
         ExecutionRow,
-        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at
+        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at
          FROM executions
          WHERE approval_id = $1 AND org_id = $2",
         approval_id,
@@ -178,7 +182,7 @@ pub(crate) async fn find_by_approval_ids(
 ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
     sqlx::query_as!(
         ExecutionRow,
-        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at
+        "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at
          FROM executions
          WHERE org_id = $1 AND approval_id = ANY($2)",
         org_id,
@@ -186,6 +190,29 @@ pub(crate) async fn find_by_approval_ids(
     )
     .fetch_all(pool)
     .await
+}
+
+/// First-read marker: mark this execution's result as viewed. Idempotent —
+/// once stamped, subsequent reads do not move the timestamp. The CHECK on
+/// `status` prevents accidentally marking a row that hasn't completed yet.
+pub(crate) async fn mark_viewed(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query!(
+        "UPDATE executions
+            SET result_viewed_at = now()
+          WHERE id = $1
+            AND org_id = $2
+            AND result_viewed_at IS NULL
+            AND status IN ('executed', 'failed')",
+        id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 /// Cross-org maintenance: transition pending executions that have passed their

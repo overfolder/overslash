@@ -255,15 +255,26 @@ export interface ApprovalResponse {
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
 export interface ExecutionSummary {
 	id: string;
-	/** pending | calling | called | failed | cancelled | expired */
+	/** pending | executing | executed | failed | cancelled | expired */
 	status: string;
 	result?: unknown;
 	error?: string;
-	triggered_by?: 'agent' | 'user';
+	/** `auto` is set when the resolve handler kicked off the replay because
+	 *  the agent's MCP binding has `auto_call_on_approve` enabled. */
+	triggered_by?: 'agent' | 'user' | 'auto';
 	started_at?: string;
 	completed_at?: string;
 	expires_at: string;
 	created_at: string;
+	/** `http` | `mcp` — disambiguates the meaning of `http_status_code`.
+	 *  Absent while the execution is still pending. */
+	runtime?: string;
+	/** Upstream HTTP status for HTTP-runtime executions only. */
+	http_status_code?: number;
+	/** False until the requesting agent fetches `/v1/approvals/{id}/execution`
+	 *  for the first time. Drives the "called but output unread" surface
+	 *  on the dashboard's pending-calls list. */
+	output_read: boolean;
 }
 
 export interface ResolveApprovalRequest {
