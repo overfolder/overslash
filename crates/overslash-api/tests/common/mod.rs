@@ -609,6 +609,8 @@ where
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     customize(&mut config);
 
@@ -738,6 +740,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -853,6 +857,8 @@ pub async fn start_api_with_auth_providers(
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -1221,6 +1227,8 @@ pub async fn start_api_with_registry(
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -1344,6 +1352,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -1437,6 +1447,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {

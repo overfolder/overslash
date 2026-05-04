@@ -144,6 +144,9 @@ module "cloud_run" {
   enable_dev_auth           = var.enable_dev_auth
   extra_api_domain_mappings = var.extra_api_domain_mappings
 
+  overslash_env               = var.env
+  vercel_preview_origin_regex = var.vercel_preview_origin_regex
+
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 

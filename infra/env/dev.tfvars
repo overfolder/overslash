@@ -26,6 +26,14 @@ dashboard_origin = "https://app.dev.overslash.com,https://*.app.dev.overslash.co
 dashboard_url    = "https://app.dev.overslash.com"
 enable_dev_auth  = false
 
+# Vercel preview-deployment OAuth handoff. Lets the dashboard's Vercel
+# previews complete Google sign-in by adopting a session cookie minted on
+# api.dev.overslash.com via a one-time code rather than a (cross-origin)
+# Set-Cookie. Pinned to our team's preview URL pattern so a random Vercel
+# tenant can't piggyback. Combined with OVERSLASH_ENV=dev (set from var.env)
+# as defense-in-depth — production must NEVER set this var.
+vercel_preview_origin_regex = "^https://overslash-[a-z0-9-]+-amanuelmartincanto-2204s-projects\\.vercel\\.app$"
+
 # Cloud SQL — minimum viable
 cloud_sql_tier         = "db-f1-micro"
 cloud_sql_disk_size_gb = 10

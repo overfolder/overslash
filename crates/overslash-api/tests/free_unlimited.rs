@@ -60,6 +60,8 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately
     // observe the new state without waiting on cache expiry. Tests that want

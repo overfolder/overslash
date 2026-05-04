@@ -18,12 +18,26 @@ use overslash_core::crypto;
 use overslash_db::repos::{membership, oauth_provider, org, user as user_repo};
 use overslash_db::{OrgScope, SystemScope};
 
+/// How long a `oauth_preview_origins` row lives — must comfortably exceed
+/// the slowest realistic IdP round-trip (Google login can take 30 s if MFA
+/// is involved, plus an unhurried human picking an account).
+const PREVIEW_ORIGIN_TTL_SECS: i64 = 600;
+/// One-time handoff codes are exchanged for a session cookie within seconds
+/// of the OAuth callback. A short TTL keeps the redemption window tight if
+/// the redirect URL is ever logged or intercepted.
+const PREVIEW_HANDOFF_CODE_TTL_SECS: i64 = 60;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         // Generic provider auth
         .route("/auth/login/{provider_key}", get(provider_login))
         .route("/auth/callback/{provider_key}", get(provider_callback))
         .route("/auth/providers", get(list_auth_providers))
+        // Vercel preview-deployment handoff. 404s unless the feature is
+        // explicitly enabled (OVERSLASH_ENV=dev + PREVIEW_ORIGIN_ALLOWLIST).
+        // Production must never serve this — the response sets a session
+        // cookie keyed to a one-time code minted in the OAuth callback.
+        .route("/auth/handoff", get(handoff_consume))
         // Backward compat — Google callback must remain a real handler (not redirect)
         // because existing Google OAuth apps have this URL registered as redirect_uri
         .route("/auth/google/login", get(google_login_compat))
@@ -67,6 +81,19 @@ struct LoginQuery {
     /// (path-only redirect). Used by `/oauth/authorize` to resume after the
     /// IdP bounce.
     next: Option<String>,
+    /// Vercel preview-deployment OAuth handoff. Set by the dashboard when
+    /// running on a preview host so the API can route the user back to the
+    /// preview after the OAuth round-trip instead of landing them on the
+    /// configured `dashboard_url`. Honored only when
+    /// `Config::is_preview_handoff_enabled()` AND the value matches
+    /// `PREVIEW_ORIGIN_ALLOWLIST`. Silently ignored otherwise — the feature
+    /// must remain invisible on prod.
+    preview_origin: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HandoffQuery {
+    code: String,
 }
 
 #[derive(Deserialize)]
@@ -141,7 +168,33 @@ async fn provider_login(
     };
 
     let nonce = Uuid::new_v4().to_string();
-    let state_param = format!("login:{provider_key}:{nonce}");
+
+    // Optionally append a preview-handoff id to the OAuth `state` so the
+    // callback can route the user back to a Vercel preview origin instead
+    // of `dashboard_url`. Gated by `is_preview_handoff_enabled()` AND the
+    // origin matching `PREVIEW_ORIGIN_ALLOWLIST` — when off, the
+    // `preview_origin` query param is silently ignored. The id is opaque
+    // (random UUID); the actual origin lives server-side in
+    // `oauth_preview_origins` so we don't leak the URL into IdP logs.
+    let preview_id = match query.preview_origin.as_deref() {
+        Some(origin) if state.config.preview_origin_allowed(origin) => {
+            let id = Uuid::new_v4();
+            overslash_db::repos::oauth_preview_handoff::insert_preview_origin(
+                &state.db,
+                id,
+                origin,
+                PREVIEW_ORIGIN_TTL_SECS,
+            )
+            .await?;
+            Some(id)
+        }
+        _ => None,
+    };
+
+    let state_param = match preview_id {
+        Some(id) => format!("login:{provider_key}:{nonce}:{id}"),
+        None => format!("login:{provider_key}:{nonce}"),
+    };
 
     let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
 
@@ -229,17 +282,35 @@ async fn provider_callback(
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    // Parse state: "login:<provider_key>:<nonce>"
-    let state_parts: Vec<&str> = params.state.splitn(3, ':').collect();
-    if state_parts.len() != 3 || state_parts[0] != "login" {
+    // Parse state: "login:<provider_key>:<nonce>" or, for the Vercel
+    // preview-deployment handoff, "login:<provider_key>:<nonce>:<preview_id>".
+    // The 4-segment form is only honored when the feature is enabled — a
+    // non-dev deployment that somehow receives a 4-segment state must
+    // reject it (defense in depth: don't let a logged URL be replayed
+    // into a prod environment).
+    let state_parts: Vec<&str> = params.state.splitn(4, ':').collect();
+    if state_parts.len() < 3 || state_parts[0] != "login" {
         return Err(AppError::BadRequest("invalid state parameter".into()));
     }
     let state_provider = state_parts[1];
     let nonce = state_parts[2];
+    let preview_id_str = state_parts.get(3).copied();
+
+    if preview_id_str.is_some() && !state.config.is_preview_handoff_enabled() {
+        return Err(AppError::BadRequest("invalid state parameter".into()));
+    }
 
     if state_provider != provider_key {
         return Err(AppError::BadRequest("provider mismatch in state".into()));
     }
+
+    let preview_id = match preview_id_str {
+        Some(s) => Some(
+            Uuid::parse_str(s)
+                .map_err(|_| AppError::BadRequest("invalid state parameter".into()))?,
+        ),
+        None => None,
+    };
 
     // Verify CSRF nonce
     let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
@@ -318,26 +389,74 @@ async fn provider_callback(
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
 
-    // Set session cookie + clear auth cookies
-    let session_cookie = session_cookie(&state, &token)?;
-    // Clear with the same Domain attribute we set them with — otherwise the
-    // browser keeps the cross-subdomain copy around and the next login round
-    // picks up stale nonce/verifier state.
+    // Always clear the auth-state cookies we set during login. Same Domain
+    // attribute used at set time, otherwise the browser keeps a stale copy.
     let clear_nonce = clear_auth_cookie(&state, "oss_auth_nonce");
     let clear_verifier = clear_auth_cookie(&state, "oss_auth_verifier");
     let clear_org = clear_auth_cookie(&state, "oss_auth_org");
     let clear_next = clear_auth_cookie(&state, "oss_auth_next");
 
+    let next_path = extract_cookie(&headers, "oss_auth_next")
+        .and_then(|v| sanitize_next(&v))
+        .unwrap_or_else(|| state.config.dashboard_url.clone());
+
+    // Vercel preview-deployment handoff branch. The session cookie can't
+    // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`
+    // (no shared parent domain), so we mint a one-time code, hand it to
+    // the preview, and let the preview adopt the JWT via a host-only
+    // cookie set on the proxied response. Login-time `preview_id` is the
+    // tamper-resistant binding between the state param and the preview
+    // origin we stashed server-side.
+    if let Some(pid) = preview_id {
+        let origin_row =
+            overslash_db::repos::oauth_preview_handoff::get_preview_origin(&state.db, pid)
+                .await?
+                .ok_or_else(|| AppError::BadRequest("preview origin expired or unknown".into()))?;
+        // Re-check against the live allowlist so a tightened policy takes
+        // effect even on in-flight logins minted under the old rules.
+        if !state.config.preview_origin_allowed(&origin_row.origin) {
+            return Err(AppError::Forbidden(
+                "preview origin not in allowlist".into(),
+            ));
+        }
+        let handoff_code = preview_handoff_code();
+        // Persist `next` alongside the JWT so the redirect URL the
+        // browser follows after cookie-set carries no path data — keeps
+        // the URL the IdP / a screen-recorder might leak free of caller
+        // intent.
+        let next_for_db = sanitize_next(&next_path);
+        overslash_db::repos::oauth_preview_handoff::insert_handoff_code(
+            &state.db,
+            &handoff_code,
+            &token,
+            &origin_row.origin,
+            next_for_db.as_deref(),
+            PREVIEW_HANDOFF_CODE_TTL_SECS,
+        )
+        .await?;
+        let target = format!(
+            "{}/auth/handoff?code={}",
+            origin_row.origin.trim_end_matches('/'),
+            urlencoding::encode(&handoff_code),
+        );
+
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(header::SET_COOKIE, clear_nonce.parse().unwrap());
+        resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
+        resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
+        resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
+        return Ok((resp_headers, Redirect::to(&target)).into_response());
+    }
+
+    // Non-preview path: set the session cookie on the API origin and bounce
+    // to the dashboard / org subdomain as before.
+    let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie);
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
-
-    let next_path = extract_cookie(&headers, "oss_auth_next")
-        .and_then(|v| sanitize_next(&v))
-        .unwrap_or_else(|| state.config.dashboard_url.clone());
 
     // When login kicks off on `<slug>.<apex>` but the OAuth callback lands
     // at `state.config.public_url/auth/callback/<provider>` (typical: a
@@ -386,6 +505,85 @@ fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) 
         format!("/{path}")
     };
     format!("{scheme}://{slug}.{apex}{port_suffix}{path}")
+}
+
+// ---------------------------------------------------------------------------
+// Vercel preview-deployment OAuth handoff
+// ---------------------------------------------------------------------------
+
+/// Random 32-byte handoff token, hex-encoded. Used as the one-time code
+/// the preview presents at `/auth/handoff?code=` to swap for a session.
+fn preview_handoff_code() -> String {
+    let buf: [u8; 32] = rand::random();
+    hex::encode(buf)
+}
+
+/// `GET /auth/handoff?code=<token>` — the redemption side of the Vercel
+/// preview handoff. Hits the API via the preview's Vercel proxy: Vercel
+/// forwards `X-Forwarded-Host: <preview>.vercel.app` and the API's response
+/// (with a `Domain`-less `Set-Cookie`) is pasted back through, scoping the
+/// cookie to the preview origin the browser sees.
+///
+/// 404 unless the feature is on. Otherwise atomically consumes the code,
+/// verifies the redeeming host matches the origin the code was minted for,
+/// re-checks the allowlist (in case it tightened), then sets the session
+/// cookie and 303s to the stored `next` path.
+async fn handoff_consume(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HandoffQuery>,
+) -> Result<Response, AppError> {
+    if !state.config.is_preview_handoff_enabled() {
+        return Err(AppError::NotFound("not found".into()));
+    }
+
+    let row = overslash_db::repos::oauth_preview_handoff::consume_handoff_code(&state.db, &q.code)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
+
+    // Bind redemption to the original preview origin so a leaked code
+    // can't be redeemed against a different host.
+    let actual_host = crate::middleware::subdomain::effective_host(&headers).unwrap_or_default();
+    let origin_url = url::Url::parse(&row.origin)
+        .map_err(|e| AppError::Internal(format!("stored origin not parseable: {e}")))?;
+    let origin_host = origin_url
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if actual_host != origin_host {
+        return Err(AppError::BadRequest("handoff origin mismatch".into()));
+    }
+
+    // Live allowlist re-check — if `PREVIEW_ORIGIN_ALLOWLIST` got
+    // tightened between mint and redeem, honor the new policy.
+    if !state.config.preview_origin_allowed(&row.origin) {
+        return Err(AppError::Forbidden(
+            "preview origin not in allowlist".into(),
+        ));
+    }
+
+    // Host-only session cookie: no `Domain` so the browser scopes it to
+    // the preview origin. `.vercel.app` is shared across tenants — sharing
+    // a cookie there would be a cross-tenant data leak.
+    let cookie = format!(
+        "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Secure; Max-Age=604800",
+        row.jwt
+    );
+
+    let next = row
+        .next_path
+        .as_deref()
+        .and_then(sanitize_next)
+        .unwrap_or_else(|| "/".to_string());
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert(
+        header::SET_COOKIE,
+        cookie
+            .parse()
+            .map_err(|e| AppError::Internal(format!("build session cookie: {e}")))?,
+    );
+    Ok((resp_headers, Redirect::to(&next)).into_response())
 }
 
 // ---------------------------------------------------------------------------
