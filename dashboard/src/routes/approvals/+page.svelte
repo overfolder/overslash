@@ -25,10 +25,26 @@
 		approvals = data.approvals;
 	});
 	$effect(() => {
-		pendingExecutions = data.pendingExecutions.filter(
-			(a) => a.execution?.status === 'pending'
-		);
+		pendingExecutions = data.pendingExecutions.filter((a) => {
+			const s = a.execution?.status;
+			if (s === 'pending') return true;
+			// "Called but output unread": auto-call (or any prior /call) ran
+			// the action to a terminal state, but the agent hasn't read the
+			// result yet. Surface so the operator sees the outcome and the
+			// HTTP code without having to click into the agent.
+			if ((s === 'executed' || s === 'failed') && a.execution?.output_read === false) {
+				return true;
+			}
+			return false;
+		});
 	});
+
+	function executionStateLabel(a: ApprovalResponse): 'pending' | 'executed' | 'failed' {
+		const s = a.execution?.status;
+		if (s === 'executed') return 'executed';
+		if (s === 'failed') return 'failed';
+		return 'pending';
+	}
 
 	// Tick state to drive periodic re-render of relativeTime() output.
 	let tick = $state(0);
@@ -141,15 +157,20 @@
 	{#if pendingExecutions.length > 0}
 		<section class="exec-section">
 			<header class="exec-header">
-				<h2>Pending Executions</h2>
-				<span class="count">{pendingExecutions.length} ready</span>
+				<h2>Pending Calls</h2>
+				<span class="count">{pendingExecutions.length} pending</span>
 			</header>
 			{#if execError}
 				<div class="banner banner-error">{execError}</div>
 			{/if}
 			<ul class="list">
 				{#each pendingExecutions as a (a.id)}
-					<li class="row exec-row">
+					{@const state = executionStateLabel(a)}
+					<li
+						class="row exec-row"
+						class:exec-row--executed={state === 'executed'}
+						class:exec-row--failed={state === 'failed'}
+					>
 						<div class="exec-body">
 							<div class="exec-main">
 								<div class="col col-identity">
@@ -161,28 +182,66 @@
 								</div>
 								<div class="col col-summary">{a.action_summary}</div>
 								<div class="col col-key"><code class="mono">{primaryKey(a)}</code></div>
+								<div class="col col-status">
+									{#if state === 'pending'}
+										<span class="exec-pill exec-pill--pending">awaiting call</span>
+									{:else if state === 'executed'}
+										<span class="exec-pill exec-pill--executed">called</span>
+										{#if a.execution?.http_status_code != null}
+											<code class="http-code mono" title="upstream HTTP status"
+												>{a.execution.http_status_code}</code
+											>
+										{/if}
+										{#if a.execution?.triggered_by === 'auto'}
+											<span class="exec-trigger">auto</span>
+										{/if}
+									{:else}
+										<span class="exec-pill exec-pill--failed">failed</span>
+										{#if a.execution?.http_status_code != null}
+											<code class="http-code mono" title="upstream HTTP status"
+												>{a.execution.http_status_code}</code
+											>
+										{/if}
+										{#if a.execution?.error}
+											<span class="exec-error mute small" title={a.execution.error}>
+												{a.execution.error.slice(0, 64)}
+											</span>
+										{/if}
+									{/if}
+								</div>
 								<div class="col col-time">
-									<div class="mute small">
-										expires {relativeTime(a.execution?.expires_at ?? a.expires_at)}
-									</div>
+									{#if state === 'pending'}
+										<div class="mute small">
+											expires {relativeTime(a.execution?.expires_at ?? a.expires_at)}
+										</div>
+									{:else if a.execution?.completed_at}
+										<div class="mute small">
+											completed {relativeTime(a.execution.completed_at)}
+										</div>
+									{/if}
+									{#if state !== 'pending'}
+										<div class="mute small">awaiting agent read</div>
+									{/if}
 								</div>
 							</div>
-							<div class="exec-actions">
-								<button
-									class="btn btn-call"
-									disabled={execBusy[a.id]}
-									onclick={() => callExecution(a)}
-								>
-									{execBusy[a.id] ? 'Calling…' : 'Call now'}
-								</button>
-								<button
-									class="btn btn-cancel"
-									disabled={execBusy[a.id]}
-									onclick={() => cancelExecution(a)}
-								>
-									Cancel
-								</button>
-							</div>
+							{#if state === 'pending'}
+								<div class="exec-actions">
+									<button
+										class="btn btn-call"
+										disabled={execBusy[a.id]}
+										onclick={() => callExecution(a)}
+									>
+										{execBusy[a.id] ? 'Calling…' : 'Call now'}
+									</button>
+									<button
+										class="btn btn-cancel"
+										disabled={execBusy[a.id]}
+										onclick={() => cancelExecution(a)}
+									>
+										Cancel
+									</button>
+								</div>
+							{/if}
 						</div>
 					</li>
 				{/each}
@@ -328,6 +387,14 @@
 		background: #fffbf0;
 		border-color: #f5d87a;
 	}
+	.exec-row--executed {
+		background: rgba(33, 184, 107, 0.06);
+		border-color: rgba(33, 184, 107, 0.4);
+	}
+	.exec-row--failed {
+		background: rgba(230, 56, 54, 0.06);
+		border-color: rgba(230, 56, 54, 0.4);
+	}
 	.exec-body {
 		display: flex;
 		align-items: center;
@@ -336,11 +403,64 @@
 	}
 	.exec-main {
 		display: grid;
-		grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr) minmax(0, 1.2fr) auto;
+		grid-template-columns:
+			minmax(0, 1.3fr) minmax(0, 1.8fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
 		gap: 1rem;
 		align-items: center;
 		flex: 1;
 		min-width: 0;
+	}
+	.col-status {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		min-width: 0;
+	}
+	.exec-pill {
+		display: inline-block;
+		padding: 0.1rem 0.5rem;
+		border-radius: 999px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+	}
+	.exec-pill--pending {
+		background: #fff3e0;
+		color: #b35900;
+		border: 1px solid #ffd699;
+	}
+	.exec-pill--executed {
+		background: rgba(33, 184, 107, 0.12);
+		color: #15803d;
+		border: 1px solid rgba(33, 184, 107, 0.4);
+	}
+	.exec-pill--failed {
+		background: rgba(230, 56, 54, 0.1);
+		color: #b91c1c;
+		border: 1px solid rgba(230, 56, 54, 0.45);
+	}
+	.http-code {
+		font-size: 0.72rem;
+		padding: 0.1rem 0.4rem;
+		border-radius: 4px;
+		background: rgba(0, 0, 0, 0.04);
+		color: var(--color-text-muted);
+	}
+	.exec-trigger {
+		font-size: 0.65rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--color-text-muted);
+		padding: 0.05rem 0.35rem;
+		border-radius: 3px;
+		background: rgba(0, 0, 0, 0.04);
+	}
+	.exec-error {
+		max-width: 16rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.exec-actions {
 		display: flex;

@@ -55,7 +55,7 @@ struct ExecutionSummary {
     result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    /// `agent` | `user`. Omitted from JSON while the execution is still pending.
+    /// `agent` | `user` | `auto`. Omitted from JSON while the execution is still pending.
     #[serde(skip_serializing_if = "Option::is_none")]
     triggered_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,10 +64,31 @@ struct ExecutionSummary {
     completed_at: Option<String>,
     expires_at: String,
     created_at: String,
+    /// `http` | `mcp` — extracted from the result envelope. Disambiguates
+    /// `http_status_code` (which is meaningless for MCP runtime calls).
+    /// `None` while the execution hasn't completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<String>,
+    /// Upstream HTTP status code for HTTP-runtime executions only. Used by
+    /// the dashboard to render a status pill on completed-but-unread rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status_code: Option<u16>,
+    /// True once the requesting agent has read the result (the GET on
+    /// `/v1/approvals/{id}/execution` from the agent identity stamps
+    /// `result_viewed_at`). Drives the "called but output unread"
+    /// pending-calls surface.
+    output_read: bool,
 }
 
 impl ExecutionSummary {
     fn from_row(r: ExecutionRow) -> Self {
+        let runtime = r.result.as_ref().and_then(extract_runtime);
+        let http_status_code = if matches!(runtime.as_deref(), Some("http")) {
+            r.result.as_ref().and_then(extract_http_status_code)
+        } else {
+            None
+        };
+        let output_read = r.result_viewed_at.is_some();
         let result = r.result.map(truncate_json_value);
         Self {
             id: r.id,
@@ -79,8 +100,31 @@ impl ExecutionSummary {
             completed_at: r.completed_at.map(fmt_time),
             expires_at: fmt_time(r.expires_at),
             created_at: fmt_time(r.created_at),
+            runtime,
+            http_status_code,
+            output_read,
         }
     }
+}
+
+/// Probe a stored execution `result` JSONB for the runtime tag. MCP envelopes
+/// carry `{ "runtime": "mcp", ... }` from `mcp_caller`; HTTP envelopes don't
+/// declare a runtime field, so we fall back to a `status_code` presence
+/// check. Anything else (truncation sentinels, unknown shapes) returns None.
+fn extract_runtime(v: &serde_json::Value) -> Option<String> {
+    if let Some(rt) = v.get("runtime").and_then(|x| x.as_str()) {
+        return Some(rt.to_string());
+    }
+    if v.get("status_code").is_some() {
+        return Some("http".to_string());
+    }
+    None
+}
+
+fn extract_http_status_code(v: &serde_json::Value) -> Option<u16> {
+    v.get("status_code")
+        .and_then(|x| x.as_u64())
+        .and_then(|n| u16::try_from(n).ok())
 }
 
 /// Truncate a JSON value's string representation to at most
@@ -368,11 +412,12 @@ async fn get_approval(
 
 async fn get_execution(
     State(_state): State<AppState>,
+    auth: AuthContext,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ExecutionSummary>> {
     // Require the approval exists in this org (4xx-not-leaky).
-    let _ = scope
+    let approval = scope
         .get_approval(id)
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
@@ -380,6 +425,20 @@ async fn get_execution(
         .get_execution_by_approval(id)
         .await?
         .ok_or_else(|| AppError::NotFound("no execution for this approval".into()))?;
+
+    // Mark-as-read: only the *requesting* agent's first read flips
+    // `result_viewed_at`. Dashboard reads (admin/resolver) leave the row
+    // unread so the operator's view doesn't accidentally clear the
+    // "agent hasn't pulled this yet" surface from the pending-calls list.
+    let exec = if auth.identity_id == Some(approval.identity_id) {
+        match scope.mark_execution_viewed(exec.id).await {
+            Ok(true) => scope.get_execution_by_approval(id).await?.unwrap_or(exec),
+            _ => exec,
+        }
+    } else {
+        exec
+    };
+
     Ok(Json(ExecutionSummary::from_row(exec)))
 }
 
@@ -587,7 +646,12 @@ async fn resolve_approval(
     overslash_metrics::approvals::record_resolution(event_label, age);
 
     // On allow/allow_remember, create the pending execution row. The actual
-    // replay is triggered later by POST /v1/approvals/{id}/call.
+    // replay is triggered either by an explicit `POST /v1/approvals/{id}/call`
+    // (manual path), or — when the requesting agent's MCP binding has
+    // `auto_call_on_approve` set (default: true) — by a background task
+    // spawned right after this `/resolve` returns. The two paths share the
+    // same atomic claim guard, so a manual click landing during an in-flight
+    // auto-call cleanly loses with a `409`.
     let execution = if status == "allowed" {
         let ttl_secs = state.config.execution_pending_ttl_secs as i64;
         let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(ttl_secs);
@@ -600,6 +664,94 @@ async fn resolve_approval(
                 expires_at,
             )
             .await?;
+
+        // Auto-call lookup: keyed on the requesting agent's identity. Plain
+        // REST agents (no MCP binding) always return None and short-circuit
+        // to today's manual-only behavior. Errors here are non-fatal — a
+        // failed lookup just leaves the execution pending for the agent or
+        // resolver to call manually.
+        let binding = match overslash_db::repos::mcp_client_agent_binding::get_by_agent_identity(
+            &state.db,
+            approval_pre.identity_id,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    approval_id = %id,
+                    "auto-call binding lookup failed: {e}"
+                );
+                None
+            }
+        };
+        // Suppress auto-call when an elicitation flow is mid-flight for this
+        // approval. The elicitation receiver drives its own /resolve → /call
+        // round-trip; an auto-call would race with that and force one side
+        // into a 409.
+        let elicitation_active =
+            match overslash_db::repos::mcp_elicitation::has_active_for_approval(
+                &state.db,
+                approval_pre.id,
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        approval_id = %id,
+                        "auto-call elicitation lookup failed: {e}"
+                    );
+                    false
+                }
+            };
+
+        if !elicitation_active
+            && binding
+                .as_ref()
+                .map(|b| b.auto_call_on_approve)
+                .unwrap_or(false)
+        {
+            let state_c = state.clone();
+            let approval_c = approval_pre.clone();
+            let resolver_identity = auth.identity_id;
+            let resolver_org_id = auth.org_id;
+            let ip_c = ip.0.clone();
+            tokio::spawn(async move {
+                let scope_c = OrgScope::new(approval_c.org_id, state_c.db.clone());
+                // Atomic claim with triggered_by="auto". Losing this claim
+                // is fine — it means a manual /call beat us to it.
+                let claim = match scope_c.claim_execution(approval_c.id, "auto").await {
+                    Ok(Some(row)) => row,
+                    Ok(None) => return,
+                    Err(e) => {
+                        tracing::warn!(
+                            approval_id = %approval_c.id,
+                            "auto-call claim failed: {e}"
+                        );
+                        return;
+                    }
+                };
+                if let Err(e) = execute_claimed_approval(
+                    &state_c,
+                    &scope_c,
+                    &approval_c,
+                    claim,
+                    "auto",
+                    ip_c.as_deref(),
+                    resolver_org_id,
+                    resolver_identity,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        approval_id = %approval_c.id,
+                        "auto-call execute failed: {e}"
+                    );
+                }
+            });
+        }
+
         Some(row)
     } else {
         None
@@ -738,6 +890,53 @@ async fn call_approval(
         let current = scope.get_execution_by_approval(id).await?;
         return Err(execution_conflict_error(current));
     };
+
+    let (finalised, _succeeded, cascaded_approval_ids) = execute_claimed_approval(
+        &state,
+        &scope,
+        &approval,
+        claimed,
+        triggered_by,
+        ip.0.as_deref(),
+        auth.org_id,
+        auth.identity_id,
+    )
+    .await?;
+
+    let (identity_path, identity_path_ids) =
+        crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
+            .await
+            .unwrap_or(None)
+            .map(|(p, ids)| (Some(p), ids))
+            .unwrap_or((None, Vec::new()));
+    let mut response =
+        ApprovalResponse::from_row(approval, identity_path, identity_path_ids, Some(finalised));
+    response.cascaded_approval_ids = cascaded_approval_ids;
+    Ok(Json(response))
+}
+
+/// Run a *claimed* execution to terminal state. Shared between the manual
+/// `POST /v1/approvals/{id}/call` path and the auto-call-on-approve
+/// background task spawned by `resolve_approval`. The caller is responsible
+/// for the atomic `pending → executing` claim before invoking this; on
+/// return the row is `executed` / `failed` and any "Allow & Remember" rule
+/// has been written + cascaded.
+///
+/// `triggered_by` is `"agent" | "user" | "auto"` and is recorded both on the
+/// execution row (already stamped at claim time by the caller) and in the
+/// audit / webhook trail this function emits.
+#[allow(clippy::too_many_arguments)]
+async fn execute_claimed_approval(
+    state: &AppState,
+    scope: &OrgScope,
+    approval: &overslash_db::repos::approval::ApprovalRow,
+    claimed: ExecutionRow,
+    triggered_by: &'static str,
+    ip: Option<&str>,
+    audit_org_id: Uuid,
+    audit_identity_id: Option<Uuid>,
+) -> Result<(ExecutionRow, bool, Vec<Uuid>)> {
+    let id = approval.id;
     let execution_id = claimed.id;
     overslash_metrics::approvals::record_event("called", triggered_by);
 
@@ -772,7 +971,7 @@ async fn call_approval(
                 let runtime = detail.get("runtime").and_then(|v| v.as_str());
                 if runtime == Some("mcp") || detail.get("tool").is_some() {
                     return fail_and_return(
-                        &scope,
+                        scope,
                         execution_id,
                         "mcp_replay_not_supported_legacy",
                         AppError::Conflict(
@@ -785,7 +984,7 @@ async fn call_approval(
                 }
                 if runtime == Some("platform") {
                     return fail_and_return(
-                        &scope,
+                        scope,
                         execution_id,
                         "platform_replay_not_supported",
                         AppError::Conflict(
@@ -798,7 +997,7 @@ async fn call_approval(
             }
             None => {
                 return fail_and_return(
-                    &scope,
+                    scope,
                     execution_id,
                     "no_replay_payload",
                     AppError::Internal(
@@ -814,7 +1013,7 @@ async fn call_approval(
     // case; this guard catches future replay_payload variants if any.
     if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("platform") {
         return fail_and_return(
-            &scope,
+            scope,
             execution_id,
             "platform_replay_not_supported",
             AppError::Conflict("replay of platform-runtime approvals is not yet supported".into()),
@@ -826,7 +1025,7 @@ async fn call_approval(
         Err(e) => {
             let msg = format!("replay payload parse error: {e}");
             return fail_and_return(
-                &scope,
+                scope,
                 execution_id,
                 &msg,
                 AppError::Internal(format!(
@@ -846,10 +1045,10 @@ async fn call_approval(
             // ── Replay with timeout. Streaming is forced off — the reviewer's
             // connection isn't the original caller's.
             let call_ctx = CallContext {
-                state: &state,
-                scope: &scope,
+                state,
+                scope,
                 identity_id: approval.identity_id, // requester identity for audit/rate-limit
-                ip: ip.0.as_deref(),
+                ip,
                 description: Some(approval.action_summary.as_str()),
                 service_key: None,
                 action_key: None,
@@ -926,8 +1125,8 @@ async fn call_approval(
             let outcome = tokio::time::timeout(
                 replay_timeout,
                 mcp_caller::invoke(
-                    &state,
-                    &scope,
+                    state,
+                    scope,
                     &call.url,
                     &call.auth,
                     &call.tool,
@@ -960,14 +1159,14 @@ async fn call_approval(
                     }
                     let _ = scope
                         .log_audit(AuditEntry {
-                            org_id: auth.org_id,
+                            org_id: audit_org_id,
                             identity_id: Some(approval.identity_id),
                             action: "action.executed",
                             resource_type: Some("mcp"),
                             resource_id: None,
                             detail: audit_detail,
                             description: Some(approval.action_summary.as_str()),
-                            ip_address: ip.0.as_deref(),
+                            ip_address: ip,
                         })
                         .await;
                     let summary = serde_json::json!({
@@ -1006,7 +1205,7 @@ async fn call_approval(
     let mut cascaded_approval_ids: Vec<Uuid> = Vec::new();
     if succeeded && finalised.remember {
         let placement_id =
-            crate::services::permission_chain::rule_placement_for(&scope, approval.identity_id)
+            crate::services::permission_chain::rule_placement_for(scope, approval.identity_id)
                 .await?;
         let keys_owned: Vec<String> = finalised
             .remember_keys
@@ -1023,8 +1222,8 @@ async fn call_approval(
         // /call request just because the cascade hit a snag.
         if !keys_owned.is_empty() {
             cascaded_approval_ids = match crate::services::permission_chain::cascade_resolve(
-                &state,
-                &scope,
+                state,
+                scope,
                 placement_id,
                 id,
             )
@@ -1050,8 +1249,8 @@ async fn call_approval(
     };
     let _ = scope
         .log_audit(AuditEntry {
-            org_id: auth.org_id,
-            identity_id: auth.identity_id,
+            org_id: audit_org_id,
+            identity_id: audit_identity_id,
             action: audit_action,
             resource_type: Some("approval"),
             resource_id: Some(id),
@@ -1063,14 +1262,14 @@ async fn call_approval(
                 "cascaded_approval_ids": &cascaded_approval_ids,
             }),
             description: None,
-            ip_address: ip.0.as_deref(),
+            ip_address: ip,
         })
         .await;
 
     {
         let db = state.db.clone();
         let client = state.http_client.clone();
-        let org_id = auth.org_id;
+        let org_id = audit_org_id;
         let webhook_event = if succeeded {
             "approval.executed"
         } else {
@@ -1096,16 +1295,7 @@ async fn call_approval(
         });
     }
 
-    let (identity_path, identity_path_ids) =
-        crate::services::identity_path::build_for_identity(&scope, approval.identity_id)
-            .await
-            .unwrap_or(None)
-            .map(|(p, ids)| (Some(p), ids))
-            .unwrap_or((None, Vec::new()));
-    let mut response =
-        ApprovalResponse::from_row(approval, identity_path, identity_path_ids, Some(finalised));
-    response.cascaded_approval_ids = cascaded_approval_ids;
-    Ok(Json(response))
+    Ok((finalised, succeeded, cascaded_approval_ids))
 }
 
 async fn cancel_approval_execution(

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE executions\n            SET status = 'cancelled',\n                completed_at = now()\n          WHERE approval_id = $1\n            AND org_id = $2\n            AND status = 'pending'\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+  "query": "SELECT id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at\n         FROM executions\n         WHERE approval_id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -72,6 +72,11 @@
         "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "result_viewed_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -94,8 +99,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "a20846a38390895d7bf20fce6723c86e71b8e796f4c17f958cfe36ba61ede8d3"
+  "hash": "339b9c54f7cf648effee504b4fc49e2e9e8f653a98bbd2638257916c37820458"
 }

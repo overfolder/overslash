@@ -85,4 +85,12 @@ impl OrgScope {
     ) -> Result<Vec<ExecutionRow>, sqlx::Error> {
         crate::repos::execution::find_by_approval_ids(self.db(), self.org_id(), approval_ids).await
     }
+
+    /// Stamp `result_viewed_at` on a terminal execution. Idempotent — the
+    /// dashboard never needs this; only the requesting agent's GET is meant
+    /// to mark a result read. Returns `true` on the first read, `false`
+    /// thereafter (already stamped or row not in a terminal state).
+    pub async fn mark_execution_viewed(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        crate::repos::execution::mark_viewed(self.db(), self.org_id(), id).await
+    }
 }

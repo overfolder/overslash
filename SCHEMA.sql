@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict zdyJRngZhW0MOaFReyj9D36zfs1viXGiUKR9BvHzTQ0DKX6PeuCSKyDkbHOPdQx
+\restrict ub9VKLeepvNMdjPRprfDk5vVlJWDWMbr5kXt7jLWVuIWJeNLqDRzodXnfnmXqZx
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -169,6 +169,7 @@ CREATE TABLE public.executions (
     completed_at timestamp with time zone,
     expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    result_viewed_at timestamp with time zone,
     CONSTRAINT executions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executing'::text, 'executed'::text, 'failed'::text, 'cancelled'::text, 'expired'::text])))
 );
 
@@ -260,7 +261,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    elicitation_enabled boolean DEFAULT false NOT NULL
+    elicitation_enabled boolean DEFAULT false NOT NULL,
+    auto_call_on_approve boolean DEFAULT true NOT NULL
 );
 
 
@@ -1168,6 +1170,13 @@ CREATE INDEX idx_executions_org_status_expires ON public.executions USING btree 
 --
 
 CREATE INDEX idx_executions_pending_expiry ON public.executions USING btree (expires_at) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: idx_executions_unread; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_unread ON public.executions USING btree (org_id, completed_at) WHERE ((status = ANY (ARRAY['executed'::text, 'failed'::text])) AND (result_viewed_at IS NULL));
 
 
 --
@@ -2178,5 +2187,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict zdyJRngZhW0MOaFReyj9D36zfs1viXGiUKR9BvHzTQ0DKX6PeuCSKyDkbHOPdQx
+\unrestrict ub9VKLeepvNMdjPRprfDk5vVlJWDWMbr5kXt7jLWVuIWJeNLqDRzodXnfnmXqZx
 

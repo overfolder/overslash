@@ -559,6 +559,13 @@ struct McpConnectionDto {
     last_seen_at: Option<String>,
     elicitation_enabled: bool,
     elicitation_supported: bool,
+    /// When `true` (default), resolving an approval for this agent as
+    /// `allow`/`allow_remember` automatically replays the underlying call
+    /// — no second `POST /v1/approvals/{id}/call` from the agent or user
+    /// is needed. The execution row still goes through the normal
+    /// `pending → executing → executed/failed` claim path; auto-call just
+    /// fires it in the background after `/resolve` returns.
+    auto_call_on_approve: bool,
 }
 
 async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<McpConnectionDto>> {
@@ -588,6 +595,7 @@ async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<
         last_seen_at: client.last_seen_at.map(fmt_time),
         elicitation_enabled: binding.elicitation_enabled,
         elicitation_supported,
+        auto_call_on_approve: binding.auto_call_on_approve,
     }))
 }
 
@@ -618,6 +626,7 @@ async fn get_mcp_connection(
 #[derive(Debug, Deserialize)]
 struct PatchMcpConnectionRequest {
     elicitation_enabled: Option<bool>,
+    auto_call_on_approve: Option<bool>,
 }
 
 async fn patch_mcp_connection(
@@ -655,6 +664,37 @@ async fn patch_mcp_connection(
                 resource_id: Some(id),
                 detail: serde_json::json!({
                     "elicitation_enabled": enabled,
+                    "bindings_updated": updated,
+                }),
+                description: None,
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+    }
+
+    if let Some(enabled) = req.auto_call_on_approve {
+        // Same fan-out rationale as elicitation: the dashboard surfaces a
+        // single agent-level toggle, but the resolve-time check reads
+        // whichever binding is most-recently-updated.
+        let updated =
+            overslash_db::repos::mcp_client_agent_binding::set_auto_call_on_approve_for_agent(
+                &state.db, id, enabled,
+            )
+            .await?;
+        if updated == 0 {
+            return Err(AppError::NotFound(
+                "no MCP connection bound to this agent".into(),
+            ));
+        }
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: acl.org_id,
+                identity_id: acl.identity_id,
+                action: "mcp_connection.auto_call_on_approve_toggled",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "auto_call_on_approve": enabled,
                     "bindings_updated": updated,
                 }),
                 description: None,

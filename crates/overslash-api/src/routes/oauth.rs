@@ -938,15 +938,21 @@ async fn consent_finish(
         }
     };
 
-    // Read the agent's existing elicitation value BEFORE upserting. Reauth
-    // under a re-registered client_id creates a fresh binding row that
-    // defaults to `false`, so without a pre-fetch the new row would hide
-    // whatever value the user saved on a prior binding.
-    let prior_elicitation =
-        mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_identity_id)
-            .await?
-            .map(|b| b.elicitation_enabled)
-            .unwrap_or(false);
+    // Read the agent's existing per-binding settings BEFORE upserting. Reauth
+    // under a re-registered client_id creates a fresh binding row that uses
+    // schema defaults, so without a pre-fetch the new row would hide
+    // whatever values the user saved on a prior binding.
+    let prior_binding =
+        mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_identity_id).await?;
+    let prior_elicitation = prior_binding
+        .as_ref()
+        .map(|b| b.elicitation_enabled)
+        .unwrap_or(false);
+    let prior_auto_call = prior_binding
+        .as_ref()
+        .map(|b| b.auto_call_on_approve)
+        // No prior binding ⇒ honour the column default (TRUE).
+        .unwrap_or(true);
 
     mcp_client_agent_binding::upsert(
         &state.db,
@@ -972,6 +978,15 @@ async fn consent_finish(
         &state.db,
         agent_identity_id,
         resolved_elicitation,
+    )
+    .await?;
+    // Preserve auto_call_on_approve across reauth. The consent screen does
+    // not yet surface this toggle, so we always inherit the prior value
+    // (or fall back to the column default — TRUE — for first-time binds).
+    mcp_client_agent_binding::set_auto_call_on_approve_for_agent(
+        &state.db,
+        agent_identity_id,
+        prior_auto_call,
     )
     .await?;
 

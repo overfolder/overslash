@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE executions\n            SET status = 'failed',\n                error = $3,\n                completed_at = now()\n          WHERE id = $1\n            AND org_id = $2\n            AND status = 'executing'\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at",
+  "query": "UPDATE executions\n            SET status = 'executed',\n                result = $3,\n                completed_at = now()\n          WHERE id = $1\n            AND org_id = $2\n            AND status = 'executing'\n          RETURNING id, approval_id, org_id, status, remember, remember_keys, remember_rule_ttl, result, error, triggered_by, started_at, completed_at, expires_at, created_at, result_viewed_at",
   "describe": {
     "columns": [
       {
@@ -72,13 +72,18 @@
         "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "result_viewed_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
         "Uuid",
-        "Text"
+        "Jsonb"
       ]
     },
     "nullable": [
@@ -95,8 +100,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "2fee324e60c4aa9715db6129883e973dc5a33f440698305b4e5646a96d3e7857"
+  "hash": "a4ca928bae6bb1b3e2e15c567800f53cc67dcd1c03185c7def8c6da3e4dd1ba6"
 }

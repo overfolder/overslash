@@ -80,6 +80,15 @@ export interface McpConnection {
   last_seen_at: string | null;
   elicitation_enabled: boolean;
   elicitation_supported: boolean;
+  /**
+   * When `true` (default), resolving an approval as `allow`/`allow_remember`
+   * automatically replays the underlying call — agents do not need to
+   * retry. The result lands on the `executions` row regardless; agents
+   * fetch it via `GET /v1/approvals/{id}/execution`. The Pending Calls
+   * panel surfaces "called but output unread" rows so the operator can
+   * see which auto-executions haven't been picked up yet.
+   */
+  auto_call_on_approve: boolean;
 }
 
 /**
