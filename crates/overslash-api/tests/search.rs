@@ -135,17 +135,20 @@ async fn create_api_key_service(
     resp
 }
 
-/// Find the first result with the matching `(service, action)` pair.
-fn find(results: &[Value], service: &str, action: &str) -> Option<Value> {
+/// Find the first result with the matching `(template, action)` pair. After
+/// the fan-out rewrite, the top-level `service` field carries an instance
+/// name; tests almost always want "any row from this template", so we look
+/// up by `template` instead.
+fn find(results: &[Value], template: &str, action: &str) -> Option<Value> {
     results
         .iter()
-        .find(|r| r["service"].as_str() == Some(service) && r["action"].as_str() == Some(action))
+        .find(|r| r["template"].as_str() == Some(template) && r["action"].as_str() == Some(action))
         .cloned()
 }
 
-fn rank_of(results: &[Value], service: &str, action: &str) -> Option<usize> {
+fn rank_of(results: &[Value], template: &str, action: &str) -> Option<usize> {
     results.iter().position(|r| {
-        r["service"].as_str() == Some(service) && r["action"].as_str() == Some(action)
+        r["template"].as_str() == Some(template) && r["action"].as_str() == Some(action)
     })
 }
 
@@ -169,10 +172,12 @@ async fn empty_query_with_include_catalog_lists_all_services() {
 
     // Service-level entries: identifiers and auth must be present;
     // action/description/risk/score must be absent (skip_serializing_if).
+    // Catalog rows (setup_required: true) under include_catalog have no
+    // `service` field — only `template` is guaranteed.
     for r in results {
         assert!(
-            r.get("service").and_then(|v| v.as_str()).is_some(),
-            "missing service: {r}"
+            r.get("template").and_then(|v| v.as_str()).is_some(),
+            "missing template: {r}"
         );
         assert!(
             r.get("service_display_name")
@@ -196,7 +201,7 @@ async fn empty_query_with_include_catalog_lists_all_services() {
 
     // Sanity-check that the bootstrapped global registry is being walked.
     assert!(
-        results.iter().any(|r| r["service"] == "gmail"),
+        results.iter().any(|r| r["template"] == "gmail"),
         "gmail missing from browse output: {results:?}"
     );
 }
@@ -241,11 +246,11 @@ async fn empty_query_respects_global_template_visibility() {
     let results = body["results"].as_array().unwrap();
 
     assert!(
-        results.iter().any(|r| r["service"] == "gmail"),
+        results.iter().any(|r| r["template"] == "gmail"),
         "gmail (explicitly enabled) missing from browse: {results:?}"
     );
     assert!(
-        !results.iter().any(|r| r["service"] == "stripe"),
+        !results.iter().any(|r| r["template"] == "stripe"),
         "stripe should be hidden in browse: {results:?}"
     );
 }
@@ -290,11 +295,11 @@ async fn empty_query_floats_connected_services_first() {
 
     let resend_rank = results
         .iter()
-        .position(|r| r["service"] == "resend")
+        .position(|r| r["template"] == "resend")
         .expect("resend missing from browse");
     let gmail_rank = results
         .iter()
-        .position(|r| r["service"] == "gmail")
+        .position(|r| r["template"] == "gmail")
         .expect("gmail missing from browse");
 
     assert!(
@@ -304,6 +309,11 @@ async fn empty_query_floats_connected_services_first() {
     assert_eq!(
         results[resend_rank]["auth"]["connected"], true,
         "resend not marked connected: {}",
+        results[resend_rank]
+    );
+    assert_eq!(
+        results[resend_rank]["service"], "resend-work",
+        "expected fanned-out resend-work as the callable service: {}",
         results[resend_rank]
     );
 }
@@ -392,20 +402,20 @@ async fn find_send_email_across_gmail_and_resend() {
     // template authors can rename them — instead we check that at least
     // one hit for each service is present in the ranked list.
     assert!(
-        results.iter().any(|r| r["service"] == "gmail"),
+        results.iter().any(|r| r["template"] == "gmail"),
         "expected a gmail hit; got {results:?}"
     );
     assert!(
-        results.iter().any(|r| r["service"] == "resend"),
+        results.iter().any(|r| r["template"] == "resend"),
         "expected a resend hit; got {results:?}"
     );
     // Top result for a mail query should come from one of the two
     // email-centric services.
     let top = &results[0];
-    let top_service = top["service"].as_str().unwrap();
+    let top_template = top["template"].as_str().unwrap();
     assert!(
-        matches!(top_service, "gmail" | "resend"),
-        "top hit was {top_service}, expected gmail or resend"
+        matches!(top_template, "gmail" | "resend"),
+        "top hit was {top_template}, expected gmail or resend"
     );
 }
 
@@ -427,7 +437,7 @@ async fn find_create_calendar_event() {
     let results = body["results"].as_array().unwrap();
     let rank = results
         .iter()
-        .position(|r| r["service"] == "google_calendar");
+        .position(|r| r["template"] == "google_calendar");
     assert!(
         rank.is_some(),
         "google_calendar missing from results: {results:?}"
@@ -466,7 +476,7 @@ async fn unrelated_query_returns_empty_or_low_score() {
 }
 
 #[tokio::test]
-async fn connected_instance_surfaces_in_auth_instances() {
+async fn connected_instance_surfaces_at_top_level() {
     let (base, client, _, admin_key, _) = bootstrap().await;
 
     // Create a resend service instance (api_key auth) so the search
@@ -507,43 +517,40 @@ async fn connected_instance_surfaces_in_auth_instances() {
     let results = body["results"].as_array().unwrap();
     let resend_hit = results
         .iter()
-        .find(|r| r["service"] == "resend")
+        .find(|r| r["template"] == "resend")
         .expect("resend result missing");
     let auth = &resend_hit["auth"];
     assert_eq!(auth["connected"], true, "expected connected=true: {auth}");
-    let instances = auth["instances"].as_array().expect("instances array");
-    assert!(!instances.is_empty(), "instances empty: {auth}");
-    // Exactly one instance we just created; name + secret_name surface
-    // verbatim. owner_email is a deprecated field and must NOT appear in
-    // the new payload — instance disambiguation is by account_email
-    // (OAuth) or secret_name (api-key) only.
-    assert_eq!(instances[0]["name"], "resend-work");
-    assert_eq!(instances[0]["secret_name"], "resend_api_key");
+    // After the fan-out rewrite the row IS the instance — no nested
+    // `auth.instances`. The instance name is `service`, the secret label
+    // is hoisted to the top level.
     assert!(
-        instances[0].get("owner_email").is_none(),
-        "owner_email leaked into payload: {}",
-        instances[0]
+        auth.get("instances").is_none(),
+        "auth.instances must be gone after fan-out: {auth}"
+    );
+    assert_eq!(resend_hit["service"], "resend-work");
+    assert_eq!(resend_hit["secret_name"], "resend_api_key");
+    assert!(
+        resend_hit.get("owner_email").is_none(),
+        "owner_email leaked into payload: {resend_hit}"
     );
     assert!(
-        instances[0].get("account_email").is_none(),
-        "api-key instance must not surface account_email: {}",
-        instances[0]
+        resend_hit.get("account_email").is_none(),
+        "api-key row must not surface account_email: {resend_hit}"
     );
     // No raw UUID anywhere — the search response should never expose
     // internal identifiers like connection_id or service_instance_id.
-    let serialized = serde_json::to_string(&instances[0]).unwrap();
+    let serialized = serde_json::to_string(&resend_hit).unwrap();
     let has_uuid = serialized.as_bytes().windows(36).any(|w| {
         std::str::from_utf8(w)
             .ok()
             .and_then(|s| Uuid::parse_str(s).ok())
             .is_some()
     });
-    assert!(!has_uuid, "raw UUID leaked into instance ref: {serialized}");
+    assert!(!has_uuid, "raw UUID leaked into row: {serialized}");
 
-    // Connected bonus should push gmail/resend above non-connected
-    // mail-adjacent options that don't have a wired instance. With
-    // include_catalog=false (default), only resend appears, so it's
-    // guaranteed to be at index 0.
+    // Connected bonus should push resend ahead. With include_catalog=false
+    // (default) only resend appears, so it's guaranteed to be near the top.
     let resend_rank = rank_of(results, "resend", resend_hit["action"].as_str().unwrap());
     assert!(resend_rank.unwrap() < 3, "connected resend rank too low");
 }
@@ -590,7 +597,7 @@ async fn hidden_global_template_is_filtered() {
         .unwrap();
     let results = body["results"].as_array().unwrap();
     assert!(
-        !results.iter().any(|r| r["service"] == "stripe"),
+        !results.iter().any(|r| r["template"] == "stripe"),
         "stripe should be hidden but appeared in results: {results:?}"
     );
 }
@@ -780,17 +787,24 @@ async fn empty_query_returns_only_connected_services_by_default() {
     let results = body["results"].as_array().unwrap();
 
     assert!(
-        results.iter().any(|r| r["service"] == "resend"),
+        results.iter().any(|r| r["template"] == "resend"),
         "connected resend missing from default browse: {results:?}"
     );
     assert!(
-        !results.iter().any(|r| r["service"] == "gmail"),
+        !results.iter().any(|r| r["template"] == "gmail"),
         "unconnected gmail leaked into default browse: {results:?}"
     );
     assert!(
-        !results.iter().any(|r| r["service"] == "stripe"),
+        !results.iter().any(|r| r["template"] == "stripe"),
         "unconnected stripe leaked into default browse: {results:?}"
     );
+    // Setup_required catalog rows must never appear without include_catalog=true.
+    for r in results {
+        assert!(
+            r.get("setup_required").is_none(),
+            "setup_required leaked into default browse: {r}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -843,11 +857,11 @@ async fn keyword_query_filters_to_connected_by_default() {
     let results = body["results"].as_array().unwrap();
 
     assert!(
-        results.iter().any(|r| r["service"] == "resend"),
+        results.iter().any(|r| r["template"] == "resend"),
         "connected resend missing from default keyword search: {results:?}"
     );
     assert!(
-        !results.iter().any(|r| r["service"] == "gmail"),
+        !results.iter().any(|r| r["template"] == "gmail"),
         "unconnected gmail leaked into default keyword search: {results:?}"
     );
 }
@@ -872,12 +886,26 @@ async fn keyword_query_with_include_catalog_searches_full_catalog() {
     let results = body["results"].as_array().unwrap();
 
     assert!(
-        results.iter().any(|r| r["service"] == "resend"),
+        results.iter().any(|r| r["template"] == "resend"),
         "resend missing with include_catalog: {results:?}"
     );
     assert!(
-        results.iter().any(|r| r["service"] == "gmail"),
+        results.iter().any(|r| r["template"] == "gmail"),
         "gmail missing with include_catalog: {results:?}"
+    );
+    // Connected resend rows are real instances; un-connected gmail rows
+    // are catalog rows under include_catalog=true.
+    let gmail_row = results
+        .iter()
+        .find(|r| r["template"] == "gmail")
+        .expect("gmail catalog row missing");
+    assert_eq!(
+        gmail_row["setup_required"], true,
+        "gmail catalog row missing setup_required: {gmail_row}"
+    );
+    assert!(
+        gmail_row.get("service").is_none(),
+        "catalog row must omit `service`: {gmail_row}"
     );
 }
 
@@ -917,21 +945,22 @@ async fn oauth_instance_exposes_account_email() {
     let results = body["results"].as_array().unwrap();
     let gmail = results
         .iter()
-        .find(|r| r["service"] == "gmail")
+        .find(|r| r["template"] == "gmail")
         .expect("connected gmail missing");
-    let instances = gmail["auth"]["instances"].as_array().unwrap();
-    assert_eq!(instances.len(), 1, "expected one instance: {instances:?}");
-    assert_eq!(instances[0]["name"], "gmail-alice");
-    assert_eq!(instances[0]["account_email"], "alice@gmail.com");
+    assert_eq!(gmail["service"], "gmail-alice");
+    assert_eq!(gmail["account_email"], "alice@gmail.com");
     assert!(
-        instances[0].get("owner_email").is_none(),
-        "owner_email leaked: {}",
-        instances[0]
+        gmail.get("owner_email").is_none(),
+        "owner_email leaked: {gmail}"
     );
     assert!(
-        instances[0].get("secret_name").is_none(),
-        "OAuth instance must not expose secret_name: {}",
-        instances[0]
+        gmail.get("secret_name").is_none(),
+        "OAuth row must not expose secret_name: {gmail}"
+    );
+    assert!(
+        gmail["auth"].get("instances").is_none(),
+        "auth.instances must be gone after fan-out: {}",
+        gmail["auth"]
     );
 }
 
@@ -963,14 +992,13 @@ async fn api_key_instance_exposes_secret_name() {
     let results = body["results"].as_array().unwrap();
     let resend = results
         .iter()
-        .find(|r| r["service"] == "resend")
+        .find(|r| r["template"] == "resend")
         .expect("resend missing");
-    let instances = resend["auth"]["instances"].as_array().unwrap();
-    assert_eq!(instances[0]["secret_name"], "resend_work");
+    assert_eq!(resend["service"], "resend-work");
+    assert_eq!(resend["secret_name"], "resend_work");
     assert!(
-        instances[0].get("account_email").is_none(),
-        "api-key instance leaked account_email: {}",
-        instances[0]
+        resend.get("account_email").is_none(),
+        "api-key row leaked account_email: {resend}"
     );
     // Defense-in-depth: nothing in the response body should look like an
     // encrypted-blob field, an envelope, or a version pointer.
@@ -988,11 +1016,11 @@ async fn api_key_instance_exposes_secret_name() {
 }
 
 #[tokio::test]
-async fn multiple_instances_of_same_service_disambiguate_by_account_email() {
+async fn multiple_instances_of_same_template_fan_out_with_account_email() {
     // Two Google Calendar accounts (a@ + b@) should each surface as a
-    // distinct entry in `auth.instances`, with their respective OAuth
-    // account emails. Action data is NOT duplicated — there's still one
-    // gmail row, with two instances under it.
+    // distinct row carrying its own `account_email`, since the fan-out
+    // rewrite emits one row per (template, action, instance). Browse mode
+    // skips actions, so we expect exactly two service-level gmail rows.
     let (base, client, fixtures, pool) = bootstrap_full().await;
     let conn_a = seed_oauth_connection(
         &pool,
@@ -1039,31 +1067,40 @@ async fn multiple_instances_of_same_service_disambiguate_by_account_email() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let gmail_rows: Vec<&Value> = results.iter().filter(|r| r["service"] == "gmail").collect();
+    let gmail_rows: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == "gmail")
+        .collect();
     assert_eq!(
         gmail_rows.len(),
-        1,
-        "actions must stay DRY across instances; got {} gmail rows",
+        2,
+        "expected two fanned-out gmail rows (browse mode), got {}",
         gmail_rows.len()
     );
-    let instances = gmail_rows[0]["auth"]["instances"].as_array().unwrap();
-    assert_eq!(
-        instances.len(),
-        2,
-        "expected two gmail instances: {instances:?}"
-    );
-    let mut emails: Vec<String> = instances
+    let mut pairs: Vec<(String, String)> = gmail_rows
         .iter()
-        .map(|i| i["account_email"].as_str().unwrap().to_string())
+        .map(|r| {
+            (
+                r["service"].as_str().unwrap().to_string(),
+                r["account_email"].as_str().unwrap().to_string(),
+            )
+        })
         .collect();
-    emails.sort();
-    assert_eq!(emails, vec!["a@gmail.com", "b@gmail.com"]);
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![
+            ("gmail-a".to_string(), "a@gmail.com".to_string()),
+            ("gmail-b".to_string(), "b@gmail.com".to_string()),
+        ]
+    );
 }
 
 #[tokio::test]
-async fn multiple_instances_of_same_service_disambiguate_by_secret_name() {
+async fn multiple_instances_of_same_template_fan_out_with_secret_name() {
     // Two Resend instances bound to different secret names should each
-    // surface with their distinct `secret_name`.
+    // surface as a distinct row whose top-level `secret_name` is hoisted
+    // from the per-instance binding. Browse mode → one row per instance.
     let (base, client, _, admin_key, _) = bootstrap().await;
     create_api_key_service(&base, &client, &admin_key, "resend", "resend-a", "secret_a").await;
     create_api_key_service(&base, &client, &admin_key, "resend", "resend-b", "secret_b").await;
@@ -1080,35 +1117,39 @@ async fn multiple_instances_of_same_service_disambiguate_by_secret_name() {
     let results = body["results"].as_array().unwrap();
     let resend_rows: Vec<&Value> = results
         .iter()
-        .filter(|r| r["service"] == "resend")
+        .filter(|r| r["template"] == "resend")
         .collect();
     assert_eq!(
         resend_rows.len(),
-        1,
-        "actions must stay DRY across instances; got {} resend rows",
+        2,
+        "expected two fanned-out resend rows (browse mode), got {}",
         resend_rows.len()
     );
-    let instances = resend_rows[0]["auth"]["instances"].as_array().unwrap();
-    assert_eq!(
-        instances.len(),
-        2,
-        "expected two resend instances: {instances:?}"
-    );
-    let mut secrets: Vec<String> = instances
+    let mut pairs: Vec<(String, String)> = resend_rows
         .iter()
-        .map(|i| i["secret_name"].as_str().unwrap().to_string())
+        .map(|r| {
+            (
+                r["service"].as_str().unwrap().to_string(),
+                r["secret_name"].as_str().unwrap().to_string(),
+            )
+        })
         .collect();
-    secrets.sort();
-    assert_eq!(secrets, vec!["secret_a", "secret_b"]);
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![
+            ("resend-a".to_string(), "secret_a".to_string()),
+            ("resend-b".to_string(), "secret_b".to_string()),
+        ]
+    );
 }
 
 #[tokio::test]
-async fn instances_with_same_account_email_disambiguate_by_name() {
-    // Two service instances pinned to the SAME OAuth connection (so
-    // they share `account_email`) must still surface as two distinct
-    // entries with their unique `name`s. Name is the canonical
-    // identifier — `account_email` and `secret_name` are convenience
-    // hints, not primary keys.
+async fn instances_with_same_account_email_disambiguate_by_service_name() {
+    // Two service instances pinned to the SAME OAuth connection (sharing
+    // `account_email`) still surface as two distinct rows differing only
+    // by `service` (the instance name). `service` is always the canonical
+    // disambiguator — the email/secret labels only assist.
     let (base, client, fixtures, pool) = bootstrap_full().await;
     let conn = seed_oauth_connection(
         &pool,
@@ -1147,35 +1188,34 @@ async fn instances_with_same_account_email_disambiguate_by_name() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let gmail = results
+    let gmail_rows: Vec<&Value> = results
         .iter()
-        .find(|r| r["service"] == "gmail")
-        .expect("gmail missing");
-    let instances = gmail["auth"]["instances"].as_array().unwrap();
+        .filter(|r| r["template"] == "gmail")
+        .collect();
     assert_eq!(
-        instances.len(),
+        gmail_rows.len(),
         2,
-        "expected two distinct gmail instances despite shared connection: {instances:?}"
+        "expected two fanned-out gmail rows despite shared connection: {gmail_rows:?}"
     );
-    let mut names: Vec<String> = instances
+    let mut names: Vec<String> = gmail_rows
         .iter()
-        .map(|i| i["name"].as_str().unwrap().to_string())
+        .map(|r| r["service"].as_str().unwrap().to_string())
         .collect();
     names.sort();
     assert_eq!(names, vec!["gmail-archive", "gmail-priority"]);
-    for inst in instances {
+    for r in gmail_rows {
         assert_eq!(
-            inst["account_email"], "alice@gmail.com",
-            "shared connection should yield same account_email: {inst}"
+            r["account_email"], "alice@gmail.com",
+            "shared connection should yield same account_email: {r}"
         );
     }
 }
 
 #[tokio::test]
-async fn instances_with_same_secret_name_disambiguate_by_name() {
-    // Two API-key instances bound to the SAME secret label must still
-    // surface as two distinct `instances[]` entries identifiable by
-    // their unique `name`.
+async fn instances_with_same_secret_name_disambiguate_by_service_name() {
+    // Two API-key instances bound to the SAME secret label still surface
+    // as two distinct rows differing only by `service` (the instance
+    // name) — the only canonical disambiguator.
     let (base, client, _, admin_key, _) = bootstrap().await;
     create_api_key_service(
         &base,
@@ -1206,27 +1246,122 @@ async fn instances_with_same_secret_name_disambiguate_by_name() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let resend = results
+    let resend_rows: Vec<&Value> = results
         .iter()
-        .find(|r| r["service"] == "resend")
-        .expect("resend missing");
-    let instances = resend["auth"]["instances"].as_array().unwrap();
+        .filter(|r| r["template"] == "resend")
+        .collect();
     assert_eq!(
-        instances.len(),
+        resend_rows.len(),
         2,
-        "expected two distinct resend instances despite shared secret_name: {instances:?}"
+        "expected two fanned-out resend rows despite shared secret_name: {resend_rows:?}"
     );
-    let mut names: Vec<String> = instances
+    let mut names: Vec<String> = resend_rows
         .iter()
-        .map(|i| i["name"].as_str().unwrap().to_string())
+        .map(|r| r["service"].as_str().unwrap().to_string())
         .collect();
     names.sort();
     assert_eq!(names, vec!["resend-prod", "resend-staging"]);
-    for inst in instances {
-        assert_eq!(inst["secret_name"], "shared_resend_key");
+    for r in resend_rows {
+        assert_eq!(r["secret_name"], "shared_resend_key");
     }
 }
 
-fn rank_of_service(results: &[Value], service: &str) -> Option<usize> {
-    results.iter().position(|r| r["service"] == service)
+fn rank_of_service(results: &[Value], template: &str) -> Option<usize> {
+    results.iter().position(|r| r["template"] == template)
+}
+
+#[tokio::test]
+async fn setup_required_rows_appear_under_include_catalog() {
+    // Catalog rows for un-connected templates are how an agent learns
+    // about services that exist but need provisioning. They must carry
+    // `setup_required: true`, omit `service`, and include the template
+    // key so the agent can pass it to overslash_auth.create_service_from_template.
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q=&include_catalog=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    let stripe = results
+        .iter()
+        .find(|r| r["template"] == "stripe")
+        .expect("stripe missing under include_catalog=true");
+    assert_eq!(
+        stripe["setup_required"], true,
+        "stripe row missing setup_required: {stripe}"
+    );
+    assert!(
+        stripe.get("service").is_none(),
+        "catalog row must omit `service`: {stripe}"
+    );
+    assert!(
+        stripe.get("account_email").is_none(),
+        "catalog row must omit `account_email`: {stripe}"
+    );
+    assert!(
+        stripe.get("secret_name").is_none(),
+        "catalog row must omit `secret_name`: {stripe}"
+    );
+    assert_eq!(
+        stripe["auth"]["connected"], false,
+        "catalog row must report connected=false: {stripe}"
+    );
+}
+
+#[tokio::test]
+async fn call_with_template_name_returns_structured_error() {
+    // The whole point of the MCP-clarity rewrite: when an agent passes a
+    // template name (e.g. "whatsapp") to overslash_call/read because they
+    // misread search output, the API responds with a structured
+    // ServiceResolution error that names the instances they could have
+    // called instead — no more dead-end "MCP service has no URL configured".
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    // Whatsapp is an MCP-runtime global with no template-level URL/secret,
+    // so calling by template key always fails URL resolution. Today there
+    // are zero whatsapp instances configured, so `available_instances`
+    // should be empty and the message should suggest `create_service_from_template`.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "service": "whatsapp",
+            "action": "pairing_start",
+            "params": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected 400 for template-name call, got {status}: {body}"
+    );
+    assert_eq!(
+        body["matched_template"], "whatsapp",
+        "expected matched_template echoing the template key: {body}"
+    );
+    assert!(
+        body["available_instances"].is_array(),
+        "available_instances missing or wrong type: {body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .map(|m| m.contains("template, not a configured instance"))
+            .unwrap_or(false),
+        "error message should call out template-vs-instance: {body}"
+    );
+    assert!(
+        body["hint"].as_str().is_some(),
+        "hint missing from structured error: {body}"
+    );
 }

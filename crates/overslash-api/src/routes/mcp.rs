@@ -350,18 +350,18 @@ fn tools_list_response(id: Value) -> Response {
                 {
                     "name": "overslash_search",
                     "title": "Search Overslash services",
-                    "description": "Discover Overslash services and actions available to the caller. Returns only services the caller has already connected; pass `include_catalog: true` to also surface the un-connected global/org catalog. Empty query lists connected services without actions.",
+                    "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. An empty `query` lists every callable instance without actions (browse mode).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Free-text query. Pass an empty string to list every connected service (no actions)."
+                                "description": "Free-text query. Pass an empty string to list every callable instance (no actions)."
                             },
                             "include_catalog": {
                                 "type": "boolean",
                                 "default": false,
-                                "description": "When true, also search the un-connected global/org catalog. Default returns only services with at least one active instance bound to the caller."
+                                "description": "When true, also surface un-connected templates as `setup_required: true` rows. Default returns only configured instances the caller can call right now."
                             }
                         },
                         "additionalProperties": false
@@ -374,12 +374,15 @@ fn tools_list_response(id: Value) -> Response {
                 },
                 {
                     "name": "overslash_read",
-                    "title": "Read via Overslash (no writes)",
-                    "description": "Call a read-class Overslash action. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
+                    "title": "Read via Overslash",
+                    "description": "Call a read-class Overslash action on a configured service instance. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "service": { "type": "string" },
+                            "service": {
+                                "type": "string",
+                                "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                            },
                             "action":  { "type": "string" },
                             "params":  {}
                         },
@@ -395,11 +398,14 @@ fn tools_list_response(id: Value) -> Response {
                 {
                     "name": "overslash_call",
                     "title": "Call an Overslash action",
-                    "description": "Call any Overslash action (read, write, or delete) or resume a pending approval. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
+                    "description": "Call any Overslash action (read, write, or delete) on a configured service instance, or resume a pending approval. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "service":     { "type": "string" },
+                            "service": {
+                                "type": "string",
+                                "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                            },
                             "action":      { "type": "string" },
                             "params":      {},
                             "approval_id": {
