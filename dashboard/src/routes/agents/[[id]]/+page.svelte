@@ -573,7 +573,7 @@
 		<div class="error-bar">{loadError}</div>
 	{/if}
 
-	<div class="panels">
+	<div class="panels" data-mobile-pane={selected ? 'detail' : 'tree'}>
 		<!-- Left: Agent tree -->
 		<aside class="tree-panel">
 			<div class="tree-head">Agents</div>
@@ -602,6 +602,18 @@
 		<!-- Right: Detail panel -->
 		<main class="detail-panel">
 			{#if selected}
+				<!-- Mobile: back-to-list affordance -->
+				<button
+					class="back-to-list"
+					type="button"
+					onclick={() => {
+						selectedId = null;
+						detail = null;
+						writeSelectionToUrl(null);
+					}}
+				>
+					‹ All agents
+				</button>
 				<!-- Header -->
 				<div class="detail-header">
 					<span class="status-dot active"></span>
@@ -1023,7 +1035,16 @@
 		flex-direction: column;
 		gap: 4px;
 	}
-	@media (max-width: 768px) {
+	@media (max-width: 1024px) {
+		.tree-panel {
+			width: 280px;
+			min-width: 240px;
+		}
+		.detail-panel {
+			padding: 20px;
+		}
+	}
+	@media (max-width: 767px) {
 		.panels {
 			flex-direction: column;
 		}
@@ -1032,7 +1053,41 @@
 			min-width: 0;
 			border-right: none;
 			border-bottom: 1px solid var(--color-border);
-			max-height: 40vh;
+			max-height: none;
+		}
+		.detail-panel {
+			padding: 16px;
+		}
+		/* Master/detail: only show one pane at a time, driven by whether
+		   an agent is selected (mirrored to data-mobile-pane on the wrapper). */
+		.panels[data-mobile-pane='tree'] .detail-panel {
+			display: none;
+		}
+		.panels[data-mobile-pane='detail'] .tree-panel {
+			display: none;
+		}
+	}
+
+	/* Back-to-list button (mobile only) */
+	.back-to-list {
+		display: none;
+		align-items: center;
+		gap: 4px;
+		background: transparent;
+		border: 0;
+		padding: 4px 6px 8px;
+		margin: 0 0 4px -6px;
+		font: var(--text-label);
+		color: var(--color-text-secondary);
+		cursor: pointer;
+		border-radius: 6px;
+	}
+	.back-to-list:hover {
+		color: var(--color-text);
+	}
+	@media (max-width: 767px) {
+		.back-to-list {
+			display: inline-flex;
 		}
 	}
 
