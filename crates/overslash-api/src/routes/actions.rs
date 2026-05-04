@@ -1078,7 +1078,7 @@ async fn resolve_request(
         if svc.runtime == Runtime::Platform {
             // Use the permission field as the action_key for PermissionKey derivation
             // so `list_templates`/`get_template`/`create_template` all resolve to
-            // the `overslash:manage_templates:*` permission anchor.
+            // the `overslash:manage_templates_own:*` permission anchor.
             let perm_action_key = action
                 .permission
                 .as_deref()

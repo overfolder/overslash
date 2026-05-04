@@ -931,6 +931,19 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
     .await
 }
 
+/// Platform actions bridged from MCP into the regular `/v1/actions/call`
+/// pipeline. Routing them through the action gateway means the permission
+/// walk + approval bubbling + audit row are inherited automatically — no
+/// MCP-specific code path. The kernel handlers live in
+/// `services::platform_templates`.
+const BRIDGED_PLATFORM_ACTIONS: &[&str] = &[
+    "list_templates",
+    "get_template",
+    "create_template",
+    "import_template",
+    "delete_template",
+];
+
 async fn dispatch_overslash_platform(
     state: &AppState,
     bearer: &str,
@@ -976,6 +989,27 @@ async fn dispatch_overslash_platform(
                 .ok_or_else(|| "cancel_pending requires params.approval_id".to_string())?;
             let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
             forward(state, bearer, Method::POST, &path, None).await
+        }
+        other if BRIDGED_PLATFORM_ACTIONS.contains(&other) => {
+            // Forward to /v1/actions/call so the action gateway resolves the
+            // call as a Platform-runtime service, runs permission_chain::walk
+            // (returning 202 PendingApproval on a gap), and dispatches the
+            // kernel registered in `state.platform_registry`. We don't need
+            // a separate MCP code path for any of these.
+            let mut body = serde_json::Map::new();
+            body.insert("service".into(), Value::String("overslash".into()));
+            body.insert("action".into(), Value::String(other.into()));
+            if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
+                body.insert("params".into(), p.clone());
+            }
+            forward(
+                state,
+                bearer,
+                Method::POST,
+                "/v1/actions/call",
+                Some(Value::Object(body)),
+            )
+            .await
         }
         other => Err(format!(
             "overslash platform action '{other}' is not callable via MCP"

@@ -204,7 +204,7 @@ pub struct ServiceAction {
     /// Platform-runtime only. When set, overrides the action key used for
     /// permission key derivation, letting multiple actions share a single
     /// permission anchor. E.g. `list_templates` and `get_template` both
-    /// set `permission: manage_templates` so one `overslash:manage_templates:*`
+    /// set `permission: manage_templates_own` so one `overslash:manage_templates_own:*`
     /// grant covers both without granting the broad action-key wildcard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,

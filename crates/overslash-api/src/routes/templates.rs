@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use overslash_core::openapi::{
     self,
-    import::{ImportOptions, ImportWarning, OperationInfo, prepare_from_value, prepare_import},
+    import::{ImportOptions, ImportWarning, OperationInfo, prepare_from_value},
 };
 use overslash_core::permissions::AccessLevel;
 use overslash_core::template_validation::{
@@ -19,6 +19,10 @@ use overslash_core::template_validation::{
 };
 use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
 
+use crate::services::platform_templates::{
+    self, MAX_TEMPLATE_YAML_BYTES, delete_active_template_inner, kernel_import_template,
+    load_draft_for_write_inner,
+};
 use crate::services::response_filter;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateServiceTemplate};
@@ -65,12 +69,6 @@ fn parse_normalize_compile_and_check_disclose(
         })
     }
 }
-
-/// Max body size accepted by `POST /v1/templates/validate`. 512 KiB is roughly
-/// 4x the largest shipped template and several orders of magnitude above any
-/// plausible hand-authored one — enough headroom for auto-generated specs
-/// without leaving a DoS-friendly validation endpoint wide open.
-const MAX_TEMPLATE_YAML_BYTES: usize = 512 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -913,7 +911,7 @@ async fn delete_template(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    // Multi-tenancy guard + ownership check. Status filter pushes draft rows
+    // Multi-tenancy guard + status filter. Status filter pushes draft rows
     // to the dedicated endpoint so a caller who knows a draft's UUID can't
     // destroy it through here (and bypass the draft-audit action label).
     let existing = service_template::get_by_id(&state.db, id)
@@ -921,33 +919,12 @@ async fn delete_template(
         .filter(|r| r.org_id == acl.org_id && r.status == "active")
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
 
-    if existing.owner_identity_id.is_some() {
-        // User-level: caller must own it or be admin
-        if existing.owner_identity_id != acl.identity_id && acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "you can only delete your own templates".into(),
-            ));
-        }
-    } else {
-        // Org-level: admin required
-        if acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "admin access required for org-level templates".into(),
-            ));
-        }
-    }
-
-    let tier = if existing.owner_identity_id.is_some() {
-        "user"
-    } else {
-        "org"
-    };
-    let key = existing.key.clone();
-
-    let deleted = service_template::delete(&state.db, id).await?;
-    if !deleted {
-        return Err(AppError::NotFound("template not found".into()));
-    }
+    let owner_identity_id = existing.owner_identity_id;
+    // Ownership check + delete live in `platform_templates` so the MCP
+    // `delete_template` kernel and this HTTP handler stay in sync.
+    let (key, tier, _) =
+        delete_active_template_inner(&state.db, existing, acl.identity_id, acl.access_level)
+            .await?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {
@@ -969,7 +946,7 @@ async fn delete_template(
         &state.db,
         tier,
         Some(acl.org_id),
-        existing.owner_identity_id,
+        owner_identity_id,
         &key,
     )
     .await;
@@ -1209,20 +1186,24 @@ struct DraftTemplateDetail {
 /// POST /v1/templates/import
 ///
 /// Fetch or accept an OpenAPI 3.x spec and persist it as a draft template.
-/// Returns a `DraftTemplateDetail` with the canonicalized YAML, a compile
-/// preview, validation report, import warnings, and the full list of
-/// operations from the source (with `included` reflecting the filter).
+/// Returns a [`platform_templates::DraftDetail`] with the canonicalized YAML,
+/// a compile preview, validation report, import warnings, and the full list
+/// of operations from the source (with `included` reflecting the filter).
 ///
 /// The draft lives in `service_templates` with `status='draft'` and is
 /// invisible to runtime lookups. Promote via
 /// `POST /v1/templates/drafts/{id}/promote`.
+///
+/// The actual import pipeline lives in
+/// [`platform_templates::kernel_import_template`] — this handler only
+/// resolves the source (URL fetch or inline body) and writes the audit row.
 async fn import_template(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Json(req): Json<ImportTemplateRequest>,
-) -> Result<Json<DraftTemplateDetail>> {
-    let (bytes, content_type_hint, mut import_warnings) = match req.source {
+) -> Result<Json<platform_templates::DraftDetail>> {
+    let (bytes, content_type_hint, fetch_warnings) = match req.source {
         ImportSource::Url { url } => fetch_openapi_url(&url).await?,
         ImportSource::Body { content_type, body } => {
             if body.len() > MAX_TEMPLATE_YAML_BYTES {
@@ -1235,67 +1216,34 @@ async fn import_template(
         }
     };
 
+    let include_operations = req
+        .include_operations
+        .clone()
+        .map(|v| v.into_iter().collect::<HashSet<_>>());
+    let operations_selected = include_operations.as_ref().map(|s| s.len());
     let opts = ImportOptions {
-        include_operations: req.include_operations.map(|v| v.into_iter().collect()),
+        include_operations,
         key: req.key,
         display_name: req.display_name,
     };
 
-    let prepared = prepare_import(&bytes, content_type_hint.as_deref(), &opts).map_err(|i| {
-        let report = ValidationReport {
-            valid: false,
-            errors: vec![i],
-            warnings: Vec::new(),
-        };
-        AppError::TemplateValidationFailed { report }
-    })?;
-
-    import_warnings.extend(prepared.warnings);
-    let operations = prepared.operations;
-
-    // Lenient validation: we persist drafts even when they don't yet compile
-    // cleanly, so the editor has something to show while the user fixes it.
-    let (canonical_doc, compiled, validation) = prepare_draft_from_value(prepared.doc);
-    let canonical_yaml = openapi::to_yaml_string(&canonical_doc).unwrap_or_default();
-    let scalars = scalars_from_compiled(compiled.as_ref());
-
-    let row = if let Some(draft_id) = req.draft_id {
-        let existing = load_draft_for_write(&state, &acl, draft_id).await?;
-        let update = UpdateServiceTemplate {
-            display_name: Some(&scalars.display_name),
-            description: Some(&scalars.description),
-            category: Some(&scalars.category),
-            hosts: Some(&scalars.hosts),
-            openapi: Some(canonical_doc.clone()),
-            key: Some(&scalars.key),
-        };
-        service_template::update(&state.db, existing.id, &update)
-            .await?
-            .ok_or_else(|| AppError::NotFound("draft not found".into()))?
-    } else {
-        // Tier rules (admin-only for org, allow_user_templates for user) only
-        // apply when creating a new row. When updating an existing draft,
-        // authorization is handled above via `load_draft_for_write` and the
-        // request's `user_level` field is not meaningful — the draft's tier
-        // is already fixed.
-        let owner_identity_id = resolve_draft_owner(&state, &acl, req.user_level).await?;
-        let input = CreateServiceTemplate {
-            org_id: acl.org_id,
-            owner_identity_id,
-            key: &scalars.key,
-            display_name: &scalars.display_name,
-            description: &scalars.description,
-            category: &scalars.category,
-            hosts: &scalars.hosts,
-            openapi: canonical_doc.clone(),
-            status: "draft",
-        };
-        service_template::create(&state.db, &input)
-            .await
-            .map_err(AppError::Database)?
+    let ctx = crate::services::platform_caller::PlatformCallContext {
+        org_id: acl.org_id,
+        identity_id: acl.identity_id.unwrap_or_else(Uuid::nil),
+        access_level: acl.access_level,
+        db: state.db.clone(),
+        registry: std::sync::Arc::clone(&state.registry),
     };
-
-    let tier = tier_of(&row);
+    let detail = kernel_import_template(
+        ctx,
+        bytes,
+        content_type_hint,
+        opts,
+        req.user_level,
+        req.draft_id,
+        fetch_warnings,
+    )
+    .await?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {
@@ -1303,27 +1251,19 @@ async fn import_template(
             identity_id: acl.identity_id,
             action: "template.draft.imported",
             resource_type: Some("template"),
-            resource_id: Some(row.id),
+            resource_id: Some(detail.id),
             detail: serde_json::json!({
-                "key": &row.key,
-                "tier": tier,
-                "owner_identity_id": row.owner_identity_id,
-                "operations_selected": opts.include_operations.as_ref().map(|s| s.len()),
+                "key": &detail.key,
+                "tier": &detail.tier,
+                "owner_identity_id": detail.owner_identity_id,
+                "operations_selected": operations_selected,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    Ok(Json(DraftTemplateDetail {
-        id: row.id,
-        tier: tier.into(),
-        openapi: canonical_yaml,
-        preview: compiled.as_ref().map(preview_from_compiled),
-        validation,
-        import_warnings,
-        operations,
-    }))
+    Ok(Json(detail))
 }
 
 /// GET /v1/templates/drafts
@@ -1585,59 +1525,14 @@ async fn discard_draft(
 
 // -- Import helpers --
 
-/// Decide which tier a new draft should live in and enforce the same rules
-/// `create_template` uses. Returns the `owner_identity_id` to write.
-async fn resolve_draft_owner(
-    state: &AppState,
-    acl: &crate::extractors::OrgAcl,
-    user_level: bool,
-) -> Result<Option<Uuid>> {
-    if user_level {
-        let identity_id = acl.identity_id.ok_or_else(|| {
-            AppError::BadRequest("user-level drafts require an identity-bound API key".into())
-        })?;
-        let allowed = org_repo::get_allow_user_templates(&state.db, acl.org_id)
-            .await?
-            .unwrap_or(false);
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "user templates are not enabled for this org".into(),
-            ));
-        }
-        Ok(Some(identity_id))
-    } else {
-        if acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "admin access required to create org-level templates".into(),
-            ));
-        }
-        Ok(None)
-    }
-}
-
 /// Load a draft for a mutating operation, enforcing tenancy + ownership.
+/// Thin wrapper around [`load_draft_for_write_inner`].
 async fn load_draft_for_write(
     state: &AppState,
     acl: &crate::extractors::OrgAcl,
     id: Uuid,
 ) -> Result<service_template::ServiceTemplateRow> {
-    let existing = service_template::get_by_id(&state.db, id)
-        .await?
-        .filter(|r| r.org_id == acl.org_id && r.status == "draft")
-        .ok_or_else(|| AppError::NotFound("draft not found".into()))?;
-
-    if existing.owner_identity_id.is_some() {
-        if existing.owner_identity_id != acl.identity_id && acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "you can only modify your own drafts".into(),
-            ));
-        }
-    } else if acl.access_level < AccessLevel::Admin {
-        return Err(AppError::Forbidden(
-            "admin access required to modify org-level drafts".into(),
-        ));
-    }
-    Ok(existing)
+    load_draft_for_write_inner(&state.db, acl.org_id, acl.identity_id, acl.access_level, id).await
 }
 
 fn row_to_draft_detail(row: service_template::ServiceTemplateRow) -> DraftTemplateDetail {

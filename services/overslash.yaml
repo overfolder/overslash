@@ -18,8 +18,11 @@ platform_actions:
   delete_secrets:
     description: "Delete secrets permanently"
     risk: delete
-  manage_templates:
-    description: "Create and manage service templates"
+  manage_templates_own:
+    description: "Author and manage service templates under your own scope"
+    risk: write
+  manage_templates_publish:
+    description: "Publish service templates org-wide or globally (dashboard only)"
     risk: delete
   manage_webhooks:
     description: "Create, update, and delete webhooks"
@@ -80,19 +83,38 @@ platform_actions:
   list_templates:
     description: "List all service templates visible to the caller"
     risk: read
-    permission: manage_templates
+    permission: manage_templates_own
 
   get_template:
     description: "Get a service template by key"
     risk: read
-    permission: manage_templates
+    permission: manage_templates_own
     params:
       key: { type: string, required: true }
 
   create_template:
     description: "Create a new service template (atomic — succeeds or returns validation errors)"
     risk: write
-    permission: manage_templates
+    permission: manage_templates_own
     params:
       openapi: { type: string, required: true }
       user_level: { type: boolean, required: false }
+
+  import_template:
+    description: "Import an OpenAPI spec as a draft template (lenient — surfaces validation issues without rejecting)"
+    risk: write
+    permission: manage_templates_own
+    params:
+      openapi: { type: string, required: true }
+      user_level: { type: boolean, required: false }
+      include_operations: { type: array, required: false }
+      key: { type: string, required: false }
+      display_name: { type: string, required: false }
+      draft_id: { type: string, required: false }
+
+  delete_template:
+    description: "Delete an active service template by key (user-tier or org-tier)"
+    risk: delete
+    permission: manage_templates_own
+    params:
+      key: { type: string, required: true }
