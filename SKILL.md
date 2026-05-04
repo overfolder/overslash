@@ -65,6 +65,71 @@ You have four MCP tools:
 
 See `SPEC.md` for the full API reference.
 
+## Bootstrapping a service from a template
+
+When `overslash_search` returns a useful **template** but no live `service`,
+you can instantiate it yourself — no dashboard click needed (provided your
+identity holds `overslash:manage_services_own:*`).
+
+**Step 1 — discover.**
+
+```
+overslash_search { "query": "calendar" }
+```
+
+If `services: []` and `templates: [{ key: "google_calendar", … }]`, continue.
+
+**Step 2 — create the service instance.**
+
+```
+overslash_call {
+  "service": "overslash",
+  "action": "create_service",
+  "params": { "template_key": "google_calendar", "name": "google-calendar" }
+}
+```
+
+The platform kernel auto-grants the new instance to your owner-user's
+Myself group (admin + `auto_approve_reads`), so siblings of yours under the
+same user pick it up immediately. The response carries
+`credentials_status`:
+
+| Value | Meaning | Next step |
+|---|---|---|
+| `needs_authentication` | OAuth template, no connection bound | go to step 3 |
+| `ok` | secret/connection inferred from existing user state | skip to step 5 |
+
+**Step 3 — start OAuth.**
+
+```
+overslash_call {
+  "service": "overslash",
+  "action": "create_connection",
+  "params": { "service_id": "<id from step 2>", "provider": "google" }
+}
+```
+
+Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim:
+*"Click here to authorize Google Calendar."* Overslash binds the resulting
+token to the service on its OAuth callback.
+
+**Step 4 — confirm ready.**
+
+```
+overslash_read {
+  "service": "overslash",
+  "action": "get_service",
+  "params": { "name": "google-calendar" }
+}
+```
+
+Wait until `credentials_status == "ok"` (poll a few seconds — the OAuth
+callback flips it). The user has clicked through.
+
+**Step 5 — call the service.** Use `overslash_read` for `risk: read` actions
+(no confirmation prompt) and `overslash_call` for everything else; both go
+through the standard approval flow described below.
+
 ## Handling pending approvals
 
 When `overslash_call` hits a permission gap it does not execute — it returns:

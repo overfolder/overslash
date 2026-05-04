@@ -329,6 +329,14 @@ async fn add_grant(
     // Authority gate: org admins can grant on any group; the owner of a Myself
     // group can manage their own. Everything else (regular org-level groups for
     // a non-admin) requires admin.
+    //
+    // Permission split (see docs/design/agent-self-management.md §1): granting a
+    // service to a non-Myself group is the *social* half of service management
+    // and lives under `manage_services_share`. Adding a grant on the caller's
+    // own Myself group is the local half — `manage_services_own` (e.g. via the
+    // auto-grant in `kernel_create_service`) is sufficient. An agent holding
+    // only `overslash:manage_services_own:*` lands here without admin and is
+    // refused — exactly the boundary the split exists to draw.
     let owner_managing_self =
         group.system_kind.as_deref() == Some("self") && group.owner_identity_id == caller_identity;
     if !owner_managing_self && caller_level < AccessLevel::Admin {
