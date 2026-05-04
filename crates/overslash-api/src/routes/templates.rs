@@ -1229,7 +1229,10 @@ async fn import_template(
 
     let ctx = crate::services::platform_caller::PlatformCallContext {
         org_id: acl.org_id,
-        identity_id: acl.identity_id.unwrap_or_else(Uuid::nil),
+        // Pass the Option through so the kernel can enforce
+        // "user-level requires identity-bound key" with a clean 400 instead
+        // of a 500 from a nil-uuid FK violation.
+        identity_id: acl.identity_id,
         access_level: acl.access_level,
         db: state.db.clone(),
         registry: std::sync::Arc::clone(&state.registry),

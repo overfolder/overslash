@@ -611,7 +611,11 @@ async fn call_action_impl(
         };
         let ctx = crate::services::platform_caller::PlatformCallContext {
             org_id: auth.org_id,
-            identity_id,
+            // The action gateway already requires an identity-bound key
+            // (see `BadRequest("api key must be bound to an identity")`
+            // earlier in this function), so `Some(identity_id)` here is
+            // always populated.
+            identity_id: Some(identity_id),
             access_level: platform_access_level,
             db: state.db.clone(),
             registry: std::sync::Arc::clone(&state.registry),

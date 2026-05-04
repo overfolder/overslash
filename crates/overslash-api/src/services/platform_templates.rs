@@ -48,7 +48,7 @@ pub async fn kernel_list_templates(ctx: PlatformCallContext) -> Result<Value, Ap
     let user_templates_allowed = org_repo::get_allow_user_templates(&ctx.db, ctx.org_id)
         .await?
         .unwrap_or(false);
-    let rows = service_template::list_available(&ctx.db, ctx.org_id, Some(ctx.identity_id)).await?;
+    let rows = service_template::list_available(&ctx.db, ctx.org_id, ctx.identity_id).await?;
     for t in rows {
         let is_user_tier = t.owner_identity_id.is_some();
         if is_user_tier && !user_templates_allowed {
@@ -76,9 +76,12 @@ pub async fn kernel_get_template(ctx: PlatformCallContext, key: String) -> Resul
     let user_templates_allowed = org_repo::get_allow_user_templates(&ctx.db, ctx.org_id)
         .await?
         .unwrap_or(false);
-    if user_templates_allowed {
+    // Org-level callers (no identity binding) can only see org/global tier;
+    // skip the user-tier lookup when there is no caller identity to look up
+    // *for*.
+    if user_templates_allowed && let Some(identity_id) = ctx.identity_id {
         if let Some(t) =
-            service_template::get_by_key(&ctx.db, ctx.org_id, Some(ctx.identity_id), &key).await?
+            service_template::get_by_key(&ctx.db, ctx.org_id, Some(identity_id), &key).await?
         {
             return template_row_to_value(t, "user");
         }
@@ -114,6 +117,9 @@ pub async fn kernel_create_template(
     user_level: bool,
 ) -> Result<Value, AppError> {
     let owner_identity_id = if user_level {
+        let identity_id = ctx.identity_id.ok_or_else(|| {
+            AppError::BadRequest("user-level templates require an identity-bound API key".into())
+        })?;
         let allowed = org_repo::get_allow_user_templates(&ctx.db, ctx.org_id)
             .await?
             .unwrap_or(false);
@@ -122,7 +128,7 @@ pub async fn kernel_create_template(
                 "user templates are not enabled for this org".into(),
             ));
         }
-        Some(ctx.identity_id)
+        Some(identity_id)
     } else {
         if ctx.access_level < AccessLevel::Admin {
             return Err(AppError::Forbidden(
@@ -228,14 +234,9 @@ pub async fn kernel_import_template(
     let scalars = scalars_from_compiled(compiled.as_ref());
 
     let row = if let Some(id) = draft_id {
-        let existing = load_draft_for_write_inner(
-            &ctx.db,
-            ctx.org_id,
-            Some(ctx.identity_id),
-            ctx.access_level,
-            id,
-        )
-        .await?;
+        let existing =
+            load_draft_for_write_inner(&ctx.db, ctx.org_id, ctx.identity_id, ctx.access_level, id)
+                .await?;
         let update = UpdateServiceTemplate {
             display_name: Some(&scalars.display_name),
             description: Some(&scalars.description),
@@ -251,7 +252,7 @@ pub async fn kernel_import_template(
         let owner_identity_id = resolve_draft_owner_inner(
             &ctx.db,
             ctx.org_id,
-            Some(ctx.identity_id),
+            ctx.identity_id,
             ctx.access_level,
             user_level,
         )
@@ -297,10 +298,13 @@ pub async fn kernel_delete_template(
     ctx: PlatformCallContext,
     key: String,
 ) -> Result<Value, AppError> {
-    // User-tier first, then org-tier. Global templates are not deletable
-    // through this kernel — they're shipped on disk, not stored in the DB.
-    let row = if let Some(t) =
-        service_template::get_by_key(&ctx.db, ctx.org_id, Some(ctx.identity_id), &key).await?
+    // User-tier first (only when the caller has an identity binding —
+    // org-level keys go straight to the org-tier lookup), then org-tier.
+    // Global templates are not deletable through this kernel — they're
+    // shipped on disk, not stored in the DB.
+    let row = if let Some(identity_id) = ctx.identity_id
+        && let Some(t) =
+            service_template::get_by_key(&ctx.db, ctx.org_id, Some(identity_id), &key).await?
     {
         Some(t)
     } else {
@@ -319,7 +323,7 @@ pub async fn kernel_delete_template(
     };
 
     let (deleted_key, tier, _id) =
-        delete_active_template_inner(&ctx.db, row, Some(ctx.identity_id), ctx.access_level).await?;
+        delete_active_template_inner(&ctx.db, row, ctx.identity_id, ctx.access_level).await?;
 
     Ok(serde_json::json!({"deleted": true, "key": deleted_key, "tier": tier}))
 }

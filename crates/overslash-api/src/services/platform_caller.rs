@@ -14,7 +14,11 @@ use crate::error::AppError;
 
 pub struct PlatformCallContext {
     pub org_id: Uuid,
-    pub identity_id: Uuid,
+    /// `None` when the caller is using an org-level API key (no identity
+    /// binding). Kernels that need an identity (user-tier writes) must
+    /// reject with `BadRequest` rather than fall back to a synthetic id —
+    /// otherwise nil-uuid ends up on FK columns and surfaces as 500.
+    pub identity_id: Option<Uuid>,
     pub access_level: AccessLevel,
     pub db: PgPool,
     pub registry: Arc<ServiceRegistry>,

@@ -848,19 +848,31 @@ async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<V
         .and_then(|v| v.as_str())
         .ok_or_else(|| "action required".to_string())?;
 
-    // The `overslash` meta-service exposes both read (`list_pending`) and
-    // write (`call_pending`, `cancel_pending`) sub-actions through the same
-    // `dispatch_overslash_platform` code path, which doesn't go through
-    // `/v1/actions/call`. Route the read sub-action through the existing
-    // platform dispatcher and reject the write ones explicitly so the user
-    // gets a clear error rather than a 404 from the actions handler.
+    // The `overslash` meta-service exposes both read and write sub-actions
+    // through the same `dispatch_overslash_platform` code path. Route the
+    // read sub-actions through the appropriate path and reject the write
+    // ones explicitly so the user gets a clear error rather than a 404 from
+    // the actions handler:
+    //   - `list_pending` is GET /v1/approvals?... and predates the bridged
+    //     platform-action set, so it goes through the platform dispatcher
+    //     directly.
+    //   - `list_templates` / `get_template` are bridged read-class platform
+    //     actions; fall through to the regular `/v1/actions/call` forwarding
+    //     so `require_risk=read` is enforced at the action gateway.
     if service == "overslash" {
-        return match action {
-            "list_pending" => dispatch_overslash_platform(state, bearer, action, args).await,
-            other => Err(format!(
-                "overslash platform action '{other}' is not read-class; use overslash_call"
-            )),
-        };
+        match action {
+            "list_pending" => {
+                return dispatch_overslash_platform(state, bearer, action, args).await;
+            }
+            "list_templates" | "get_template" => {
+                // fall through to the regular forwarding path
+            }
+            other => {
+                return Err(format!(
+                    "overslash platform action '{other}' is not read-class; use overslash_call"
+                ));
+            }
+        }
     }
 
     let mut body = serde_json::Map::new();
