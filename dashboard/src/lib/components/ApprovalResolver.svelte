@@ -66,12 +66,27 @@
 	// returns immediately and the actual call runs in a spawned task on
 	// the backend (see #239 auto-call). Self-terminates on terminal status,
 	// component teardown, or after a 30s safety cap.
+	//
+	// `pollStartedAt` is anchored outside the reactive scope so the cap is
+	// a wall-clock window from when polling first became active, not from
+	// the latest poll response. Each successful poll re-runs the effect
+	// (override → current → execution change), and we want the cap to
+	// survive that re-run.
+	let pollStartedAt: number | null = null;
+	let pollApprovalId: string | null = null;
 	$effect(() => {
-		if (isPending) return;
-		if (!execution) return;
-		if (executionTerminal) return;
 		const id = current.id;
-		const startedAt = Date.now();
+		if (isPending || !execution || executionTerminal) {
+			pollStartedAt = null;
+			pollApprovalId = null;
+			return;
+		}
+		if (pollApprovalId !== id) {
+			pollApprovalId = id;
+			pollStartedAt = Date.now();
+		}
+		const startedAt = pollStartedAt!;
+		if (Date.now() - startedAt > 30_000) return;
 		const handle = setInterval(async () => {
 			if (submitting) return;
 			if (Date.now() - startedAt > 30_000) {
