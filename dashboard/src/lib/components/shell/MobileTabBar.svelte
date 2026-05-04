@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import { ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM, isActive, type NavItemDef } from './nav-items';
+	import {
+		ADMIN_NAV_ITEMS,
+		SETTINGS_NAV_ITEM,
+		pickActiveHref,
+		type NavItemDef
+	} from './nav-items';
 
 	let {
 		user,
@@ -26,8 +31,13 @@
 
 	let moreOpen = $state(false);
 
-	// "More" is active when the current route is one of the secondary items.
-	const moreActive = $derived(MORE_ITEMS.some((it) => isActive($page.url.pathname, it.href)));
+	// `/org` is a prefix of `/org/groups`, so a per-item isActive() check would
+	// light up Settings AND Groups whenever you're on /org/groups. Pick the
+	// single longest-matching href for the whole nav and compare exactly.
+	const allItems = $derived([...PRIMARY_TABS, ...MORE_ITEMS]);
+	const activeHref = $derived(pickActiveHref($page.url.pathname, allItems));
+	// "More" is active when the active route is one of the secondary items.
+	const moreActive = $derived(MORE_ITEMS.some((it) => it.href === activeHref));
 
 	function openMore() {
 		moreOpen = true;
@@ -52,7 +62,7 @@
 		<a
 			href={item.href}
 			class="tab"
-			class:active={isActive($page.url.pathname, item.href)}
+			class:active={item.href === activeHref}
 			aria-label={item.label}
 		>
 			<span class="icon">{item.icon}</span>
@@ -86,7 +96,7 @@
 			<button
 				type="button"
 				class="sheet-item"
-				class:active={isActive($page.url.pathname, item.href)}
+				class:active={item.href === activeHref}
 				onclick={() => pickFromMore(item.href)}
 				role="menuitem"
 			>

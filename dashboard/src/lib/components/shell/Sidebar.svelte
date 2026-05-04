@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { page } from '$app/stores';
 	import { sidebarCollapsed } from '$lib/stores/shell';
 	import { viewport } from '$lib/stores/viewport';
-	import { NAV_ITEMS, ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM } from './nav-items';
+	import { NAV_ITEMS, ADMIN_NAV_ITEMS, SETTINGS_NAV_ITEM, pickActiveHref } from './nav-items';
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
@@ -36,6 +37,16 @@
 	);
 	const isMobile = $derived($viewport === 'mobile');
 
+	// `/org` (Settings) is a prefix of `/org/groups` (Groups), so per-item
+	// isActive() lights up both. Pick the longest match across every visible
+	// item once and pass it down to NavItem so only one is highlighted.
+	const allItems = $derived([
+		...NAV_ITEMS,
+		...(isAdmin ? ADMIN_NAV_ITEMS : []),
+		...(isAdmin ? [SETTINGS_NAV_ITEM] : [])
+	]);
+	const activeHref = $derived(pickActiveHref($page.url.pathname, allItems));
+
 	let createOrgOpen = $state(false);
 </script>
 
@@ -63,13 +74,25 @@
 
 	<nav class="nav">
 		{#each NAV_ITEMS as item (item.href)}
-			<NavItem href={item.href} label={item.label} icon={item.icon} {collapsed} />
+			<NavItem
+				href={item.href}
+				label={item.label}
+				icon={item.icon}
+				{collapsed}
+				{activeHref}
+			/>
 		{/each}
 
 		{#if isAdmin}
 			{#if !collapsed}<div class="section-label">ADMIN</div>{:else}<div class="divider"></div>{/if}
 			{#each ADMIN_NAV_ITEMS as item (item.href)}
-				<NavItem href={item.href} label={item.label} icon={item.icon} {collapsed} />
+				<NavItem
+				href={item.href}
+				label={item.label}
+				icon={item.icon}
+				{collapsed}
+				{activeHref}
+			/>
 			{/each}
 		{/if}
 	</nav>
@@ -94,6 +117,7 @@
 				label={SETTINGS_NAV_ITEM.label}
 				icon={SETTINGS_NAV_ITEM.icon}
 				{collapsed}
+				{activeHref}
 			/>
 		{/if}
 		{#if !isMobile && $viewport !== 'tablet'}
