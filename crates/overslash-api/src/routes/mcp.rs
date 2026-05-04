@@ -862,7 +862,14 @@ async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<V
     // gets a clear error rather than a 404 from the actions handler.
     if service == "overslash" {
         return match action {
-            "list_pending" => dispatch_overslash_platform(state, bearer, action, args).await,
+            // Pass `require_risk: "read"` so the actions handler enforces the
+            // risk gate even though the caller is the read tool. Defense in
+            // depth — if a write-class action ever sneaks into this arm by
+            // mistake, the server-side check refuses it.
+            "list_pending" | "list_services" | "get_service" | "list_templates"
+            | "get_template" => {
+                dispatch_overslash_platform(state, bearer, action, args, Some("read")).await
+            }
             other => Err(format!(
                 "overslash platform action '{other}' is not read-class; use overslash_call"
             )),
@@ -914,9 +921,10 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
         .ok_or_else(|| "action required".to_string())?;
 
     // Overslash metaservice platform actions are handled in-process; they have
-    // no upstream HTTP host to forward to.
+    // no upstream HTTP host to forward to. No `require_risk` here — the call
+    // tool admits read/write/delete equally.
     if service == "overslash" {
-        return dispatch_overslash_platform(state, bearer, action, args).await;
+        return dispatch_overslash_platform(state, bearer, action, args, None).await;
     }
 
     let mut body = serde_json::Map::new();
@@ -942,6 +950,7 @@ async fn dispatch_overslash_platform(
     bearer: &str,
     action: &str,
     args: &Value,
+    require_risk: Option<&str>,
 ) -> Result<Value, String> {
     let params = args.get("params");
     match action {
@@ -983,10 +992,52 @@ async fn dispatch_overslash_platform(
             let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
             forward(state, bearer, Method::POST, &path, None).await
         }
+        // Service-instance kernels — forward through `/v1/actions/call` so the
+        // platform_target dispatcher in `routes/actions.rs` runs the kernel via
+        // `state.platform_registry`. Permission gating is handled by the
+        // action's `permission:` anchor in `services/overslash.yaml` (the
+        // `manage_services_own` / `manage_services_share` split). When the
+        // caller is the read tool, `require_risk` is forwarded so the action
+        // handler enforces the risk gate.
+        "list_services" | "get_service" | "create_service" | "update_service"
+        | "list_templates" | "get_template" | "create_template" => {
+            forward_overslash_action(state, bearer, action, params, require_risk).await
+        }
         other => Err(format!(
             "overslash platform action '{other}' is not callable via MCP"
         )),
     }
+}
+
+/// Forward an `overslash`-platform action through `/v1/actions/call` so the
+/// existing platform_target dispatch in `routes/actions.rs` runs the kernel
+/// via `state.platform_registry`. Returns whatever the actions endpoint
+/// returned (which may be `pending_approval` if the agent lacks the
+/// permission anchor declared on the action).
+async fn forward_overslash_action(
+    state: &AppState,
+    bearer: &str,
+    action: &str,
+    params: Option<&Value>,
+    require_risk: Option<&str>,
+) -> Result<Value, String> {
+    let mut body = serde_json::Map::new();
+    body.insert("service".into(), Value::String("overslash".into()));
+    body.insert("action".into(), Value::String(action.into()));
+    if let Some(risk) = require_risk {
+        body.insert("require_risk".into(), Value::String(risk.into()));
+    }
+    if let Some(p) = params.filter(|v| !v.is_null()) {
+        body.insert("params".into(), p.clone());
+    }
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        "/v1/actions/call",
+        Some(Value::Object(body)),
+    )
+    .await
 }
 
 async fn dispatch_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
