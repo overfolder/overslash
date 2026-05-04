@@ -113,8 +113,14 @@ platform_actions:
       draft_id: { type: string, required: false }
 
   delete_template:
-    description: "Delete an active service template by key (user-tier or org-tier)"
-    risk: delete
+    # `risk: write` (not `delete`) so a caller with the standard
+    # Everyone-group `write` ceiling on `overslash` can delete templates they
+    # own. The destructive case — deleting an org-tier template — is gated
+    # inside the kernel via an admin-access check (and ownership for user-tier
+    # rows), so the runtime `risk` reflects the user-tier path the agent
+    # surface is designed for.
+    description: "Delete an active service template by key (user-tier; org-tier requires admin access)"
+    risk: write
     permission: manage_templates_own
     params:
       key: { type: string, required: true }
