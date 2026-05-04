@@ -448,7 +448,12 @@
 	// after closing the modal. Never stomp an existing selection.
 	$effect(() => {
 		const approval = modalApproval;
-		if (!approval) return;
+		if (!approval) {
+			// Reset the guard when the modal closes so that a later
+			// re-open of the same approval link still auto-selects.
+			autoSelectedForApproval = null;
+			return;
+		}
 		if (autoSelectedForApproval === approval.id) return;
 		if (selectedId !== null) {
 			autoSelectedForApproval = approval.id;
