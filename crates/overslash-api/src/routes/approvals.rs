@@ -12,7 +12,10 @@ use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::execution::ExecutionRow;
 use overslash_db::scopes::OrgScope;
 
-use overslash_core::permissions::{GroupCeilingResult, PermissionKey, parse_derived_key};
+use overslash_core::permissions::{
+    DerivedKey, GroupCeilingResult, PermissionKey, parse_derived_key,
+};
+use overslash_core::registry::ServiceRegistry;
 use overslash_core::types::service::Risk;
 
 use crate::{
@@ -198,6 +201,34 @@ struct ApprovalResponse {
     /// other contexts.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     cascaded_approval_ids: Vec<Uuid>,
+    /// Risk class for the gated action, used by the dashboard to color the
+    /// approval card's risk top bar. Derived from the matching
+    /// `ServiceAction.risk` in the live registry: `Read → "low"`,
+    /// `Write → "med"`, `Delete → "high"`. Defaults to `"med"` when the
+    /// service / action lookup misses.
+    risk: String,
+}
+
+/// Derive the dashboard-facing risk class (`"low" | "med" | "high"`) for an
+/// approval by looking up the first derived key in the live service registry.
+/// Misses fall back to `"med"` — a deliberately cautious default so the UI
+/// errs on the side of "review carefully" rather than "low risk" when the
+/// service template has been removed or renamed since the approval row was
+/// written.
+fn derive_risk_class(registry: &ServiceRegistry, derived_keys: &[DerivedKey]) -> String {
+    let Some(first) = derived_keys.first() else {
+        return "med".to_string();
+    };
+    let risk = registry
+        .get(&first.service)
+        .and_then(|svc| svc.actions.get(&first.action))
+        .map(|action| action.risk);
+    match risk {
+        Some(Risk::Read) => "low".to_string(),
+        Some(Risk::Write) => "med".to_string(),
+        Some(Risk::Delete) => "high".to_string(),
+        None => "med".to_string(),
+    }
 }
 
 /// Truncate a UTF-8 string to at most `max` bytes, walking backward from the
@@ -219,9 +250,11 @@ impl ApprovalResponse {
         identity_path: Option<String>,
         identity_path_ids: Vec<Uuid>,
         execution: Option<ExecutionRow>,
+        registry: &ServiceRegistry,
     ) -> Self {
         let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
         let suggested_tiers = overslash_core::permissions::suggest_tiers(&r.permission_keys);
+        let risk = derive_risk_class(registry, &derived_keys);
         let (action_detail, action_detail_truncated, action_detail_size_bytes) = match r
             .action_detail
             .as_ref()
@@ -259,12 +292,14 @@ impl ApprovalResponse {
             created_at: fmt_time(r.created_at),
             execution: execution.map(ExecutionSummary::from_row),
             cascaded_approval_ids: Vec::new(),
+            risk,
         }
     }
 }
 
 async fn build_response(
     scope: &OrgScope,
+    registry: &ServiceRegistry,
     row: overslash_db::repos::approval::ApprovalRow,
 ) -> Result<ApprovalResponse> {
     let (identity_path, identity_path_ids) =
@@ -282,6 +317,7 @@ async fn build_response(
         identity_path,
         identity_path_ids,
         execution,
+        registry,
     ))
 }
 
@@ -308,7 +344,7 @@ struct ListQuery {
 }
 
 async fn list_approvals(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth: AuthContext,
     scope: OrgScope,
     Query(q): Query<ListQuery>,
@@ -322,7 +358,7 @@ async fn list_approvals(
             .await?
             .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
         let rows = scope.list_mine_approvals(identity_id).await?;
-        return Ok(Json(batch_responses(&scope, rows).await?));
+        return Ok(Json(batch_responses(&scope, &state.registry, rows).await?));
     }
     let rows = match q.scope.as_deref() {
         Some("mine") => {
@@ -333,7 +369,7 @@ async fn list_approvals(
                 let rows = scope
                     .list_mine_approvals_by_status(identity_id, status)
                     .await?;
-                return Ok(Json(batch_responses(&scope, rows).await?));
+                return Ok(Json(batch_responses(&scope, &state.registry, rows).await?));
             }
             scope.list_mine_approvals(identity_id).await?
         }
@@ -360,7 +396,7 @@ async fn list_approvals(
     if let Some(ref s) = q.status {
         rows.retain(|r| r.status == *s);
     }
-    Ok(Json(batch_responses(&scope, rows).await?))
+    Ok(Json(batch_responses(&scope, &state.registry, rows).await?))
 }
 
 /// Assemble `ApprovalResponse`s for a list of approvals, batching the
@@ -368,6 +404,7 @@ async fn list_approvals(
 /// the N+1 that a per-row `build_response` would produce.
 async fn batch_responses(
     scope: &OrgScope,
+    registry: &ServiceRegistry,
     rows: Vec<overslash_db::repos::approval::ApprovalRow>,
 ) -> Result<Vec<ApprovalResponse>> {
     if rows.is_empty() {
@@ -394,13 +431,14 @@ async fn batch_responses(
             identity_path,
             identity_path_ids,
             execution,
+            registry,
         ));
     }
     Ok(out)
 }
 
 async fn get_approval(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
@@ -408,7 +446,7 @@ async fn get_approval(
         .get_approval(id)
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
-    Ok(Json(build_response(&scope, row).await?))
+    Ok(Json(build_response(&scope, &state.registry, row).await?))
 }
 
 async fn get_execution(
@@ -534,7 +572,9 @@ async fn resolve_approval(
             })
             .await;
 
-        return Ok(Json(build_response(&scope, updated).await?));
+        return Ok(Json(
+            build_response(&scope, &state.registry, updated).await?,
+        ));
     }
 
     let (status, remember) = match req.resolution.as_str() {
@@ -828,6 +868,7 @@ async fn resolve_approval(
         identity_path,
         identity_path_ids,
         execution,
+        &state.registry,
     )))
 }
 
@@ -910,8 +951,13 @@ async fn call_approval(
             .unwrap_or(None)
             .map(|(p, ids)| (Some(p), ids))
             .unwrap_or((None, Vec::new()));
-    let mut response =
-        ApprovalResponse::from_row(approval, identity_path, identity_path_ids, Some(finalised));
+    let mut response = ApprovalResponse::from_row(
+        approval,
+        identity_path,
+        identity_path_ids,
+        Some(finalised),
+        &state.registry,
+    );
     response.cascaded_approval_ids = cascaded_approval_ids;
     Ok(Json(response))
 }
@@ -1391,6 +1437,7 @@ async fn cancel_approval_execution(
         identity_path,
         identity_path_ids,
         Some(cancelled),
+        &state.registry,
     )))
 }
 
@@ -1417,5 +1464,99 @@ fn execution_conflict_error(current: Option<ExecutionRow>) -> AppError {
             "expired" => AppError::Gone("pending execution has expired".into()),
             other => AppError::Conflict(format!("execution in unexpected state: {other}")),
         },
+    }
+}
+
+#[cfg(test)]
+mod risk_tests {
+    use super::*;
+    use overslash_core::permissions::DerivedKey;
+    use overslash_core::types::service::{Runtime, ServiceAction, ServiceDefinition};
+    use std::collections::HashMap;
+
+    fn registry_with(key: &str, action: &str, risk: Risk) -> ServiceRegistry {
+        let mut actions = HashMap::new();
+        actions.insert(
+            action.into(),
+            ServiceAction {
+                method: "GET".into(),
+                path: "/".into(),
+                description: String::new(),
+                risk,
+                response_type: None,
+                params: HashMap::new(),
+                scope_param: None,
+                required_scopes: vec![],
+                permission: None,
+                disclose: vec![],
+                redact: vec![],
+                mcp_tool: None,
+                output_schema: None,
+                disabled: false,
+            },
+        );
+        let mut registry = ServiceRegistry::default();
+        registry.insert(ServiceDefinition {
+            key: key.into(),
+            display_name: key.into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            auth: vec![],
+            actions,
+            runtime: Runtime::Http,
+            mcp: None,
+        });
+        registry
+    }
+
+    fn dk(service: &str, action: &str) -> DerivedKey {
+        DerivedKey {
+            key: format!("{service}:{action}:*"),
+            service: service.into(),
+            action: action.into(),
+            arg: "*".into(),
+        }
+    }
+
+    #[test]
+    fn risk_read_maps_low() {
+        let reg = registry_with("github", "list_repos", Risk::Read);
+        let keys = vec![dk("github", "list_repos")];
+        assert_eq!(derive_risk_class(&reg, &keys), "low");
+    }
+
+    #[test]
+    fn risk_write_maps_med() {
+        let reg = registry_with("github", "create_pr", Risk::Write);
+        let keys = vec![dk("github", "create_pr")];
+        assert_eq!(derive_risk_class(&reg, &keys), "med");
+    }
+
+    #[test]
+    fn risk_delete_maps_high() {
+        let reg = registry_with("postgres", "drop_database", Risk::Delete);
+        let keys = vec![dk("postgres", "drop_database")];
+        assert_eq!(derive_risk_class(&reg, &keys), "high");
+    }
+
+    #[test]
+    fn missing_service_falls_back_to_med() {
+        let reg = ServiceRegistry::default();
+        let keys = vec![dk("ghost", "vanish")];
+        assert_eq!(derive_risk_class(&reg, &keys), "med");
+    }
+
+    #[test]
+    fn missing_action_falls_back_to_med() {
+        let reg = registry_with("github", "list_repos", Risk::Read);
+        let keys = vec![dk("github", "create_pr")];
+        assert_eq!(derive_risk_class(&reg, &keys), "med");
+    }
+
+    #[test]
+    fn empty_derived_keys_falls_back_to_med() {
+        let reg = ServiceRegistry::default();
+        assert_eq!(derive_risk_class(&reg, &[]), "med");
     }
 }
