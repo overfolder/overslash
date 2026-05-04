@@ -38,6 +38,7 @@ hex = "0.4"
 subtle = { workspace = true }
 url = { workspace = true }
 urlencoding = "2"
+regex = { workspace = true }
 base64 = "0.22"
 jsonwebtoken = { workspace = true }
 futures-util = "0.3"

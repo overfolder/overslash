@@ -75,6 +75,12 @@ variable "enable_dev_auth" {
   default     = false
 }
 
+variable "vercel_preview_origin_regex" {
+  description = "Regex matching Vercel preview-deployment URLs allowed to use the OAuth handoff (dev-only). Empty = feature off (production must leave it empty). Combined with OVERSLASH_ENV=dev as a defense-in-depth gate; a non-dev environment never advertises the endpoint, even if this is set by mistake."
+  type        = string
+  default     = ""
+}
+
 # --- Feature flags ---
 
 variable "use_private_vpc" {

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ub9VKLeepvNMdjPRprfDk5vVlJWDWMbr5kXt7jLWVuIWJeNLqDRzodXnfnmXqZx
+\restrict su2KgQIj8SBbnb1xXKdj6cx8Ijk7orTnUaZZ91E0n5o3bo1BZzoZAkhceWU7fWw
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -339,6 +339,21 @@ CREATE TABLE public.mcp_upstream_tokens (
 
 
 --
+-- Name: oauth_handoff_codes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_handoff_codes (
+    code text NOT NULL,
+    jwt text NOT NULL,
+    origin text NOT NULL,
+    next_path text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone
+);
+
+
+--
 -- Name: oauth_mcp_clients; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -358,6 +373,18 @@ CREATE TABLE public.oauth_mcp_clients (
     client_info jsonb,
     protocol_version text,
     last_session_id uuid
+);
+
+
+--
+-- Name: oauth_preview_origins; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_preview_origins (
+    preview_id uuid NOT NULL,
+    origin text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
 );
 
 
@@ -875,6 +902,14 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: oauth_handoff_codes oauth_handoff_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_handoff_codes
+    ADD CONSTRAINT oauth_handoff_codes_pkey PRIMARY KEY (code);
+
+
+--
 -- Name: oauth_mcp_clients oauth_mcp_clients_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -888,6 +923,14 @@ ALTER TABLE ONLY public.oauth_mcp_clients
 
 ALTER TABLE ONLY public.oauth_mcp_clients
     ADD CONSTRAINT oauth_mcp_clients_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_preview_origins oauth_preview_origins_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_preview_origins
+    ADD CONSTRAINT oauth_preview_origins_pkey PRIMARY KEY (preview_id);
 
 
 --
@@ -1348,10 +1391,24 @@ CREATE INDEX idx_memberships_org ON public.user_org_memberships USING btree (org
 
 
 --
+-- Name: idx_oauth_handoff_codes_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_handoff_codes_expires ON public.oauth_handoff_codes USING btree (expires_at);
+
+
+--
 -- Name: idx_oauth_mcp_clients_active; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_oauth_mcp_clients_active ON public.oauth_mcp_clients USING btree (created_at DESC) WHERE (is_revoked = false);
+
+
+--
+-- Name: idx_oauth_preview_origins_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_preview_origins_expires ON public.oauth_preview_origins USING btree (expires_at);
 
 
 --
@@ -2187,5 +2244,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ub9VKLeepvNMdjPRprfDk5vVlJWDWMbr5kXt7jLWVuIWJeNLqDRzodXnfnmXqZx
+\unrestrict su2KgQIj8SBbnb1xXKdj6cx8Ijk7orTnUaZZ91E0n5o3bo1BZzoZAkhceWU7fWw
 

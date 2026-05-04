@@ -1,5 +1,7 @@
 {
   "rewrites": [
+    { "source": "/auth/handoff",                           "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/__handoff_disabled_in_prod" },
+    { "source": "/auth/handoff",                           "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }], "destination": "https://api.overslash.com/__handoff_disabled_in_prod" },
     { "source": "/v1/:path*",                              "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/v1/:path*" },
     { "source": "/auth/:path*",                            "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/auth/:path*" },
     { "source": "/health",                                 "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/health" },

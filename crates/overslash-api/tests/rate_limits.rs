@@ -373,6 +373,8 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -615,6 +617,8 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -675,6 +679,8 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     overslash_api::AppState {
         db: pool,
@@ -1054,6 +1060,8 @@ async fn test_cache_invalidation_user_budget() {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     // Prime the cache
@@ -1211,6 +1219,8 @@ async fn test_cache_invalidation_org_flushes_all() {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let r1 = cache

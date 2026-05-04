@@ -1166,6 +1166,8 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     overslash_api::AppState {

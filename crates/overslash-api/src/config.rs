@@ -97,6 +97,49 @@ pub struct Config {
     /// the proxied URL. When unset, only the proxied URL is returned.
     pub oversla_sh_base_url: Option<String>,
     pub oversla_sh_api_key: Option<String>,
+    /// Vercel preview-deployment OAuth handoff allowlist. When set on a
+    /// `OVERSLASH_ENV=dev` deployment, the API will accept a `preview_origin`
+    /// query param on `/auth/login/<provider>`, embed an opaque preview-id
+    /// in the OAuth state, and after callback bounce the user to
+    /// `<preview_origin>/auth/handoff?code=...` so the preview can adopt the
+    /// session via a host-only cookie set on the proxied response. The
+    /// allowlist is fail-closed: an invalid regex disables the feature; a
+    /// non-dev `OVERSLASH_ENV` disables it; an empty value disables it. The
+    /// production deployment must never set this.
+    pub preview_origin_allowlist: Option<regex::Regex>,
+    /// Deployment environment marker (`dev`, `staging`, `prod`, …). Used as
+    /// a defense-in-depth gate alongside `preview_origin_allowlist`: the
+    /// preview-handoff feature is off unless this is exactly `dev`.
+    pub overslash_env: Option<String>,
+}
+
+/// Parse the `PREVIEW_ORIGIN_ALLOWLIST` env var into a compiled regex.
+/// Fail-closed: any error (empty string, invalid regex syntax) returns
+/// None and the preview-handoff feature stays off. We also log the
+/// failure so an operator who fat-fingers the regex notices instead of
+/// silently disabling the feature.
+///
+/// Wraps the user pattern in `^(?:<pat>)$` so `is_match` does a
+/// full-string match. Without this, an unanchored config like
+/// `overslash\.vercel\.app` would let `overslash.vercel.app.attacker.com`
+/// pass — the partial-match default would be a session-theft footgun.
+/// Wrapping is idempotent for already-anchored patterns: `^foo$` becomes
+/// `^(?:^foo$)$`, which the regex engine collapses to the same
+/// language as `^foo$`.
+fn parse_preview_origin_allowlist(raw: Option<&str>) -> Option<regex::Regex> {
+    let pattern = raw.map(str::trim).filter(|s| !s.is_empty())?;
+    let anchored = format!("^(?:{pattern})$");
+    match regex::Regex::new(&anchored) {
+        Ok(re) => Some(re),
+        Err(e) => {
+            tracing::warn!(
+                pattern = pattern,
+                error = %e,
+                "PREVIEW_ORIGIN_ALLOWLIST regex did not compile; preview handoff disabled",
+            );
+            None
+        }
+    }
 }
 
 fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
@@ -271,6 +314,10 @@ impl Config {
             oversla_sh_api_key: env::var("OVERSLA_SH_API_KEY")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            preview_origin_allowlist: parse_preview_origin_allowlist(
+                env::var("PREVIEW_ORIGIN_ALLOWLIST").ok().as_deref(),
+            ),
+            overslash_env: env::var("OVERSLASH_ENV").ok().filter(|s| !s.is_empty()),
         }
     }
 
@@ -352,6 +399,28 @@ impl Config {
             out.push_str(q);
         }
         out
+    }
+
+    /// Whether the Vercel preview-deployment OAuth handoff is enabled. Both
+    /// gates must be on: `OVERSLASH_ENV=dev` (deployment marker) and a
+    /// well-formed `PREVIEW_ORIGIN_ALLOWLIST` regex. Either missing → off.
+    /// Defense in depth: even if a non-dev deployment accidentally ships
+    /// the allowlist, the env mismatch keeps the endpoint 404 and the
+    /// callback rejects 4-segment state params.
+    pub fn is_preview_handoff_enabled(&self) -> bool {
+        self.overslash_env.as_deref() == Some("dev") && self.preview_origin_allowlist.is_some()
+    }
+
+    /// Test the candidate origin against the allowlist regex. Returns false
+    /// when the feature is disabled or the candidate doesn't match.
+    pub fn preview_origin_allowed(&self, candidate: &str) -> bool {
+        if !self.is_preview_handoff_enabled() {
+            return false;
+        }
+        match self.preview_origin_allowlist.as_ref() {
+            Some(re) => re.is_match(candidate),
+            None => false,
+        }
     }
 
     /// Returns env-var-based auth credentials for a given provider key, if configured.
@@ -560,6 +629,92 @@ mod tests {
         assert_eq!(resolved, "https://attacker.example.com/foo");
     }
 
+    #[test]
+    fn parse_preview_origin_allowlist_disabled_when_empty_or_invalid() {
+        assert!(parse_preview_origin_allowlist(None).is_none());
+        assert!(parse_preview_origin_allowlist(Some("")).is_none());
+        assert!(parse_preview_origin_allowlist(Some("   ")).is_none());
+        // Unbalanced group — regex compile fails, fall back to disabled.
+        assert!(parse_preview_origin_allowlist(Some("(unbalanced")).is_none());
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_compiles_valid_pattern() {
+        let re =
+            parse_preview_origin_allowlist(Some(r"^https://overslash-[a-z0-9-]+\.vercel\.app$"))
+                .expect("compiles");
+        assert!(re.is_match("https://overslash-feat-x.vercel.app"));
+        assert!(!re.is_match("https://attacker.example.com"));
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_full_string_matches_even_unanchored_input() {
+        // An operator who forgets to anchor their regex must not create a
+        // session-theft hole. Substring matches like "...vercel.app..."
+        // could otherwise pass.
+        let re = parse_preview_origin_allowlist(Some(r"https://allowed\.preview\.test"))
+            .expect("compiles");
+        assert!(re.is_match("https://allowed.preview.test"));
+        assert!(
+            !re.is_match("https://allowed.preview.test.attacker.com"),
+            "unanchored pattern must not be exploitable via suffix injection"
+        );
+        assert!(
+            !re.is_match("https://prefix.allowed.preview.test"),
+            "unanchored pattern must not be exploitable via prefix injection"
+        );
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_anchoring_is_idempotent() {
+        // Already-anchored input must keep working — the wrapper is
+        // `^(?:<pat>)$`, so `^foo$` becomes `^(?:^foo$)$` which is the
+        // same language as `^foo$`.
+        let re = parse_preview_origin_allowlist(Some(r"^foo$")).expect("compiles");
+        assert!(re.is_match("foo"));
+        assert!(!re.is_match("foofoo"));
+        assert!(!re.is_match("xfoo"));
+    }
+
+    #[test]
+    fn parse_preview_origin_allowlist_alternation_anchors_each_branch() {
+        // `foo|bar` becomes `^(?:foo|bar)$` — both branches must be
+        // full-string-matched, not just the first.
+        let re = parse_preview_origin_allowlist(Some("foo|bar")).expect("compiles");
+        assert!(re.is_match("foo"));
+        assert!(re.is_match("bar"));
+        assert!(!re.is_match("foobar"));
+        assert!(!re.is_match("xfoo"));
+        assert!(!re.is_match("barx"));
+    }
+
+    #[test]
+    fn preview_handoff_gate_requires_dev_env_and_allowlist() {
+        let mut cfg = empty_test_config();
+        // Both off → disabled.
+        assert!(!cfg.is_preview_handoff_enabled());
+        // Allowlist alone → still disabled (defense in depth).
+        cfg.preview_origin_allowlist = Some(regex::Regex::new("^https://x$").unwrap());
+        assert!(!cfg.is_preview_handoff_enabled());
+        // Wrong env value → disabled.
+        cfg.overslash_env = Some("staging".into());
+        assert!(!cfg.is_preview_handoff_enabled());
+        // Both on → enabled.
+        cfg.overslash_env = Some("dev".into());
+        assert!(cfg.is_preview_handoff_enabled());
+        // Drop allowlist → disabled again.
+        cfg.preview_origin_allowlist = None;
+        assert!(!cfg.is_preview_handoff_enabled());
+    }
+
+    #[test]
+    fn preview_origin_allowed_returns_false_when_disabled() {
+        let mut cfg = empty_test_config();
+        cfg.preview_origin_allowlist = Some(regex::Regex::new("^https://ok$").unwrap());
+        // overslash_env not set → feature off → never allowed even when match.
+        assert!(!cfg.preview_origin_allowed("https://ok"));
+    }
+
     fn empty_test_config() -> Config {
         Config {
             host: "127.0.0.1".into(),
@@ -601,6 +756,8 @@ mod tests {
             service_base_overrides: HashMap::new(),
             oversla_sh_base_url: None,
             oversla_sh_api_key: None,
+            preview_origin_allowlist: None,
+            overslash_env: None,
         }
     }
 }
