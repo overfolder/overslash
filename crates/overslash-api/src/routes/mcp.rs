@@ -5,10 +5,15 @@
 //! request in the body; this handler dispatches it and returns the JSON-RPC
 //! response.
 //!
-//! Dispatch is intentionally small: the three tools (`overslash_search`,
-//! `overslash_call`, `overslash_auth`) are the whole catalog. The MCP
-//! surface is call-only — it lets an agent discover and run already-
-//! configured services, plus introspect its own identity. Self-management
+//! Dispatch is intentionally small: the four tools (`overslash_search`,
+//! `overslash_read`, `overslash_call`, `overslash_auth`) are the whole
+//! catalog. `overslash_read` is the read-only fast-path — same shape as
+//! `overslash_call`'s fresh-call mode but the action handler rejects the
+//! request when the resolved action's risk is not `Read`, which lets MCP
+//! clients honour `readOnlyHint: true` and skip the confirmation prompt.
+//! The MCP surface is call-only — it lets an agent discover and run
+//! already-configured services, plus introspect its own identity.
+//! Self-management
 //! (creating services, minting subagents, resolving approvals, listing
 //! secrets) lives in the dashboard; see
 //! `docs/design/agent-self-management.md` for the roadmap to bring those
@@ -321,8 +326,12 @@ async fn initialize_response(
                 "version": env!("CARGO_PKG_VERSION"),
             },
             "instructions": "Overslash MCP server. Use overslash_search to discover \
-        services, overslash_call to run actions, and overslash_auth for \
-        identity introspection (whoami, service_status).",
+        services, overslash_read to invoke read-class actions (the server \
+        rejects writes/deletes routed through it), overslash_call to invoke \
+        any action or resume a pending approval, and overslash_auth for \
+        identity introspection (whoami, service_status). Prefer overslash_read \
+        when the action only reads data — clients can skip the confirmation \
+        prompt.",
         }
     });
     (
@@ -340,6 +349,7 @@ fn tools_list_response(id: Value) -> Response {
             "tools": [
                 {
                     "name": "overslash_search",
+                    "title": "Search Overslash services",
                     "description": "Discover Overslash services and actions available to the caller. Returns only services the caller has already connected; pass `include_catalog: true` to also surface the un-connected global/org catalog. Empty query lists connected services without actions.",
                     "inputSchema": {
                         "type": "object",
@@ -355,11 +365,37 @@ fn tools_list_response(id: Value) -> Response {
                             }
                         },
                         "additionalProperties": false
+                    },
+                    "annotations": {
+                        "readOnlyHint": true,
+                        "idempotentHint": true,
+                        "openWorldHint": false
+                    }
+                },
+                {
+                    "name": "overslash_read",
+                    "title": "Read via Overslash (no writes)",
+                    "description": "Call a read-class Overslash action. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "service": { "type": "string" },
+                            "action":  { "type": "string" },
+                            "params":  {}
+                        },
+                        "required": ["service", "action"],
+                        "additionalProperties": false
+                    },
+                    "annotations": {
+                        "readOnlyHint": true,
+                        "idempotentHint": true,
+                        "openWorldHint": true
                     }
                 },
                 {
                     "name": "overslash_call",
-                    "description": "Call an Overslash action. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it.",
+                    "title": "Call an Overslash action",
+                    "description": "Call any Overslash action (read, write, or delete) or resume a pending approval. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -372,10 +408,17 @@ fn tools_list_response(id: Value) -> Response {
                             }
                         },
                         "additionalProperties": false
+                    },
+                    "annotations": {
+                        "readOnlyHint": false,
+                        "destructiveHint": true,
+                        "idempotentHint": false,
+                        "openWorldHint": true
                     }
                 },
                 {
                     "name": "overslash_auth",
+                    "title": "Identity & service status",
                     "description": "Identity introspection sub-actions: whoami, service_status.",
                     "inputSchema": {
                         "type": "object",
@@ -385,6 +428,11 @@ fn tools_list_response(id: Value) -> Response {
                         },
                         "required": ["action"],
                         "additionalProperties": false
+                    },
+                    "annotations": {
+                        "readOnlyHint": true,
+                        "idempotentHint": true,
+                        "openWorldHint": false
                     }
                 }
             ]
@@ -427,6 +475,7 @@ async fn tools_call(
 
     let outcome = match params.name.as_str() {
         "overslash_search" => dispatch_search(state, bearer, &params.arguments).await,
+        "overslash_read" => dispatch_read(state, bearer, &params.arguments).await,
         "overslash_call" => {
             return tools_call_overslash_call(
                 state,
@@ -776,6 +825,65 @@ async fn dispatch_search(state: &AppState, bearer: &str, args: &Value) -> Result
     forward(state, bearer, Method::GET, &path, None).await
 }
 
+/// Read-only fast path: forwards to `/v1/actions/call` with `require_risk=read`
+/// so the action handler rejects the call when the resolved action's risk is
+/// not `Risk::Read`. The split lets MCP clients skip confirmation prompts on
+/// the readonly tool while still routing through the same execution pipeline.
+///
+/// `approval_id` is rejected here: approval resume always replays a previously
+/// permission-gated (i.e. write/delete) action, so it has no place on a tool
+/// annotated `readOnlyHint: true`.
+async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+    if args.get("approval_id").is_some() {
+        return Err(
+            "approval_id is not allowed on overslash_read; use overslash_call to resume a pending approval".into(),
+        );
+    }
+    let service = args
+        .get("service")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "service required".to_string())?;
+    let action = args
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "action required".to_string())?;
+
+    // The `overslash` meta-service exposes both read (`list_pending`) and
+    // write (`call_pending`, `cancel_pending`) sub-actions through the same
+    // `dispatch_overslash_platform` code path, which doesn't go through
+    // `/v1/actions/call`. Route the read sub-action through the existing
+    // platform dispatcher and reject the write ones explicitly so the user
+    // gets a clear error rather than a 404 from the actions handler.
+    if service == "overslash" {
+        return match action {
+            "list_pending" => dispatch_overslash_platform(state, bearer, action, args).await,
+            other => Err(format!(
+                "overslash platform action '{other}' is not read-class; use overslash_call"
+            )),
+        };
+    }
+
+    let mut body = serde_json::Map::new();
+    body.insert("service".into(), Value::String(service.into()));
+    body.insert("action".into(), Value::String(action.into()));
+    body.insert("require_risk".into(), Value::String("read".into()));
+    // Forward `params` only when the caller actually supplied a map. The
+    // receiving CallRequest's `params: HashMap<...>` deserializer rejects an
+    // explicit `null` (it expects a map), even though `#[serde(default)]`
+    // would happily fill in an empty map for an absent key.
+    if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
+        body.insert("params".into(), p.clone());
+    }
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        "/v1/actions/call",
+        Some(Value::Object(body)),
+    )
+    .await
+}
+
 async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
     // Resume-mode: caller is triggering the replay of a previously-approved
     // action. Forwards to POST /v1/approvals/{id}/call.
@@ -805,12 +913,22 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
         return dispatch_overslash_platform(state, bearer, action, args).await;
     }
 
-    let body = json!({
-        "service": service,
-        "action": action,
-        "params": args.get("params").cloned().unwrap_or(Value::Null),
-    });
-    forward(state, bearer, Method::POST, "/v1/actions/call", Some(body)).await
+    let mut body = serde_json::Map::new();
+    body.insert("service".into(), Value::String(service.into()));
+    body.insert("action".into(), Value::String(action.into()));
+    // See `dispatch_read` — explicit `null` would 422 the action handler;
+    // omit when the caller didn't supply a map.
+    if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
+        body.insert("params".into(), p.clone());
+    }
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        "/v1/actions/call",
+        Some(Value::Object(body)),
+    )
+    .await
 }
 
 async fn dispatch_overslash_platform(

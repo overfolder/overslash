@@ -352,15 +352,57 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(frame["jsonrpc"], "2.0");
     assert_eq!(frame["id"], 1);
     let tools = frame["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"overslash_search"));
+    assert!(names.contains(&"overslash_read"));
     assert!(names.contains(&"overslash_call"));
     assert!(names.contains(&"overslash_auth"));
     assert!(
         !names.contains(&"overslash_approve"),
         "overslash_approve must not be exposed — self-management is dashboard-only"
     );
+
+    // Every tool must carry a `title` and the appropriate annotation hints
+    // (MCP 2025-06-18 §Tool annotations). Anthropic Directory submission
+    // gates on this — see docs/mcp-anthropic-submission-status.md §3.
+    let by_name: std::collections::HashMap<&str, &Value> = tools
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), t))
+        .collect();
+
+    let search = by_name["overslash_search"];
+    assert_eq!(search["title"], "Search Overslash services");
+    assert_eq!(search["annotations"]["readOnlyHint"], true);
+    assert_eq!(search["annotations"]["idempotentHint"], true);
+    assert_eq!(search["annotations"]["openWorldHint"], false);
+
+    let read = by_name["overslash_read"];
+    assert_eq!(read["title"], "Read via Overslash (no writes)");
+    assert_eq!(read["annotations"]["readOnlyHint"], true);
+    assert_eq!(read["annotations"]["idempotentHint"], true);
+    assert_eq!(read["annotations"]["openWorldHint"], true);
+    // No `approval_id` field on the readonly tool — resume always replays a
+    // write/destructive action and has no place behind readOnlyHint=true.
+    assert!(
+        read["inputSchema"]["properties"]
+            .get("approval_id")
+            .is_none(),
+        "overslash_read must not expose approval_id"
+    );
+
+    let call = by_name["overslash_call"];
+    assert_eq!(call["title"], "Call an Overslash action");
+    assert_eq!(call["annotations"]["readOnlyHint"], false);
+    assert_eq!(call["annotations"]["destructiveHint"], true);
+    assert_eq!(call["annotations"]["idempotentHint"], false);
+    assert_eq!(call["annotations"]["openWorldHint"], true);
+
+    let authn = by_name["overslash_auth"];
+    assert_eq!(authn["title"], "Identity & service status");
+    assert_eq!(authn["annotations"]["readOnlyHint"], true);
+    assert_eq!(authn["annotations"]["idempotentHint"], true);
+    assert_eq!(authn["annotations"]["openWorldHint"], false);
 
     // Refresh rotates the refresh token.
     let refresh_resp = client

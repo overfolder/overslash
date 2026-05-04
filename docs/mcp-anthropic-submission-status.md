@@ -17,7 +17,7 @@ Legend: ✅ pass · ⚠️ partial · ❌ missing · N/A not applicable to this 
 | Streamable HTTP transport | ✅ |
 | AS / Resource metadata (RFC 8414, 9728) | ✅ |
 | JSON-RPC error handling | ✅ |
-| Tool `title` / `readOnlyHint` / `destructiveHint` annotations | ❌ |
+| Tool `title` / `readOnlyHint` / `destructiveHint` annotations | ✅ |
 | Privacy Policy (public URL) | ✅ <https://www.overslash.com/privacy> |
 | Terms of Service (public URL) | ✅ <https://www.overslash.com/terms> |
 | Public setup & usage docs | ❌ |
@@ -56,15 +56,18 @@ Overall: the protocol surface is in good shape. The blockers for submission are 
 
 > "All tools must include a `title` and the applicable `readOnlyHint` or `destructiveHint`."
 
-`crates/overslash-api/src/routes/mcp.rs:326–378` declares three tools. **None** carry `title`, `readOnlyHint`, or `destructiveHint`. This is a hard requirement.
+`crates/overslash-api/src/routes/mcp.rs` declares four tools, all carrying `title` and the appropriate annotation hints (MCP 2025-06-18 §Tool annotations). Asserted by the `tools/list` integration test in `crates/overslash-api/tests/mcp_oauth.rs`.
 
-| Tool | `title` | `readOnlyHint` | `destructiveHint` | Suggested annotations |
-|---|---|---|---|---|
-| `overslash_search` | ❌ | ❌ | ❌ | `title: "Search Overslash services"`, `readOnlyHint: true` |
-| `overslash_call` | ❌ | ❌ | ❌ | `title: "Call an Overslash action"`, `readOnlyHint: false`, `destructiveHint: true`. **Note:** Overslash's permission/approval chain is defense-in-depth — it does not change what Claude should tell the user. The tool dispatches arbitrary upstream actions (Stripe charges, Gmail sends, calendar deletes), so from the MCP client's perspective it is a write/destructive surface. Claiming `readOnlyHint: true` because the gateway can block the call would mislead the client. |
-| `overslash_auth` | ❌ | ❌ | ❌ | `title: "Identity & service status"`, `readOnlyHint: true` |
+| Tool | `title` | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+|---|---|---|---|---|---|
+| `overslash_search` | "Search Overslash services" | ✅ true | — | true | false |
+| `overslash_read` | "Read via Overslash (no writes)" | ✅ true | — | true | true |
+| `overslash_call` | "Call an Overslash action" | false | ✅ true | false | true |
+| `overslash_auth` | "Identity & service status" | ✅ true | — | true | false |
 
-Action: extend each tool object in `tools_list_response` with the `title` field plus `annotations: { readOnlyHint, destructiveHint, openWorldHint, idempotentHint }` per the MCP `Tool` schema (2025-06-18). Cover with an integration test that asserts the presence of these fields.
+`overslash_read` is the read-only fast-path split out of `overslash_call`: same `service`/`action`/`params` schema, but the action handler rejects with HTTP 400 if the resolved action's `risk` is not `Read` (enforced via the `require_risk` field on `POST /v1/actions/call`). This lets MCP clients skip the confirmation prompt on read-class operations (`gmail.list_messages`, `calendar.list_events`, etc.) while keeping `overslash_call` honestly annotated as destructive for everything else.
+
+Approval resume (`approval_id`) is only on `overslash_call` — replaying a previously-approved action is by definition a write/destructive operation and has no place behind `readOnlyHint: true`.
 
 ## 4. Authentication — OAuth 2.0
 
@@ -145,11 +148,11 @@ The form requires the following — assemble before submitting.
 - [ ] Use cases (3–5 bullets).
 - [ ] Authentication type: OAuth 2.1 (PKCE, DCR).
 - [ ] Transport: Streamable HTTP + SSE.
-- [ ] Read/write capabilities: read = `overslash_search`, `overslash_auth`; write = `overslash_call` (gated by Overslash permission/approval chain).
+- [ ] Read/write capabilities: read = `overslash_search`, `overslash_read`, `overslash_auth`; write = `overslash_call` (gated by Overslash permission/approval chain).
 - [ ] Connection requirements: an Overslash account; agent enrollment via OAuth consent.
 - [ ] Data handling summary (link to Privacy Policy).
 - [ ] Third-party connections: dynamic — depends on which upstream services the user enables.
-- [ ] Tool inventory: `overslash_search`, `overslash_call`, `overslash_auth` (full schemas above).
+- [ ] Tool inventory: `overslash_search`, `overslash_read`, `overslash_call`, `overslash_auth` (full schemas above).
 - [ ] Resources/prompts: none currently exposed.
 - [ ] Logo URL + favicon URL.
 - [ ] Test account credentials + setup notes.
@@ -159,7 +162,7 @@ The form requires the following — assemble before submitting.
 
 ## 12. Pre-submission checklist (gating items, in order)
 
-1. ❌ Add `title` + `readOnlyHint` / `destructiveHint` annotations to all three tools (`mcp.rs:326`).
+1. ✅ `title` + `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` annotations are wired up on all four tools (`mcp.rs` `tools_list_response`, asserted in `tests/mcp_oauth.rs`).
 2. ✅ Privacy Policy <https://www.overslash.com/privacy> and Terms of Service <https://www.overslash.com/terms> are live — link from `/oauth/consent`, dashboard footer, and README.
 3. ✅ Support channel confirmed (`contact@overslash.com` + public-repo issues) — surface in README.
 4. ❌ Publish a public setup/usage doc (promote `SKILL.md` content to `docs.overslash.com/mcp` or `www.overslash.com/docs`).
