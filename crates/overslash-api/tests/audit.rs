@@ -100,6 +100,8 @@ fn filter(org_id: Uuid) -> AuditFilter {
         since: None,
         until: None,
         q: None,
+        event_id: None,
+        uuid: None,
         limit: 100,
         offset: 0,
     }
@@ -1381,4 +1383,227 @@ async fn test_query_audit_log_overwrites_filter_org_id() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].org_id, org_a);
     assert_eq!(rows[0].action, "a.event");
+}
+
+// ===========================================================================
+// New: identity_path resolution + event_id / uuid filters
+// ===========================================================================
+
+#[tokio::test]
+async fn test_audit_api_includes_identity_path() {
+    let pool = common::test_pool().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let mock_addr = start_mock().await;
+
+    client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+        .send()
+        .await
+        .unwrap();
+
+    let entries = fetch_audit_with(&base, &client, &key, "action=action.executed").await;
+    assert_eq!(entries.len(), 1);
+    let path = entries[0]["identity_path"]
+        .as_str()
+        .expect("identity_path should be present for resolvable identities");
+    // bootstrap_org_identity wires: org → user "test-user" → agent "test-agent".
+    assert!(
+        path.starts_with("spiffe://"),
+        "expected SPIFFE-format path, got {path}"
+    );
+    assert!(path.contains("/user/test-user"), "got {path}");
+    assert!(path.contains("/agent/test-agent"), "got {path}");
+
+    // The id list should align: one id per `(kind, name)` unit (user + agent = 2).
+    let ids = entries[0]["identity_path_ids"]
+        .as_array()
+        .expect("identity_path_ids should be an array");
+    assert_eq!(ids.len(), 2, "expected 2 path ids for user→agent chain");
+}
+
+#[tokio::test]
+async fn test_audit_api_filter_by_event_id() {
+    let pool = common::test_pool().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let mock_addr = start_mock().await;
+
+    // Generate two action.executed entries.
+    for _ in 0..2 {
+        client
+            .post(format!("{base}/v1/actions/call"))
+            .header(auth(&key).0, auth(&key).1)
+            .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let all = fetch_audit_with(&base, &client, &key, "action=action.executed").await;
+    assert_eq!(all.len(), 2);
+    let target_id = all[0]["id"].as_str().unwrap();
+
+    let filtered = fetch_audit_with(&base, &client, &key, &format!("event_id={target_id}")).await;
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0]["id"].as_str().unwrap(), target_id);
+}
+
+#[tokio::test]
+async fn test_audit_api_filter_by_uuid_matches_resource_id() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let target_resource = Uuid::new_v4();
+
+    // Insert two rows: one with the target resource_id, one without.
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "match.resource",
+            Some("widget"),
+            Some(target_resource),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "other.thing",
+            Some("widget"),
+            Some(Uuid::new_v4()),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    let mut f = filter(org_id);
+    f.uuid = Some(target_resource);
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "match.resource");
+}
+
+#[tokio::test]
+async fn test_audit_api_filter_by_uuid_matches_detail_execution_id() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let exec_id = Uuid::new_v4();
+
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "action.executed",
+            None,
+            None,
+            json!({"execution_id": exec_id.to_string(), "method": "GET"}),
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "action.executed",
+            None,
+            None,
+            json!({"execution_id": Uuid::new_v4().to_string(), "method": "GET"}),
+        ))
+        .await
+        .unwrap();
+
+    let mut f = filter(org_id);
+    f.uuid = Some(exec_id);
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].detail["execution_id"], exec_id.to_string());
+}
+
+#[tokio::test]
+async fn test_audit_api_filter_by_uuid_matches_replayed_from_approval() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let approval_id = Uuid::new_v4();
+
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "action.executed",
+            None,
+            None,
+            json!({"replayed_from_approval": approval_id.to_string()}),
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "unrelated.event",
+            None,
+            None,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    let mut f = filter(org_id);
+    f.uuid = Some(approval_id);
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "action.executed");
+}
+
+#[tokio::test]
+async fn test_audit_api_filter_by_uuid_tolerates_malformed_detail() {
+    // The query guards JSONB casts with a regex so non-UUID strings in the
+    // detail don't blow up the whole query. Insert garbage and confirm.
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+    let target = Uuid::new_v4();
+
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "garbage.detail",
+            None,
+            None,
+            json!({"execution_id": "not-a-uuid", "replayed_from_approval": ""}),
+        ))
+        .await
+        .unwrap();
+    overslash_db::OrgScope::new(org_id, pool.clone())
+        .log_audit(entry(
+            org_id,
+            None,
+            "real.match",
+            None,
+            Some(target),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+    let mut f = filter(org_id);
+    f.uuid = Some(target);
+    let rows = overslash_db::OrgScope::new(org_id, pool.clone())
+        .query_audit_log(f)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "real.match");
 }
