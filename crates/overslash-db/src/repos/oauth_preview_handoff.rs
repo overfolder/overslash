@@ -102,9 +102,33 @@ pub async fn insert_handoff_code(
     Ok(())
 }
 
+/// Read a handoff code without consuming it. Used for pre-consume
+/// validation (host binding, allowlist re-check) so a probe / crawler
+/// can't burn a legitimate user's code by hitting the handoff URL with
+/// a wrong host header. Returns None if missing, expired, or already
+/// consumed — callers don't need to distinguish.
+pub async fn peek_handoff_code(
+    pool: &PgPool,
+    code: &str,
+) -> Result<Option<HandoffCodeRow>, sqlx::Error> {
+    sqlx::query_as!(
+        HandoffCodeRow,
+        "SELECT code, jwt, origin, next_path, expires_at, consumed_at
+         FROM oauth_handoff_codes
+         WHERE code = $1 AND consumed_at IS NULL AND expires_at > now()",
+        code,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Atomically consume a handoff code: marks it `consumed_at = now()` and
 /// returns the row only when the code exists, hasn't been consumed, and
 /// hasn't expired. Replays return None.
+///
+/// Pre-validate via `peek_handoff_code` and only call this once you know
+/// the request is legitimate; after this call the code is gone whether
+/// or not the surrounding response succeeds.
 pub async fn consume_handoff_code(
     pool: &PgPool,
     code: &str,

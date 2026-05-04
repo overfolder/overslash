@@ -396,9 +396,12 @@ async fn provider_callback(
     let clear_org = clear_auth_cookie(&state, "oss_auth_org");
     let clear_next = clear_auth_cookie(&state, "oss_auth_next");
 
-    let next_path = extract_cookie(&headers, "oss_auth_next")
-        .and_then(|v| sanitize_next(&v))
-        .unwrap_or_else(|| state.config.dashboard_url.clone());
+    // Path-only `next` carried across the IdP bounce. The dashboard_url
+    // fallback is intentionally only applied to the non-preview branch:
+    // for previews it points at the corporate dashboard host
+    // (e.g. `https://app.dev.overslash.com`), which would defeat the whole
+    // point of routing the user back to their preview origin.
+    let cookie_next = extract_cookie(&headers, "oss_auth_next").and_then(|v| sanitize_next(&v));
 
     // Vercel preview-deployment handoff branch. The session cookie can't
     // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`
@@ -420,17 +423,17 @@ async fn provider_callback(
             ));
         }
         let handoff_code = preview_handoff_code();
-        // Persist `next` alongside the JWT so the redirect URL the
-        // browser follows after cookie-set carries no path data — keeps
-        // the URL the IdP / a screen-recorder might leak free of caller
-        // intent.
-        let next_for_db = sanitize_next(&next_path);
+        // Only path-only values get persisted (`cookie_next` already sanitized).
+        // No fallback to `dashboard_url` — that points at the corp host, not
+        // the preview origin. Missing → handoff endpoint defaults to `/` on
+        // the preview, which is the correct landing for someone whose login
+        // had no specific intent.
         overslash_db::repos::oauth_preview_handoff::insert_handoff_code(
             &state.db,
             &handoff_code,
             &token,
             &origin_row.origin,
-            next_for_db.as_deref(),
+            cookie_next.as_deref(),
             PREVIEW_HANDOFF_CODE_TTL_SECS,
         )
         .await?;
@@ -457,6 +460,11 @@ async fn provider_callback(
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
+
+    // Non-preview path: fall back to the configured dashboard URL when the
+    // caller had no explicit `next`. (The preview branch above handles its
+    // own fallback because `dashboard_url` is the wrong host for a preview.)
+    let next_path = cookie_next.unwrap_or_else(|| state.config.dashboard_url.clone());
 
     // When login kicks off on `<slug>.<apex>` but the OAuth callback lands
     // at `state.config.public_url/auth/callback/<provider>` (typical: a
@@ -524,10 +532,11 @@ fn preview_handoff_code() -> String {
 /// (with a `Domain`-less `Set-Cookie`) is pasted back through, scoping the
 /// cookie to the preview origin the browser sees.
 ///
-/// 404 unless the feature is on. Otherwise atomically consumes the code,
-/// verifies the redeeming host matches the origin the code was minted for,
-/// re-checks the allowlist (in case it tightened), then sets the session
-/// cookie and 303s to the stored `next` path.
+/// 404 unless the feature is on. Otherwise: peek at the row, run host +
+/// allowlist validations, *then* atomically consume — only after we know
+/// the request is legitimate. Reverse order would let a probe (crawler,
+/// retry, misconfigured proxy) burn a code with the wrong host header
+/// and force a real user to restart their OAuth round-trip.
 async fn handoff_consume(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -537,7 +546,9 @@ async fn handoff_consume(
         return Err(AppError::NotFound("not found".into()));
     }
 
-    let row = overslash_db::repos::oauth_preview_handoff::consume_handoff_code(&state.db, &q.code)
+    // Peek first so failed validations leave the row consumable by a
+    // retry that gets the host right.
+    let row = overslash_db::repos::oauth_preview_handoff::peek_handoff_code(&state.db, &q.code)
         .await?
         .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
 
@@ -562,15 +573,24 @@ async fn handoff_consume(
         ));
     }
 
+    // Now consume. Race-with-self window: another concurrent request
+    // that also passed validation could win the UPDATE, in which case
+    // this caller sees `None` and gets a 400 — same outcome as a
+    // replay, which is correct.
+    let consumed =
+        overslash_db::repos::oauth_preview_handoff::consume_handoff_code(&state.db, &q.code)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
+
     // Host-only session cookie: no `Domain` so the browser scopes it to
     // the preview origin. `.vercel.app` is shared across tenants — sharing
     // a cookie there would be a cross-tenant data leak.
     let cookie = format!(
         "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Secure; Max-Age=604800",
-        row.jwt
+        consumed.jwt
     );
 
-    let next = row
+    let next = consumed
         .next_path
         .as_deref()
         .and_then(sanitize_next)

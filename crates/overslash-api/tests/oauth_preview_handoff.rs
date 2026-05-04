@@ -253,6 +253,44 @@ async fn handoff_endpoint_rejects_host_mismatch() {
     assert_eq!(resp.status(), 400);
 }
 
+/// A failed-validation request MUST NOT burn the code. A misconfigured
+/// proxy / crawler / retried request that hits the URL with a wrong
+/// host must not invalidate the legitimate user's pending login.
+#[tokio::test]
+async fn handoff_endpoint_does_not_consume_code_on_failed_validation() {
+    let pool = common::test_pool().await;
+    plant_code(
+        &pool,
+        "preserve-on-fail",
+        "fake.jwt",
+        ALLOWED_ORIGIN,
+        None,
+        60,
+    )
+    .await;
+
+    let (addr, _) = start_with_handoff_enabled(pool.clone()).await;
+    let client = no_redirect_client();
+
+    // Wrong host → 400.
+    let bad = client
+        .get(format!("http://{addr}/auth/handoff?code=preserve-on-fail"))
+        .header("x-forwarded-host", "evil.preview.test")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // Subsequent legitimate redemption must still succeed.
+    let good = client
+        .get(format!("http://{addr}/auth/handoff?code=preserve-on-fail"))
+        .header("x-forwarded-host", ALLOWED_HOST)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(good.status(), 303);
+}
+
 /// Live allowlist re-check: a code minted while the allowlist matched can
 /// still be invalidated by a subsequent allowlist change. The endpoint
 /// reads the current config, not a snapshot taken at mint time.
