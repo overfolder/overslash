@@ -61,6 +61,36 @@
 				execution.status === 'expired')
 	);
 
+	// Live-refresh while a call is in flight — without this the resolver
+	// would stay stuck on "Calling upstream action…" because /resolve
+	// returns immediately and the actual call runs in a spawned task on
+	// the backend (see #239 auto-call). Self-terminates on terminal status,
+	// component teardown, or after a 30s safety cap.
+	$effect(() => {
+		if (isPending) return;
+		if (!execution) return;
+		if (executionTerminal) return;
+		const id = current.id;
+		const startedAt = Date.now();
+		const handle = setInterval(async () => {
+			if (submitting) return;
+			if (Date.now() - startedAt > 30_000) {
+				clearInterval(handle);
+				return;
+			}
+			try {
+				const fresh = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
+				if (id !== current.id) return;
+				override = fresh;
+			} catch {
+				// Transient error — keep polling. A persistent failure here
+				// shouldn't stomp the resolver's `error` field, which is
+				// reserved for user-action failures.
+			}
+		}, 1500);
+		return () => clearInterval(handle);
+	});
+
 	// Derive Service / Action display from the first parsed permission key.
 	// `derived_keys` comes from the API as `{service, action, arg}`.
 	const primary = $derived(current.derived_keys[0] ?? null);
@@ -315,28 +345,32 @@
 			</div>
 		</div>
 	{:else if !isPending && executionRunning}
-		<div class="banner banner-allowed">
-			Calling upstream action…
+		<div role="status" aria-live="polite">
+			<div class="banner banner-allowed">
+				Calling upstream action…
+			</div>
 		</div>
 	{:else if !isPending && executionTerminal && execution}
-		<div class="banner banner-{execution.status}">
-			{#if execution.status === 'called'}
-				Called successfully.
-			{:else if execution.status === 'failed'}
-				Call failed{execution.error ? `: ${execution.error}` : ''}.
-			{:else if execution.status === 'cancelled'}
-				Call was cancelled.
-			{:else if execution.status === 'expired'}
-				Pending call expired before it ran.
+		<div role="status" aria-live="polite">
+			<div class="banner banner-{execution.status}">
+				{#if execution.status === 'called'}
+					Called successfully.
+				{:else if execution.status === 'failed'}
+					Call failed{execution.error ? `: ${execution.error}` : ''}.
+				{:else if execution.status === 'cancelled'}
+					Call was cancelled.
+				{:else if execution.status === 'expired'}
+					Pending call expired before it ran.
+				{/if}
+			</div>
+			{#if execution.status === 'called' && (current.cascaded_approval_ids?.length ?? 0) > 0}
+				{@const n = current.cascaded_approval_ids!.length}
+				<div class="banner banner-cascade">
+					Also resolved {n} related {n === 1 ? 'approval' : 'approvals'} that the new
+					permission now covers.
+				</div>
 			{/if}
 		</div>
-		{#if execution.status === 'called' && (current.cascaded_approval_ids?.length ?? 0) > 0}
-			{@const n = current.cascaded_approval_ids!.length}
-			<div class="banner banner-cascade">
-				Also resolved {n} related {n === 1 ? 'approval' : 'approvals'} that the new
-				permission now covers.
-			</div>
-		{/if}
 		{#if execution.status === 'called' && execution.result}
 			<details class="raw-payload">
 				<summary>Result</summary>

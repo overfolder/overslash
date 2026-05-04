@@ -406,6 +406,7 @@
 	let modalApproval = $state<ApprovalResponse | null>(null);
 	let modalError = $state<string | null>(null);
 	let lastLoadedApprovalId = $state<string | null>(null);
+	let autoSelectedForApproval = $state<string | null>(null);
 	const modalApprovalId = $derived($page.url.searchParams.get('approval'));
 
 	$effect(() => {
@@ -442,6 +443,29 @@
 		})();
 	});
 
+	// When the modal opens via deep-link (no agent in the URL), highlight
+	// the requesting agent in the tree so the user has somewhere to land
+	// after closing the modal. Never stomp an existing selection.
+	$effect(() => {
+		const approval = modalApproval;
+		if (!approval) return;
+		if (autoSelectedForApproval === approval.id) return;
+		if (selectedId !== null) {
+			autoSelectedForApproval = approval.id;
+			return;
+		}
+		if (loading || identities.length === 0) return;
+		const pathIds = approval.identity_path_ids ?? [];
+		const requestingId = approval.requesting_identity_id;
+		const candidate =
+			[...pathIds].reverse().find((id) => identities.some((i) => i.id === id)) ??
+			(identities.some((i) => i.id === requestingId) ? requestingId : null);
+		if (candidate) {
+			selectIdentity(candidate);
+		}
+		autoSelectedForApproval = approval.id;
+	});
+
 	function closeApprovalModal() {
 		modalApproval = null;
 		modalError = null;
@@ -457,10 +481,9 @@
 
 	function onModalResolved(updated: ApprovalResponse) {
 		void onApprovalResolved(updated);
-		// Close the overlay and strip `?approval=<id>` from the URL — the
-		// agents view's pending list and rules table reflect the resolution
-		// already, so leaving the modal open just shows a stale banner.
-		closeApprovalModal();
+		// Keep the modal open so the user sees the auto-call execution
+		// banner ("Calling upstream action…" → "Called successfully" /
+		// "Call failed: …"). The user closes via × / Esc / backdrop.
 	}
 
 	function toggle(id: string) {
