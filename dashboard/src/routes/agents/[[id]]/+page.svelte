@@ -565,7 +565,7 @@
 					onclick={() => {
 						selectedId = null;
 						detail = null;
-						void goto('/agents', { replaceState: true, noScroll: true, keepFocus: true });
+						writeSelectionToUrl(null);
 					}}
 				>
 					‹ All agents
