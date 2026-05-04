@@ -29,6 +29,27 @@ pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_FAILED: &str = "failed";
 pub const STATUS_CANCELLED: &str = "cancelled";
 
+/// True when an elicitation row for `approval_id` is still active (pending
+/// or claimed). Used by `resolve_approval` to suppress auto-call: the
+/// elicitation flow drives its own `/resolve` → `/call` round-trip and an
+/// auto-call would race with it.
+pub async fn has_active_for_approval(
+    pool: &PgPool,
+    approval_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query_scalar!(
+        "SELECT EXISTS(
+            SELECT 1 FROM pending_mcp_elicitations
+             WHERE approval_id = $1
+               AND status IN ('pending', 'claimed')
+         )",
+        approval_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.unwrap_or(false))
+}
+
 pub async fn insert(
     pool: &PgPool,
     elicit_id: &str,

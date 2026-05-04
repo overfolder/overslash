@@ -685,10 +685,32 @@ async fn resolve_approval(
                 None
             }
         };
-        if binding
-            .as_ref()
-            .map(|b| b.auto_call_on_approve)
-            .unwrap_or(false)
+        // Suppress auto-call when an elicitation flow is mid-flight for this
+        // approval. The elicitation receiver drives its own /resolve → /call
+        // round-trip; an auto-call would race with that and force one side
+        // into a 409.
+        let elicitation_active =
+            match overslash_db::repos::mcp_elicitation::has_active_for_approval(
+                &state.db,
+                approval_pre.id,
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        approval_id = %id,
+                        "auto-call elicitation lookup failed: {e}"
+                    );
+                    false
+                }
+            };
+
+        if !elicitation_active
+            && binding
+                .as_ref()
+                .map(|b| b.auto_call_on_approve)
+                .unwrap_or(false)
         {
             let state_c = state.clone();
             let approval_c = approval_pre.clone();
