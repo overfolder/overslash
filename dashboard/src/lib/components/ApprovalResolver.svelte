@@ -11,6 +11,7 @@
 	import RiskBadge from './approval/RiskBadge.svelte';
 	import { relativeTime } from '$lib/utils/time';
 	import { highlightJson } from '$lib/api';
+	import { onMount } from 'svelte';
 
 	let { approval, onResolved, compact = false }: {
 		approval: ApprovalResponse;
@@ -30,6 +31,22 @@
 	let scopeOpen = $state(false);
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
+
+	// Refresh the relative-time labels (risk bar's "expires in …", execution
+	// expiry hint, etc.) every 30s. Without this the modal can sit open for
+	// minutes showing a stale "expires in 30m" while the real countdown ticks
+	// down silently. The page-level approvals queue has its own ticker; this
+	// one keeps the resolver self-sufficient when it's mounted in a modal or
+	// outside that page.
+	let tick = $state(0);
+	onMount(() => {
+		const id = setInterval(() => (tick += 1), 30_000);
+		return () => clearInterval(id);
+	});
+	function rel(iso: string): string {
+		void tick;
+		return relativeTime(iso);
+	}
 
 	// Reset transient form state when the underlying approval id changes.
 	$effect(() => {
@@ -270,7 +287,7 @@
 
 <article class="card" class:compact>
 	{#if isPending}
-		<RiskBar risk={current.risk} expiresLabel={relativeTime(current.expires_at)} />
+		<RiskBar risk={current.risk} expiresLabel={rel(current.expires_at)} />
 	{/if}
 
 	<div class="body">
@@ -410,7 +427,7 @@
 				<strong>Execution pending.</strong>
 				The approval has been allowed. Trigger the action now, or cancel to
 				invalidate — cancelling <em>Allow once</em> means the agent must request
-				a fresh approval. Expires {execution ? relativeTime(execution.expires_at) : ''}.
+				a fresh approval. Expires {execution ? rel(execution.expires_at) : ''}.
 			</div>
 			{#if error}<div class="error">{error}</div>{/if}
 			<div class="exec-actions">
