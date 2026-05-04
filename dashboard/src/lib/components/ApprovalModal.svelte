@@ -74,7 +74,7 @@
 		right: 8px;
 		width: 32px;
 		height: 32px;
-		background: rgba(255, 255, 255, 0.85);
+		background: var(--color-surface);
 		border: 1px solid var(--color-border);
 		border-radius: 50%;
 		color: var(--color-text-muted);
@@ -85,6 +85,14 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		box-shadow: var(--shadow-sm);
+	}
+	/* Reserve a gutter on the risk bar's right edge so the close button
+	   never clips the "expires in …" timestamp. The bar is the first child
+	   of the resolver card and uses :global(.bar) — keep this in sync with
+	   the bar selector in RiskBar.svelte. */
+	.frame :global(.card .bar) {
+		padding-right: 52px;
 	}
 	:global([data-theme='dark']) .close {
 		background: rgba(26, 27, 30, 0.85);

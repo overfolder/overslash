@@ -270,7 +270,7 @@
 
 <article class="card" class:compact>
 	{#if isPending}
-		<RiskBar risk={current.risk} expiresLabel={`in ${relativeTime(current.expires_at)}`} />
+		<RiskBar risk={current.risk} expiresLabel={relativeTime(current.expires_at)} />
 	{/if}
 
 	<div class="body">

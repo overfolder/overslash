@@ -64,7 +64,7 @@ try {
 		{
 			viewport: { width: 1280, height: 800 },
 			waitFor: async (p) => {
-				await p.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
+				await p.getByRole('dialog').getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
 			}
 		}
 	);
@@ -74,7 +74,7 @@ try {
 	// resolution as a modal, so the post-click state is rendered in-place.
 	// Give the network round-trip time to land and snapshot whatever's
 	// shown — denied badge, closed modal, or the underlying tree.
-	await page.getByRole('button', { name: /^Deny$/ }).click();
+	await page.getByRole('dialog').getByRole('button', { name: /^Deny$/ }).click();
 	await page.waitForTimeout(1500);
 	await snap.snap(page, 'resolved');
 	await ctx.close();
@@ -102,7 +102,7 @@ try {
 	await snap.navigateAndSnap('card-mobile', `/approvals/${mobileApproval.id}`, {
 		viewport: { width: 390, height: 760 },
 		waitFor: async (p) => {
-			await p.getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
+			await p.getByRole('dialog').getByRole('button', { name: /^Deny$/ }).waitFor({ timeout: 15_000 });
 		}
 	});
 
