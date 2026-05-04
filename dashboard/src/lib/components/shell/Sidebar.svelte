@@ -41,6 +41,7 @@
 
 {#if isMobile}
 	<button
+		type="button"
 		class="scrim"
 		class:open={mobileOpen}
 		aria-label="Close menu"
