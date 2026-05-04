@@ -47,7 +47,7 @@
 		align-items: stretch;
 		padding: 0 0.25rem;
 	}
-	@media (max-width: 768px) {
+	@media (max-width: 767px) {
 		.tabbar {
 			display: flex;
 		}
