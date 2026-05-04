@@ -19,12 +19,23 @@ const HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 pub async fn mint(state: &AppState, long_url: &str, expires_at: OffsetDateTime) -> Option<String> {
     let base = state.config.oversla_sh_base_url.as_deref()?;
     let api_key = state.config.oversla_sh_api_key.as_deref()?;
+    mint_with_client(&state.http_client, base, api_key, long_url, expires_at).await
+}
+
+/// Lower-level entry point that takes an explicit client + config so unit
+/// tests can exercise the HTTP roundtrip without constructing an `AppState`.
+pub async fn mint_with_client(
+    http_client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    long_url: &str,
+    expires_at: OffsetDateTime,
+) -> Option<String> {
     let ttl_seconds = (expires_at - OffsetDateTime::now_utc())
         .whole_seconds()
         .max(60) as u64;
-    let resp = match state
-        .http_client
-        .post(format!("{}/api/links", base.trim_end_matches('/')))
+    let resp = match http_client
+        .post(format!("{}/api/links", base_url.trim_end_matches('/')))
         .bearer_auth(api_key)
         .header(header::ACCEPT, "application/json")
         .json(&serde_json::json!({
