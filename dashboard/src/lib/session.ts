@@ -255,7 +255,9 @@ export interface ApprovalResponse {
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
 export interface ExecutionSummary {
 	id: string;
-	/** pending | executing | executed | failed | cancelled | expired */
+	/** pending | executing | executed | failed | cancelled | expired —
+	 *  authoritative values come from the `executions.status` column;
+	 *  the API does no translation. */
 	status: string;
 	result?: unknown;
 	error?: string;

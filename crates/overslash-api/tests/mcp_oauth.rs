@@ -378,7 +378,7 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(search["annotations"]["openWorldHint"], false);
 
     let read = by_name["overslash_read"];
-    assert_eq!(read["title"], "Read via Overslash (no writes)");
+    assert_eq!(read["title"], "Read via Overslash");
     assert_eq!(read["annotations"]["readOnlyHint"], true);
     assert_eq!(read["annotations"]["idempotentHint"], true);
     assert_eq!(read["annotations"]["openWorldHint"], true);

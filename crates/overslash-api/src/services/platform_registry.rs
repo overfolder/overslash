@@ -7,6 +7,10 @@ use uuid::Uuid;
 use overslash_core::openapi::import::{ImportOptions, ImportWarning};
 
 use super::platform_caller::{BoxFuture, PlatformCallContext, PlatformHandler, PlatformRegistry};
+use super::platform_services::{
+    CreateServiceInput, GetServiceInput, UpdateServiceInput, kernel_create_service,
+    kernel_get_service, kernel_list_services, kernel_update_service,
+};
 use super::platform_templates::{
     DraftDetail, kernel_create_template, kernel_delete_template, kernel_get_template,
     kernel_import_template, kernel_list_templates,
@@ -166,6 +170,108 @@ impl PlatformHandler for DeleteTemplateHandler {
     }
 }
 
+// ── Service kernels ──────────────────────────────────────────────────────
+
+struct ListServicesHandler;
+
+impl PlatformHandler for ListServicesHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        _params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(async move {
+            let summaries = kernel_list_services(ctx).await?;
+            Ok(serde_json::to_value(summaries).unwrap_or(Value::Null))
+        })
+    }
+}
+
+struct GetServiceHandler;
+
+impl PlatformHandler for GetServiceHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(async move {
+            let input = params_to_get_input(params)?;
+            let detail = kernel_get_service(ctx, input).await?;
+            Ok(serde_json::to_value(detail).unwrap_or(Value::Null))
+        })
+    }
+}
+
+struct CreateServiceHandler;
+
+impl PlatformHandler for CreateServiceHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(async move {
+            let input: CreateServiceInput = params_to_struct(params)?;
+            if input.template_key.is_empty() {
+                return Err(AppError::BadRequest("'template_key' is required".into()));
+            }
+            let detail = kernel_create_service(ctx, input).await?;
+            Ok(serde_json::to_value(detail).unwrap_or(Value::Null))
+        })
+    }
+}
+
+struct UpdateServiceHandler;
+
+impl PlatformHandler for UpdateServiceHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(async move {
+            let id_str = params
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::BadRequest("'id' param is required".into()))?;
+            let id = Uuid::parse_str(id_str)
+                .map_err(|_| AppError::BadRequest(format!("invalid uuid '{id_str}'")))?;
+            let mut params = params;
+            params.remove("id");
+            let input: UpdateServiceInput = params_to_struct(params)?;
+            let detail = kernel_update_service(ctx, id, input).await?;
+            Ok(serde_json::to_value(detail).unwrap_or(Value::Null))
+        })
+    }
+}
+
+fn params_to_struct<T: serde::de::DeserializeOwned + Default>(
+    params: HashMap<String, Value>,
+) -> Result<T, AppError> {
+    if params.is_empty() {
+        return Ok(T::default());
+    }
+    let value = Value::Object(params.into_iter().collect());
+    serde_json::from_value(value).map_err(|e| AppError::BadRequest(format!("invalid params: {e}")))
+}
+
+fn params_to_get_input(params: HashMap<String, Value>) -> Result<GetServiceInput, AppError> {
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::BadRequest("'name' param is required".into()))?
+        .to_string();
+    let include_inactive = params
+        .get("include_inactive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(GetServiceInput {
+        name,
+        include_inactive,
+    })
+}
+
 pub fn build_registry() -> PlatformRegistry {
     let mut m: PlatformRegistry = HashMap::new();
     m.insert("ping".into(), Box::new(PingHandler));
@@ -174,5 +280,9 @@ pub fn build_registry() -> PlatformRegistry {
     m.insert("create_template".into(), Box::new(CreateTemplateHandler));
     m.insert("import_template".into(), Box::new(ImportTemplateHandler));
     m.insert("delete_template".into(), Box::new(DeleteTemplateHandler));
+    m.insert("list_services".into(), Box::new(ListServicesHandler));
+    m.insert("get_service".into(), Box::new(GetServiceHandler));
+    m.insert("create_service".into(), Box::new(CreateServiceHandler));
+    m.insert("update_service".into(), Box::new(UpdateServiceHandler));
     m
 }

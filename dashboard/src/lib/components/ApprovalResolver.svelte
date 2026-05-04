@@ -52,14 +52,59 @@
 	/** Execution lifecycle — populated once approval is allowed. */
 	const execution = $derived(current.execution ?? null);
 	const executionPending = $derived(execution?.status === 'pending');
-	const executionRunning = $derived(execution?.status === 'calling');
+	const executionRunning = $derived(execution?.status === 'executing');
 	const executionTerminal = $derived(
 		!!execution &&
-			(execution.status === 'called' ||
+			(execution.status === 'executed' ||
 				execution.status === 'failed' ||
 				execution.status === 'cancelled' ||
 				execution.status === 'expired')
 	);
+
+	// Live-refresh while a call is in flight — without this the resolver
+	// would stay stuck on "Calling upstream action…" because /resolve
+	// returns immediately and the actual call runs in a spawned task on
+	// the backend (see #239 auto-call). Self-terminates on terminal status,
+	// component teardown, or after a 30s safety cap.
+	//
+	// `pollStartedAt` is anchored outside the reactive scope so the cap is
+	// a wall-clock window from when polling first became active, not from
+	// the latest poll response. Each successful poll re-runs the effect
+	// (override → current → execution change), and we want the cap to
+	// survive that re-run.
+	let pollStartedAt: number | null = null;
+	let pollApprovalId: string | null = null;
+	$effect(() => {
+		const id = current.id;
+		if (isPending || !execution || executionTerminal) {
+			pollStartedAt = null;
+			pollApprovalId = null;
+			return;
+		}
+		if (pollApprovalId !== id) {
+			pollApprovalId = id;
+			pollStartedAt = Date.now();
+		}
+		const startedAt = pollStartedAt!;
+		if (Date.now() - startedAt > 30_000) return;
+		const handle = setInterval(async () => {
+			if (submitting) return;
+			if (Date.now() - startedAt > 30_000) {
+				clearInterval(handle);
+				return;
+			}
+			try {
+				const fresh = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
+				if (id !== current.id) return;
+				override = fresh;
+			} catch {
+				// Transient error — keep polling. A persistent failure here
+				// shouldn't stomp the resolver's `error` field, which is
+				// reserved for user-action failures.
+			}
+		}, 1500);
+		return () => clearInterval(handle);
+	});
 
 	// Derive Service / Action display from the first parsed permission key.
 	// `derived_keys` comes from the API as `{service, action, arg}`.
@@ -315,29 +360,33 @@
 			</div>
 		</div>
 	{:else if !isPending && executionRunning}
-		<div class="banner banner-allowed">
-			Calling upstream action…
+		<div role="status" aria-live="polite">
+			<div class="banner banner-allowed">
+				Calling upstream action…
+			</div>
 		</div>
 	{:else if !isPending && executionTerminal && execution}
-		<div class="banner banner-{execution.status}">
-			{#if execution.status === 'called'}
-				Called successfully.
-			{:else if execution.status === 'failed'}
-				Call failed{execution.error ? `: ${execution.error}` : ''}.
-			{:else if execution.status === 'cancelled'}
-				Call was cancelled.
-			{:else if execution.status === 'expired'}
-				Pending call expired before it ran.
+		<div role="status" aria-live="polite">
+			<div class="banner banner-{execution.status}">
+				{#if execution.status === 'executed'}
+					Called successfully.
+				{:else if execution.status === 'failed'}
+					Call failed{execution.error ? `: ${execution.error}` : ''}.
+				{:else if execution.status === 'cancelled'}
+					Call was cancelled.
+				{:else if execution.status === 'expired'}
+					Pending call expired before it ran.
+				{/if}
+			</div>
+			{#if execution.status === 'executed' && (current.cascaded_approval_ids?.length ?? 0) > 0}
+				{@const n = current.cascaded_approval_ids!.length}
+				<div class="banner banner-cascade">
+					Also resolved {n} related {n === 1 ? 'approval' : 'approvals'} that the new
+					permission now covers.
+				</div>
 			{/if}
 		</div>
-		{#if execution.status === 'called' && (current.cascaded_approval_ids?.length ?? 0) > 0}
-			{@const n = current.cascaded_approval_ids!.length}
-			<div class="banner banner-cascade">
-				Also resolved {n} related {n === 1 ? 'approval' : 'approvals'} that the new
-				permission now covers.
-			</div>
-		{/if}
-		{#if execution.status === 'called' && execution.result}
+		{#if execution.status === 'executed' && execution.result}
 			<details class="raw-payload">
 				<summary>Result</summary>
 				<pre class="code">{@html highlightJson(execution.result)}</pre>
@@ -660,7 +709,7 @@
 		color: #d14343;
 		background: rgba(209, 67, 67, 0.06);
 	}
-	.banner-called {
+	.banner-executed {
 		border-color: #2e7d32;
 		color: #2e7d32;
 		background: rgba(46, 125, 50, 0.06);

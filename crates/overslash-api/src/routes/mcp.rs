@@ -350,18 +350,18 @@ fn tools_list_response(id: Value) -> Response {
                 {
                     "name": "overslash_search",
                     "title": "Search Overslash services",
-                    "description": "Discover Overslash services and actions available to the caller. Returns only services the caller has already connected; pass `include_catalog: true` to also surface the un-connected global/org catalog. Empty query lists connected services without actions.",
+                    "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. An empty `query` lists every callable instance without actions (browse mode).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Free-text query. Pass an empty string to list every connected service (no actions)."
+                                "description": "Free-text query. Pass an empty string to list every callable instance (no actions)."
                             },
                             "include_catalog": {
                                 "type": "boolean",
                                 "default": false,
-                                "description": "When true, also search the un-connected global/org catalog. Default returns only services with at least one active instance bound to the caller."
+                                "description": "When true, also surface un-connected templates as `setup_required: true` rows. Default returns only configured instances the caller can call right now."
                             }
                         },
                         "additionalProperties": false
@@ -374,12 +374,15 @@ fn tools_list_response(id: Value) -> Response {
                 },
                 {
                     "name": "overslash_read",
-                    "title": "Read via Overslash (no writes)",
-                    "description": "Call a read-class Overslash action. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
+                    "title": "Read via Overslash",
+                    "description": "Call a read-class Overslash action on a configured service instance. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "service": { "type": "string" },
+                            "service": {
+                                "type": "string",
+                                "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                            },
                             "action":  { "type": "string" },
                             "params":  {}
                         },
@@ -395,11 +398,14 @@ fn tools_list_response(id: Value) -> Response {
                 {
                     "name": "overslash_call",
                     "title": "Call an Overslash action",
-                    "description": "Call any Overslash action (read, write, or delete) or resume a pending approval. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
+                    "description": "Call any Overslash action (read, write, or delete) on a configured service instance, or resume a pending approval. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "service":     { "type": "string" },
+                            "service": {
+                                "type": "string",
+                                "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                            },
                             "action":      { "type": "string" },
                             "params":      {},
                             "approval_id": {
@@ -860,19 +866,19 @@ async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<V
     //     actions; fall through to the regular `/v1/actions/call` forwarding
     //     so `require_risk=read` is enforced at the action gateway.
     if service == "overslash" {
-        match action {
-            "list_pending" => {
-                return dispatch_overslash_platform(state, bearer, action, args).await;
+        return match action {
+            // Pass `require_risk: "read"` so the actions handler enforces the
+            // risk gate even though the caller is the read tool. Defense in
+            // depth — if a write-class action ever sneaks into this arm by
+            // mistake, the server-side check refuses it.
+            "list_pending" | "list_services" | "get_service" | "list_templates"
+            | "get_template" => {
+                dispatch_overslash_platform(state, bearer, action, args, Some("read")).await
             }
-            "list_templates" | "get_template" => {
-                // fall through to the regular forwarding path
-            }
-            other => {
-                return Err(format!(
-                    "overslash platform action '{other}' is not read-class; use overslash_call"
-                ));
-            }
-        }
+            other => Err(format!(
+                "overslash platform action '{other}' is not read-class; use overslash_call"
+            )),
+        };
     }
 
     let mut body = serde_json::Map::new();
@@ -920,9 +926,10 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
         .ok_or_else(|| "action required".to_string())?;
 
     // Overslash metaservice platform actions are handled in-process; they have
-    // no upstream HTTP host to forward to.
+    // no upstream HTTP host to forward to. No `require_risk` here — the call
+    // tool admits read/write/delete equally.
     if service == "overslash" {
-        return dispatch_overslash_platform(state, bearer, action, args).await;
+        return dispatch_overslash_platform(state, bearer, action, args, None).await;
     }
 
     let mut body = serde_json::Map::new();
@@ -943,24 +950,12 @@ async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<V
     .await
 }
 
-/// Platform actions bridged from MCP into the regular `/v1/actions/call`
-/// pipeline. Routing them through the action gateway means the permission
-/// walk + approval bubbling + audit row are inherited automatically — no
-/// MCP-specific code path. The kernel handlers live in
-/// `services::platform_templates`.
-const BRIDGED_PLATFORM_ACTIONS: &[&str] = &[
-    "list_templates",
-    "get_template",
-    "create_template",
-    "import_template",
-    "delete_template",
-];
-
 async fn dispatch_overslash_platform(
     state: &AppState,
     bearer: &str,
     action: &str,
     args: &Value,
+    require_risk: Option<&str>,
 ) -> Result<Value, String> {
     let params = args.get("params");
     match action {
@@ -1002,31 +997,54 @@ async fn dispatch_overslash_platform(
             let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
             forward(state, bearer, Method::POST, &path, None).await
         }
-        other if BRIDGED_PLATFORM_ACTIONS.contains(&other) => {
-            // Forward to /v1/actions/call so the action gateway resolves the
-            // call as a Platform-runtime service, runs permission_chain::walk
-            // (returning 202 PendingApproval on a gap), and dispatches the
-            // kernel registered in `state.platform_registry`. We don't need
-            // a separate MCP code path for any of these.
-            let mut body = serde_json::Map::new();
-            body.insert("service".into(), Value::String("overslash".into()));
-            body.insert("action".into(), Value::String(other.into()));
-            if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
-                body.insert("params".into(), p.clone());
-            }
-            forward(
-                state,
-                bearer,
-                Method::POST,
-                "/v1/actions/call",
-                Some(Value::Object(body)),
-            )
-            .await
+        // Bridged platform kernels — forward through `/v1/actions/call` so the
+        // platform_target dispatcher in `routes/actions.rs` runs the kernel via
+        // `state.platform_registry`. Permission gating is handled by the
+        // action's `permission:` anchor in `services/overslash.yaml` (the
+        // `manage_services_own` / `manage_services_share` /
+        // `manage_templates_own` / `manage_templates_publish` splits). When
+        // the caller is the read tool, `require_risk` is forwarded so the
+        // action handler enforces the risk gate.
+        "list_services" | "get_service" | "create_service" | "update_service"
+        | "list_templates" | "get_template" | "create_template" | "import_template"
+        | "delete_template" => {
+            forward_overslash_action(state, bearer, action, params, require_risk).await
         }
         other => Err(format!(
             "overslash platform action '{other}' is not callable via MCP"
         )),
     }
+}
+
+/// Forward an `overslash`-platform action through `/v1/actions/call` so the
+/// existing platform_target dispatch in `routes/actions.rs` runs the kernel
+/// via `state.platform_registry`. Returns whatever the actions endpoint
+/// returned (which may be `pending_approval` if the agent lacks the
+/// permission anchor declared on the action).
+async fn forward_overslash_action(
+    state: &AppState,
+    bearer: &str,
+    action: &str,
+    params: Option<&Value>,
+    require_risk: Option<&str>,
+) -> Result<Value, String> {
+    let mut body = serde_json::Map::new();
+    body.insert("service".into(), Value::String("overslash".into()));
+    body.insert("action".into(), Value::String(action.into()));
+    if let Some(risk) = require_risk {
+        body.insert("require_risk".into(), Value::String(risk.into()));
+    }
+    if let Some(p) = params.filter(|v| !v.is_null()) {
+        body.insert("params".into(), p.clone());
+    }
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        "/v1/actions/call",
+        Some(Value::Object(body)),
+    )
+    .await
 }
 
 async fn dispatch_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {

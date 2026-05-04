@@ -143,6 +143,18 @@ variable "enable_dev_auth" {
   default = false
 }
 
+variable "overslash_env" {
+  type        = string
+  default     = ""
+  description = "Deployment env marker (e.g. dev/prod) propagated as OVERSLASH_ENV. Used as the env half of the Vercel preview OAuth handoff defense-in-depth gate."
+}
+
+variable "vercel_preview_origin_regex" {
+  type        = string
+  default     = ""
+  description = "Regex matching Vercel preview-deployment URLs allowed to OAuth-handoff back to themselves (dev only). Empty = feature off; production must leave empty."
+}
+
 variable "redis_host" {
   type    = string
   default = ""
@@ -231,6 +243,8 @@ locals {
     var.app_host_suffix != "" ? { APP_HOST_SUFFIX = var.app_host_suffix } : {},
     var.api_host_suffix != "" ? { API_HOST_SUFFIX = var.api_host_suffix } : {},
     var.session_cookie_domain != "" ? { SESSION_COOKIE_DOMAIN = var.session_cookie_domain } : {},
+    var.overslash_env != "" ? { OVERSLASH_ENV = var.overslash_env } : {},
+    var.vercel_preview_origin_regex != "" ? { PREVIEW_ORIGIN_ALLOWLIST = var.vercel_preview_origin_regex } : {},
   )
 
   env_secrets = merge(

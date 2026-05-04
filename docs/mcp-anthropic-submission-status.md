@@ -61,7 +61,7 @@ Overall: the protocol surface is in good shape. The blockers for submission are 
 | Tool | `title` | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 |---|---|---|---|---|---|
 | `overslash_search` | "Search Overslash services" | ✅ true | — | true | false |
-| `overslash_read` | "Read via Overslash (no writes)" | ✅ true | — | true | true |
+| `overslash_read` | "Read via Overslash" | ✅ true | — | true | true |
 | `overslash_call` | "Call an Overslash action" | false | ✅ true | false | true |
 | `overslash_auth` | "Identity & service status" | ✅ true | — | true | false |
 

@@ -538,6 +538,14 @@
 				{#if isSystem}
 					<StatusBadge variant="built-in" />
 				{:else}
+					<button
+						type="button"
+						class="btn"
+						title="Open in API Explorer"
+						onclick={() => goto(`/services?tab=api-explorer&service=${encodeURIComponent(name)}`)}
+					>
+						⌘ Try it
+					</button>
 					{#if svc.status !== 'archived'}
 						<button type="button" class="btn" onclick={() => changeStatus('archived')}>Archive</button>
 					{:else}

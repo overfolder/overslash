@@ -61,6 +61,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     // Build the app with the test pool directly
@@ -1305,6 +1307,8 @@ async fn test_service_registry_api() {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -2283,6 +2287,8 @@ async fn start_api_with_registry(
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {

@@ -1,8 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { env } from '$env/dynamic/public';
 
 	let { data } = $props();
+
+	// Build-time-injected preview-host regex. Set on the Vercel project for
+	// preview deployments only; empty on prod and self-hosted builds. When
+	// empty, `isPreviewHost()` returns false and the OAuth login URL skips
+	// the `preview_origin` query param entirely — the handoff feature stays
+	// invisible end-to-end.
+	const previewHostRe = env.PUBLIC_PREVIEW_HOST_RE ?? '';
 
 	const providers = $derived(
 		data.providers as Array<{ key: string; display_name: string; source: string; is_default?: boolean }>
@@ -14,11 +22,40 @@
 
 	function loginUrl(key: string): string {
 		const target = `/auth/login/${encodeURIComponent(key)}`;
+		const params = new URLSearchParams();
 		// Forward `next` so the OAuth-AS resumption path survives the IdP
 		// bounce. Without this, `/oauth/authorize` redirects here, the user
 		// signs in, and the callback dumps them at the dashboard root —
 		// breaking MCP onboarding.
-		return next ? `${target}?next=${encodeURIComponent(next)}` : target;
+		if (next) params.set('next', next);
+		// Vercel preview-deployment OAuth handoff. The dashboard runs on
+		// `<preview>.vercel.app` (no shared parent domain with the API),
+		// so cookies set on `api.dev.overslash.com` can't reach back here.
+		// We tell the API where we live; if the origin is in its
+		// allowlist, the callback bounces us through `/auth/handoff` with
+		// a one-time code instead of trying to set a cookie that would
+		// never arrive. The API silently ignores `preview_origin` when
+		// the feature is off, so this is safe to send unconditionally
+		// from a preview host.
+		if (typeof window !== 'undefined' && isPreviewHost()) {
+			params.set('preview_origin', window.location.origin);
+		}
+		const qs = params.toString();
+		return qs ? `${target}?${qs}` : target;
+	}
+
+	/// Match the host against the preview-host regex injected at build
+	/// time via `PUBLIC_PREVIEW_HOST_RE`. When unset, the dashboard is
+	/// not deployed on a Vercel preview and we never advertise a
+	/// preview origin to the API.
+	function isPreviewHost(): boolean {
+		const raw = previewHostRe;
+		if (!raw) return false;
+		try {
+			return new RegExp(raw).test(window.location.host);
+		} catch {
+			return false;
+		}
 	}
 
 	let devProfile = $state<'admin' | 'member' | 'readonly'>('admin');

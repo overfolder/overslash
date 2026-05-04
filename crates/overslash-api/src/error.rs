@@ -73,6 +73,15 @@ pub enum AppError {
     TemplateValidationFailed {
         report: overslash_core::template_validation::ValidationReport,
     },
+
+    #[error("{message}")]
+    ServiceResolution {
+        status: StatusCode,
+        message: String,
+        matched_template: Option<String>,
+        available_instances: Vec<String>,
+        hint: Option<String>,
+    },
 }
 
 impl AppError {
@@ -92,6 +101,7 @@ impl AppError {
             Self::Gone(_) => StatusCode::GONE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::TemplateValidationFailed { .. } => StatusCode::BAD_REQUEST,
+            Self::ServiceResolution { status, .. } => *status,
             Self::Internal(_) | Self::Database(_) | Self::Json(_) | Self::Crypto(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -212,6 +222,23 @@ impl IntoResponse for AppError {
                     })),
                 )
                     .into_response();
+            }
+            Self::ServiceResolution {
+                status,
+                message,
+                matched_template,
+                available_instances,
+                hint,
+            } => {
+                let mut body = json!({ "error": message });
+                if let Some(t) = matched_template {
+                    body["matched_template"] = json!(t);
+                }
+                body["available_instances"] = json!(available_instances);
+                if let Some(h) = hint {
+                    body["hint"] = json!(h);
+                }
+                return (*status, Json(body)).into_response();
             }
         };
 

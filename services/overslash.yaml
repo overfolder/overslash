@@ -45,8 +45,11 @@ platform_actions:
   resolve_approvals:
     description: "Resolve pending approval requests"
     risk: write
-  manage_services:
-    description: "Create service instances"
+  manage_services_own:
+    description: "Create and update service instances the caller owns"
+    risk: write
+  manage_services_share:
+    description: "Grant service instances to non-Myself groups (org-wide sharing)"
     risk: write
   delete_services:
     description: "Delete and manage service instance lifecycle"
@@ -124,3 +127,45 @@ platform_actions:
     permission: manage_templates_own
     params:
       key: { type: string, required: true }
+
+  list_services:
+    description: "List service instances visible to the caller"
+    risk: read
+    permission: manage_services_own
+
+  get_service:
+    description: "Get a service instance by name or id"
+    risk: read
+    permission: manage_services_own
+    params:
+      name: { type: string, required: true }
+      include_inactive: { type: boolean, required: false }
+
+  create_service:
+    description: >
+      Create a service instance from a template. The instance is auto-granted to
+      the owner's Myself group with admin access and auto_approve_reads. For
+      OAuth-backed templates the new row carries credentials_status =
+      "needs_authentication" — start the OAuth flow before calling actions.
+    risk: write
+    permission: manage_services_own
+    params:
+      template_key: { type: string, required: true }
+      name: { type: string, required: false }
+      connection_id: { type: string, required: false }
+      secret_name: { type: string, required: false }
+      url: { type: string, required: false }
+      status: { type: string, required: false }
+      user_level: { type: boolean, required: false }
+      on_behalf_of: { type: string, required: false }
+
+  update_service:
+    description: "Update mutable fields on a service instance (name, connection, secret, url)"
+    risk: write
+    permission: manage_services_own
+    params:
+      id: { type: string, required: true }
+      name: { type: string, required: false }
+      connection_id: { type: string, required: false }
+      secret_name: { type: string, required: false }
+      url: { type: string, required: false }

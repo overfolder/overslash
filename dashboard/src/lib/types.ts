@@ -322,8 +322,14 @@ export interface ServiceGroupRef {
 }
 
 /** Derived from the bound connection's scopes vs. the template's per-action
- *  required_scopes. `needs_reconnect` is the "no action at all will work" state. */
-export type CredentialsStatus = 'ok' | 'partially_degraded' | 'needs_reconnect';
+ *  required_scopes. `needs_authentication` is the freshly-created state for an
+ *  auth-bearing template with no connection bound; `needs_reconnect` is the
+ *  "connection is bound but no action will work" state. */
+export type CredentialsStatus =
+  | 'needs_authentication'
+  | 'ok'
+  | 'partially_degraded'
+  | 'needs_reconnect';
 
 export interface ServiceInstanceSummary {
   id: string;
