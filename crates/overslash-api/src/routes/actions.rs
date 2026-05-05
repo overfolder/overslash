@@ -2272,6 +2272,12 @@ async fn resolve_service_auth(
     let user_scope = overslash_db::scopes::UserScope::new(org_id, identity_id, scope.db().clone());
 
     // Try OAuth first: check if identity has a connection for this service's OAuth provider
+    // The encryption key is process-global, so a parse error here can't be
+    // recovered by trying the next provider — propagate Internal once,
+    // outside the loop.
+    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+        .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
+
     for service_auth in &svc.auth {
         if let overslash_core::types::ServiceAuth::OAuth {
             provider,
@@ -2279,27 +2285,26 @@ async fn resolve_service_auth(
             ..
         } = service_auth
         {
-            // `find_my_connection_by_provider` returning Err is a DB
-            // failure. Surface it as Internal so the caller doesn't see
-            // a misleading 401 needs_authentication when the real
-            // problem is server-side. `Ok(None)` (the *no connection
-            // exists yet* case) keeps the legacy fall-through.
+            // Per-provider lookup. `Ok(None)` is the legitimate "no
+            // connection yet" case — try the next provider. A DB blip
+            // (Err) we log and continue too, so a transient issue on
+            // provider A doesn't break a multi-provider template that
+            // could authenticate via provider B.
             let conn = match user_scope.find_my_connection_by_provider(provider).await {
                 Ok(Some(conn)) => conn,
                 Ok(None) => continue,
                 Err(e) => {
-                    return Err(AppError::Internal(format!(
-                        "connection lookup for provider '{provider}' failed: {e}"
-                    )));
+                    tracing::warn!(
+                        "connection lookup for provider '{provider}' failed; trying next provider: {e}"
+                    );
+                    continue;
                 }
             };
-            // Crypto config / BYOC resolution failures are server-side
-            // problems too. Same treatment — propagate as Internal
-            // instead of swallowing and confusing the user with a
-            // needs_authentication prompt.
-            let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
-                .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
-            let creds = crate::services::client_credentials::resolve(
+            // Per-provider credentials resolution. Failures here are
+            // typically "no BYOC for provider X and no env fallback" — a
+            // legitimate "try the next provider" signal. Log and continue
+            // instead of bailing the whole loop.
+            let creds = match crate::services::client_credentials::resolve(
                 &state.db,
                 &enc_key,
                 org_id,
@@ -2309,11 +2314,15 @@ async fn resolve_service_auth(
                 None,
             )
             .await
-            .map_err(|e| {
-                AppError::Internal(format!(
-                    "OAuth client credentials resolution for '{provider}' failed: {e}"
-                ))
-            })?;
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "OAuth client credentials resolution for '{provider}' failed; trying next provider: {e}"
+                    );
+                    continue;
+                }
+            };
 
             match crate::services::oauth::resolve_access_token(
                 scope,
@@ -2476,24 +2485,19 @@ async fn resolve_instance_auth(
     }
 
     let org_id = scope.org_id();
-    // If instance has a bound connection, use it directly
+    // If instance has a bound connection, use it directly. Errors here
+    // (encryption-key parse, client-credentials resolve) are server-side
+    // problems on the *specific* connection the instance is bound to —
+    // falling back to template-level resolve_service_auth would either
+    // re-trigger the same crypto error or pick an unrelated connection
+    // that the operator never asked us to use. Propagate Internal so the
+    // operator can see the real cause; mirror what resolve_service_auth
+    // does for its access_token errors.
     if let Some(conn_id) = instance.connection_id {
         if let Ok(Some(conn)) = scope.get_connection(conn_id).await {
-            let enc_key = match crypto::parse_hex_key(&state.config.secrets_encryption_key) {
-                Ok(k) => k,
-                Err(_) => {
-                    return resolve_service_auth(
-                        state,
-                        scope,
-                        identity_id,
-                        svc,
-                        explicit_secrets,
-                        headers,
-                    )
-                    .await;
-                }
-            };
-            let creds = match crate::services::client_credentials::resolve(
+            let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+                .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
+            let creds = crate::services::client_credentials::resolve(
                 &state.db,
                 &enc_key,
                 org_id,
@@ -2503,20 +2507,12 @@ async fn resolve_instance_auth(
                 None,
             )
             .await
-            {
-                Ok(c) => c,
-                Err(_) => {
-                    return resolve_service_auth(
-                        state,
-                        scope,
-                        identity_id,
-                        svc,
-                        explicit_secrets,
-                        headers,
-                    )
-                    .await;
-                }
-            };
+            .map_err(|e| {
+                AppError::Internal(format!(
+                    "OAuth client credentials resolution for instance-bound connection {} failed: {e}",
+                    conn.id
+                ))
+            })?;
 
             match crate::services::oauth::resolve_access_token(
                 scope,
