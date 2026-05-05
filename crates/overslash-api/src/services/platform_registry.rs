@@ -182,7 +182,7 @@ impl PlatformHandler for ListServicesHandler {
         _params: HashMap<String, Value>,
     ) -> BoxFuture<'_, Result<Value, AppError>> {
         Box::pin(async move {
-            let summaries = kernel_list_services(ctx).await?;
+            let summaries = kernel_list_services(ctx, false).await?;
             Ok(serde_json::to_value(summaries).unwrap_or(Value::Null))
         })
     }

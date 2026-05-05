@@ -759,3 +759,145 @@ async fn admin_agent_cannot_delete_owner_user_service_by_name() {
         "service must still exist after denied delete"
     );
 }
+
+/// Helper: seed a user-level service owned by the given user. Returns its name.
+async fn seed_user_level_service(
+    base: &str,
+    client: &reqwest::Client,
+    org_key: &str,
+    owner_key: &str,
+    name: &str,
+) {
+    // Create the template at org level so any user can instantiate it.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({ "openapi": common::minimal_openapi(name) }))
+        .send()
+        .await
+        .unwrap();
+
+    // Owner creates a user-level instance.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({
+            "template_key": name,
+            "name": name,
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "seeding user-level service '{name}' must succeed"
+    );
+}
+
+/// `?include_user_level=true` is silently ignored for callers without the
+/// `is_org_admin` flag — the listing falls back to the standard group-ceiling
+/// view. We do not 403 so a tab open across an admin-flag revocation does
+/// not start failing.
+#[tokio::test]
+async fn include_user_level_is_silently_ignored_for_non_admins() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+
+    // admin-user owns a user-level service. Auto-grant lands on admin-user's
+    // Myself group, so write-user has no group route to see it.
+    seed_user_level_service(&base, &client, &fx.org_key, &fx.admin_key, "admin-user-svc").await;
+
+    // write-user is not flagged is_org_admin and has no grant on
+    // admin-user's service. The flag must not broaden their view.
+    let resp = client
+        .get(format!("{base}/v1/services?include_user_level=true"))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        !names.contains(&"admin-user-svc"),
+        "non-admin must not see another user's user-level service even with the flag (got: {names:?})"
+    );
+}
+
+/// A flag-only org admin (set `is_org_admin=true` directly, without Admins
+/// group membership) must see every user-level service in the org when they
+/// pass `?include_user_level=true`.
+#[tokio::test]
+async fn flag_only_admin_sees_other_users_services_with_flag() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    // admin-user owns a user-level service. Auto-grant lands on admin-user's
+    // Myself group, so write-user has no group route to see it.
+    seed_user_level_service(&base, &client, &fx.org_key, &fx.admin_key, "admin-user-svc").await;
+
+    // Flip the flag on write-user. The bootstrap fixture leaves
+    // write-user out of the Admins group, so this is the flag-only path.
+    sqlx::query!(
+        "UPDATE identities SET is_org_admin = true WHERE id = $1",
+        fx.user_ids[1],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/services?include_user_level=true"))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        names.contains(&"admin-user-svc"),
+        "flag-only admin with include_user_level=true must see other users' user-level services (got: {names:?})"
+    );
+}
+
+/// Even an admin must not see other users' user-level services when the
+/// override flag is absent — default behaviour stays group-gated.
+#[tokio::test]
+async fn admin_without_flag_keeps_group_gated_view() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    // admin-user owns a user-level service. Auto-grant lands on admin-user's
+    // Myself group, so write-user has no group route to see it.
+    seed_user_level_service(&base, &client, &fx.org_key, &fx.admin_key, "admin-user-svc").await;
+
+    sqlx::query!(
+        "UPDATE identities SET is_org_admin = true WHERE id = $1",
+        fx.user_ids[1],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // No `include_user_level` query param → kernel still applies the
+    // ceiling, and write-user has no grant on admin-user's service.
+    let resp = client
+        .get(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        !names.contains(&"admin-user-svc"),
+        "admin without the flag must keep the group-gated view (got: {names:?})"
+    );
+}

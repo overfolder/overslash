@@ -376,6 +376,27 @@ pub(crate) async fn list_available_with_groups(
     }
 }
 
+/// List every service instance in an org, regardless of owner or group grants.
+///
+/// Used by the dashboard's admin "view all users' services" affordance. The route
+/// layer is responsible for gating this on `is_org_admin`.
+pub(crate) async fn list_all_in_org(
+    pool: &PgPool,
+    org_id: Uuid,
+) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ServiceInstanceRow,
+        "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
+         template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
+         FROM service_instances \
+         WHERE org_id = $1 \
+         ORDER BY name",
+        org_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// Update lifecycle status, scoped to an org.
 ///
 /// Double-key

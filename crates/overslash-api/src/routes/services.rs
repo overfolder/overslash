@@ -51,6 +51,16 @@ struct GetServiceQuery {
     include_inactive: bool,
 }
 
+#[derive(Deserialize, Default)]
+struct ListServicesQuery {
+    /// Admin-only: when true, return every service instance in the org
+    /// (org-level + all users' user-level rows), bypassing the group ceiling.
+    /// Silently ignored for non-admin callers so a stale dashboard tab does
+    /// not start 403'ing when an admin flag is revoked.
+    #[serde(default)]
+    include_user_level: bool,
+}
+
 // -- Helpers --
 
 /// Build a [`PlatformCallContext`] from the WriteAcl extractor for kernel calls.
@@ -77,6 +87,7 @@ async fn list_services(
     State(state): State<AppState>,
     auth: AuthContext,
     scope: OrgScope,
+    Query(q): Query<ListServicesQuery>,
 ) -> Result<Json<Vec<ServiceInstanceSummary>>> {
     // Org-level API keys (no identity) bypass kernel and use a permissive
     // listing path — see the original implementation for why. Identity-bound
@@ -114,6 +125,23 @@ async fn list_services(
         return Ok(Json(summaries));
     }
 
+    let identity_id = auth.identity_id.unwrap();
+
+    // Admin-only opt-in: when an org admin explicitly asks for the full org
+    // view, skip the group-ceiling filter. We read `is_org_admin` directly
+    // from the identity row instead of relying on `AdminAcl`, because
+    // `AdminAcl` requires `AccessLevel::Admin` on the overslash service
+    // grant — we want the flag-based admin check (same approach as the
+    // dashboard secrets list, see `routes/secrets.rs`). Non-admins requesting
+    // the flag get the standard ceiling-gated listing without an error so a
+    // tab open across an admin-flag revocation does not start 403'ing.
+    let admin_view_all = q.include_user_level
+        && scope
+            .get_identity(identity_id)
+            .await?
+            .map(|i| i.is_org_admin)
+            .unwrap_or(false);
+
     let ctx = PlatformCallContext {
         org_id: auth.org_id,
         identity_id: auth.identity_id,
@@ -123,7 +151,7 @@ async fn list_services(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
-    let summaries = platform_services::kernel_list_services(ctx).await?;
+    let summaries = platform_services::kernel_list_services(ctx, admin_view_all).await?;
     Ok(Json(summaries))
 }
 

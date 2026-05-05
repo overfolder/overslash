@@ -19,6 +19,7 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import TemplateCatalog from '$lib/components/templates/TemplateCatalog.svelte';
 	import ApiExplorer from '$lib/components/api-explorer/ApiExplorer.svelte';
 
@@ -60,6 +61,10 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let searchValue = $state<SearchValue>({ expressions: [], freeText: '' });
+	// Admin-only: when true, list every user-level service across the org.
+	// Non-admin callers can still flip this UI (it's just hidden), and the
+	// backend silently ignores the flag for them.
+	let showAllUsers = $state(false);
 
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
@@ -133,7 +138,7 @@
 		error = null;
 		try {
 			const [s, c, ids] = await Promise.all([
-				listServices(),
+				listServices({ includeUserLevel: showAllUsers }),
 				listConnections(),
 				// Identity list is used to map owner UUIDs to display names. Soft-fail
 				// if it can't load so the services view is still usable.
@@ -235,7 +240,7 @@
 			<div class="error">{error}</div>
 		{/if}
 
-		{#if !loading && services.length > 0}
+		{#if !loading && (services.length > 0 || showAllUsers)}
 			<div class="filters">
 				<SearchBar
 					keys={searchKeys}
@@ -243,6 +248,21 @@
 					placeholder="Search services… (try status=active)"
 					onchange={(next) => (searchValue = next)}
 				/>
+				{#if isAdmin}
+					<label class="admin-toggle" for="show-all-users">
+						<ToggleSwitch
+							id="show-all-users"
+							checked={showAllUsers}
+							onchange={(next) => {
+								showAllUsers = next;
+								load();
+							}}
+							size="sm"
+							label="Show all users' services"
+						/>
+						<span>Show all users' services</span>
+					</label>
+				{/if}
 			</div>
 		{/if}
 
@@ -292,7 +312,14 @@
 								</td>
 								<td class="muted" title={s.owner_identity_id ?? ''}>{ownerLabel(s)}</td>
 								<td>
-									{#if s.groups && s.groups.length > 0}
+									{#if s.owner_identity_id && currentUserId && s.owner_identity_id !== currentUserId}
+										<span class="group-pills">
+											<StatusBadge variant="user" label="User-level" />
+											{#each s.groups ?? [] as g (g.grant_id)}
+												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
+											{/each}
+										</span>
+									{:else if s.groups && s.groups.length > 0}
 										<span class="group-pills">
 											{#each s.groups as g (g.grant_id)}
 												<span class="group-pill" title={`${g.access_level}${g.auto_approve_reads ? ' · auto-approve reads' : ''}`}>{g.system_kind === 'self' ? 'Myself' : g.group_name}</span>
@@ -427,7 +454,24 @@
 		font-size: 0.85rem;
 	}
 	.filters {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
 		margin-bottom: 0.9rem;
+	}
+	.filters > :global(:first-child) {
+		flex: 1;
+		min-width: 240px;
+	}
+	.admin-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		font-size: 0.82rem;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		user-select: none;
 	}
 	.empty {
 		background: var(--color-surface);
