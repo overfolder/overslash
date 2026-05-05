@@ -465,19 +465,19 @@ async fn webhook_payload_carries_result_only_for_auto_calls() {
     let deadline = std::time::Instant::now() + Duration::from_secs(8);
     loop {
         let payloads = sink.lock().unwrap().payloads.clone();
-        let auto = payloads
-            .iter()
-            .find(|p| p["approval_id"] == approval_id && p["triggered_by"] == "auto");
-        let manual = payloads
-            .iter()
-            .find(|p| p["approval_id"] == approval_id_manual && p["triggered_by"] == "agent");
+        let auto = payloads.iter().find(|p| {
+            p["data"]["approval_id"] == approval_id && p["data"]["triggered_by"] == "auto"
+        });
+        let manual = payloads.iter().find(|p| {
+            p["data"]["approval_id"] == approval_id_manual && p["data"]["triggered_by"] == "agent"
+        });
         if let (Some(auto), Some(manual)) = (auto, manual) {
             assert!(
-                auto.get("result").is_some(),
+                auto["data"].get("result").is_some(),
                 "auto-fired webhook payload must include result: {auto}"
             );
             assert!(
-                manual.get("result").is_none(),
+                manual["data"].get("result").is_none(),
                 "manual-call webhook payload must NOT include result: {manual}"
             );
             break;
