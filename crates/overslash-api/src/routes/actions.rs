@@ -1472,13 +1472,18 @@ async fn resolve_action_metadata(
             action_key.clone()
         };
 
-        // `needs_gate` mirrors `/call`'s post-resolve computation
-        // (`!secrets.is_empty() || req.connection.is_some() ||
-        // meta.auth_injected`). MCP and Platform always inject auth, so
-        // they always gate. HTTP gates only when the template carries
-        // an auth method or the instance has bound credentials —
-        // otherwise `/call` skips Layer 2 (no `oauth_injected`) and
-        // `/validate` must do the same to stay honest as a dry-run.
+        // `needs_gate` is a *conservative estimate* of `/call`'s
+        // post-resolve `meta.auth_injected`. MCP and Platform always
+        // inject auth (gate=true). HTTP estimates from cheap signals:
+        // a template auth method or an instance binding (connection or
+        // secret). The estimate can over-gate vs. `/call` in one
+        // direction only — when an HTTP service has auth declared but
+        // OAuth token resolution at `/call` time fails, `/call` sets
+        // `auth_injected=false` and skips Layer 2, while `/validate`
+        // (which never resolves tokens, by design) keeps the gate on
+        // and reports `would_require_approval`. That's a worse-case
+        // surface for the dry-run, not a silent allow, so it's worth
+        // the runtime savings of skipping the OAuth round-trip.
         let auth_injected_estimate = match svc.runtime {
             Runtime::Mcp | Runtime::Platform => true,
             Runtime::Http => {
