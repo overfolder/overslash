@@ -624,6 +624,8 @@ async fn call_action_impl(
             access_level: platform_access_level,
             db: state.db.clone(),
             registry: std::sync::Arc::clone(&state.registry),
+            config: state.config.clone(),
+            http_client: state.http_client.clone(),
         };
         let params: std::collections::HashMap<String, serde_json::Value> =
             pt.params.clone().into_iter().collect();

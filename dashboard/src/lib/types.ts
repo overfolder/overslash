@@ -410,9 +410,18 @@ export interface ByocCredentialSummary {
 }
 
 export interface InitiateConnectionResponse {
-  auth_url: string;
+  /// Default. The Overslash-gated path; fail-fasts on session mismatch
+  /// before redirecting to the provider. Open this in the popup.
+  proxied: string;
+  /// Optional shortened form (only present if the shortener is configured).
+  short?: string;
+  /// Raw provider authorize URL. Only included when the request set
+  /// `include_raw: true`.
+  raw?: string;
   state: string;
   provider: string;
+  expires_at: string;
+  flow_id: string;
 }
 
 export interface ServiceSummary {

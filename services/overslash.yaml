@@ -36,8 +36,8 @@ platform_actions:
   create_users:
     description: "Create user identities"
     risk: delete
-  manage_connections:
-    description: "Create and delete OAuth connections"
+  manage_connections_own:
+    description: "Create and delete OAuth connections the caller owns"
     risk: write
   manage_byoc:
     description: "Manage bring-your-own-credential configurations"
@@ -169,3 +169,23 @@ platform_actions:
       connection_id: { type: string, required: false }
       secret_name: { type: string, required: false }
       url: { type: string, required: false }
+
+  create_connection:
+    description: >
+      Start the OAuth dance for a provider. Returns a `proxied` URL pointing
+      at Overslash's `/connect-authorize` gate (and an optional shortened
+      form). Hand that URL to the user — the gate fail-fasts on session
+      mismatch before redirecting to the provider, mitigating the chat-
+      delivery pitfalls catalogued in the Obsidian "MCP meets OAuth"
+      writeup. The raw provider URL is intentionally not surfaced over MCP;
+      REST callers can opt-in via `include_raw` for white-label
+      integrations. The actual connection row is minted in the OAuth
+      callback after the user clicks; poll `overslash_auth(action:
+      "service_status")` to see it land.
+    risk: write
+    permission: manage_connections_own
+    params:
+      provider: { type: string, required: true }
+      scopes: { type: array, required: false }
+      byoc_credential_id: { type: string, required: false }
+      on_behalf_of: { type: string, required: false }

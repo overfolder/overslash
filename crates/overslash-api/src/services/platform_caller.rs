@@ -10,6 +10,7 @@ use uuid::Uuid;
 use overslash_core::permissions::AccessLevel;
 use overslash_core::registry::ServiceRegistry;
 
+use crate::config::Config;
 use crate::error::AppError;
 
 pub struct PlatformCallContext {
@@ -22,6 +23,12 @@ pub struct PlatformCallContext {
     pub access_level: AccessLevel,
     pub db: PgPool,
     pub registry: Arc<ServiceRegistry>,
+    /// Snapshot of process config + HTTP client. Most kernels don't need
+    /// these — they're here for the OAuth-bearing kernels (e.g.
+    /// `platform_connections`) that read `public_url`, encryption keys,
+    /// or call out to `oversla.sh`. Cheap `Clone` per dispatch.
+    pub config: Config,
+    pub http_client: reqwest::Client,
 }
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

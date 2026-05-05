@@ -7,6 +7,7 @@ use uuid::Uuid;
 use overslash_core::openapi::import::{ImportOptions, ImportWarning};
 
 use super::platform_caller::{BoxFuture, PlatformCallContext, PlatformHandler, PlatformRegistry};
+use super::platform_connections::dispatch_create_connection;
 use super::platform_services::{
     CreateServiceInput, GetServiceInput, UpdateServiceInput, kernel_create_service,
     kernel_get_service, kernel_list_services, kernel_update_service,
@@ -222,6 +223,18 @@ impl PlatformHandler for CreateServiceHandler {
     }
 }
 
+struct CreateConnectionHandler;
+
+impl PlatformHandler for CreateConnectionHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(dispatch_create_connection(ctx, params))
+    }
+}
+
 struct UpdateServiceHandler;
 
 impl PlatformHandler for UpdateServiceHandler {
@@ -284,5 +297,9 @@ pub fn build_registry() -> PlatformRegistry {
     m.insert("get_service".into(), Box::new(GetServiceHandler));
     m.insert("create_service".into(), Box::new(CreateServiceHandler));
     m.insert("update_service".into(), Box::new(UpdateServiceHandler));
+    m.insert(
+        "create_connection".into(),
+        Box::new(CreateConnectionHandler),
+    );
     m
 }

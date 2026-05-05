@@ -66,6 +66,8 @@ fn ctx_from_acl(state: &AppState, acl: &OrgAcl) -> Result<PlatformCallContext> {
         access_level: acl.access_level,
         db: state.db.clone(),
         registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     })
 }
 
@@ -118,6 +120,8 @@ async fn list_services(
         access_level: overslash_core::permissions::AccessLevel::Read,
         db: state.db.clone(),
         registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     };
     let summaries = platform_services::kernel_list_services(ctx).await?;
     Ok(Json(summaries))
@@ -181,6 +185,8 @@ async fn get_service(
         access_level: overslash_core::permissions::AccessLevel::Read,
         db: state.db.clone(),
         registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     };
     let detail = platform_services::kernel_get_service(
         ctx,

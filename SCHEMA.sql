@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict su2KgQIj8SBbnb1xXKdj6cx8Ijk7orTnUaZZ91E0n5o3bo1BZzoZAkhceWU7fWw
+\restrict JdtwU9YfjhceOLJB43bpzrmwjQMtMhbQj8i1OaX5U7MyRKK7zcXa56tc3xNHJ36
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -339,6 +339,28 @@ CREATE TABLE public.mcp_upstream_tokens (
 
 
 --
+-- Name: oauth_connection_flows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_connection_flows (
+    id text NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    actor_identity_id uuid NOT NULL,
+    provider_key text NOT NULL,
+    byoc_credential_id uuid,
+    scopes text[] DEFAULT '{}'::text[] NOT NULL,
+    pkce_code_verifier text,
+    upstream_authorize_url text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_ip text,
+    created_user_agent text
+);
+
+
+--
 -- Name: oauth_handoff_codes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -384,7 +406,11 @@ CREATE TABLE public.oauth_preview_origins (
     preview_id uuid NOT NULL,
     origin text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    expires_at timestamp with time zone NOT NULL
+    expires_at timestamp with time zone NOT NULL,
+    nonce text DEFAULT ''::text NOT NULL,
+    pkce_verifier text,
+    org_slug text,
+    next_path text
 );
 
 
@@ -902,6 +928,14 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: oauth_connection_flows oauth_connection_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: oauth_handoff_codes oauth_handoff_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1388,6 +1422,20 @@ CREATE UNIQUE INDEX idx_mcp_upstream_tokens_current ON public.mcp_upstream_token
 --
 
 CREATE INDEX idx_memberships_org ON public.user_org_memberships USING btree (org_id);
+
+
+--
+-- Name: idx_oauth_connection_flows_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_connection_flows_expires_at ON public.oauth_connection_flows USING btree (expires_at) WHERE (consumed_at IS NULL);
+
+
+--
+-- Name: idx_oauth_connection_flows_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_connection_flows_identity ON public.oauth_connection_flows USING btree (identity_id, created_at DESC);
 
 
 --
@@ -1993,6 +2041,30 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: oauth_connection_flows oauth_connection_flows_actor_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_actor_identity_id_fkey FOREIGN KEY (actor_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: oauth_connection_flows oauth_connection_flows_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: oauth_connection_flows oauth_connection_flows_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2244,5 +2316,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict su2KgQIj8SBbnb1xXKdj6cx8Ijk7orTnUaZZ91E0n5o3bo1BZzoZAkhceWU7fWw
+\unrestrict JdtwU9YfjhceOLJB43bpzrmwjQMtMhbQj8i1OaX5U7MyRKK7zcXa56tc3xNHJ36
 

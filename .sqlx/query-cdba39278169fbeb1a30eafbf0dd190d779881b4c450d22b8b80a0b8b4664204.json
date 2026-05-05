@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE oauth_connection_flows\n            SET consumed_at = now()\n          WHERE id = $1\n            AND consumed_at IS NULL\n            AND expires_at > now()\n          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,\n                    byoc_credential_id, scopes, pkce_code_verifier,\n                    upstream_authorize_url, expires_at, consumed_at,\n                    created_at, created_ip, created_user_agent",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "provider_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "byoc_credential_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "pkce_code_verifier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "upstream_authorize_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "consumed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_ip",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_user_agent",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "cdba39278169fbeb1a30eafbf0dd190d779881b4c450d22b8b80a0b8b4664204"
+}

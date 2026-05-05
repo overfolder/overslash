@@ -32,6 +32,7 @@ pub mod mcp_upstream_connection;
 pub mod mcp_upstream_flow;
 pub mod mcp_upstream_token;
 pub mod membership;
+pub mod oauth_connection_flow;
 pub mod oauth_mcp_client;
 pub mod oauth_preview_handoff;
 pub mod oauth_provider;

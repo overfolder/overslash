@@ -3,20 +3,34 @@ use std::collections::{BTreeSet, HashMap};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
+    response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use overslash_db::repos::audit::AuditEntry;
+use overslash_db::repos::oauth_connection_flow;
 use overslash_db::scopes::{OrgScope, UserScope};
 
+use super::connect_gate::{
+    ParsedSession, SessionError, gone_html, mismatch_html, read_session,
+    session_authorized_for_org_identity,
+};
 use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{ClientIp, WriteAcl},
-    services::{client_credentials, oauth},
+    services::{
+        client_credentials, oauth,
+        platform_caller::PlatformCallContext,
+        platform_connections::{
+            CreateConnectionInput, CreateConnectionResponse, RequestMeta, kernel_create_connection,
+        },
+    },
 };
 use overslash_core::crypto;
 
@@ -32,6 +46,7 @@ pub fn router() -> Router<AppState> {
             post(upgrade_connection_scopes),
         )
         .route("/v1/oauth/callback", get(oauth_callback))
+        .route("/connect-authorize", get(connect_authorize))
 }
 
 #[derive(Deserialize)]
@@ -41,106 +56,181 @@ struct InitiateConnectionRequest {
     scopes: Vec<String>,
     /// Pin a specific BYOC credential for this connection. If omitted, the
     /// cascade resolver picks identity-level → org-level → env fallback.
+    #[serde(default)]
     byoc_credential_id: Option<Uuid>,
     /// Bind the resulting connection to this user identity instead of the
     /// calling agent. Caller must be an agent whose owner is this user (or the
     /// user itself). Lets all agents under the user share the connection.
     #[serde(default)]
     on_behalf_of: Option<Uuid>,
+    /// REST-only opt-in: include the raw provider authorize URL alongside
+    /// the proxied form. Intended for white-label integrations that wrap
+    /// the dance in their own consent UI. The MCP path never sets this —
+    /// chat-delivered links must always go through the gate.
+    #[serde(default)]
+    include_raw: bool,
 }
 
+/// Wire shape for `POST /v1/connections`.
+///
+/// **Breaking change** vs. the pre-PR shape `{ auth_url, state, provider }`:
+/// the field formerly named `auth_url` is gone. Callers should use
+/// `proxied` (the gated `app.overslash.com` URL) by default, or opt into
+/// `raw` via `include_raw: true` to render their own consent screen. The
+/// gate fail-fasts on session mismatch *before* redirecting to the
+/// provider — see the kernel doc-comment in
+/// `services/platform_connections.rs` for the threat model.
 #[derive(Serialize)]
 struct InitiateConnectionResponse {
-    auth_url: String,
+    proxied: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    short: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
     state: String,
     provider: String,
+    expires_at: OffsetDateTime,
+    flow_id: String,
 }
 
 async fn initiate_connection(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
-    scope: OrgScope,
+    ip: ClientIp,
+    headers: HeaderMap,
     Json(req): Json<InitiateConnectionRequest>,
 ) -> Result<Json<InitiateConnectionResponse>> {
-    let auth = acl;
-    let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, &req.provider)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", req.provider)))?;
-
-    // OAuth connections require an identity-bound API key
-    let caller_identity_id = auth
-        .identity_id
-        .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
-
-    // If on_behalf_of is set, validate it walks the agent's owner chain and
-    // bind the resulting connection to the user instead of the calling agent.
-    let identity_id = if let Some(target) = req.on_behalf_of {
-        crate::services::group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target)
-            .await?
-    } else {
-        caller_identity_id
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let ctx = PlatformCallContext {
+        org_id: acl.org_id,
+        identity_id: acl.identity_id,
+        access_level: acl.access_level,
+        db: state.db.clone(),
+        registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     };
-
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
-    let creds = client_credentials::resolve(
-        &state.db,
-        &enc_key,
-        auth.org_id,
-        Some(identity_id),
-        &req.provider,
-        None,
-        req.byoc_credential_id,
+    let input = CreateConnectionInput {
+        provider: req.provider,
+        scopes: req.scopes,
+        byoc_credential_id: req.byoc_credential_id,
+        on_behalf_of: req.on_behalf_of,
+    };
+    let kernel_response: CreateConnectionResponse = kernel_create_connection(
+        ctx,
+        input,
+        RequestMeta {
+            ip: ip.0.as_deref(),
+            user_agent,
+        },
     )
     .await?;
 
-    let redirect_uri = format!(
-        "{}/v1/oauth/callback",
-        state.config.public_url.trim_end_matches('/')
-    );
-
-    let byoc_id = creds.byoc_credential_id;
-    let byoc_segment = byoc_id.map_or_else(|| "_".to_string(), |id| id.to_string());
-
-    // Generate PKCE pair if the provider requires it
-    let pkce = if provider.supports_pkce {
-        Some(oauth::generate_pkce())
+    // Re-read the persisted flow row when `include_raw` is set: the row is
+    // the source of truth for the raw upstream URL, and the kernel
+    // intentionally keeps it inside the `oauth_connection_flows` table so
+    // the MCP path cannot accidentally surface it. White-label REST
+    // callers opting into `include_raw` are agreeing to render their own
+    // consent screen and have already cleared the Obsidian threat model
+    // server-side (PKCE + state binding still hold either way).
+    let raw = if req.include_raw {
+        oauth_connection_flow::get_by_id(&state.db, &kernel_response.flow_id)
+            .await?
+            .map(|row| row.upstream_authorize_url)
     } else {
         None
     };
 
-    let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
+    Ok(Json(InitiateConnectionResponse {
+        proxied: kernel_response.proxied,
+        short: kernel_response.short,
+        raw,
+        state: kernel_response.state,
+        provider: kernel_response.provider,
+        expires_at: kernel_response.expires_at,
+        flow_id: kernel_response.flow_id,
+    }))
+}
 
-    // The actor (caller agent) is preserved separately from `identity_id` so the
-    // callback can audit the agent that initiated the OAuth flow even when the
-    // resulting connection is bound to the owner user via on_behalf_of.
-    let actor_segment = if caller_identity_id == identity_id {
-        "_".to_string()
-    } else {
-        caller_identity_id.to_string()
+// ---------------------------------------------------------------------------
+// GET /connect-authorize?id=F
+// ---------------------------------------------------------------------------
+//
+// Public-facing fail-fast UX gate for the HTTP-OAuth flow. Mirrors
+// `oauth_upstream::gated_authorize`: reads the dashboard session, looks up
+// the flow row, and only redirects to the provider when the session
+// actually matches. This is the chat-delivery hardening described in
+// `docs/design/agent-mcp-bootstrap-story.md` §3 ("Is this vulnerable to
+// the Obsidian pitfalls?") — without this gate, an agent could hand a
+// raw provider URL to the user with no Overslash-branded checkpoint.
+
+#[derive(Debug, Deserialize)]
+struct ConnectAuthorizeParams {
+    id: String,
+}
+
+async fn connect_authorize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnectAuthorizeParams>,
+) -> Result<Response> {
+    let Some(flow) = oauth_connection_flow::get_by_id(&state.db, &params.id).await? else {
+        return Ok(gone_html("This OAuth link is invalid or has been revoked."));
+    };
+    if flow.consumed_at.is_some() {
+        return Ok(gone_html(
+            "This OAuth link has already been used. Initiate the connection again to retry.",
+        ));
+    }
+    if flow.expires_at <= OffsetDateTime::now_utc() {
+        return Ok(gone_html(
+            "This OAuth link has expired. Initiate the connection again to retry.",
+        ));
+    }
+
+    let session = match read_session(&state, &headers) {
+        Ok(s) => s,
+        Err(SessionError::Missing) => {
+            // Out-of-band delivery (Slack/email/agent chat) clicked
+            // without an active session. Bounce through login and
+            // resume.
+            let return_to = format!(
+                "{}/connect-authorize?id={}",
+                state.config.public_url, flow.id
+            );
+            let login_url = state.config.dashboard_url_for(&format!(
+                "/auth/login?next={}",
+                urlencoding::encode(&return_to)
+            ));
+            return Ok(Redirect::to(&login_url).into_response());
+        }
+        Err(SessionError::Invalid) => {
+            return Err(AppError::Unauthorized("invalid session cookie".into()));
+        }
     };
 
-    // State encodes: org_id:identity_id:provider_key:byoc_credential_id:code_verifier:actor_identity_id:upgrade_connection_id
-    // Initiate path never carries an upgrade id — the callback treats a bare
-    // trailing `_` (or absence) as "create a new connection".
-    let oauth_state = format!(
-        "{}:{}:{}:{}:{}:{}:_",
-        auth.org_id, identity_id, req.provider, byoc_segment, verifier_segment, actor_segment
-    );
+    if session_authorized_for_flow(&state, &session, flow.org_id, flow.identity_id).await? {
+        // Atomically mark consumed and redirect. The `/v1/oauth/callback`
+        // security boundary still re-validates everything from the OAuth
+        // `state` parameter — `consumed_at` is purely the gate's UX
+        // single-use flag (a second click renders the "already been
+        // used" page rather than re-triggering the dance).
+        let _ = oauth_connection_flow::consume(&state.db, &flow.id).await?;
+        return Ok(Redirect::to(&flow.upstream_authorize_url).into_response());
+    }
 
-    let auth_url = oauth::build_auth_url(
-        &provider,
-        &creds.client_id,
-        &redirect_uri,
-        &req.scopes,
-        &oauth_state,
-        pkce.as_ref().map(|p| p.challenge.as_str()),
-    );
+    Ok(mismatch_html())
+}
 
-    Ok(Json(InitiateConnectionResponse {
-        auth_url,
-        state: oauth_state,
-        provider: req.provider,
-    }))
+async fn session_authorized_for_flow(
+    state: &AppState,
+    session: &ParsedSession,
+    flow_org_id: Uuid,
+    flow_identity_id: Uuid,
+) -> std::result::Result<bool, AppError> {
+    session_authorized_for_org_identity(state, session, flow_org_id, flow_identity_id).await
 }
 
 #[derive(Deserialize)]
