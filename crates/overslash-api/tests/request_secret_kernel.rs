@@ -226,51 +226,10 @@ async fn share_target_denied_for_non_admin_agent() {
     );
 }
 
-/// Org-level API keys (no identity binding) cannot mint a request — the
-/// `secret_requests` row needs an identity. Surfacing this as a clean 400
-/// keeps the failure mode out of the FK 500 path.
-#[tokio::test]
-async fn org_key_without_identity_rejected() {
-    let pool = common::test_pool().await;
-    let (base, client) = common::start_api_with_registry(pool, None).await;
-    let (org_id, _agent_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
-
-    // Mint a fresh org-level (unbound) key. Admin level satisfies the YAML
-    // anchor on the action without needing an explicit grant, so the kernel
-    // is reached and the identity check is the first thing that fires.
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .json(&json!({"org_id": org_id, "name": "org-unbound"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let unbound_key = key_resp["key"].as_str().unwrap();
-
-    let resp = call(
-        &client,
-        &base,
-        unbound_key,
-        json!({
-            "service": "overslash",
-            "action": "request_secret",
-            "params": { "secret_name": "openai_api_key" }
-        }),
-    )
-    .await;
-
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-    let body: Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or_default()
-            .to_lowercase()
-            .contains("identity"),
-        "expected identity-required error, got {body}"
-    );
-}
+// The kernel's `ctx.identity_id.ok_or_else(...)` branch is defensive: every
+// API-key path goes through `routes/api_keys.rs` which now requires an
+// identity binding (the legacy "org-level" / null-identity key was removed),
+// so there's no way to construct a `PlatformCallContext` with
+// `identity_id = None` from a public test surface. Leaving the guard in
+// place because it's cheap and guarantees a clean 400 if a future code path
+// (e.g. service-account tokens) ever reintroduces an unbound caller.
