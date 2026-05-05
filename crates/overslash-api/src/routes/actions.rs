@@ -1,3 +1,21 @@
+//! Action execution endpoints (`POST /v1/actions/call`, `POST /v1/actions/validate`).
+//!
+//! Three call modes, distinguished by which request fields are populated:
+//!
+//! - **Mode A — raw HTTP**: caller supplies `method` + `url` (+ optional
+//!   `headers`, `body`, `secrets[]` to inject into headers/query).
+//! - **Mode B — connection**: caller supplies a `connection` UUID (a stored
+//!   OAuth connection) plus a `url`. We resolve/refresh the access token and
+//!   inject it as `Authorization: Bearer …`.
+//! - **Mode C — service + action**: caller supplies `service` + `action` keys
+//!   and `params`. We resolve the template (user → org → global), build the
+//!   URL from the action's path template, fail-fast on missing OAuth scopes,
+//!   and inject auth from the instance's bound connection or the template's
+//!   `auth` config.
+//!
+//! Precedence in `resolve_request`: Mode B (if `connection` set) → Mode C
+//! (if `service`+`action` set) → Mode A (fallback).
+
 use std::collections::HashMap;
 
 use axum::{
@@ -370,7 +388,8 @@ async fn validate_action_impl(
     Ok(((StatusCode::OK, Json(body)).into_response(), label))
 }
 
-/// Unified call request: supports Mode A (raw HTTP) and Mode C (service + action).
+/// Unified call request: supports Mode A (raw HTTP), Mode B (connection),
+/// and Mode C (service + action). See module docs for mode selection rules.
 #[derive(Debug, Deserialize)]
 struct CallRequest {
     // Mode A fields
@@ -494,6 +513,7 @@ async fn call_action_impl(
 
     // Validate filter syntax before any upstream call so a malformed
     // expression is a clean 400 — not a wasted upstream quota burn.
+    // NOTE: More expensive that ceiling perms check, might move after it
     if let Some(filter) = req.filter.as_ref() {
         response_filter::validate_syntax(filter).map_err(AppError::FilterSyntax)?;
     }
@@ -1584,13 +1604,18 @@ async fn resolve_request(
     pre_resolved_mode_c: Option<ResolvedModeC>,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
+    // Node: Mode B might be just a header injector that then fallbacks to service+action or URL direct
     if let Some(conn_id) = req.connection {
         let conn = scope.get_connection(conn_id).await?;
         let conn = crate::ownership::require_org_owned(conn, auth.org_id, "connection")?;
 
+        // NOTE: Cant we parse this and save to AppState? or a place where debugging/controlling what code accesses it is easier
         let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
         let provider_key = conn.provider_key.clone();
+        // CRAZY: Can we inject credentials from connections to others services that have nothing to do???
 
+        // NOTE: Path too long, we should use crate::services::client_credentials
+        // NOTE: resolve() should retrieve or access the enc key inside, it might even get the full &state
         let creds = crate::services::client_credentials::resolve(
             &state.db,
             &enc_key,
