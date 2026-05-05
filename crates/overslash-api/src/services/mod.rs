@@ -19,6 +19,7 @@ pub mod param_resolver;
 pub mod permission_chain;
 pub mod platform_caller;
 pub mod platform_registry;
+pub mod platform_secrets;
 pub mod platform_services;
 pub mod platform_templates;
 pub mod rate_limit;

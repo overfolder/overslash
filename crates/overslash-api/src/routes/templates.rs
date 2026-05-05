@@ -1236,6 +1236,8 @@ async fn import_template(
         access_level: acl.access_level,
         db: state.db.clone(),
         registry: std::sync::Arc::clone(&state.registry),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     };
     let detail = kernel_import_template(
         ctx,

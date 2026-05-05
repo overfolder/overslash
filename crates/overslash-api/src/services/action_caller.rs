@@ -152,7 +152,16 @@ pub async fn call_action_request(
             .get_current_secret_value(&secret_ref.name)
             .await?
             .ok_or_else(|| {
-                AppError::BadRequest(format!("secret '{}' not found", secret_ref.name))
+                // TODO(slice-4): replace this string hint with a structured
+                // JSON-RPC `data` payload of the form
+                // `{ error: "credential_missing", secret_name, request_secret_args: {...} }`
+                // once the typed-error envelope lands.
+                AppError::BadRequest(format!(
+                    "credential_missing: secret '{name}' not found. \
+                     Hint: call overslash.request_secret with \
+                     {{\"secret_name\":\"{name}\"}} to ask the user to provide a value.",
+                    name = secret_ref.name,
+                ))
             })?;
         let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
         let value = String::from_utf8(decrypted)

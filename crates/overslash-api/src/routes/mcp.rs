@@ -1001,13 +1001,14 @@ async fn dispatch_overslash_platform(
         // platform_target dispatcher in `routes/actions.rs` runs the kernel via
         // `state.platform_registry`. Permission gating is handled by the
         // action's `permission:` anchor in `services/overslash.yaml` (the
-        // `manage_services_own` / `manage_services_share` /
-        // `manage_templates_own` / `manage_templates_publish` splits). When
-        // the caller is the read tool, `require_risk` is forwarded so the
-        // action handler enforces the risk gate.
+        // `manage_services_own` / `manage_services_share`,
+        // `manage_templates_own` / `manage_templates_publish`, and
+        // `request_secrets_own` / `request_secrets_share` splits). When the
+        // caller is the read tool, `require_risk` is forwarded so the action
+        // handler enforces the risk gate.
         "list_services" | "get_service" | "create_service" | "update_service"
         | "list_templates" | "get_template" | "create_template" | "import_template"
-        | "delete_template" => {
+        | "delete_template" | "request_secret" => {
             forward_overslash_action(state, bearer, action, params, require_risk).await
         }
         other => Err(format!(

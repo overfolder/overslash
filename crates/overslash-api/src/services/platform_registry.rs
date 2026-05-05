@@ -7,6 +7,7 @@ use uuid::Uuid;
 use overslash_core::openapi::import::{ImportOptions, ImportWarning};
 
 use super::platform_caller::{BoxFuture, PlatformCallContext, PlatformHandler, PlatformRegistry};
+use super::platform_secrets::{RequestSecretInput, kernel_request_secret};
 use super::platform_services::{
     CreateServiceInput, GetServiceInput, UpdateServiceInput, kernel_create_service,
     kernel_get_service, kernel_list_services, kernel_update_service,
@@ -246,6 +247,23 @@ impl PlatformHandler for UpdateServiceHandler {
     }
 }
 
+// ── Secret-request kernel ────────────────────────────────────────────────
+
+struct RequestSecretHandler;
+
+impl PlatformHandler for RequestSecretHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(async move {
+            let input: RequestSecretInput = params_to_struct(params)?;
+            kernel_request_secret(ctx, input).await
+        })
+    }
+}
+
 fn params_to_struct<T: serde::de::DeserializeOwned + Default>(
     params: HashMap<String, Value>,
 ) -> Result<T, AppError> {
@@ -284,5 +302,6 @@ pub fn build_registry() -> PlatformRegistry {
     m.insert("get_service".into(), Box::new(GetServiceHandler));
     m.insert("create_service".into(), Box::new(CreateServiceHandler));
     m.insert("update_service".into(), Box::new(UpdateServiceHandler));
+    m.insert("request_secret".into(), Box::new(RequestSecretHandler));
     m
 }

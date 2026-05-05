@@ -136,6 +136,15 @@ pub fn mint_secret_request(
     Ok(jsonwebtoken::encode(&Header::default(), claims, &key)?)
 }
 
+/// Decode the configured `signing_key` into raw bytes. Hex-encoded keys are
+/// preferred (the `OVERSLASH_SIGNING_KEY` env var is documented as hex), but
+/// callers may pass an arbitrary string for local dev — fall back to its
+/// UTF-8 bytes in that case. Both the REST handler and the MCP kernel call
+/// this so the JWT secret stays in lockstep.
+pub fn signing_key_bytes(key: &str) -> Vec<u8> {
+    hex::decode(key).unwrap_or_else(|_| key.as_bytes().to_vec())
+}
+
 pub fn verify_secret_request(secret: &[u8], token: &str) -> Result<SecretRequestClaims, JwtError> {
     let key = DecodingKey::from_secret(secret);
     let mut validation = Validation::new(Algorithm::HS256);

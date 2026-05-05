@@ -32,6 +32,7 @@ use crate::{
     extractors::{ClientIp, WriteAcl},
     services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims},
     services::session::extract_session,
+    services::short_url,
 };
 use overslash_core::crypto;
 
@@ -62,6 +63,11 @@ struct CreateSecretRequestResponse {
     id: String,
     token: String,
     url: String,
+    /// Best-effort short URL via the configured `oversla.sh` instance.
+    /// `None` when the shortener isn't configured or the mint fails — the
+    /// canonical `url` is always usable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    short_url: Option<String>,
     expires_at: String,
 }
 
@@ -108,7 +114,7 @@ async fn create_secret_request(
     let require_user_session = !allow_unsigned;
 
     // Mint the JWT first so we can hash it before persisting.
-    let signing_key = signing_key_bytes(&state);
+    let signing_key = jwt::signing_key_bytes(&state.config.signing_key);
     let claims = SecretRequestClaims {
         req: req_id.clone(),
         org: acl.org_id,
@@ -137,6 +143,7 @@ async fn create_secret_request(
     let url = state
         .config
         .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
+    let short_url = short_url::mint(&state, &url, expires_at).await;
 
     let _ = OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {
@@ -160,6 +167,7 @@ async fn create_secret_request(
         id: req_id,
         token,
         url,
+        short_url,
         expires_at: fmt_time(expires_at),
     }))
 }
@@ -346,7 +354,7 @@ async fn load_and_validate(
     req_id: &str,
     token: &str,
 ) -> Result<overslash_db::repos::secret_request::SecretRequestRow> {
-    let signing_key = signing_key_bytes(state);
+    let signing_key = jwt::signing_key_bytes(&state.config.signing_key);
     let claims = jwt::verify_secret_request(&signing_key, token)
         .map_err(|_| AppError::BadRequest("invalid_token".into()))?;
     if claims.req != req_id {
@@ -373,11 +381,6 @@ async fn load_and_validate(
         return Err(AppError::Gone("already_fulfilled".into()));
     }
     Ok(row)
-}
-
-fn signing_key_bytes(state: &AppState) -> Vec<u8> {
-    hex::decode(&state.config.signing_key)
-        .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec())
 }
 
 fn sha256(s: &str) -> Vec<u8> {

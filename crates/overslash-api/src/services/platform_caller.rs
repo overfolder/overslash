@@ -10,6 +10,7 @@ use uuid::Uuid;
 use overslash_core::permissions::AccessLevel;
 use overslash_core::registry::ServiceRegistry;
 
+use crate::config::Config;
 use crate::error::AppError;
 
 pub struct PlatformCallContext {
@@ -22,6 +23,11 @@ pub struct PlatformCallContext {
     pub access_level: AccessLevel,
     pub db: PgPool,
     pub registry: Arc<ServiceRegistry>,
+    /// App config — kernels that mint signed URLs or call the shortener read
+    /// signing keys, dashboard URL, and `oversla.sh` settings from here.
+    pub config: Config,
+    /// Shared HTTP client for outbound calls (e.g. the URL shortener).
+    pub http_client: reqwest::Client,
 }
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
