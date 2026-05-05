@@ -2378,26 +2378,44 @@ async fn check_required_scopes(
     // `/v1/connections/{id}/upgrade_scopes` — is preserved alongside for
     // white-label callers that drive the API directly. Agents should use
     // `auth_url`.
-    let auth_url = platform_connections::mint_upgrade_auth_url(
+    //
+    // If the mint fails (DB hiccup, provider-key lookup), don't break the
+    // missing_scopes contract by surfacing the mint error: log it and omit
+    // `auth_url` from the body. The dashboard / REST clients will fall
+    // back to `upgrade_url`, and the client still gets the correct 403
+    // missing_scopes shape.
+    let auth_url = match platform_connections::mint_upgrade_auth_url(
         state,
         scope.org_id(),
         identity_id,
         &connection,
         &missing,
     )
-    .await?;
+    .await
+    {
+        Ok(url) => Some(url),
+        Err(e) => {
+            tracing::error!(
+                "missing_scopes: failed to mint upgrade auth url for connection {}: {e}",
+                connection.id
+            );
+            None
+        }
+    };
     let upgrade_url = format!(
         "{}/v1/connections/{}/upgrade_scopes",
         state.config.public_url.trim_end_matches('/'),
         connection.id
     );
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "error": "missing_scopes",
         "missing": missing,
         "connection_id": connection.id,
-        "auth_url": auth_url,
         "upgrade_url": upgrade_url,
     });
+    if let Some(url) = auth_url {
+        body["auth_url"] = serde_json::Value::String(url);
+    }
     Err(AppError::Forbidden(body.to_string()))
 }
 
