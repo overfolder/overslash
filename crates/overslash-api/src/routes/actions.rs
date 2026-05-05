@@ -2111,6 +2111,12 @@ fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
 /// connection that the user could potentially reauth against. Centralises
 /// the Reauth-vs-Internal-vs-Upstream split so both auth resolvers
 /// (instance- and service-level) make the same call.
+///
+/// Mode B and the instance-bound branch of Mode C call this directly:
+/// they target a *specific* connection, so an upstream blip can't
+/// recover by trying another provider — we surface BadGateway. The
+/// Mode C provider loop calls a non-bailing variant: see
+/// [`oauth_error_to_app_error_or_continue`].
 async fn oauth_error_to_app_error(
     state: &AppState,
     org_id: Uuid,
@@ -2128,6 +2134,39 @@ async fn oauth_error_to_app_error(
         }
         OAuthOutcome::Upstream => {
             AppError::BadGateway(format!("OAuth provider returned an error: {err}"))
+        }
+    }
+}
+
+/// Variant used inside the multi-provider loop in `resolve_service_auth`:
+/// returns `Some(err)` for outcomes that should bail the whole loop
+/// (Reauth — actionable for the user; Internal — won't recover by
+/// trying another provider), and `None` for Upstream errors — those
+/// log + `continue` so a transient blip on provider A doesn't break
+/// authentication via provider B.
+async fn oauth_error_to_app_error_or_continue(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    conn: &overslash_db::repos::connection::ConnectionRow,
+    err: OAuthError,
+) -> Option<AppError> {
+    match classify_oauth(&err) {
+        OAuthOutcome::Reauth(reason) => Some(
+            reauth_required_envelope(state, org_id, caller_identity_id, conn, reason, &err).await,
+        ),
+        OAuthOutcome::Internal => {
+            tracing::error!("OAuth internal error on connection {}: {err}", conn.id);
+            Some(AppError::Internal(format!(
+                "OAuth token resolution failed: {err}"
+            )))
+        }
+        OAuthOutcome::Upstream => {
+            tracing::warn!(
+                "upstream OAuth error on provider '{}'; trying next provider: {err}",
+                conn.provider_key
+            );
+            None
         }
     }
 }
@@ -2346,9 +2385,15 @@ async fn resolve_service_auth(
                     return Ok((vec![], true));
                 }
                 Err(e) => {
-                    return Err(
-                        oauth_error_to_app_error(state, org_id, identity_id, &conn, e).await,
-                    );
+                    if let Some(err) =
+                        oauth_error_to_app_error_or_continue(state, org_id, identity_id, &conn, e)
+                            .await
+                    {
+                        return Err(err);
+                    }
+                    // Upstream blip — fall through to the next OAuth
+                    // provider in the template.
+                    continue;
                 }
             }
         }
