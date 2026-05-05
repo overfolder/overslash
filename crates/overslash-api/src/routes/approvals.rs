@@ -1335,19 +1335,22 @@ async fn execute_claimed_approval(
             "error": finalised.error,
             "summary": result_summary,
         });
-        // Auto-fired executions ship the full result body in the webhook so
+        // Auto-fired executions ship the result body in the webhook so
         // white-label platforms can render the outcome without a follow-up
         // `GET /v1/approvals/{id}/execution`. Manual (`agent`/`user`) calls
         // omit it — the caller already received the response in-band on
-        // their `POST /v1/approvals/{id}/call`. Same shape as the
-        // execution-row projection.
-        if triggered_by == "auto" && succeeded {
-            if let Some(result) = finalised.result.as_ref() {
-                payload
-                    .as_object_mut()
-                    .expect("payload is a json object")
-                    .insert("result".into(), result.clone());
-            }
+        // their `POST /v1/approvals/{id}/call`. Apply the same
+        // `truncate_json_value` cap used by `ExecutionSummary::from` so a
+        // multi-megabyte upstream body can't blow past subscriber size
+        // limits or stress the webhook dispatcher.
+        if triggered_by == "auto"
+            && succeeded
+            && let Some(result) = finalised.result.clone()
+        {
+            payload
+                .as_object_mut()
+                .expect("payload is a json object")
+                .insert("result".into(), truncate_json_value(result));
         }
         tokio::spawn(async move {
             crate::services::webhook_dispatcher::dispatch(
