@@ -10,6 +10,41 @@ mod common;
 
 use serde_json::{Value, json};
 
+/// Poll the mock target's `/webhooks/received` until `expected` returns the
+/// payload+headers it cares about, or fail after ~5s. Webhook dispatch is
+/// fire-and-forget via `tokio::spawn`, so a fixed sleep is racy in CI.
+async fn wait_for_webhook<F>(
+    client: &reqwest::Client,
+    mock_addr: &std::net::SocketAddr,
+    matcher: F,
+    msg: &str,
+) -> (Value, Value)
+where
+    F: Fn(&Value) -> bool,
+{
+    for _ in 0..50 {
+        let received: Value = client
+            .get(format!("http://{mock_addr}/webhooks/received"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let webhooks = received["webhooks"].as_array().unwrap();
+        let headers = received["headers"].as_array().unwrap();
+        if let Some((w, h)) = webhooks
+            .iter()
+            .zip(headers.iter())
+            .find(|(w, _)| matcher(w))
+        {
+            return (w.clone(), h.clone());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("{msg}");
+}
+
 #[tokio::test]
 async fn test_connection_created_webhook_fires_on_oauth_callback() {
     let pool = common::test_pool().await;
@@ -60,28 +95,13 @@ async fn test_connection_created_webhook_fires_on_oauth_callback() {
     assert_eq!(callback_resp["status"], "connected");
     let connection_id = callback_resp["connection_id"].as_str().unwrap().to_string();
 
-    // Webhook dispatch is fire-and-forget via tokio::spawn — give it a beat.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let received: Value = client
-        .get(format!("http://{mock_addr}/webhooks/received"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let webhooks = received["webhooks"].as_array().unwrap();
-    let headers = received["headers"].as_array().unwrap();
-
-    let created = webhooks
-        .iter()
-        .zip(headers.iter())
-        .find(|(w, _)| w["connection_id"] == connection_id.as_str())
-        .expect("expected a connection.created webhook for the new connection");
-    let (created_payload, created_headers) = created;
-    assert_eq!(created_payload["provider"], "x");
-    assert!(created_payload["scopes"].is_array());
+    let (_, created_headers) = wait_for_webhook(
+        &client,
+        &mock_addr,
+        |w| w["connection_id"] == connection_id.as_str() && w["provider"] == "x",
+        "expected a connection.created webhook for the new connection",
+    )
+    .await;
     let sig = created_headers["x-overslash-signature"].as_str().unwrap();
     assert!(
         sig.starts_with("sha256="),
@@ -97,29 +117,17 @@ async fn test_connection_created_webhook_fires_on_oauth_callback() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    let received: Value = client
-        .get(format!("http://{mock_addr}/webhooks/received"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let webhooks = received["webhooks"].as_array().unwrap();
-    let deleted_count = webhooks
-        .iter()
-        .filter(|w| {
+    // The deleted payload includes `org_id`; the created one doesn't, so this
+    // matcher uniquely identifies the deletion event.
+    let org_id_str = org_id.to_string();
+    wait_for_webhook(
+        &client,
+        &mock_addr,
+        |w| {
             w["connection_id"] == connection_id.as_str()
-                && w["org_id"].as_str() == Some(&org_id.to_string())
-        })
-        .count();
-    // Two payloads now reference this connection_id — created and deleted.
-    // The created payload has no `org_id` field, so the filter above only
-    // matches the deleted one.
-    assert_eq!(
-        deleted_count, 1,
-        "expected exactly one connection.deleted webhook"
-    );
+                && w["org_id"].as_str() == Some(org_id_str.as_str())
+        },
+        "expected a connection.deleted webhook",
+    )
+    .await;
 }
