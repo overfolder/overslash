@@ -2539,7 +2539,26 @@ async fn resolve_instance_auth(
     // operator can see the real cause; mirror what resolve_service_auth
     // does for its access_token errors.
     if let Some(conn_id) = instance.connection_id {
-        if let Ok(Some(conn)) = scope.get_connection(conn_id).await {
+        // Explicit `match` (rather than `if let Ok(Some(...))`) so a DB
+        // error doesn't get silently treated as "no connection bound" and
+        // misrouted to a `needs_authentication` 401. Ok(None) — the
+        // connection was deleted out from under the instance — *does*
+        // fall through to the template-auto-resolve / API-key path, which
+        // will pick up any newly-minted connection on the calling
+        // identity (e.g. one the user just created via the gated link
+        // returned by `needs_authentication_for_service`). So a
+        // disconnected instance recovers on the next call after reauth
+        // without us needing to touch the binding here.
+        let conn = match scope.get_connection(conn_id).await {
+            Ok(Some(c)) => Some(c),
+            Ok(None) => None,
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "lookup of instance-bound connection {conn_id} failed: {e}"
+                )));
+            }
+        };
+        if let Some(conn) = conn {
             let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
                 .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
             let creds = crate::services::client_credentials::resolve(
