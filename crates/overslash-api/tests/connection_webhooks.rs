@@ -97,10 +97,16 @@ async fn test_connection_created_webhook_fires_on_oauth_callback() {
     assert_eq!(callback_resp["status"], "connected");
     let connection_id = callback_resp["connection_id"].as_str().unwrap().to_string();
 
+    // Webhook payload is wrapped in a `{ id, type, created_at, data }`
+    // envelope by the dispatcher — match against `data.connection_id`.
     let (_, created_headers) = wait_for_webhook(
         &client,
         &mock_addr,
-        |w| w["connection_id"] == connection_id.as_str() && w["provider"] == "x",
+        |w| {
+            w["type"] == "connection.created"
+                && w["data"]["connection_id"] == connection_id.as_str()
+                && w["data"]["provider"] == "x"
+        },
         "expected a connection.created webhook for the new connection",
     )
     .await;
@@ -119,15 +125,12 @@ async fn test_connection_created_webhook_fires_on_oauth_callback() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // The deleted payload includes `org_id`; the created one doesn't, so this
-    // matcher uniquely identifies the deletion event.
-    let org_id_str = org_id.to_string();
     wait_for_webhook(
         &client,
         &mock_addr,
         |w| {
-            w["connection_id"] == connection_id.as_str()
-                && w["org_id"].as_str() == Some(org_id_str.as_str())
+            w["type"] == "connection.deleted"
+                && w["data"]["connection_id"] == connection_id.as_str()
         },
         "expected a connection.deleted webhook",
     )
