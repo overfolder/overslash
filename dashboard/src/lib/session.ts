@@ -250,6 +250,11 @@ export interface ApprovalResponse {
 	 *  satisfied other pending approvals under the same placement identity.
 	 *  Empty / omitted in all other contexts. */
 	cascaded_approval_ids?: string[];
+	/** Risk class derived from the matching ServiceAction.risk in the live
+	 *  service registry. Drives the approval card's risk top bar.
+	 *  Read → "low", Write → "med", Delete → "high". Defaults to "med" when
+	 *  the lookup misses. */
+	risk: 'low' | 'med' | 'high';
 }
 
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
