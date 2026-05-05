@@ -26,7 +26,7 @@ use overslash_db::scopes::OrgScope;
 use super::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims};
 use super::permission_chain;
 use super::platform_caller::PlatformCallContext;
-use super::url_shortener;
+use super::short_url;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
@@ -126,14 +126,15 @@ pub async fn kernel_request_secret(
     let url = ctx
         .config
         .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
-    let short_url = url_shortener::mint_short_url(
-        &ctx.http_client,
+    let short_url = match (
         ctx.config.oversla_sh_base_url.as_deref(),
         ctx.config.oversla_sh_api_key.as_deref(),
-        &url,
-        expires_at,
-    )
-    .await;
+    ) {
+        (Some(base), Some(key)) => {
+            short_url::mint_with_client(&ctx.http_client, base, key, &url, expires_at).await
+        }
+        _ => None,
+    };
 
     let _ = scope
         .log_audit(AuditEntry {

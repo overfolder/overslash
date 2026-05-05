@@ -31,7 +31,7 @@ use crate::{
     error::AppError,
     extractors::{SessionAuth, extract_cookie},
     routes::auth::signing_key_bytes,
-    services::{jwt, oauth_upstream as svc, ssrf_guard, url_shortener::mint_short_url},
+    services::{jwt, oauth_upstream as svc, short_url, ssrf_guard},
 };
 use overslash_core::crypto;
 use overslash_db::repos::{
@@ -257,14 +257,7 @@ async fn initiate(
             "{}/gated-authorize?id={}",
             state.config.public_url, existing.id
         );
-        let short = mint_short_url(
-            &state.http_client,
-            state.config.oversla_sh_base_url.as_deref(),
-            state.config.oversla_sh_api_key.as_deref(),
-            &proxied,
-            existing.expires_at,
-        )
-        .await;
+        let short = short_url::mint(&state, &proxied, existing.expires_at).await;
         let raw = req
             .include_raw
             .then(|| existing.upstream_authorize_url.clone());
@@ -381,14 +374,7 @@ async fn initiate(
     .await?;
 
     let proxied = format!("{}/gated-authorize?id={}", state.config.public_url, flow_id);
-    let short = mint_short_url(
-        &state.http_client,
-        state.config.oversla_sh_base_url.as_deref(),
-        state.config.oversla_sh_api_key.as_deref(),
-        &proxied,
-        expires_at,
-    )
-    .await;
+    let short = short_url::mint(&state, &proxied, expires_at).await;
     let raw = req.include_raw.then(|| raw_authorize_url.clone());
 
     Ok(Json(InitiateResponse::PendingAuth {

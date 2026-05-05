@@ -500,6 +500,10 @@ async fn call_action_impl(
                 let approval_url = state
                     .config
                     .dashboard_url_for(&format!("/approvals/{}", approval.id));
+                let approval_url =
+                    crate::services::short_url::mint(&state, &approval_url, expires_at)
+                        .await
+                        .unwrap_or(approval_url);
 
                 return Ok((
                     StatusCode::ACCEPTED,

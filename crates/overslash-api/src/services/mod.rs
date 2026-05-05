@@ -25,6 +25,6 @@ pub mod platform_templates;
 pub mod rate_limit;
 pub mod response_filter;
 pub mod session;
+pub mod short_url;
 pub mod ssrf_guard;
-pub mod url_shortener;
 pub mod webhook_dispatcher;

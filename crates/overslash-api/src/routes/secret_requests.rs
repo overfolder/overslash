@@ -32,7 +32,7 @@ use crate::{
     extractors::{ClientIp, WriteAcl},
     services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims},
     services::session::extract_session,
-    services::url_shortener::mint_short_url,
+    services::short_url,
 };
 use overslash_core::crypto;
 
@@ -143,14 +143,7 @@ async fn create_secret_request(
     let url = state
         .config
         .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
-    let short_url = mint_short_url(
-        &state.http_client,
-        state.config.oversla_sh_base_url.as_deref(),
-        state.config.oversla_sh_api_key.as_deref(),
-        &url,
-        expires_at,
-    )
-    .await;
+    let short_url = short_url::mint(&state, &url, expires_at).await;
 
     let _ = OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {
