@@ -307,7 +307,7 @@
 				ctrl.signal
 			);
 			if (ctrl.signal.aborted) return;
-			const popup = window.open(resp.proxied, 'oss_oauth', 'width=520,height=680');
+			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
 			if (!popup) {
 				error = 'Pop-up blocked. Allow pop-ups and try again.';
 				return;

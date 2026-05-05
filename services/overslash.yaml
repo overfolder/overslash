@@ -172,7 +172,7 @@ platform_actions:
 
   create_connection:
     description: >
-      Start the OAuth dance for a provider. Returns a `proxied` URL pointing
+      Start the OAuth dance for a provider. Returns an `auth_url` pointing
       at Overslash's `/connect-authorize` gate (and an optional shortened
       form). Hand that URL to the user — the gate fail-fasts on session
       mismatch before redirecting to the provider, mitigating the chat-

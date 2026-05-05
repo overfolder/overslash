@@ -73,16 +73,16 @@ struct InitiateConnectionRequest {
 
 /// Wire shape for `POST /v1/connections`.
 ///
-/// **Breaking change** vs. the pre-PR shape `{ auth_url, state, provider }`:
-/// the field formerly named `auth_url` is gone. Callers should use
-/// `proxied` (the gated `app.overslash.com` URL) by default, or opt into
-/// `raw` via `include_raw: true` to render their own consent screen. The
-/// gate fail-fasts on session mismatch *before* redirecting to the
-/// provider — see the kernel doc-comment in
-/// `services/platform_connections.rs` for the threat model.
+/// Field name `auth_url` is unchanged from the pre-PR shape — the *value*
+/// upgrades to the Overslash-gated URL (`/connect-authorize?id=…`) which
+/// fail-fasts on session mismatch before redirecting to the provider, so
+/// existing callers transparently inherit the chat-delivery hardening
+/// described in the kernel doc-comment in
+/// `services/platform_connections.rs`. White-label callers that still
+/// need the raw provider URL can opt in via `include_raw: true`.
 #[derive(Serialize)]
 struct InitiateConnectionResponse {
-    proxied: String,
+    auth_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     short: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,7 +144,7 @@ async fn initiate_connection(
     };
 
     Ok(Json(InitiateConnectionResponse {
-        proxied: kernel_response.proxied,
+        auth_url: kernel_response.auth_url,
         short: kernel_response.short,
         raw,
         state: kernel_response.state,
@@ -212,13 +212,23 @@ async fn connect_authorize(
     };
 
     if session_authorized_for_flow(&state, &session, flow.org_id, flow.identity_id).await? {
-        // Atomically mark consumed and redirect. The `/v1/oauth/callback`
-        // security boundary still re-validates everything from the OAuth
-        // `state` parameter — `consumed_at` is purely the gate's UX
-        // single-use flag (a second click renders the "already been
-        // used" page rather than re-triggering the dance).
-        let _ = oauth_connection_flow::consume(&state.db, &flow.id).await?;
-        return Ok(Redirect::to(&flow.upstream_authorize_url).into_response());
+        // Atomically claim the flow for redirect. `consume` is the
+        // gate's single-use UX flag — a concurrent click that already
+        // marked the row returns `None`, in which case we render the
+        // "already been used" page instead of letting two browser tabs
+        // race into the upstream provider. The `/v1/oauth/callback`
+        // security boundary still re-validates everything from the
+        // OAuth `state` parameter regardless.
+        match oauth_connection_flow::consume(&state.db, &flow.id).await? {
+            Some(row) => {
+                return Ok(Redirect::to(&row.upstream_authorize_url).into_response());
+            }
+            None => {
+                return Ok(gone_html(
+                    "This OAuth link has already been used. Initiate the connection again to retry.",
+                ));
+            }
+        }
     }
 
     Ok(mismatch_html())

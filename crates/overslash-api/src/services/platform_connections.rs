@@ -24,10 +24,12 @@
 //! that the upstream-MCP path already has via `mcp_upstream_flows` /
 //! `/gated-authorize` (`routes/oauth_upstream.rs`). The kernel persists an
 //! `oauth_connection_flows` row holding the raw authorize URL and returns
-//! a `proxied` URL of the form `{public_url}/connect-authorize?id=<flow>`.
-//! The gate handler reads the row, fail-fasts on missing/expired/consumed
-//! /session-mismatch, and only then 302s to the provider — so a chat-
-//! delivered link cannot bypass the user-visible Overslash chrome.
+//! `auth_url` set to `{public_url}/connect-authorize?id=<flow>` instead
+//! of the raw provider URL. The wire-level field name is unchanged so
+//! existing REST clients keep working — only the *value* upgrades to the
+//! gated URL, which fail-fasts on missing/expired/consumed/session-
+//! mismatch before 302ing to the provider. White-label REST callers that
+//! still need the raw provider URL can opt in via `include_raw: true`.
 
 use std::collections::HashMap;
 
@@ -70,9 +72,14 @@ pub struct CreateConnectionInput {
 
 #[derive(Debug, Serialize)]
 pub struct CreateConnectionResponse {
-    /// Default. The Overslash-gated path; fail-fasts on session mismatch
-    /// before redirecting to the provider. Hand this to the user.
-    pub proxied: String,
+    /// The Overslash-gated URL (`{public_url}/connect-authorize?id=…`).
+    /// Hand this to the user — the gate fail-fasts on session mismatch
+    /// before redirecting to the provider. Field name kept as
+    /// `auth_url` so existing REST callers keep working transparently;
+    /// the *value* changed (gated URL instead of raw provider URL),
+    /// which is the security upgrade. White-label callers that need the
+    /// raw provider URL must opt in via `include_raw: true`.
+    pub auth_url: String,
     /// Optional shortened form (only present if the shortener is configured).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short: Option<String>,
@@ -192,7 +199,7 @@ pub async fn kernel_create_connection(
     )
     .await?;
 
-    let proxied = format!(
+    let auth_url = format!(
         "{}/connect-authorize?id={}",
         ctx.config.public_url.trim_end_matches('/'),
         flow_id
@@ -201,13 +208,13 @@ pub async fn kernel_create_connection(
         &ctx.http_client,
         ctx.config.oversla_sh_base_url.as_deref(),
         ctx.config.oversla_sh_api_key.as_deref(),
-        &proxied,
+        &auth_url,
         expires_at,
     )
     .await;
 
     Ok(CreateConnectionResponse {
-        proxied,
+        auth_url,
         short,
         state: oauth_state,
         provider: input.provider,

@@ -6,15 +6,15 @@
 //      a fresh service via `overslash_call(create_service)`. Verify
 //      `credentials_status: 'needs_authentication'`.
 //   2. Agent calls `overslash_call(create_connection, { provider: 'github' })`.
-//      Response carries `proxied` (gated `/connect-authorize` URL),
+//      Response carries `auth_url` (gated `/connect-authorize` URL),
 //      `state`, `provider`, `expires_at`, `flow_id`, and **no `raw`**.
-//   3. **Gate negative**: GET `proxied` with no session cookie → 302 to
+//   3. **Gate negative**: GET `auth_url` with no session cookie → 302 to
 //      `/auth/login?next=...`. Proves chat-delivered links can't bypass
 //      the Overslash chrome.
-//   4. **Gate negative**: GET `proxied` with an *unrelated* user's
+//   4. **Gate negative**: GET `auth_url` with an *unrelated* user's
 //      session cookie → 403 mismatch HTML, no provider redirect. Proves
 //      cookies-of-the-wrong-user can't drive the flow.
-//   5. **Gate positive**: GET `proxied` with the *target* user's session
+//   5. **Gate positive**: GET `auth_url` with the *target* user's session
 //      cookie via Playwright. The fake AS auto-approves and 307s into
 //      `/v1/oauth/callback`, which mints the connection row.
 //   6. The agent calls `update_service { connection_id }` over MCP to
@@ -122,7 +122,7 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 
 	let serviceDetail: ServiceDetail;
 	let connectionResp: {
-		proxied?: string;
+		auth_url?: string;
 		short?: string | null;
 		raw?: string | null;
 		state?: string;
@@ -145,8 +145,10 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 		serviceDetail = JSON.parse(createEnvelope.result?.body ?? '{}') as ServiceDetail;
 		expect(serviceDetail.credentials_status).toBe('needs_authentication');
 
-		// Step 2 — start OAuth via MCP. Response must carry the gated
-		// `proxied` URL and *not* the raw provider URL.
+		// Step 2 — start OAuth via MCP. `auth_url` must be the gated
+		// `/connect-authorize` URL, *not* the raw provider URL — the
+		// kernel transparently substitutes it so existing REST clients
+		// inherit the gate.
 		const createConnStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'create_connection',
@@ -159,7 +161,7 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 		expect(connEnvelope.status).toBe('called');
 		connectionResp = JSON.parse(connEnvelope.result?.body ?? '{}') as typeof connectionResp;
 		expect(connectionResp.provider).toBe('github');
-		expect(connectionResp.proxied, 'proxied URL must be returned over MCP').toMatch(
+		expect(connectionResp.auth_url, 'auth_url must point at the gated /connect-authorize').toMatch(
 			/\/connect-authorize\?id=[A-Za-z0-9]+$/
 		);
 		// MCP path must never leak the raw provider URL.
@@ -173,7 +175,7 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 	}
 
 	// Step 3 (negative): no session cookie → bounce through login.
-	const noCookieRes = await page.request.get(connectionResp.proxied!, {
+	const noCookieRes = await page.request.get(connectionResp.auth_url!, {
 		maxRedirects: 0,
 		failOnStatusCode: false
 	});
@@ -194,7 +196,7 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 	try {
 		await attachToContext(adminContext, adminSession);
 		const adminPage = await adminContext.newPage();
-		const adminRes = await adminPage.request.get(connectionResp.proxied!, {
+		const adminRes = await adminPage.request.get(connectionResp.auth_url!, {
 			maxRedirects: 0,
 			failOnStatusCode: false
 		});
@@ -208,7 +210,7 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 	// Step 5 (positive): member session, follow the redirect chain into
 	// the fake AS, which auto-approves and lands on /v1/oauth/callback.
 	await attachToContext(page.context(), memberSession);
-	const positiveRes = await page.request.get(connectionResp.proxied!, {
+	const positiveRes = await page.request.get(connectionResp.auth_url!, {
 		failOnStatusCode: false
 	});
 	expect(positiveRes.status(), 'positive path must complete with 200').toBe(200);
