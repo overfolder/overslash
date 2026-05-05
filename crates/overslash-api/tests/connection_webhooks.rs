@@ -10,8 +10,8 @@ mod common;
 
 use serde_json::{Value, json};
 
-/// Poll the mock target's `/webhooks/received` until `expected` returns the
-/// payload+headers it cares about, or fail after ~5s. Webhook dispatch is
+/// Poll the mock target's `/webhooks/received` until `matcher` finds the
+/// payload+headers it cares about, or fail after ~15s. Webhook dispatch is
 /// fire-and-forget via `tokio::spawn`, so a fixed sleep is racy in CI.
 async fn wait_for_webhook<F>(
     client: &reqwest::Client,
@@ -22,7 +22,8 @@ async fn wait_for_webhook<F>(
 where
     F: Fn(&Value) -> bool,
 {
-    for _ in 0..50 {
+    let mut last_received: Value = json!({});
+    for _ in 0..150 {
         let received: Value = client
             .get(format!("http://{mock_addr}/webhooks/received"))
             .send()
@@ -40,9 +41,10 @@ where
         {
             return (w.clone(), h.clone());
         }
+        last_received = received;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    panic!("{msg}");
+    panic!("{msg}\nmock state at timeout: {last_received}");
 }
 
 #[tokio::test]
