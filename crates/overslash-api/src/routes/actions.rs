@@ -22,6 +22,8 @@ use crate::{
     services::{
         action_caller::{StoredCallRequest, StoredMcpCall},
         disclosure, group_ceiling, http_caller, mcp_caller,
+        oauth::OAuthError,
+        platform_connections,
         response_filter::{self, ResponseFilter},
     },
 };
@@ -1600,7 +1602,7 @@ async fn resolve_request(
         )
         .await?;
 
-        let access_token = crate::services::oauth::resolve_access_token(
+        let access_token = match crate::services::oauth::resolve_access_token(
             scope,
             &state.http_client,
             &enc_key,
@@ -1609,7 +1611,14 @@ async fn resolve_request(
             &creds.client_secret,
         )
         .await
-        .map_err(|e| AppError::Internal(format!("OAuth token resolution failed: {e}")))?;
+        {
+            Ok(token) => token,
+            Err(e) => {
+                return Err(
+                    reauth_or_internal(state, scope.org_id(), identity_id, &conn, &e).await,
+                );
+            }
+        };
 
         let method = req.method.clone().unwrap_or_else(|| "GET".into());
         let url = req
@@ -1936,7 +1945,10 @@ async fn resolve_request(
         check_required_scopes(state, scope, identity_id, instance.as_ref(), &svc, action).await?;
 
         // Auth resolution: if instance has a bound connection/secret, use that;
-        // otherwise fall back to auto-resolve from the template's auth config
+        // otherwise fall back to auto-resolve from the template's auth config.
+        // RefreshFailed / NoRefreshToken from the resolver bubble up as
+        // `ReauthRequired` (with a freshly-minted gated URL) instead of being
+        // swallowed and surfaced as opaque upstream errors downstream.
         let (secrets, oauth_injected) = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
@@ -1947,10 +1959,40 @@ async fn resolve_request(
                 &req.secrets,
                 &mut headers,
             )
-            .await
+            .await?
         } else {
-            resolve_service_auth(state, scope, identity_id, &svc, &req.secrets, &mut headers).await
+            resolve_service_auth(state, scope, identity_id, &svc, &req.secrets, &mut headers)
+                .await?
         };
+
+        // After resolution, if the template declares OAuth and *nothing*
+        // was injected — no header, no secret, no connection — the
+        // upstream call is going to fail with whatever the provider
+        // returns when faced with an empty Authorization header. Catch
+        // it here and hand the agent a freshly-minted gated URL it can
+        // forward to the user. Same envelope shape as the RefreshFailed
+        // path so MCP clients only need one branch.
+        //
+        // ApiKey-only templates aren't covered: there's no OAuth provider
+        // to mint a URL for, and the existing secret-not-found errors
+        // already give the operator a "set this secret" path. MCP-bearer
+        // templates take a different fork (the runtime check above) and
+        // never reach this branch.
+        if !oauth_injected && secrets.is_empty() {
+            if let Some(err) = needs_authentication_for_service(
+                state,
+                scope.org_id(),
+                identity_id,
+                &svc,
+                action,
+                instance.as_ref(),
+                service_key,
+            )
+            .await?
+            {
+                return Err(err);
+            }
+        }
 
         let resolver_base = if host.contains("://") {
             host.to_string()
@@ -2040,9 +2082,143 @@ async fn resolve_request(
     ))
 }
 
+/// Classify an OAuth resolver error: `Some(reason)` means the user can
+/// fix it by clicking a reauth link, `None` means it's an internal /
+/// operational error (crypto, DB, provider-not-found) that should surface
+/// as 5xx. The returned `reason` is the stable tag wired into the
+/// `ReauthRequired` envelope so MCP clients can branch on it.
+fn classify_reauth(err: &OAuthError) -> Option<&'static str> {
+    match err {
+        OAuthError::RefreshFailed(_) => Some("refresh_token_failed"),
+        OAuthError::NoRefreshToken => Some("no_refresh_token"),
+        _ => None,
+    }
+}
+
+/// Build the structured `ReauthRequired` envelope: mint a gated upgrade URL
+/// pointing at the existing connection (so the OAuth callback updates the
+/// row in place), pack it together with the caller-supplied `reason` tag,
+/// and fall back to `Internal` if the URL mint itself fails — at that
+/// point we genuinely can't help the user from this response and the
+/// operator needs to investigate.
+async fn reauth_required_envelope(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    conn: &overslash_db::repos::connection::ConnectionRow,
+    reason: &'static str,
+    underlying: &OAuthError,
+) -> AppError {
+    match platform_connections::mint_upgrade_auth_url(state, org_id, caller_identity_id, conn, &[])
+        .await
+    {
+        Ok(auth_url) => AppError::ReauthRequired {
+            connection_id: conn.id,
+            auth_url,
+            reason: reason.to_string(),
+        },
+        Err(mint_err) => {
+            tracing::error!(
+                "failed to mint reauth url for connection {}: {mint_err}",
+                conn.id
+            );
+            AppError::Internal(format!("OAuth token resolution failed: {underlying}"))
+        }
+    }
+}
+
+/// Mode B helper: classify a raw OAuth resolver failure into either a
+/// `ReauthRequired` envelope (recoverable) or `Internal` (operator
+/// problem). The Mode C resolvers handle this inline because they want to
+/// distinguish *fall through to API key* from *return the typed error*;
+/// Mode B has no fall-through, so we centralize the choice here.
+async fn reauth_or_internal(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    conn: &overslash_db::repos::connection::ConnectionRow,
+    err: &OAuthError,
+) -> AppError {
+    match classify_reauth(err) {
+        Some(reason) => {
+            reauth_required_envelope(state, org_id, caller_identity_id, conn, reason, err).await
+        }
+        None => AppError::Internal(format!("OAuth token resolution failed: {err}")),
+    }
+}
+
+/// Mode C: when auth resolution returned no header / no secret on a service
+/// whose template requires auth, the upstream call is going to fail with
+/// whatever shape the provider returns to an empty Authorization header.
+/// Detect that *here* and hand the agent a structured `NeedsAuthentication`
+/// envelope with a freshly-minted gated URL, so they can forward it to the
+/// user instead of forwarding an opaque 401-from-Google.
+///
+/// Returns:
+/// - `Ok(Some(err))` — the template declares OAuth and the URL mint
+///   succeeded; caller should `Err(err)` out of `resolve_request`.
+/// - `Ok(None)` — the template has no OAuth provider declared (the
+///   no-op happy path for free templates and ApiKey-only templates).
+/// - `Err(_)` — an internal failure during URL mint (DB, crypto).
+///   Surfaced so the caller can decide whether to wrap or bail.
+async fn needs_authentication_for_service(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    svc: &overslash_core::types::ServiceDefinition,
+    action: &overslash_core::types::ServiceAction,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    service_key: &str,
+) -> Result<Option<AppError>, AppError> {
+    // First OAuth provider declared by the template. If the template has
+    // multiple OAuth providers (rare), we pick the first — that mirrors
+    // what `resolve_service_auth` already does.
+    let provider = svc.auth.iter().find_map(|a| match a {
+        overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.clone()),
+        _ => None,
+    });
+
+    // Templates that don't declare OAuth: nothing to mint a URL for. The
+    // template might require an API key, but we don't have a click-to-fix
+    // recovery shape for that today — the existing
+    // `secret-not-found`-style errors handle it. Future: emit a different
+    // typed envelope with a "go to dashboard / set this secret" hint.
+    let Some(provider) = provider else {
+        return Ok(None);
+    };
+
+    // Request the action's declared `required_scopes` up-front so the user
+    // only sees one consent screen instead of two (consenting to nothing,
+    // then being bounced through `missing_scopes` for the real set). When
+    // the action declares no scopes, the empty vec is what we want anyway.
+    let auth_url = platform_connections::mint_initial_auth_url(
+        state,
+        org_id,
+        caller_identity_id,
+        &provider,
+        &action.required_scopes,
+        None,
+    )
+    .await?;
+
+    Ok(Some(AppError::NeedsAuthentication {
+        service: Some(service_key.to_string()),
+        service_instance_id: instance.map(|i| i.id),
+        connection_id: None,
+        auth_url,
+    }))
+}
+
 /// Auto-resolve auth for a service. Uses the identity's OAuth connection when the
 /// template declares OAuth auth. Returns (secret_refs, oauth_was_injected).
 /// If an OAuth token is resolved, it's injected directly into headers (not via SecretRef).
+///
+/// `RefreshFailed` / `NoRefreshToken` from the OAuth resolver bubble up as
+/// `AppError::ReauthRequired` (with a freshly-minted gated URL) so the
+/// caller doesn't see the upstream call fail with an opaque 5xx. Other
+/// resolver errors (crypto/db/provider lookup) keep the legacy
+/// fall-through behavior — they don't have a clean "click here to fix"
+/// recovery shape.
 async fn resolve_service_auth(
     state: &AppState,
     scope: &OrgScope,
@@ -2050,9 +2226,9 @@ async fn resolve_service_auth(
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     headers: &mut HashMap<String, String>,
-) -> (Vec<SecretRef>, bool) {
+) -> Result<(Vec<SecretRef>, bool), AppError> {
     if !explicit_secrets.is_empty() {
-        return (explicit_secrets.to_vec(), false);
+        return Ok((explicit_secrets.to_vec(), false));
     }
 
     let org_id = scope.org_id();
@@ -2088,7 +2264,7 @@ async fn resolve_service_auth(
                     Err(_) => continue,
                 };
 
-                if let Ok(access_token) = crate::services::oauth::resolve_access_token(
+                match crate::services::oauth::resolve_access_token(
                     scope,
                     &state.http_client,
                     &enc_key,
@@ -2098,21 +2274,37 @@ async fn resolve_service_auth(
                 )
                 .await
                 {
-                    // Inject directly into headers
-                    let value = match &token_injection.prefix {
-                        Some(p) => format!("{p}{access_token}"),
-                        None => access_token,
-                    };
-                    if let Some(header_name) = &token_injection.header_name {
-                        headers.insert(header_name.clone(), value);
+                    Ok(access_token) => {
+                        // Inject directly into headers
+                        let value = match &token_injection.prefix {
+                            Some(p) => format!("{p}{access_token}"),
+                            None => access_token,
+                        };
+                        if let Some(header_name) = &token_injection.header_name {
+                            headers.insert(header_name.clone(), value);
+                        }
+                        return Ok((vec![], true));
                     }
-                    return (vec![], true); // OAuth token injected into headers
+                    Err(e) => match classify_reauth(&e) {
+                        Some(reason) => {
+                            return Err(reauth_required_envelope(
+                                state,
+                                org_id,
+                                identity_id,
+                                &conn,
+                                reason,
+                                &e,
+                            )
+                            .await);
+                        }
+                        None => continue,
+                    },
                 }
             }
         }
     }
 
-    (Vec::new(), false)
+    Ok((Vec::new(), false))
 }
 
 /// Fail-fast scope gate: before the outgoing request is built, compare the
@@ -2179,6 +2371,21 @@ async fn check_required_scopes(
         return Ok(());
     }
 
+    // Mint a chat-deliverable gated `/connect-authorize` URL that, when
+    // consumed, runs an incremental-scope OAuth flow against the existing
+    // connection (segment 7 of the OAuth state carries `connection.id`).
+    // The legacy `upgrade_url` field — pointing at the raw REST endpoint
+    // `/v1/connections/{id}/upgrade_scopes` — is preserved alongside for
+    // white-label callers that drive the API directly. Agents should use
+    // `auth_url`.
+    let auth_url = platform_connections::mint_upgrade_auth_url(
+        state,
+        scope.org_id(),
+        identity_id,
+        &connection,
+        &missing,
+    )
+    .await?;
     let upgrade_url = format!(
         "{}/v1/connections/{}/upgrade_scopes",
         state.config.public_url.trim_end_matches('/'),
@@ -2188,6 +2395,7 @@ async fn check_required_scopes(
         "error": "missing_scopes",
         "missing": missing,
         "connection_id": connection.id,
+        "auth_url": auth_url,
         "upgrade_url": upgrade_url,
     });
     Err(AppError::Forbidden(body.to_string()))
@@ -2203,9 +2411,9 @@ async fn resolve_instance_auth(
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     headers: &mut HashMap<String, String>,
-) -> (Vec<SecretRef>, bool) {
+) -> Result<(Vec<SecretRef>, bool), AppError> {
     if !explicit_secrets.is_empty() {
-        return (explicit_secrets.to_vec(), false);
+        return Ok((explicit_secrets.to_vec(), false));
     }
 
     let org_id = scope.org_id();
@@ -2251,7 +2459,7 @@ async fn resolve_instance_auth(
                 }
             };
 
-            if let Ok(access_token) = crate::services::oauth::resolve_access_token(
+            match crate::services::oauth::resolve_access_token(
                 scope,
                 &state.http_client,
                 &enc_key,
@@ -2261,29 +2469,49 @@ async fn resolve_instance_auth(
             )
             .await
             {
-                // Find the matching token_injection from the template's auth config
-                for service_auth in &svc.auth {
-                    if let overslash_core::types::ServiceAuth::OAuth {
-                        provider,
-                        token_injection,
-                        ..
-                    } = service_auth
-                    {
-                        if *provider == conn.provider_key {
-                            let value = match &token_injection.prefix {
-                                Some(p) => format!("{p}{access_token}"),
-                                None => access_token,
-                            };
-                            if let Some(header_name) = &token_injection.header_name {
-                                headers.insert(header_name.clone(), value);
+                Ok(access_token) => {
+                    // Find the matching token_injection from the template's auth config
+                    for service_auth in &svc.auth {
+                        if let overslash_core::types::ServiceAuth::OAuth {
+                            provider,
+                            token_injection,
+                            ..
+                        } = service_auth
+                        {
+                            if *provider == conn.provider_key {
+                                let value = match &token_injection.prefix {
+                                    Some(p) => format!("{p}{access_token}"),
+                                    None => access_token,
+                                };
+                                if let Some(header_name) = &token_injection.header_name {
+                                    headers.insert(header_name.clone(), value);
+                                }
+                                return Ok((vec![], true));
                             }
-                            return (vec![], true);
                         }
                     }
+                    // No matching auth config found, inject as Bearer by default
+                    headers.insert("Authorization".into(), format!("Bearer {access_token}"));
+                    return Ok((vec![], true));
                 }
-                // No matching auth config found, inject as Bearer by default
-                headers.insert("Authorization".into(), format!("Bearer {access_token}"));
-                return (vec![], true);
+                Err(e) => match classify_reauth(&e) {
+                    Some(reason) => {
+                        return Err(reauth_required_envelope(
+                            state,
+                            org_id,
+                            identity_id,
+                            &conn,
+                            reason,
+                            &e,
+                        )
+                        .await);
+                    }
+                    None => {
+                        // Crypto / DB / parse errors — keep legacy fall-through
+                        // to the API-key branch below in case the template is
+                        // dual-auth.
+                    }
+                },
             }
         }
     }
@@ -2294,7 +2522,7 @@ async fn resolve_instance_auth(
     if let Some(ref secret_name) = instance.secret_name {
         for service_auth in &svc.auth {
             if let overslash_core::types::ServiceAuth::ApiKey { injection, .. } = service_auth {
-                return (
+                return Ok((
                     vec![SecretRef {
                         name: secret_name.clone(),
                         inject_as: if injection.inject_as == "query" {
@@ -2307,7 +2535,7 @@ async fn resolve_instance_auth(
                         prefix: injection.prefix.clone(),
                     }],
                     false,
-                );
+                ));
             }
         }
     }
