@@ -185,36 +185,24 @@
 	}
 
 	async function setAutoCallOnApprove(next: boolean) {
-		if (!detail || !detail.mcp) return;
+		if (!detail) return;
 		const targetId = detail.agentId;
 		detail.togglingAutoCall = true;
 		detail.autoCallError = null;
 		try {
-			const resp = await session.patch<{ connection: McpConnection | null }>(
-				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
-				{ auto_call_on_approve: next }
+			// Hits the per-identity endpoint; works for any agent (REST,
+			// MCP, white-label) regardless of whether an MCP client is
+			// bound. Returns the refreshed identity row.
+			const updated = await session.patch<Identity>(
+				`/v1/identities/${encodeURIComponent(targetId)}/auto-call-on-approve`,
+				{ enabled: next }
 			);
 			if (detail?.agentId === targetId) {
-				if (resp.connection) {
-					detail.mcp = resp.connection;
-				} else {
-					// Same vanished-binding case as setElicitation — surface via
-					// mcpError rather than an inline warning so the user sees the
-					// connection card collapse instead of a stale toggle state.
-					detail.mcp = null;
-					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
-				}
+				identities = identities.map((i) => (i.id === targetId ? updated : i));
 			}
 		} catch (e) {
 			if (detail?.agentId === targetId) {
-				if (e instanceof ApiError && e.status === 404) {
-					detail.mcp = null;
-					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
-					detail.autoCallError = null;
-				} else {
-					detail.autoCallError =
-						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
-				}
+				detail.autoCallError = e instanceof ApiError ? `Error ${e.status}` : 'Network error';
 			}
 		} finally {
 			if (detail?.agentId === targetId) {
@@ -690,6 +678,26 @@
 							/>
 						</span>
 					</div>
+					<div class="field-row">
+						<span class="field-label" id="opt-auto-call-label">Auto-execute on approval</span>
+						<span class="field-value field-value-stack">
+							<ToggleSwitch
+								checked={selected.auto_call_on_approve ?? true}
+								disabled={detail?.togglingAutoCall ?? false}
+								labelledby="opt-auto-call-label"
+								onchange={(v) => setAutoCallOnApprove(v)}
+							/>
+							<span class="field-help">
+								When on (default), approving a request immediately replays the call and the
+								result lands on the execution record. When off, the request waits in
+								"deferred execution" mode until something calls
+								<code class="mono">POST /v1/approvals/&#123;id&#125;/call</code>.
+							</span>
+							{#if detail?.autoCallError}
+								<span class="opt-warn">{detail.autoCallError}</span>
+							{/if}
+						</span>
+					</div>
 
 					<!-- Pending Approvals -->
 					{#if detail && detail.approvals.length > 0}
@@ -811,25 +819,6 @@
 									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
 									labelledby="opt-elicitation-label"
 									onchange={(v) => setElicitation(v)}
-								/>
-							</div>
-							<div class="mcp-option">
-								<div class="mcp-option-text">
-									<div class="opt-title" id="opt-auto-call-label">Auto-call on approve</div>
-									<div class="opt-desc">
-										Automatically execute approved actions without waiting for the agent to
-										retry. Results land on the call's execution record — agents pull them via
-										a follow-up read.
-									</div>
-									{#if detail.autoCallError}
-										<div class="opt-warn">{detail.autoCallError}</div>
-									{/if}
-								</div>
-								<ToggleSwitch
-									checked={detail.mcp.auto_call_on_approve}
-									disabled={detail.togglingAutoCall}
-									labelledby="opt-auto-call-label"
-									onchange={(v) => setAutoCallOnApprove(v)}
 								/>
 							</div>
 						</div>
@@ -1342,6 +1331,17 @@
 	.field-value {
 		font-size: 13px;
 		color: var(--color-text);
+	}
+	.field-value-stack {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		flex: 1;
+	}
+	.field-help {
+		font-size: 12px;
+		color: var(--color-text-muted);
+		line-height: 1.4;
 	}
 
 	/* ── Section titles ── */

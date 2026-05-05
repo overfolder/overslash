@@ -37,6 +37,10 @@ pub fn router() -> Router<AppState> {
             "/v1/identities/{id}/mcp-connection/disconnect",
             post(disconnect_mcp_connection),
         )
+        .route(
+            "/v1/identities/{id}/auto-call-on-approve",
+            patch(patch_auto_call_on_approve),
+        )
         .route("/v1/whoami", get(whoami))
 }
 
@@ -264,6 +268,12 @@ struct IdentityResponse {
     depth: i32,
     owner_id: Option<Uuid>,
     inherit_permissions: bool,
+    /// When `true` (default), resolving an approval for this identity as
+    /// `allow`/`allow_remember` automatically replays the underlying call.
+    /// Flipping to `false` puts the agent in "deferred execution" mode —
+    /// the resolver/agent must call `POST /v1/approvals/{id}/call`
+    /// explicitly. Meaningless for `user`-kind rows.
+    auto_call_on_approve: bool,
     created_at: String,
     last_active_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -297,6 +307,7 @@ impl From<overslash_db::repos::identity::IdentityRow> for IdentityResponse {
             depth: r.depth,
             owner_id: r.owner_id,
             inherit_permissions: r.inherit_permissions,
+            auto_call_on_approve: r.auto_call_on_approve,
             created_at: fmt_time(r.created_at),
             last_active_at: fmt_time(r.last_active_at),
             archived_at: r.archived_at.map(fmt_time),
@@ -559,13 +570,6 @@ struct McpConnectionDto {
     last_seen_at: Option<String>,
     elicitation_enabled: bool,
     elicitation_supported: bool,
-    /// When `true` (default), resolving an approval for this agent as
-    /// `allow`/`allow_remember` automatically replays the underlying call
-    /// — no second `POST /v1/approvals/{id}/call` from the agent or user
-    /// is needed. The execution row still goes through the normal
-    /// `pending → executing → executed/failed` claim path; auto-call just
-    /// fires it in the background after `/resolve` returns.
-    auto_call_on_approve: bool,
 }
 
 async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<McpConnectionDto>> {
@@ -595,7 +599,6 @@ async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<
         last_seen_at: client.last_seen_at.map(fmt_time),
         elicitation_enabled: binding.elicitation_enabled,
         elicitation_supported,
-        auto_call_on_approve: binding.auto_call_on_approve,
     }))
 }
 
@@ -626,7 +629,6 @@ async fn get_mcp_connection(
 #[derive(Debug, Deserialize)]
 struct PatchMcpConnectionRequest {
     elicitation_enabled: Option<bool>,
-    auto_call_on_approve: Option<bool>,
 }
 
 async fn patch_mcp_connection(
@@ -672,39 +674,69 @@ async fn patch_mcp_connection(
             .await;
     }
 
-    if let Some(enabled) = req.auto_call_on_approve {
-        // Same fan-out rationale as elicitation: the dashboard surfaces a
-        // single agent-level toggle, but the resolve-time check reads
-        // whichever binding is most-recently-updated.
-        let updated =
-            overslash_db::repos::mcp_client_agent_binding::set_auto_call_on_approve_for_agent(
-                &state.db, id, enabled,
-            )
-            .await?;
-        if updated == 0 {
-            return Err(AppError::NotFound(
-                "no MCP connection bound to this agent".into(),
-            ));
-        }
-        let _ = scope
-            .log_audit(AuditEntry {
-                org_id: acl.org_id,
-                identity_id: acl.identity_id,
-                action: "mcp_connection.auto_call_on_approve_toggled",
-                resource_type: Some("identity"),
-                resource_id: Some(id),
-                detail: serde_json::json!({
-                    "auto_call_on_approve": enabled,
-                    "bindings_updated": updated,
-                }),
-                description: None,
-                ip_address: ip.0.as_deref(),
-            })
-            .await;
-    }
-
     let connection = load_mcp_connection(&state, id).await?;
     Ok(Json(McpConnectionResponse { connection }))
+}
+
+// ─── Auto-call-on-approve toggle (agent-level) ──────────────────────────
+// Per-agent override of the default auto-call behavior. Default `true`;
+// flipping to `false` puts the agent in "deferred execution" mode where
+// the resolver or agent must call `POST /v1/approvals/{id}/call`
+// explicitly after a resolver allows the approval. Replaces the prior
+// per-MCP-binding column so REST and white-label agents can opt in too.
+
+#[derive(Debug, Deserialize)]
+struct PatchAutoCallOnApproveRequest {
+    enabled: bool,
+}
+
+async fn patch_auto_call_on_approve(
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchAutoCallOnApproveRequest>,
+) -> Result<Json<IdentityResponse>> {
+    // Only meaningful for agent/sub_agent identities. Reject up front so a
+    // mistaken call against a user-kind row gets a clean error instead of
+    // silently writing a no-op flag.
+    let target = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    if target.kind != "agent" && target.kind != "sub_agent" {
+        return Err(AppError::BadRequest(
+            "auto_call_on_approve only applies to agent identities".into(),
+        ));
+    }
+
+    let updated = scope
+        .set_identity_auto_call_on_approve(id, req.enabled)
+        .await?;
+    if !updated {
+        return Err(AppError::NotFound("identity not found".into()));
+    }
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "identity.auto_call_on_approve_toggled",
+            resource_type: Some("identity"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "auto_call_on_approve": req.enabled,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    let row = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    Ok(Json(row.into()))
 }
 
 async fn disconnect_mcp_connection(

@@ -11,6 +11,7 @@ pub struct OrgRow {
     pub subagent_archive_retention_days: i32,
     pub is_personal: bool,
     pub plan: String,
+    pub default_deferred_execution: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -28,7 +29,7 @@ pub async fn create(
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at",
         name,
         slug,
         plan,
@@ -40,7 +41,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -176,6 +177,39 @@ pub async fn set_allow_unsigned_secret_provide(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `default_deferred_execution` org default. When `true`, a newly-
+/// created agent identity is seeded with `auto_call_on_approve = false`
+/// instead of the column default (`true`). Existing agents are not touched
+/// when this flag flips. Returns `None` if the org doesn't exist.
+pub async fn get_default_deferred_execution(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT default_deferred_execution FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.default_deferred_execution))
+}
+
+/// Update the `default_deferred_execution` setting for an org.
+pub async fn set_default_deferred_execution(
+    pool: &PgPool,
+    id: Uuid,
+    value: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET default_deferred_execution = $2, updated_at = now() WHERE id = $1",
+        id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Atomically update template settings and return the new values.
 pub async fn update_template_settings(
     pool: &PgPool,
@@ -202,7 +236,7 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -224,7 +258,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

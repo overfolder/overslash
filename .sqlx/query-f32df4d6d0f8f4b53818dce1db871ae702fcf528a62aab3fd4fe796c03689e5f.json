@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at\n         FROM orgs WHERE slug = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "subagent_idle_timeout_secs",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "subagent_archive_retention_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "is_personal",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "plan",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "default_deferred_execution",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f32df4d6d0f8f4b53818dce1db871ae702fcf528a62aab3fd4fe796c03689e5f"
+}

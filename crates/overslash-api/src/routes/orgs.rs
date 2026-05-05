@@ -38,6 +38,10 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{id}/secret-request-settings",
             get(get_secret_request_settings).patch(patch_secret_request_settings),
         )
+        .route(
+            "/v1/orgs/{id}/execution-settings",
+            get(get_execution_settings).patch(patch_execution_settings),
+        )
 }
 
 // Bounds for sub-agent idle cleanup config (per replan).
@@ -697,5 +701,81 @@ async fn patch_secret_request_settings(
 
     Ok(Json(SecretRequestSettingsResponse {
         allow_unsigned_secret_provide: req.allow_unsigned_secret_provide,
+    }))
+}
+
+// ─── Execution settings (auto-call-on-approve org default) ──────────────
+
+#[derive(Serialize)]
+struct ExecutionSettingsResponse {
+    /// When `true`, newly-created agents in this org are seeded with
+    /// `auto_call_on_approve = false` — they require an explicit
+    /// `POST /v1/approvals/{id}/call` after a resolver allows the
+    /// approval. Existing agents are not touched when this flag flips;
+    /// per-agent overrides win for them. Default: `false` (auto-call on).
+    default_deferred_execution: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchExecutionSettingsRequest {
+    default_deferred_execution: bool,
+}
+
+async fn get_execution_settings(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ExecutionSettingsResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let value = overslash_db::repos::org::get_default_deferred_execution(&state.db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(ExecutionSettingsResponse {
+        default_deferred_execution: value,
+    }))
+}
+
+async fn patch_execution_settings(
+    State(state): State<AppState>,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchExecutionSettingsRequest>,
+) -> Result<Json<ExecutionSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let updated = overslash_db::repos::org::set_default_deferred_execution(
+        &state.db,
+        id,
+        req.default_deferred_execution,
+    )
+    .await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.execution_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "default_deferred_execution": req.default_deferred_execution,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(ExecutionSettingsResponse {
+        default_deferred_execution: req.default_deferred_execution,
     }))
 }

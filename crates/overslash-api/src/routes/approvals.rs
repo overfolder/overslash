@@ -688,7 +688,7 @@ async fn resolve_approval(
 
     // On allow/allow_remember, create the pending execution row. The actual
     // replay is triggered either by an explicit `POST /v1/approvals/{id}/call`
-    // (manual path), or — when the requesting agent's MCP binding has
+    // (manual path), or — when the requesting agent's identity has
     // `auto_call_on_approve` set (default: true) — by a background task
     // spawned right after this `/resolve` returns. The two paths share the
     // same atomic claim guard, so a manual click landing during an in-flight
@@ -706,30 +706,40 @@ async fn resolve_approval(
             )
             .await?;
 
-        // Auto-call lookup: keyed on the requesting agent's identity. Plain
-        // REST agents (no MCP binding) always return None and short-circuit
-        // to today's manual-only behavior. Errors here are non-fatal — a
-        // failed lookup just leaves the execution pending for the agent or
-        // resolver to call manually.
-        let binding = match overslash_db::repos::mcp_client_agent_binding::get_by_agent_identity(
+        // Auto-call lookup: read the per-agent toggle off the requesting
+        // agent's identity row. Lookup errors are non-fatal — they degrade
+        // to manual-only by leaving auto-call disabled. The pre-migration
+        // path keyed this on `mcp_client_agent_bindings.auto_call_on_approve`,
+        // which excluded plain REST and white-label agents; moving it onto
+        // the identity makes the toggle universal across surfaces.
+        let auto_call_enabled = match overslash_db::repos::identity::get_by_id(
             &state.db,
+            approval_pre.org_id,
             approval_pre.identity_id,
         )
         .await
         {
-            Ok(b) => b,
+            Ok(Some(i)) => i.auto_call_on_approve,
+            Ok(None) => {
+                tracing::warn!(
+                    approval_id = %id,
+                    "auto-call identity lookup returned no row"
+                );
+                false
+            }
             Err(e) => {
                 tracing::warn!(
                     approval_id = %id,
-                    "auto-call binding lookup failed: {e}"
+                    "auto-call identity lookup failed: {e}"
                 );
-                None
+                false
             }
         };
         // Suppress auto-call when an elicitation flow is mid-flight for this
         // approval. The elicitation receiver drives its own /resolve → /call
         // round-trip; an auto-call would race with that and force one side
-        // into a 409.
+        // into a 409. Non-MCP agents have no elicitation rows, so this check
+        // is naturally a no-op for them.
         let elicitation_active =
             match overslash_db::repos::mcp_elicitation::has_active_for_approval(
                 &state.db,
@@ -747,12 +757,7 @@ async fn resolve_approval(
                 }
             };
 
-        if !elicitation_active
-            && binding
-                .as_ref()
-                .map(|b| b.auto_call_on_approve)
-                .unwrap_or(false)
-        {
+        if !elicitation_active && auto_call_enabled {
             let state_c = state.clone();
             let approval_c = approval_pre.clone();
             let resolver_identity = auth.identity_id;
@@ -1322,7 +1327,7 @@ async fn execute_claimed_approval(
         } else {
             "approval.execution_failed"
         };
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "approval_id": id,
             "execution_id": execution_id,
             "status": finalised.status,
@@ -1330,6 +1335,20 @@ async fn execute_claimed_approval(
             "error": finalised.error,
             "summary": result_summary,
         });
+        // Auto-fired executions ship the full result body in the webhook so
+        // white-label platforms can render the outcome without a follow-up
+        // `GET /v1/approvals/{id}/execution`. Manual (`agent`/`user`) calls
+        // omit it — the caller already received the response in-band on
+        // their `POST /v1/approvals/{id}/call`. Same shape as the
+        // execution-row projection.
+        if triggered_by == "auto" && succeeded {
+            if let Some(result) = finalised.result.as_ref() {
+                payload
+                    .as_object_mut()
+                    .expect("payload is a json object")
+                    .insert("result".into(), result.clone());
+            }
+        }
         tokio::spawn(async move {
             crate::services::webhook_dispatcher::dispatch(
                 &db,

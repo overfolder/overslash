@@ -125,6 +125,18 @@ async fn bootstrap(pool: sqlx::PgPool) -> (String, String, Uuid, std::net::Socke
         .unwrap();
     let org_key = org_key_resp["key"].as_str().unwrap().to_string();
 
+    // Cascade tests assert on `triggered_by="agent"` semantics from the
+    // manual `/call` flow; flip the org default so every agent we
+    // create below is seeded with auto_call_on_approve=false and the
+    // manual call wins the execution claim deterministically.
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"default_deferred_execution": true}))
+        .send()
+        .await
+        .unwrap();
+
     client
         .put(format!("{base}/v1/secrets/test_token"))
         .header("Authorization", format!("Bearer {org_key}"))

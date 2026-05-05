@@ -21,6 +21,16 @@ export interface SecretRequestSettings {
   allow_unsigned_secret_provide: boolean;
 }
 
+/**
+ * Shape of GET/PATCH /v1/orgs/{id}/execution-settings. When
+ * `default_deferred_execution` is `true`, agents created in this org
+ * after the flip are seeded with `auto_call_on_approve = false` —
+ * existing agents are not touched.
+ */
+export interface ExecutionSettings {
+  default_deferred_execution: boolean;
+}
+
 export interface IdpConfig {
   id?: string;
   org_id?: string;
@@ -80,15 +90,6 @@ export interface McpConnection {
   last_seen_at: string | null;
   elicitation_enabled: boolean;
   elicitation_supported: boolean;
-  /**
-   * When `true` (default), resolving an approval as `allow`/`allow_remember`
-   * automatically replays the underlying call — agents do not need to
-   * retry. The result lands on the `executions` row regardless; agents
-   * fetch it via `GET /v1/approvals/{id}/execution`. The Pending Calls
-   * panel surfaces "called but output unread" rows so the operator can
-   * see which auto-executions haven't been picked up yet.
-   */
-  auto_call_on_approve: boolean;
 }
 
 /**
@@ -555,6 +556,15 @@ export interface Identity {
   depth: number;
   owner_id: string | null;
   inherit_permissions: boolean;
+  /**
+   * When `true` (default), resolving an approval for this identity as
+   * `allow`/`allow_remember` automatically replays the underlying call.
+   * Flipping to `false` puts the agent in "deferred execution" mode —
+   * the resolver/agent must call `POST /v1/approvals/{id}/call` explicitly.
+   * Meaningless for `user`-kind rows. Backend may omit on older API
+   * builds; treat `undefined` as `true` for display fallback.
+   */
+  auto_call_on_approve?: boolean;
   created_at?: string;
   last_active_at?: string;
   archived_at?: string | null;

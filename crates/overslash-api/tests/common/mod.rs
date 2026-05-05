@@ -992,6 +992,22 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
+    // Disable auto-call-on-approve so the suite's manual `/call` flow keeps
+    // winning the execution claim race. The universal default (true) would
+    // spawn a background auto-call after each `/resolve`, which would beat
+    // the manual call most of the time and break tests that assert
+    // `triggered_by == "agent"`. Tests covering the auto-call path live in
+    // `auto_call_on_approve.rs` and re-enable it explicitly.
+    client
+        .patch(format!(
+            "{base}/v1/identities/{ident_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
     // Identity-bound key for the agent
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))

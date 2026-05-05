@@ -279,6 +279,21 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid, String) {
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
+    // Disable auto-call-on-approve so the suite's manual `/call` tests
+    // continue to win the execution claim. The universal default (true)
+    // would race the manual call with a background auto-call after every
+    // `/resolve`. New auto-call coverage lives in `auto_call_on_approve.rs`
+    // and re-enables it explicitly.
+    client
+        .patch(format!(
+            "{base}/v1/identities/{ident_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {raw_key}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
     // Create identity-bound API key
     let agent_key: Value = client
         .post(format!("{base}/v1/api-keys"))

@@ -13,7 +13,7 @@ impl UserScope {
     pub async fn get_self_identity(&self) -> Result<Option<IdentityRow>, sqlx::Error> {
         sqlx::query_as!(
             IdentityRow,
-            "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+            "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
              FROM identities WHERE id = $1 AND org_id = $2",
             self.user_id(),
             self.org_id(),
@@ -49,7 +49,7 @@ impl UserScope {
             IdentityRow,
             "UPDATE identities SET preferences = $3, updated_at = now()
              WHERE id = $1 AND org_id = $2
-             RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+             RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
             self.user_id(),
             self.org_id(),
             merged,

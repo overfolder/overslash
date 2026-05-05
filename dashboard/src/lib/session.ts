@@ -267,7 +267,9 @@ export interface ExecutionSummary {
 	result?: unknown;
 	error?: string;
 	/** `auto` is set when the resolve handler kicked off the replay because
-	 *  the agent's MCP binding has `auto_call_on_approve` enabled. */
+	 *  the requesting agent's identity has `auto_call_on_approve` enabled
+	 *  (default true). Applies uniformly to MCP, REST, and white-label
+	 *  agents. */
 	triggered_by?: 'agent' | 'user' | 'auto';
 	started_at?: string;
 	completed_at?: string;
