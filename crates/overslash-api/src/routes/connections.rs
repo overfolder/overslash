@@ -346,59 +346,60 @@ async fn oauth_callback(
     // initiate time — which we already validated above by decoding into Uuids.
     let scope = OrgScope::new(org_id, state.db.clone());
 
-    let (connection_id, audit_action) = if let Some(existing_id) = upgrade_connection_id {
-        // Incremental upgrade: union the granted scope set with what was on
-        // the connection, update tokens, keep the same row id so every
-        // service pointing at it stays bound.
-        let existing = scope
-            .get_connection(existing_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
-        if existing.identity_id != identity_id || existing.provider_key != provider_key {
-            return Err(AppError::BadRequest(
-                "state mismatch: upgrade connection does not match identity/provider".into(),
-            ));
-        }
-        let merged: Vec<String> = merge_scopes(&existing.scopes, &granted_scopes);
-        let updated = scope
-            .update_connection_tokens_and_scopes(
-                existing_id,
-                &encrypted_access,
-                encrypted_refresh.as_deref(),
-                expires_at,
-                &merged,
-                // Refresh the label too — the provider may have renamed the
-                // account between the original connect and the upgrade.
-                // `COALESCE` on the repo side leaves the existing value
-                // intact when we pass `None` (userinfo fetch failed).
-                account_email.as_deref(),
-            )
-            .await?;
-        if !updated {
-            // Concurrent deletion between the initial get_connection() read
-            // and this update. Surface a specific error instead of telling
-            // the caller the upgrade succeeded against a row that's gone.
-            return Err(AppError::NotFound(
-                "connection was deleted during upgrade".into(),
-            ));
-        }
-        (existing_id, "connection.scopes_upgraded")
-    } else {
-        let conn = scope
-            .create_connection(overslash_db::repos::connection::CreateConnection {
-                org_id,
-                identity_id,
-                provider_key,
-                encrypted_access_token: &encrypted_access,
-                encrypted_refresh_token: encrypted_refresh.as_deref(),
-                token_expires_at: expires_at,
-                scopes: &granted_scopes,
-                account_email: account_email.as_deref(),
-                byoc_credential_id: effective_byoc_id,
-            })
-            .await?;
-        (conn.id, "connection.created")
-    };
+    let (connection_id, audit_action, effective_scopes) =
+        if let Some(existing_id) = upgrade_connection_id {
+            // Incremental upgrade: union the granted scope set with what was on
+            // the connection, update tokens, keep the same row id so every
+            // service pointing at it stays bound.
+            let existing = scope
+                .get_connection(existing_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
+            if existing.identity_id != identity_id || existing.provider_key != provider_key {
+                return Err(AppError::BadRequest(
+                    "state mismatch: upgrade connection does not match identity/provider".into(),
+                ));
+            }
+            let merged: Vec<String> = merge_scopes(&existing.scopes, &granted_scopes);
+            let updated = scope
+                .update_connection_tokens_and_scopes(
+                    existing_id,
+                    &encrypted_access,
+                    encrypted_refresh.as_deref(),
+                    expires_at,
+                    &merged,
+                    // Refresh the label too — the provider may have renamed the
+                    // account between the original connect and the upgrade.
+                    // `COALESCE` on the repo side leaves the existing value
+                    // intact when we pass `None` (userinfo fetch failed).
+                    account_email.as_deref(),
+                )
+                .await?;
+            if !updated {
+                // Concurrent deletion between the initial get_connection() read
+                // and this update. Surface a specific error instead of telling
+                // the caller the upgrade succeeded against a row that's gone.
+                return Err(AppError::NotFound(
+                    "connection was deleted during upgrade".into(),
+                ));
+            }
+            (existing_id, "connection.scopes_upgraded", merged)
+        } else {
+            let conn = scope
+                .create_connection(overslash_db::repos::connection::CreateConnection {
+                    org_id,
+                    identity_id,
+                    provider_key,
+                    encrypted_access_token: &encrypted_access,
+                    encrypted_refresh_token: encrypted_refresh.as_deref(),
+                    token_expires_at: expires_at,
+                    scopes: &granted_scopes,
+                    account_email: account_email.as_deref(),
+                    byoc_credential_id: effective_byoc_id,
+                })
+                .await?;
+            (conn.id, "connection.created", granted_scopes.clone())
+        };
 
     let _ = scope
         .log_audit(AuditEntry {
@@ -422,13 +423,16 @@ async fn oauth_callback(
         let client = state.http_client.clone();
         let provider_key = provider_key.to_string();
         let account_email = account_email.clone();
-        let granted_scopes = granted_scopes.clone();
+        // For upgrades, this is the merged scope set (the connection's full
+        // current scopes), not just the delta granted in this OAuth flow.
+        // Webhook consumers want the resulting state, not the diff.
+        let scopes = effective_scopes;
         tokio::spawn(async move {
             let payload = serde_json::json!({
                 "connection_id": connection_id,
                 "provider": provider_key,
                 "account_email": account_email,
-                "scopes": granted_scopes,
+                "scopes": scopes,
                 "identity_id": identity_id,
             });
             crate::services::webhook_dispatcher::dispatch(
