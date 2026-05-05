@@ -240,7 +240,7 @@
 			<div class="error">{error}</div>
 		{/if}
 
-		{#if !loading && (services.length > 0 || showAllUsers)}
+		{#if !loading && (services.length > 0 || showAllUsers || isAdmin)}
 			<div class="filters">
 				<SearchBar
 					keys={searchKeys}
