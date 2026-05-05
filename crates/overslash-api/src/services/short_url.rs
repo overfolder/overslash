@@ -1,8 +1,8 @@
 //! Best-effort short-link minting via the `oversla.sh` service.
 //!
 //! Used by flows that hand a deep link to a human (OAuth upstream capture,
-//! approvals). The long URL is the source of truth — a missing short URL
-//! never blocks the flow.
+//! HTTP-OAuth gated-authorize, approvals). The long URL is the source of
+//! truth — a missing short URL never blocks the flow.
 //!
 //! Returns `None` if the service isn't configured or the request fails.
 //! Callers fall back to the long URL.

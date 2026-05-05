@@ -29,9 +29,12 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{SessionAuth, extract_cookie},
-    routes::auth::signing_key_bytes,
-    services::{jwt, oauth_upstream as svc, short_url, ssrf_guard},
+    extractors::SessionAuth,
+    routes::connect_gate::{
+        ParsedSession, SessionError, gone_html, html_escape, mismatch_html, read_session,
+        session_authorized_for_org_identity,
+    },
+    services::{oauth_upstream as svc, short_url, ssrf_guard},
 };
 use overslash_core::crypto;
 use overslash_db::repos::{
@@ -589,88 +592,21 @@ async fn callback(
 }
 
 // ---------------------------------------------------------------------------
-// Session reading + authorization helpers
+// Flow-specific authorization wrapper around the generic gate primitives.
 // ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct ParsedSession {
-    org_id: Uuid,
-    identity_id: Uuid,
-    user_id: Option<Uuid>,
-}
-
-enum SessionError {
-    Missing,
-    Invalid,
-}
-
-fn read_session(state: &AppState, headers: &HeaderMap) -> Result<ParsedSession, SessionError> {
-    let token = extract_cookie(headers, "oss_session").ok_or(SessionError::Missing)?;
-    let signing_key = signing_key_bytes(&state.config.signing_key);
-    let claims =
-        jwt::verify(&signing_key, &token, jwt::AUD_SESSION).map_err(|_| SessionError::Invalid)?;
-    Ok(ParsedSession {
-        org_id: claims.org,
-        identity_id: claims.sub,
-        user_id: claims.user_id,
-    })
-}
 
 async fn session_authorized_for_flow(
     state: &AppState,
     session: &ParsedSession,
     flow: &mcp_upstream_flow::McpUpstreamFlowRow,
 ) -> Result<bool, AppError> {
-    if session.org_id != flow.org_id {
-        return Ok(false);
-    }
-    if session.identity_id == flow.identity_id {
-        return Ok(true);
-    }
-    let chain = identity::get_ancestor_chain(&state.db, flow.org_id, flow.identity_id).await?;
-    Ok(chain.iter().any(|row| row.id == session.identity_id))
+    session_authorized_for_org_identity(state, session, flow.org_id, flow.identity_id).await
 }
 
 // ---------------------------------------------------------------------------
-// HTML helpers — minimal, server-rendered. The dashboard owns rich UX; these
-// pages are reached when the session check fails or the URL is gone. Any
-// caller-controlled data MUST go through `html_escape` before interpolation.
+// Flow-specific HTML — multi-org switch is shaped around the upstream-flow
+// id and is not a primitive in `connect_gate`.
 // ---------------------------------------------------------------------------
-
-fn html_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#x27;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn gone_html(msg: &str) -> Response {
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><title>OAuth link unavailable</title>\
-         <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
-         <h1>Link unavailable</h1><p>{}</p></body>",
-        html_escape(msg)
-    );
-    (StatusCode::GONE, Html(body)).into_response()
-}
-
-fn mismatch_html() -> Response {
-    let body = "<!doctype html><meta charset=utf-8><title>Wrong account</title>\
-                <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
-                <h1>Wrong account</h1>\
-                <p>This OAuth link was created for a different Overslash account. \
-                If you believe this is an error, sign out and sign in as the correct user, \
-                then click the link again.</p></body>";
-    (StatusCode::FORBIDDEN, Html(body)).into_response()
-}
 
 fn switch_org_html(public_url: &str, flow_id: &str, target_org: Uuid) -> Response {
     let return_to = format!("{public_url}/gated-authorize?id={flow_id}");
@@ -730,18 +666,4 @@ fn connected_html(resource: &str) -> Response {
         html_escape(resource)
     );
     (StatusCode::OK, Html(body)).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::html_escape;
-
-    #[test]
-    fn html_escape_handles_xss_payloads() {
-        assert_eq!(
-            html_escape("<script>alert('x')</script>"),
-            "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;"
-        );
-        assert_eq!(html_escape("a&b\"c"), "a&amp;b&quot;c");
-    }
 }

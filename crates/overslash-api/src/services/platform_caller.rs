@@ -23,10 +23,12 @@ pub struct PlatformCallContext {
     pub access_level: AccessLevel,
     pub db: PgPool,
     pub registry: Arc<ServiceRegistry>,
-    /// App config — kernels that mint signed URLs or call the shortener read
-    /// signing keys, dashboard URL, and `oversla.sh` settings from here.
+    /// App config — OAuth-bearing kernels (`platform_connections`) read
+    /// `public_url` and encryption keys here; URL-minting kernels read
+    /// signing keys and `oversla.sh` settings. Cheap `Clone` per dispatch.
     pub config: Config,
-    /// Shared HTTP client for outbound calls (e.g. the URL shortener).
+    /// Shared HTTP client for outbound calls (e.g. the URL shortener,
+    /// upstream OAuth providers).
     pub http_client: reqwest::Client,
 }
 

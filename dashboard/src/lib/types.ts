@@ -410,9 +410,21 @@ export interface ByocCredentialSummary {
 }
 
 export interface InitiateConnectionResponse {
+  /// The Overslash-gated URL (`/connect-authorize?id=…`); fail-fasts on
+  /// session mismatch before redirecting to the provider. Open this in
+  /// the popup. Field name is unchanged from the pre-PR shape — the
+  /// *value* upgrades to the gated URL so existing callers transparently
+  /// inherit the chat-delivery hardening.
   auth_url: string;
+  /// Optional shortened form (only present if the shortener is configured).
+  short?: string;
+  /// Raw provider authorize URL. Only included when the request set
+  /// `include_raw: true`.
+  raw?: string;
   state: string;
   provider: string;
+  expires_at: string;
+  flow_id: string;
 }
 
 export interface ServiceSummary {

@@ -234,6 +234,9 @@ async fn test_oauth_x_pkce_in_auth_url() {
         .json(&json!({
             "provider": "x",
             "scopes": ["tweet.read", "users.read", "offline.access"],
+            // White-label REST opt-in: surface the raw provider URL so we
+            // can assert PKCE params landed on the upstream redirect.
+            "include_raw": true,
         }))
         .send()
         .await
@@ -242,22 +245,22 @@ async fn test_oauth_x_pkce_in_auth_url() {
         .await
         .unwrap();
 
-    let auth_url = resp["auth_url"].as_str().unwrap();
+    let raw = resp["raw"].as_str().unwrap();
     let state = resp["state"].as_str().unwrap();
 
-    // Auth URL must contain PKCE parameters
+    // Raw provider URL must contain PKCE parameters
     assert!(
-        auth_url.contains("code_challenge="),
-        "auth_url missing code_challenge: {auth_url}"
+        raw.contains("code_challenge="),
+        "raw missing code_challenge: {raw}"
     );
     assert!(
-        auth_url.contains("code_challenge_method=S256"),
-        "auth_url missing code_challenge_method: {auth_url}"
+        raw.contains("code_challenge_method=S256"),
+        "raw missing code_challenge_method: {raw}"
     );
 
-    // State must have 5 segments (org:ident:provider:byoc:verifier)
-    let segments: Vec<&str> = state.splitn(5, ':').collect();
-    assert_eq!(segments.len(), 5, "state should have 5 segments: {state}");
+    // State has 7 segments (org:ident:provider:byoc:verifier:actor:upgrade).
+    let segments: Vec<&str> = state.splitn(7, ':').collect();
+    assert_eq!(segments.len(), 7, "state should have 7 segments: {state}");
     assert_eq!(segments[2], "x");
     // The verifier segment must not be "_" (it should be an actual verifier)
     assert_ne!(segments[4], "_", "code_verifier should not be empty");
@@ -506,6 +509,7 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         .json(&json!({
             "provider": "github",
             "scopes": ["repo"],
+            "include_raw": true,
         }))
         .send()
         .await
@@ -514,18 +518,19 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         .await
         .unwrap();
 
-    let auth_url = resp["auth_url"].as_str().unwrap();
+    let raw = resp["raw"].as_str().unwrap();
     let state = resp["state"].as_str().unwrap();
 
     // Non-PKCE provider should NOT have code_challenge
     assert!(
-        !auth_url.contains("code_challenge="),
-        "github auth_url should not have code_challenge: {auth_url}"
+        !raw.contains("code_challenge="),
+        "github raw should not have code_challenge: {raw}"
     );
 
-    // State verifier segment should be "_"
-    let segments: Vec<&str> = state.splitn(6, ':').collect();
-    assert_eq!(segments.len(), 6);
+    // State verifier segment should be "_". Layout is now 7 segments
+    // (org:ident:provider:byoc:verifier:actor:upgrade).
+    let segments: Vec<&str> = state.splitn(7, ':').collect();
+    assert_eq!(segments.len(), 7);
     assert_eq!(
         segments[4], "_",
         "github should have '_' as verifier segment"

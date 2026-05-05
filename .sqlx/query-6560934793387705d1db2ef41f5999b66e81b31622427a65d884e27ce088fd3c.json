@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM oauth_connection_flows\n          WHERE expires_at < now() AND consumed_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6560934793387705d1db2ef41f5999b66e81b31622427a65d884e27ce088fd3c"
+}
