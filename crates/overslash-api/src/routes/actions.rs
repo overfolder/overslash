@@ -44,6 +44,15 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/v1/actions/call", post(call_action))
 }
 
+/// `/v1/actions/validate` is a dry-run probe: it runs `validate_args` and
+/// the permission chain, but never executes the upstream call, never
+/// writes an approval, never logs audit, and is exempt from rate limits.
+/// Mounted on its own router so callers can pre-flight bad params without
+/// burning their rate budget.
+pub fn validate_router() -> Router<AppState> {
+    Router::new().route("/v1/actions/validate", post(validate_action))
+}
+
 /// Top-level handler that times the request and emits the
 /// `overslash_action_executions_total` / `_duration_seconds` metrics.
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
@@ -107,6 +116,256 @@ async fn call_action(
         start.elapsed(),
     );
     result
+}
+
+/// `POST /v1/actions/validate` — dry-run probe for `/v1/actions/call`.
+///
+/// Runs the same body shape, the same identity / risk / argument checks,
+/// and the same Layer 1 (group ceiling) + Layer 2 (permission chain)
+/// gates that `/call` runs — but stops short of executing the upstream
+/// request, writing an approval row, logging audit, or dispatching
+/// webhooks. Returns 200 `{ok: true, permission: {status, ...}}` on
+/// success, or 400 with the structured `invalid_action_args` body when
+/// the caller's params don't match the action's input contract.
+///
+/// Exempt from rate limits (mounted on its own router) so an agent can
+/// pre-validate without burning quota on a request it isn't sure of yet.
+async fn validate_action(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    scope: OrgScope,
+    _ip: ClientIp,
+    Json(req): Json<CallRequest>,
+) -> Result<Response, AppError> {
+    let start = std::time::Instant::now();
+    let mode = if req.connection.is_some() {
+        "b"
+    } else if req.service.is_some() {
+        "c"
+    } else {
+        "a"
+    };
+    let template_key = if req.connection.is_some() {
+        "_raw".to_string()
+    } else {
+        match req.service.as_deref() {
+            Some(key) if state.registry.get(key).is_some() => key.to_string(),
+            Some(_) => "_unknown".to_string(),
+            None => "_raw".to_string(),
+        }
+    };
+
+    let result = validate_action_impl(State(state), auth, scope, Json(req)).await;
+
+    let outcome = match &result {
+        Ok((_, label)) => *label,
+        // Only the `InvalidActionArgs` 400 counts as `invalid_args`;
+        // Mode B rejection, filter-syntax errors, and require_risk
+        // mismatches are all 400s but unrelated to the schema check, so
+        // they fall into `rejected` — keeps the dashboard panel for
+        // schema misses honest.
+        Err(AppError::InvalidActionArgs { .. }) => "invalid_args",
+        Err(err) => {
+            let code = err.status_code().as_u16();
+            if code >= 500 {
+                "failed"
+            } else if code == 403 {
+                "denied"
+            } else {
+                "rejected"
+            }
+        }
+    };
+    overslash_metrics::actions::record_validation(&template_key, mode, outcome, start.elapsed());
+
+    result.map(|(resp, _)| resp)
+}
+
+/// Outcome label tracked alongside the response so the metrics wrapper
+/// can distinguish e.g. `validated` vs `would_require_approval` without
+/// re-parsing the response body.
+async fn validate_action_impl(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    scope: OrgScope,
+    Json(req): Json<CallRequest>,
+) -> Result<(Response, &'static str), AppError> {
+    // Mode B (raw connection) has no schema to validate against, and
+    // resolving the connection would require a real OAuth token refresh
+    // — not appropriate for a dry-run probe. The caller can hit
+    // `/v1/actions/call` directly to test that path.
+    if req.connection.is_some() {
+        return Err(AppError::BadRequest(
+            "validate does not support raw connection mode; \
+             use /v1/actions/call to test connection-based requests"
+                .into(),
+        ));
+    }
+
+    // Filter syntax — same gate as `/call`. A malformed expression is a
+    // 400, not a wasted upstream burn.
+    if let Some(filter) = req.filter.as_ref() {
+        response_filter::validate_syntax(filter).map_err(AppError::FilterSyntax)?;
+    }
+
+    let identity_id = auth
+        .identity_id
+        .ok_or_else(|| AppError::BadRequest("api key must be bound to an identity".into()))?;
+    let identity = scope
+        .get_identity(identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    let ceiling_user_id = group_ceiling::ceiling_user_id_from_identity(&identity)?;
+
+    // Cheap resolution — loads the action template (Mode C) without
+    // running OAuth, param resolvers, or scope checks. The resolved
+    // template/instance ride along but the validate path doesn't
+    // forward them anywhere; they're dropped at the end of this scope.
+    let (meta, _resolved_mode_c) =
+        resolve_action_metadata(&state, &auth, &scope, ceiling_user_id, &req).await?;
+
+    // Argument validation runs before the risk gate so a request with
+    // both bad params and a wrong-risk assertion produces the same
+    // `invalid_action_args` 400 it would on `/call` — the byte-identical
+    // 400 contract is meaningful only when the gates fire in the same
+    // order in both endpoints.
+    if let Err(errors) =
+        overslash_core::openapi::validate_input::validate_args(&meta.validation_params, &req.params)
+    {
+        return Err(invalid_action_args_error(&meta.validation_params, errors));
+    }
+
+    // Caller-asserted risk gate — mirrors `/call` (which runs it inside
+    // `resolve_request` after `validate_args` has already gated bad args).
+    if let Some(required) = req.require_risk {
+        let effective = meta
+            .risk
+            .unwrap_or_else(|| Risk::from_http_method(&meta.raw_method));
+        if required == Risk::Read && effective.is_mutating() {
+            let action_label = req
+                .action
+                .as_deref()
+                .or(req.service.as_deref())
+                .unwrap_or(&meta.raw_url);
+            return Err(AppError::BadRequest(format!(
+                "action '{action_label}' is risk={effective}; this entry point only permits risk=read actions. Use overslash_call instead."
+            )));
+        }
+    }
+
+    // Permission key derivation — same logic as `/call` runs after
+    // `resolve_request` returns, using the resolved scope and method.
+    let perm_keys = if let Some(ref svc) = meta.service_scope {
+        PermissionKey::from_service_action(
+            &svc.service_key,
+            &svc.action_key,
+            svc.scope_param.as_deref(),
+            &req.params,
+        )
+    } else {
+        PermissionKey::from_http(&meta.raw_method, &meta.raw_url)
+    };
+
+    // Layer 1: group ceiling. Surfaced as a permission status, not a
+    // 403 — validate always returns 200 on a well-formed call so the
+    // caller has a single decode path.
+    let ceiling_service = meta
+        .service_scope
+        .as_ref()
+        .map(|s| s.service_key.clone())
+        .unwrap_or_else(|| "http".to_string());
+    let ceiling_risk = meta
+        .risk
+        .unwrap_or_else(|| Risk::from_http_method(&meta.raw_method));
+    let ceiling = group_ceiling::load_ceiling(&scope, ceiling_user_id).await?;
+    let mut skip_layer2 = false;
+    if ceiling.has_groups {
+        match group_ceiling::check_ceiling(&ceiling, &ceiling_service, ceiling_risk) {
+            GroupCeilingResult::ExceedsCeiling(reason) => {
+                let body = serde_json::json!({
+                    "ok": true,
+                    "permission": {
+                        "status": "exceeds_ceiling",
+                        "reason": reason,
+                    },
+                });
+                return Ok((
+                    (StatusCode::OK, Json(body)).into_response(),
+                    "exceeds_ceiling",
+                ));
+            }
+            GroupCeilingResult::WithinCeiling { read_bypass } => {
+                if read_bypass && identity.kind != "user" {
+                    skip_layer2 = true;
+                }
+            }
+            GroupCeilingResult::NoGroups => {}
+        }
+    }
+
+    // Layer 2: permission chain. Users are gated by groups only, so
+    // they get an immediate `allowed`. Agents walk the chain — first
+    // gap reports `would_require_approval` without writing an approval
+    // row or firing a webhook.
+    if identity.kind == "user" || !meta.needs_gate || skip_layer2 {
+        let body = serde_json::json!({
+            "ok": true,
+            "permission": { "status": "allowed" },
+        });
+        return Ok(((StatusCode::OK, Json(body)).into_response(), "validated"));
+    }
+
+    let bubble_secs =
+        overslash_db::repos::org::get_approval_auto_bubble_secs(&state.db, auth.org_id)
+            .await?
+            .unwrap_or(300);
+    let force_user_resolver = bubble_secs == 0;
+
+    let outcome = crate::services::permission_chain::walk(
+        &scope,
+        identity_id,
+        &perm_keys,
+        force_user_resolver,
+    )
+    .await?;
+
+    let (body, label) = match outcome {
+        crate::services::permission_chain::ChainWalkResult::Allowed => (
+            serde_json::json!({
+                "ok": true,
+                "permission": { "status": "allowed" },
+            }),
+            "validated",
+        ),
+        crate::services::permission_chain::ChainWalkResult::Gap {
+            uncovered_keys,
+            gap_identity_id,
+            initial_resolver_id,
+            rule_placement_id: _,
+        } => {
+            let keys: Vec<String> = uncovered_keys.iter().map(|k| k.0.clone()).collect();
+            (
+                serde_json::json!({
+                    "ok": true,
+                    "permission": {
+                        "status": "would_require_approval",
+                        "uncovered_keys": keys,
+                        "gap_identity_id": gap_identity_id,
+                        "initial_resolver_id": initial_resolver_id,
+                    },
+                }),
+                "would_require_approval",
+            )
+        }
+        crate::services::permission_chain::ChainWalkResult::Denied(reason) => (
+            serde_json::json!({
+                "ok": true,
+                "permission": { "status": "denied", "reason": reason },
+            }),
+            "denied",
+        ),
+    };
+    Ok(((StatusCode::OK, Json(body)).into_response(), label))
 }
 
 /// Unified call request: supports Mode A (raw HTTP) and Mode C (service + action).
@@ -249,10 +508,44 @@ async fn call_action_impl(
 
     let ceiling_user_id = group_ceiling::ceiling_user_id_from_identity(&identity)?;
 
+    // ── Argument validation gate ────────────────────────────────────
+    //
+    // Pre-resolve the action's metadata (cheap; no OAuth, no upstream
+    // calls) and reject malformed args **before** any permission or
+    // approval work. Sitting at the top of the handler — above the
+    // ceiling check, above the permission walk, above the approval
+    // branch — is what guarantees the ordering structurally: a future
+    // refactor of `resolve_request` can't reintroduce the bug where a
+    // user clicks "Allow" on a request that then fails validation.
+    // Mode A/B carry an empty schema so the call is a no-op for them.
+    //
+    // The Mode C branch threads the resolved `(svc, instance)` into
+    // `resolve_request` below so the call hot path doesn't re-fetch
+    // the template / instance from the DB.
+    let (pre_meta, pre_resolved_mode_c) =
+        resolve_action_metadata(&state, &auth, &scope, ceiling_user_id, &req).await?;
+    if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
+        &pre_meta.validation_params,
+        &req.params,
+    ) {
+        return Err(invalid_action_args_error(
+            &pre_meta.validation_params,
+            errors,
+        ));
+    }
+
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
     // the identity lookup above so Mode C name resolution doesn't re-fetch it.
-    let (action_req, meta) =
-        resolve_request(&state, &auth, &scope, identity_id, ceiling_user_id, &req).await?;
+    let (action_req, meta) = resolve_request(
+        &state,
+        &auth,
+        &scope,
+        identity_id,
+        ceiling_user_id,
+        &req,
+        pre_resolved_mode_c,
+    )
+    .await?;
 
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
     // permission/approval work if the resolved action mutates. We use the
@@ -1050,8 +1343,235 @@ fn unknown_service_error(service_key: &str, available: Vec<String>) -> AppError 
     }
 }
 
+/// Cheap, side-effect-free pre-resolution of a `CallRequest`.
+///
+/// Returns enough information for the top-level handler to:
+///   1. Validate caller-supplied args against the action's schema
+///      (Mode C only; A/B carry an empty schema).
+///   2. Derive permission keys.
+///   3. Run the caller-asserted risk gate.
+///
+/// Mode A / Mode B don't touch the DB. Mode C loads the service template
+/// and looks up the action — no OAuth refresh, no `param_resolver` HTTP,
+/// no scope checks, no audit. Used by both `/v1/actions/call` (so
+/// `validate_args` can sit at the top of the handler, structurally before
+/// any approval-creation work) and `/v1/actions/validate` (which only
+/// runs the cheap path and never builds a real request).
+///
+/// For Mode C, the resolved template + instance ride along in the
+/// returned tuple so `resolve_request` can reuse them and avoid the
+/// duplicate DB lookup that a separate metadata pre-resolve would
+/// otherwise force on the call hot path.
+struct ActionMetadata {
+    /// Schema for `validate_args`. Empty for Mode A/B (no contract to enforce).
+    validation_params: HashMap<String, overslash_core::types::ActionParam>,
+    /// Service/action keys for permission key derivation (Mode C only).
+    service_scope: Option<ServiceScope>,
+    /// Risk class — Mode C reads it from the template; A/B leave it
+    /// `None` and the caller infers from the HTTP method.
+    risk: Option<Risk>,
+    /// Caller-supplied raw HTTP fields used for Mode A/B permission key
+    /// derivation. Mode C ignores these (uses `service_scope`).
+    raw_method: String,
+    raw_url: String,
+    /// Whether this request needs Layer 2 (permission-chain) gating.
+    /// Mode C is always gated (templates ship with auth or are
+    /// platform/MCP). Mode A is gated only when secrets are injected.
+    /// Mode B is always gated.
+    needs_gate: bool,
+}
+
+/// Mode-C pre-resolution: the looked-up template + instance, threaded
+/// from `resolve_action_metadata` into `resolve_request` so the call
+/// path doesn't re-fetch them.
+struct ResolvedModeC {
+    svc: overslash_core::types::ServiceDefinition,
+    instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+}
+
+async fn resolve_action_metadata(
+    state: &AppState,
+    auth: &AuthContext,
+    scope: &OrgScope,
+    ceiling_user_id: Uuid,
+    req: &CallRequest,
+) -> Result<(ActionMetadata, Option<ResolvedModeC>), AppError> {
+    // Mode B: no schema, no template lookup. Permission keys are derived
+    // from the caller's url/method.
+    if req.connection.is_some() {
+        let raw_method = req.method.clone().unwrap_or_else(|| "GET".into());
+        let raw_url = req.url.clone().unwrap_or_default();
+        return Ok((
+            ActionMetadata {
+                validation_params: HashMap::new(),
+                service_scope: None,
+                risk: None,
+                raw_method,
+                raw_url,
+                needs_gate: true,
+            },
+            None,
+        ));
+    }
+
+    // Mode C: service + action. Load template, look up action, expose
+    // schema + scope for validation and permission derivation.
+    if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
+        let instance = scope
+            .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
+            .await?;
+
+        let svc = if let Some(ref inst) = instance {
+            super::templates::resolve_template_definition(
+                state,
+                auth.org_id,
+                auth.identity_id,
+                &inst.template_key,
+            )
+            .await?
+        } else {
+            let from_template = super::templates::resolve_template_definition(
+                state,
+                auth.org_id,
+                auth.identity_id,
+                service_key,
+            )
+            .await
+            .ok();
+            match from_template.or_else(|| state.registry.get(service_key).cloned()) {
+                Some(s) => s,
+                None => {
+                    let available = caller_visible_instance_names(
+                        scope,
+                        auth.identity_id,
+                        Some(ceiling_user_id),
+                    )
+                    .await?;
+                    return Err(unknown_service_error(service_key, available));
+                }
+            }
+        };
+
+        let action = svc.actions.get(action_key).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "action '{action_key}' not found in service '{service_key}'"
+            ))
+        })?;
+
+        // MCP-runtime templates hide disabled tools from agents — mirror
+        // the check `resolve_request` makes inside the MCP fork so
+        // `/validate` doesn't green-light an action that `/call` would
+        // refuse with 404.
+        if svc.runtime == Runtime::Mcp && action.disabled {
+            return Err(AppError::NotFound(format!(
+                "action '{action_key}' is disabled on service '{service_key}'"
+            )));
+        }
+
+        // Platform actions use the `permission` field as the action_key
+        // for permission scoping (mirrors `resolve_request`).
+        let perm_action_key = if svc.runtime == Runtime::Platform {
+            action
+                .permission
+                .as_deref()
+                .unwrap_or(action_key)
+                .to_string()
+        } else {
+            action_key.clone()
+        };
+
+        // `needs_gate` is a *conservative estimate* of `/call`'s
+        // post-resolve `meta.auth_injected`. MCP and Platform always
+        // inject auth (gate=true). HTTP estimates from cheap signals:
+        // a template auth method or an instance binding (connection or
+        // secret). The estimate can over-gate vs. `/call` in one
+        // direction only — when an HTTP service has auth declared but
+        // OAuth token resolution at `/call` time fails, `/call` sets
+        // `auth_injected=false` and skips Layer 2, while `/validate`
+        // (which never resolves tokens, by design) keeps the gate on
+        // and reports `would_require_approval`. That's a worse-case
+        // surface for the dry-run, not a silent allow, so it's worth
+        // the runtime savings of skipping the OAuth round-trip.
+        let auth_injected_estimate = match svc.runtime {
+            Runtime::Mcp | Runtime::Platform => true,
+            Runtime::Http => {
+                !svc.auth.is_empty()
+                    || instance
+                        .as_ref()
+                        .map(|i| i.connection_id.is_some() || i.secret_name.is_some())
+                        .unwrap_or(false)
+            }
+        };
+
+        let metadata = ActionMetadata {
+            validation_params: action.params.clone(),
+            service_scope: Some(ServiceScope {
+                service_key: service_key.clone(),
+                action_key: perm_action_key,
+                scope_param: action.scope_param.clone(),
+            }),
+            risk: Some(action.risk),
+            raw_method: String::new(),
+            raw_url: String::new(),
+            needs_gate: !req.secrets.is_empty() || auth_injected_estimate,
+        };
+        return Ok((metadata, Some(ResolvedModeC { svc, instance })));
+    }
+
+    // Mode A: raw HTTP. No schema. Permission keys from caller's url/method.
+    let raw_method = req.method.clone().ok_or_else(|| {
+        AppError::BadRequest("either 'method'+'url' or 'service'+'action' required".into())
+    })?;
+    let raw_url = req
+        .url
+        .clone()
+        .ok_or_else(|| AppError::BadRequest("'url' required for raw HTTP mode".into()))?;
+    Ok((
+        ActionMetadata {
+            validation_params: HashMap::new(),
+            service_scope: None,
+            risk: None,
+            raw_method,
+            raw_url,
+            needs_gate: !req.secrets.is_empty(),
+        },
+        None,
+    ))
+}
+
+/// Build the structured 400 returned when caller args don't match an
+/// action's declared input contract. Surfaces the full `required` /
+/// `allowed` schema so an agent runner can hand a clean shape to the LLM
+/// instead of grepping a sentence.
+fn invalid_action_args_error(
+    params: &HashMap<String, overslash_core::types::ActionParam>,
+    errors: Vec<overslash_core::openapi::validate_input::ArgError>,
+) -> AppError {
+    let mut required: Vec<String> = params
+        .iter()
+        .filter(|(_, p)| p.required)
+        .map(|(k, _)| k.clone())
+        .collect();
+    required.sort();
+    let mut allowed: Vec<String> = params.keys().cloned().collect();
+    allowed.sort();
+    let detail = overslash_core::openapi::validate_input::format_errors(&errors);
+    let errors = errors.into_iter().map(Into::into).collect();
+    AppError::InvalidActionArgs {
+        required,
+        allowed,
+        errors,
+        detail,
+    }
+}
+
 /// Resolve a CallRequest into a concrete ActionRequest + metadata.
 /// Handles Mode A (raw HTTP), Mode B (connection-based), and Mode C (service+action).
+///
+/// `pre_resolved_mode_c` lets the caller hand in the template+instance
+/// already looked up by `resolve_action_metadata`, so Mode C doesn't
+/// pay for a duplicate DB lookup. `None` is fine for the validate path
+/// or for callers that don't share that work.
 async fn resolve_request(
     state: &AppState,
     auth: &AuthContext,
@@ -1059,6 +1579,7 @@ async fn resolve_request(
     identity_id: Uuid,
     ceiling_user_id: Uuid,
     req: &CallRequest,
+    pre_resolved_mode_c: Option<ResolvedModeC>,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
     // Mode B: explicit connection — resolve OAuth token and inject as header
     if let Some(conn_id) = req.connection {
@@ -1123,49 +1644,57 @@ async fn resolve_request(
 
     // Mode C: service + action
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
-        // Try to resolve through a service instance first (user-shadows-org).
-        // Include the ceiling user so agent callers can reach services their
-        // owner user has created.
-        let instance = scope
-            .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
-            .await?;
-
-        // Resolve the template: if instance found use its template_key, else use service_key directly
-        let svc = if let Some(ref inst) = instance {
-            // Instance exists — resolve its template; propagate errors (don't fall back
-            // to global registry, which could match on the wrong key)
-            super::templates::resolve_template_definition(
-                state,
-                auth.org_id,
-                auth.identity_id,
-                &inst.template_key,
-            )
-            .await?
+        // Reuse the template/instance lookup performed by
+        // `resolve_action_metadata` if the caller threaded it through.
+        // Otherwise fall back to the same DB walk it would have run.
+        let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
+            (pre.instance, pre.svc)
         } else {
-            // No instance — try unified resolution, then fall back to global registry.
-            // When neither matches, surface a structured ServiceResolution
-            // error that names a few instances the agent could call
-            // instead, so the agent doesn't dead-end on "service not found".
-            let from_template = super::templates::resolve_template_definition(
-                state,
-                auth.org_id,
-                auth.identity_id,
-                service_key,
-            )
-            .await
-            .ok();
-            match from_template.or_else(|| state.registry.get(service_key).cloned()) {
-                Some(s) => s,
-                None => {
-                    let available = caller_visible_instance_names(
-                        scope,
-                        auth.identity_id,
-                        Some(ceiling_user_id),
-                    )
-                    .await?;
-                    return Err(unknown_service_error(service_key, available));
+            let instance = scope
+                .resolve_service_instance_by_name(
+                    auth.identity_id,
+                    Some(ceiling_user_id),
+                    service_key,
+                )
+                .await?;
+
+            let svc = if let Some(ref inst) = instance {
+                // Instance exists — resolve its template; propagate errors (don't fall back
+                // to global registry, which could match on the wrong key)
+                super::templates::resolve_template_definition(
+                    state,
+                    auth.org_id,
+                    auth.identity_id,
+                    &inst.template_key,
+                )
+                .await?
+            } else {
+                // No instance — try unified resolution, then fall back to global registry.
+                // When neither matches, surface a structured ServiceResolution
+                // error that names a few instances the agent could call
+                // instead, so the agent doesn't dead-end on "service not found".
+                let from_template = super::templates::resolve_template_definition(
+                    state,
+                    auth.org_id,
+                    auth.identity_id,
+                    service_key,
+                )
+                .await
+                .ok();
+                match from_template.or_else(|| state.registry.get(service_key).cloned()) {
+                    Some(s) => s,
+                    None => {
+                        let available = caller_visible_instance_names(
+                            scope,
+                            auth.identity_id,
+                            Some(ceiling_user_id),
+                        )
+                        .await?;
+                        return Err(unknown_service_error(service_key, available));
+                    }
                 }
-            }
+            };
+            (instance, svc)
         };
 
         let action = svc.actions.get(action_key).ok_or_else(|| {
@@ -1174,18 +1703,12 @@ async fn resolve_request(
             ))
         })?;
 
-        // Reject calls whose params don't match the action's declared
-        // input contract: missing required fields, or unknown keys (e.g.
-        // a caller passing `jid` for an action that declares `recipient`).
-        // Catching this here means we don't silently render `{recipient}`
-        // in descriptions or collapse the permission scope to `*`.
-        if let Err(errors) =
-            overslash_core::openapi::validate_input::validate_args(&action.params, &req.params)
-        {
-            return Err(AppError::BadRequest(
-                overslash_core::openapi::validate_input::format_errors(&errors),
-            ));
-        }
+        // Note: argument validation against `action.params` happens
+        // upstream in `call_action_impl` via `resolve_action_metadata`,
+        // before any permission/approval work. Keeping it out of here
+        // means the validation gate is structurally guaranteed to run
+        // before the approval-creation branch — a future refactor of
+        // this function can't accidentally reorder past it.
 
         // ── MCP runtime fork ─────────────────────────────────────────
         // Disabled tools are invisible to agents even when they exist in

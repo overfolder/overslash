@@ -31,6 +31,9 @@ dashboard/tests/e2e/screenshots/
 # E2E harness runtime state (per-worktree, written by scripts/e2e-up.sh)
 .e2e/
 
+# Claude Code session/scheduling state (machine-local, never committed)
+.claude/scheduled_tasks.lock
+
 # Dashboard (SvelteKit)
 dashboard/node_modules/*
 !dashboard/node_modules/.gitkeep
