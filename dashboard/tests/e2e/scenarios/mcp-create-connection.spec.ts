@@ -179,8 +179,11 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 		maxRedirects: 0,
 		failOnStatusCode: false
 	});
+	// `Redirect::to` in axum returns 303 See Other; accept the full 3xx
+	// redirect family so the assertion isn't sensitive to the exact code
+	// the framework picks.
 	expect(
-		[301, 302, 307, 308].includes(noCookieRes.status()),
+		[301, 302, 303, 307, 308].includes(noCookieRes.status()),
 		`expected redirect, got ${noCookieRes.status()}`
 	).toBe(true);
 	const loginLocation = noCookieRes.headers()['location'] ?? '';
