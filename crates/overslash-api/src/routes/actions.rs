@@ -1615,7 +1615,7 @@ async fn resolve_request(
             Ok(token) => token,
             Err(e) => {
                 return Err(
-                    reauth_or_internal(state, scope.org_id(), identity_id, &conn, &e).await,
+                    oauth_error_to_app_error(state, scope.org_id(), identity_id, &conn, e).await,
                 );
             }
         };
@@ -2082,16 +2082,53 @@ async fn resolve_request(
     ))
 }
 
-/// Classify an OAuth resolver error: `Some(reason)` means the user can
-/// fix it by clicking a reauth link, `None` means it's an internal /
-/// operational error (crypto, DB, provider-not-found) that should surface
-/// as 5xx. The returned `reason` is the stable tag wired into the
-/// `ReauthRequired` envelope so MCP clients can branch on it.
-fn classify_reauth(err: &OAuthError) -> Option<&'static str> {
+/// Classify an OAuth resolver error so the action handler can respond
+/// with the right HTTP status. The split mirrors RFC 7231 semantics:
+///   * `Reauth(reason)` → 401, the user can fix it by clicking a link.
+///   * `Internal` → 500, server-side problem the user can't fix
+///     (crypto, DB, parse, provider config missing from the DB).
+///   * `Upstream` → 502, the *provider* is the broken party (transport
+///     error, provider rejected the credentials with a non-refresh body).
+enum OAuthOutcome {
+    Reauth(&'static str),
+    Internal,
+    Upstream,
+}
+
+fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
     match err {
-        OAuthError::RefreshFailed(_) => Some("refresh_token_failed"),
-        OAuthError::NoRefreshToken => Some("no_refresh_token"),
-        _ => None,
+        OAuthError::RefreshFailed(_) => OAuthOutcome::Reauth("refresh_token_failed"),
+        OAuthError::NoRefreshToken => OAuthOutcome::Reauth("no_refresh_token"),
+        OAuthError::CryptoError(_)
+        | OAuthError::DbError(_)
+        | OAuthError::ParseError(_)
+        | OAuthError::ProviderNotFound(_) => OAuthOutcome::Internal,
+        OAuthError::HttpError(_) | OAuthError::TokenExchangeFailed(_) => OAuthOutcome::Upstream,
+    }
+}
+
+/// Map an `OAuthError` to the right `AppError` response shape, given a
+/// connection that the user could potentially reauth against. Centralises
+/// the Reauth-vs-Internal-vs-Upstream split so both auth resolvers
+/// (instance- and service-level) make the same call.
+async fn oauth_error_to_app_error(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    conn: &overslash_db::repos::connection::ConnectionRow,
+    err: OAuthError,
+) -> AppError {
+    match classify_oauth(&err) {
+        OAuthOutcome::Reauth(reason) => {
+            reauth_required_envelope(state, org_id, caller_identity_id, conn, reason, &err).await
+        }
+        OAuthOutcome::Internal => {
+            tracing::error!("OAuth internal error on connection {}: {err}", conn.id);
+            AppError::Internal(format!("OAuth token resolution failed: {err}"))
+        }
+        OAuthOutcome::Upstream => {
+            AppError::BadGateway(format!("OAuth provider returned an error: {err}"))
+        }
     }
 }
 
@@ -2124,26 +2161,6 @@ async fn reauth_required_envelope(
             );
             AppError::Internal(format!("OAuth token resolution failed: {underlying}"))
         }
-    }
-}
-
-/// Mode B helper: classify a raw OAuth resolver failure into either a
-/// `ReauthRequired` envelope (recoverable) or `Internal` (operator
-/// problem). The Mode C resolvers handle this inline because they want to
-/// distinguish *fall through to API key* from *return the typed error*;
-/// Mode B has no fall-through, so we centralize the choice here.
-async fn reauth_or_internal(
-    state: &AppState,
-    org_id: Uuid,
-    caller_identity_id: Uuid,
-    conn: &overslash_db::repos::connection::ConnectionRow,
-    err: &OAuthError,
-) -> AppError {
-    match classify_reauth(err) {
-        Some(reason) => {
-            reauth_required_envelope(state, org_id, caller_identity_id, conn, reason, err).await
-        }
-        None => AppError::Internal(format!("OAuth token resolution failed: {err}")),
     }
 }
 
@@ -2319,28 +2336,11 @@ async fn resolve_service_auth(
                     }
                     return Ok((vec![], true));
                 }
-                Err(e) => match classify_reauth(&e) {
-                    Some(reason) => {
-                        return Err(reauth_required_envelope(
-                            state,
-                            org_id,
-                            identity_id,
-                            &conn,
-                            reason,
-                            &e,
-                        )
-                        .await);
-                    }
-                    None => {
-                        // Non-reauth OAuth errors (HTTP transport, parse
-                        // failures from the provider) — surface as
-                        // BadGateway so the caller sees an upstream
-                        // error, not a fake "needs auth" prompt.
-                        return Err(AppError::BadGateway(format!(
-                            "OAuth token resolution failed: {e}"
-                        )));
-                    }
-                },
+                Err(e) => {
+                    return Err(
+                        oauth_error_to_app_error(state, org_id, identity_id, &conn, e).await,
+                    );
+                }
             }
         }
     }
@@ -2553,24 +2553,17 @@ async fn resolve_instance_auth(
                     headers.insert("Authorization".into(), format!("Bearer {access_token}"));
                     return Ok((vec![], true));
                 }
-                Err(e) => match classify_reauth(&e) {
-                    Some(reason) => {
-                        return Err(reauth_required_envelope(
-                            state,
-                            org_id,
-                            identity_id,
-                            &conn,
-                            reason,
-                            &e,
-                        )
-                        .await);
-                    }
-                    None => {
-                        // Crypto / DB / parse errors — keep legacy fall-through
-                        // to the API-key branch below in case the template is
-                        // dual-auth.
-                    }
-                },
+                Err(e) => {
+                    // Surface the typed AppError up the call stack — the
+                    // caller (resolve_request) maps each variant to the
+                    // right HTTP status. Falling back to API-key /
+                    // resolve_service_auth on a transient OAuth error
+                    // would hide the real failure behind a misleading
+                    // `needs_authentication` 401.
+                    return Err(
+                        oauth_error_to_app_error(state, org_id, identity_id, &conn, e).await,
+                    );
+                }
             }
         }
     }
