@@ -239,19 +239,74 @@ async fn unknown_arg_jid_is_rejected_with_recipient_suggestion() {
         .unwrap();
 
     assert_eq!(resp.status(), 400);
-    let body = resp.text().await.unwrap();
-    assert!(
-        body.contains("missing required argument `recipient`"),
-        "expected missing-recipient error, got: {body}"
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["error"], "invalid_action_args",
+        "expected invalid_action_args envelope, got: {body}"
     );
-    // `jid` and `recipient` share no characters, so there's no Levenshtein
-    // suggestion — but the candidate list should still surface
-    // `recipient` and `text` so the agent knows what's accepted.
+
+    // The `detail` line keeps the human-readable summary so logs stay
+    // grep-able; `errors` carries the machine-readable shape.
     assert!(
-        body.contains("unknown argument `jid`")
-            && body.contains("`recipient`")
-            && body.contains("`text`"),
-        "expected jid rejection with candidate list, got: {body}"
+        body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("missing required argument `recipient`"),
+        "expected missing-recipient detail, got: {body}"
+    );
+
+    // The schema is surfaced at the top level so an agent runner can
+    // hand a clean shape to the LLM without re-parsing each error.
+    let required: Vec<&str> = body["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        required.contains(&"recipient") && required.contains(&"text"),
+        "expected required to include recipient + text, got: {required:?}"
+    );
+
+    let allowed: Vec<&str> = body["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        allowed.contains(&"recipient") && allowed.contains(&"text"),
+        "expected allowed to include recipient + text, got: {allowed:?}"
+    );
+
+    // Per-error tagged structure: a Missing(recipient) and an
+    // Unknown(jid). `jid` ↔ `recipient` are too far apart for a
+    // Levenshtein suggestion, but `expected` should still list the
+    // declared keys so the agent has a recovery path.
+    let errors = body["errors"].as_array().unwrap();
+    let missing = errors
+        .iter()
+        .find(|e| e["kind"] == "missing" && e["field"] == "recipient")
+        .expect("expected Missing(recipient)");
+    assert_eq!(missing["field"], "recipient");
+
+    let unknown = errors
+        .iter()
+        .find(|e| e["kind"] == "unknown" && e["field"] == "jid")
+        .unwrap_or_else(|| panic!("expected Unknown(jid), got: {body}"));
+    assert!(
+        unknown["suggestion"].is_null(),
+        "jid→recipient is not a typo"
+    );
+    let expected: Vec<&str> = unknown["expected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        expected.contains(&"recipient") && expected.contains(&"text"),
+        "expected candidate list for unknown(jid), got: {expected:?}"
     );
 }
 

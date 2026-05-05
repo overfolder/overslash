@@ -348,12 +348,19 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // part of the OAuth flow, it serves dashboard-only `/v1/oauth/consent/*`
     // endpoints that leak pending-request metadata and must NOT be readable
     // from the Inspector origin.
+    // `/v1/actions/validate` is a dry-run probe: cheap, side-effect-free,
+    // and explicitly exempted from rate limiting so callers can pre-flight
+    // bad params without burning quota. Same auth + CORS as the rest of
+    // the dashboard API surface; only the rate-limit layer is dropped.
+    let validate_routes = routes::actions::validate_router();
+
     let global_routes = Router::new()
         .merge(routes::health::router())
         .merge(routes::skill_md::router())
         .merge(routes::oauth_upstream::router())
         .merge(routes::oauth::consent_router())
         .merge(stripe_webhook_routes)
+        .merge(validate_routes)
         .merge(rate_limited_routes)
         .layer(cors_global);
 

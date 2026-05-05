@@ -3,7 +3,40 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use overslash_core::openapi::validate_input::ArgError;
 use serde_json::json;
+
+/// API-layer mirror of `ArgError`. Owning the wire shape here keeps the
+/// core crate free of serde contracts that the API renders.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArgErrorDto {
+    Missing {
+        field: String,
+    },
+    Unknown {
+        field: String,
+        suggestion: Option<String>,
+        expected: Vec<String>,
+    },
+}
+
+impl From<ArgError> for ArgErrorDto {
+    fn from(e: ArgError) -> Self {
+        match e {
+            ArgError::Missing { field } => Self::Missing { field },
+            ArgError::Unknown {
+                field,
+                suggestion,
+                expected,
+            } => Self::Unknown {
+                field,
+                suggestion,
+                expected,
+            },
+        }
+    }
+}
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
@@ -62,6 +95,18 @@ pub enum AppError {
     #[error("filter syntax error: {0}")]
     FilterSyntax(String),
 
+    #[error("invalid action args")]
+    InvalidActionArgs {
+        /// All required argument names for the action, sorted.
+        required: Vec<String>,
+        /// All declared argument names for the action, sorted.
+        allowed: Vec<String>,
+        /// Per-error details (missing fields, unknown fields).
+        errors: Vec<ArgErrorDto>,
+        /// One-line human summary — same string `format_errors` produces.
+        detail: String,
+    },
+
     #[error("identity archived: {reason}")]
     IdentityArchived {
         identity_id: uuid::Uuid,
@@ -93,7 +138,9 @@ impl AppError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) | Self::IdentityArchived { .. } => StatusCode::FORBIDDEN,
-            Self::BadRequest(_) | Self::FilterSyntax(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::FilterSyntax(_) | Self::InvalidActionArgs { .. } => {
+                StatusCode::BAD_REQUEST
+            }
             Self::BadGateway(_) | Self::Request(_) | Self::ResponseTooLarge { .. } => {
                 StatusCode::BAD_GATEWAY
             }
@@ -123,6 +170,24 @@ impl IntoResponse for AppError {
                     Json(json!({
                         "error": "filter_syntax_error",
                         "detail": msg,
+                    })),
+                )
+                    .into_response();
+            }
+            Self::InvalidActionArgs {
+                required,
+                allowed,
+                errors,
+                detail,
+            } => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "invalid_action_args",
+                        "detail": detail,
+                        "required": required,
+                        "allowed": allowed,
+                        "errors": errors,
                     })),
                 )
                     .into_response();

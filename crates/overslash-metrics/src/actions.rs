@@ -24,6 +24,26 @@ pub fn record_execution(template_key: &str, mode: &str, status: &str, elapsed: D
     .record(elapsed.as_secs_f64());
 }
 
+/// Record one dry-run validation call (`POST /v1/actions/validate`).
+/// `outcome` is one of: `"validated"` (args ok and permission allowed),
+/// `"invalid_args"` (400), `"would_require_approval"`, `"denied"`,
+/// `"exceeds_ceiling"`, `"rejected"` (other 4xx), `"failed"` (5xx).
+pub fn record_validation(template_key: &str, mode: &str, outcome: &str, elapsed: Duration) {
+    counter!(
+        "overslash_action_validations_total",
+        "template_key" => template_key.to_string(),
+        "mode" => mode.to_string(),
+        "outcome" => outcome.to_string(),
+    )
+    .increment(1);
+    histogram!(
+        "overslash_action_validation_duration_seconds",
+        "template_key" => template_key.to_string(),
+        "mode" => mode.to_string(),
+    )
+    .record(elapsed.as_secs_f64());
+}
+
 /// Record one outbound HTTP call made on behalf of an action.
 /// `status_class` is one of `"2xx"`, `"3xx"`, `"4xx"`, `"5xx"`, `"error"`.
 pub fn record_outbound(template_key: &str, status_class: &str, elapsed: Duration) {
