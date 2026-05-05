@@ -1,6 +1,9 @@
 use hmac::{Hmac, Mac, digest::KeyInit};
+use serde_json::json;
 use sha2::Sha256;
 use sqlx::PgPool;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use overslash_db::{OrgScope, SystemScope};
@@ -41,18 +44,45 @@ pub async fn dispatch(
             }
         };
 
+        // Use the JSONB-roundtripped payload from the row (not the original
+        // in-memory `payload`) so the first attempt and any retries serialize
+        // — and therefore sign — identically. Postgres JSONB does not
+        // preserve insertion order; both code paths must read through it.
+        let envelope = build_envelope(delivery.id, event, delivery.created_at, &delivery.payload);
+
         deliver(
             pool,
             http_client,
             delivery.id,
             &sub.url,
             &sub.secret,
-            &payload,
+            &envelope,
             event,
             1,
         )
         .await;
     }
+}
+
+/// Build the stable webhook envelope: `{id, type, created_at, data}`.
+///
+/// Used by both first-attempt and retry paths so replays are byte-identical
+/// (same id, same created_at, same signature).
+fn build_envelope(
+    delivery_id: Uuid,
+    event: &str,
+    created_at: OffsetDateTime,
+    payload: &serde_json::Value,
+) -> serde_json::Value {
+    let created_at = created_at
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| String::new());
+    json!({
+        "id": delivery_id,
+        "type": event,
+        "created_at": created_at,
+        "data": payload,
+    })
 }
 
 /// Attempt to deliver a single webhook.
@@ -63,13 +93,13 @@ async fn deliver(
     delivery_id: Uuid,
     url: &str,
     secret: &str,
-    payload: &serde_json::Value,
+    envelope: &serde_json::Value,
     event_type: &str,
     attempt: u32,
 ) {
-    let body = serde_json::to_string(payload).unwrap_or_default();
+    let body = serde_json::to_string(envelope).unwrap_or_default();
 
-    // HMAC-SHA256 signature
+    // HMAC-SHA256 signature over the raw body bytes (the envelope JSON).
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
     mac.update(body.as_bytes());
     let signature = hex::encode(mac.finalize().into_bytes());
@@ -77,6 +107,8 @@ async fn deliver(
     let result = http_client
         .post(url)
         .header("Content-Type", "application/json")
+        .header("X-Overslash-Event", event_type)
+        .header("X-Overslash-Delivery", delivery_id.to_string())
         .header("X-Overslash-Signature", format!("sha256={signature}"))
         .body(body)
         .timeout(std::time::Duration::from_secs(10))
@@ -143,13 +175,14 @@ pub async fn spawn_retry_loop(pool: PgPool, http_client: reqwest::Client) {
 
         let status = if pending.is_empty() { "noop" } else { "ok" };
         for row in pending {
+            let envelope = build_envelope(row.id, &row.event, row.created_at, &row.payload);
             deliver(
                 &pool,
                 &http_client,
                 row.id,
                 &row.url,
                 &row.secret,
-                &row.payload,
+                &envelope,
                 &row.event,
                 (row.attempts as u32).saturating_add(1),
             )
