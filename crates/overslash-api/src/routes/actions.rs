@@ -2089,6 +2089,7 @@ async fn resolve_request(
 ///     (crypto, DB, parse, provider config missing from the DB).
 ///   * `Upstream` → 502, the *provider* is the broken party (transport
 ///     error, provider rejected the credentials with a non-refresh body).
+#[derive(Debug)]
 enum OAuthOutcome {
     Reauth(&'static str),
     Internal,
@@ -2831,4 +2832,49 @@ async fn compute_approval_detail(
         core_disclosure::apply_redactions(&mut redacted, &meta.redact);
     }
     (disclosed, Some(redacted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_oauth_reauth_signals() {
+        match classify_oauth(&OAuthError::RefreshFailed("provider said no".into())) {
+            OAuthOutcome::Reauth(reason) => assert_eq!(reason, "refresh_token_failed"),
+            other => panic!("expected Reauth, got {other:?}"),
+        }
+        match classify_oauth(&OAuthError::NoRefreshToken) {
+            OAuthOutcome::Reauth(reason) => assert_eq!(reason, "no_refresh_token"),
+            other => panic!("expected Reauth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_oauth_internal_signals() {
+        for err in [
+            OAuthError::CryptoError("bad key".into()),
+            OAuthError::DbError("conn refused".into()),
+            OAuthError::ParseError("bad json".into()),
+            OAuthError::ProviderNotFound("x".into()),
+        ] {
+            assert!(
+                matches!(classify_oauth(&err), OAuthOutcome::Internal),
+                "{err:?} should be Internal"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_oauth_upstream_signals() {
+        for err in [
+            OAuthError::HttpError("timeout".into()),
+            OAuthError::TokenExchangeFailed("provider 500".into()),
+        ] {
+            assert!(
+                matches!(classify_oauth(&err), OAuthOutcome::Upstream),
+                "{err:?} should be Upstream"
+            );
+        }
+    }
 }

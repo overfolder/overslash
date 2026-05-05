@@ -380,3 +380,25 @@ pub async fn mint_upgrade_auth_url(
     .await?;
     Ok(response.auth_url)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_scopes_dedupes_and_sorts() {
+        let existing = vec!["b".into(), "a".into()];
+        let incoming = vec!["a".into(), "c".into()];
+        assert_eq!(
+            merge_scopes(&existing, &incoming),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_scopes_handles_empty_inputs() {
+        assert!(merge_scopes(&[], &[]).is_empty());
+        assert_eq!(merge_scopes(&["x".into()], &[]), vec!["x".to_string()]);
+        assert_eq!(merge_scopes(&[], &["x".into()]), vec!["x".to_string()]);
+    }
+}
