@@ -493,6 +493,69 @@ async fn outstanding_url_unaffected_by_toggle() {
 }
 
 #[tokio::test]
+async fn expired_token_rejected() {
+    // The provide page must reject a request whose `expires_at` is in the
+    // past, even when the JWT signature is otherwise valid. Mint normally
+    // (so the JWT is well-formed), then fast-forward `expires_at` past now
+    // via SQL. Both GET (page metadata) and POST (submit) must return 410
+    // `expired`.
+    let pool = common::test_pool().await;
+    let q = pool.clone();
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_org, _ident, agent_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let req = mint(&base, &client, &agent_key, "k_expired").await;
+    let req_id = req["id"].as_str().unwrap();
+    let token = req["token"].as_str().unwrap();
+
+    // Fast-forward expiry. The JWT's own `exp` claim is also checked, but
+    // the row's `expires_at` is the gate the test is locking — so set it
+    // far enough in the past that the row check fires regardless.
+    let past = time::OffsetDateTime::now_utc() - time::Duration::seconds(3600);
+    sqlx::query("UPDATE secret_requests SET expires_at = $1 WHERE id = $2")
+        .bind(past)
+        .bind(req_id)
+        .execute(&q)
+        .await
+        .unwrap();
+
+    let r = client
+        .get(provide_url(&base, req_id, token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 410);
+    let body: Value = r.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("expired")
+            || body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid_token"),
+        "unexpected GET body: {body}"
+    );
+
+    let r = client
+        .post(format!("{base}/public/secrets/provide/{req_id}"))
+        .json(&json!({"token": token, "value": "v"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 410);
+    let body: Value = r.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("expired")
+            || body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid_token"),
+        "unexpected POST body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn cross_org_session_ignored() {
     let pool = common::test_pool().await;
     let q = pool.clone();

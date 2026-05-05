@@ -260,14 +260,7 @@ async fn initiate(
             "{}/gated-authorize?id={}",
             state.config.public_url, existing.id
         );
-        let short = short_url::mint_short_url(
-            &state.http_client,
-            state.config.oversla_sh_base_url.as_deref(),
-            state.config.oversla_sh_api_key.as_deref(),
-            &proxied,
-            existing.expires_at,
-        )
-        .await;
+        let short = short_url::mint(&state, &proxied, existing.expires_at).await;
         let raw = req
             .include_raw
             .then(|| existing.upstream_authorize_url.clone());
@@ -384,14 +377,7 @@ async fn initiate(
     .await?;
 
     let proxied = format!("{}/gated-authorize?id={}", state.config.public_url, flow_id);
-    let short = short_url::mint_short_url(
-        &state.http_client,
-        state.config.oversla_sh_base_url.as_deref(),
-        state.config.oversla_sh_api_key.as_deref(),
-        &proxied,
-        expires_at,
-    )
-    .await;
+    let short = short_url::mint(&state, &proxied, expires_at).await;
     let raw = req.include_raw.then(|| raw_authorize_url.clone());
 
     Ok(Json(InitiateResponse::PendingAuth {

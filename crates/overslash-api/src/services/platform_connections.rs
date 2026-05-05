@@ -204,14 +204,15 @@ pub async fn kernel_create_connection(
         ctx.config.public_url.trim_end_matches('/'),
         flow_id
     );
-    let short = short_url::mint_short_url(
-        &ctx.http_client,
+    let short = match (
         ctx.config.oversla_sh_base_url.as_deref(),
         ctx.config.oversla_sh_api_key.as_deref(),
-        &auth_url,
-        expires_at,
-    )
-    .await;
+    ) {
+        (Some(base), Some(key)) => {
+            short_url::mint_with_client(&ctx.http_client, base, key, &auth_url, expires_at).await
+        }
+        _ => None,
+    };
 
     Ok(CreateConnectionResponse {
         auth_url,

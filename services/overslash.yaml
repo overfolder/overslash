@@ -51,6 +51,12 @@ platform_actions:
   manage_services_share:
     description: "Grant service instances to non-Myself groups (org-wide sharing)"
     risk: write
+  request_secrets_own:
+    description: "Mint a signed provide URL to request a secret value for the caller's own identity (or a descendant)"
+    risk: write
+  request_secrets_share:
+    description: "Mint a signed provide URL targeting another identity in the org (admin-only — never auto-grantable to agents)"
+    risk: write
   delete_services:
     description: "Delete and manage service instance lifecycle"
     risk: delete
@@ -189,3 +195,17 @@ platform_actions:
       scopes: { type: array, required: false }
       byoc_credential_id: { type: string, required: false }
       on_behalf_of: { type: string, required: false }
+
+  request_secret:
+    description: >
+      Mint a signed, single-use URL the user can open to provide a secret
+      value (e.g. an API key). The agent never sees the value — only the URL.
+      Returns request_id, provide_url, optional short_url, and expires_at.
+      Defaults to the caller's own identity; targeting another identity
+      requires `request_secrets_share`.
+    risk: write
+    permission: request_secrets_own
+    params:
+      secret_name: { type: string, required: true }
+      identity_id: { type: string, required: false }
+      purpose: { type: string, required: false }
