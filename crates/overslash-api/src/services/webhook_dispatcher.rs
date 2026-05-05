@@ -44,7 +44,11 @@ pub async fn dispatch(
             }
         };
 
-        let envelope = build_envelope(delivery.id, event, delivery.created_at, &payload);
+        // Use the JSONB-roundtripped payload from the row (not the original
+        // in-memory `payload`) so the first attempt and any retries serialize
+        // — and therefore sign — identically. Postgres JSONB does not
+        // preserve insertion order; both code paths must read through it.
+        let envelope = build_envelope(delivery.id, event, delivery.created_at, &delivery.payload);
 
         deliver(
             pool,
