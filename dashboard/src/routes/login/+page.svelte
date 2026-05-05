@@ -12,6 +12,15 @@
 	const returnTo = $derived(data.returnTo as string);
 	const reason = $derived(data.reason as string | null);
 
+	// Captured in `onMount` so the login `<a href>` URLs re-render with
+	// `preview_origin` set after hydration. Reading `window.location.origin`
+	// straight from `loginUrl()` would be `undefined` during SSR and the
+	// template wouldn't re-evaluate on the client (no reactive dep), so the
+	// SSR'd hrefs would ship without it — and the API would never see a
+	// `preview_origin`, leaving previews stuck on the cookie path that
+	// can't work cross-domain.
+	let browserOrigin = $state<string | null>(null);
+
 	function loginUrl(key: string): string {
 		const target = `/auth/login/${encodeURIComponent(key)}`;
 		const params = new URLSearchParams();
@@ -25,9 +34,7 @@
 		// `PREVIEW_ORIGIN_ALLOWLIST` regex and silently ignores values that
 		// don't match (so prod and the corp-apex dashboard fall through to
 		// the cookie-based path unchanged).
-		if (typeof window !== 'undefined') {
-			params.set('preview_origin', window.location.origin);
-		}
+		if (browserOrigin) params.set('preview_origin', browserOrigin);
 		const qs = params.toString();
 		return qs ? `${target}?${qs}` : target;
 	}
@@ -54,6 +61,11 @@
 	// Skip the picker entirely so MCP-driven OAuth bounces don't show an
 	// extra click. Users can always go back from the IdP to pick another.
 	onMount(() => {
+		// Set first so the loginUrl computed below picks it up — and so the
+		// post-hydration template re-render attaches `preview_origin` to the
+		// rest of the providers' hrefs.
+		browserOrigin = window.location.origin;
+
 		if (scope !== 'org') return;
 		const def = providers.find((p) => p.is_default);
 		if (def && def.key !== 'dev') {
