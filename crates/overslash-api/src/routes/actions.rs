@@ -2194,11 +2194,17 @@ async fn reauth_required_envelope(
             reason: reason.to_string(),
         },
         Err(mint_err) => {
-            tracing::error!(
-                "failed to mint reauth url for connection {}: {mint_err}",
+            // Pass the kernel's typed error through verbatim — wrapping
+            // it as Internal would lose the right status (e.g. a
+            // `Forbidden` from `validate_on_behalf_of` cross-identity
+            // check, or a `NotFound` for a missing OAuth provider row)
+            // and tell the caller "OAuth token resolution failed" when
+            // the real cause is a permission or config problem.
+            tracing::warn!(
+                "reauth flow on connection {}: underlying OAuth error was {underlying}; mint of gated URL failed: {mint_err}",
                 conn.id
             );
-            AppError::Internal(format!("OAuth token resolution failed: {underlying}"))
+            mint_err
         }
     }
 }
@@ -2334,18 +2340,18 @@ async fn resolve_service_auth(
         } = service_auth
         {
             // Per-provider lookup. `Ok(None)` is the legitimate "no
-            // connection yet" case — try the next provider. A DB blip
-            // (Err) we log and continue too, so a transient issue on
-            // provider A doesn't break a multi-provider template that
-            // could authenticate via provider B.
+            // connection yet" case — try the next provider. An `Err` is
+            // a DB problem; propagate immediately as Internal so a
+            // transient DB failure on a single-provider template doesn't
+            // silently degrade to a `needs_authentication` 401 prompting
+            // the user to "fix" something that isn't their fault.
             let conn = match user_scope.find_my_connection_by_provider(provider).await {
                 Ok(Some(conn)) => conn,
                 Ok(None) => continue,
                 Err(e) => {
-                    tracing::warn!(
-                        "connection lookup for provider '{provider}' failed; trying next provider: {e}"
-                    );
-                    continue;
+                    return Err(AppError::Internal(format!(
+                        "connection lookup for provider '{provider}' failed: {e}"
+                    )));
                 }
             };
             // Per-provider credentials resolution. Failures here are
