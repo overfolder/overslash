@@ -198,7 +198,8 @@ async fn connect_authorize(
             // resume.
             let return_to = format!(
                 "{}/connect-authorize?id={}",
-                state.config.public_url, flow.id
+                state.config.public_url.trim_end_matches('/'),
+                flow.id
             );
             let login_url = state.config.dashboard_url_for(&format!(
                 "/auth/login?next={}",
