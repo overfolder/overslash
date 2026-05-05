@@ -1450,6 +1450,16 @@ async fn resolve_action_metadata(
             ))
         })?;
 
+        // MCP-runtime templates hide disabled tools from agents — mirror
+        // the check `resolve_request` makes inside the MCP fork so
+        // `/validate` doesn't green-light an action that `/call` would
+        // refuse with 404.
+        if svc.runtime == Runtime::Mcp && action.disabled {
+            return Err(AppError::NotFound(format!(
+                "action '{action_key}' is disabled on service '{service_key}'"
+            )));
+        }
+
         // Platform actions use the `permission` field as the action_key
         // for permission scoping (mirrors `resolve_request`).
         let perm_action_key = if svc.runtime == Runtime::Platform {
@@ -1462,6 +1472,24 @@ async fn resolve_action_metadata(
             action_key.clone()
         };
 
+        // `needs_gate` mirrors `/call`'s post-resolve computation
+        // (`!secrets.is_empty() || req.connection.is_some() ||
+        // meta.auth_injected`). MCP and Platform always inject auth, so
+        // they always gate. HTTP gates only when the template carries
+        // an auth method or the instance has bound credentials —
+        // otherwise `/call` skips Layer 2 (no `oauth_injected`) and
+        // `/validate` must do the same to stay honest as a dry-run.
+        let auth_injected_estimate = match svc.runtime {
+            Runtime::Mcp | Runtime::Platform => true,
+            Runtime::Http => {
+                !svc.auth.is_empty()
+                    || instance
+                        .as_ref()
+                        .map(|i| i.connection_id.is_some() || i.secret_name.is_some())
+                        .unwrap_or(false)
+            }
+        };
+
         let metadata = ActionMetadata {
             validation_params: action.params.clone(),
             service_scope: Some(ServiceScope {
@@ -1472,7 +1500,7 @@ async fn resolve_action_metadata(
             risk: Some(action.risk),
             raw_method: String::new(),
             raw_url: String::new(),
-            needs_gate: true,
+            needs_gate: !req.secrets.is_empty() || auth_injected_estimate,
         };
         return Ok((metadata, Some(ResolvedModeC { svc, instance })));
     }

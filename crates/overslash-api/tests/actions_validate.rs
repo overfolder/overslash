@@ -296,6 +296,93 @@ async fn approval_gap_reported_without_writing_approval_row() {
     );
 }
 
+/// Disabled MCP actions return 404 on `/validate`, matching `/call`'s
+/// behavior. Without this check, an agent could pre-flight a disabled
+/// action successfully and then have the real `/call` fail with 404 —
+/// breaking the dry-run contract.
+#[tokio::test]
+async fn disabled_mcp_action_404s_on_validate() {
+    let pool = common::test_pool().await;
+    let stub_addr = start_stub().await;
+    let stub_url = format!("http://{stub_addr}/mcp");
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_org, _ident, agent_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    // Same template shape as the other tests but with `disabled: true`
+    // on the only action.
+    let yaml = format!(
+        r#"openapi: "3.1.0"
+info:
+  title: Disabled Stub
+  x-overslash-key: validate_disabled
+x-overslash-runtime: mcp
+paths: {{}}
+x-overslash-mcp:
+  url: {stub_url}
+  auth: {{ kind: bearer, secret_name: whatsapp_token }}
+  autodiscover: false
+  tools:
+    - name: send_message
+      disabled: true
+      risk: write
+      input_schema:
+        type: object
+        properties:
+          recipient: {{ type: string }}
+        required: [recipient]
+"#
+    );
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
+        .json(&json!({ "openapi": yaml, "user_level": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "template create: {:?}",
+        resp.text().await
+    );
+
+    let resp = client
+        .put(format!("{base}/v1/secrets/whatsapp_token"))
+        .header(auth_header(&admin_key).0, auth_header(&admin_key).1)
+        .json(&json!({ "value": "stub" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header(auth_header(&agent_key).0, auth_header(&agent_key).1)
+        .json(&json!({ "name": "validate_disabled", "template_key": "validate_disabled" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .post(format!("{base}/v1/actions/validate"))
+        .header(auth_header(&agent_key).0, auth_header(&agent_key).1)
+        .json(&json!({
+            "service": "validate_disabled",
+            "action": "send_message",
+            "params": { "recipient": "x@s.whatsapp.net" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "disabled action must 404 on validate (mirrors /call)"
+    );
+}
+
 /// Mode B (raw `connection`) is rejected with 400. The validate endpoint
 /// has no schema to check against in Mode B, and resolving the connection
 /// would force a real OAuth token refresh — both reasons to keep this
