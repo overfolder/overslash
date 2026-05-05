@@ -417,6 +417,31 @@ async fn oauth_callback(
         })
         .await;
 
+    {
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let provider_key = provider_key.to_string();
+        let account_email = account_email.clone();
+        let granted_scopes = granted_scopes.clone();
+        tokio::spawn(async move {
+            let payload = serde_json::json!({
+                "connection_id": connection_id,
+                "provider": provider_key,
+                "account_email": account_email,
+                "scopes": granted_scopes,
+                "identity_id": identity_id,
+            });
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                audit_action,
+                payload,
+            )
+            .await;
+        });
+    }
+
     Ok(Json(serde_json::json!({
         "status": "connected",
         "connection_id": connection_id,
@@ -619,6 +644,26 @@ async fn delete_connection(
                 ip_address: ip.0.as_deref(),
             })
             .await;
+
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let org_id = auth.org_id;
+        let identity_id = auth.identity_id;
+        tokio::spawn(async move {
+            let payload = serde_json::json!({
+                "connection_id": id,
+                "org_id": org_id,
+                "identity_id": identity_id,
+            });
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                "connection.deleted",
+                payload,
+            )
+            .await;
+        });
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))

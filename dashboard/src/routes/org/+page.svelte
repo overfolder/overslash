@@ -1273,7 +1273,7 @@
 						<input
 							type="text"
 							bind:value={whEvents}
-							placeholder="approval.resolved, secret.created"
+							placeholder="connection.created, approval.resolved"
 							required
 						/>
 					</label>
