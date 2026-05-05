@@ -620,6 +620,8 @@ async fn call_action_impl(
             access_level: platform_access_level,
             db: state.db.clone(),
             registry: std::sync::Arc::clone(&state.registry),
+            config: state.config.clone(),
+            http_client: state.http_client.clone(),
         };
         let params: std::collections::HashMap<String, serde_json::Value> =
             pt.params.clone().into_iter().collect();
@@ -669,7 +671,13 @@ async fn call_action_impl(
             .get_current_secret_value(&secret_ref.name)
             .await?
             .ok_or_else(|| {
-                AppError::BadRequest(format!("secret '{}' not found", secret_ref.name))
+                // TODO(slice-4): replace with structured JSON-RPC `data` payload.
+                AppError::BadRequest(format!(
+                    "credential_missing: secret '{name}' not found. \
+                     Hint: call overslash.request_secret with \
+                     {{\"secret_name\":\"{name}\"}} to ask the user to provide a value.",
+                    name = secret_ref.name,
+                ))
             })?;
         let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
         let value = String::from_utf8(decrypted)

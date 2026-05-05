@@ -31,7 +31,7 @@ use crate::{
     error::AppError,
     extractors::{SessionAuth, extract_cookie},
     routes::auth::signing_key_bytes,
-    services::{jwt, oauth_upstream as svc, ssrf_guard},
+    services::{jwt, oauth_upstream as svc, ssrf_guard, url_shortener::mint_short_url},
 };
 use overslash_core::crypto;
 use overslash_db::repos::{
@@ -257,7 +257,14 @@ async fn initiate(
             "{}/gated-authorize?id={}",
             state.config.public_url, existing.id
         );
-        let short = mint_short_url(&state, &proxied, existing.expires_at).await;
+        let short = mint_short_url(
+            &state.http_client,
+            state.config.oversla_sh_base_url.as_deref(),
+            state.config.oversla_sh_api_key.as_deref(),
+            &proxied,
+            existing.expires_at,
+        )
+        .await;
         let raw = req
             .include_raw
             .then(|| existing.upstream_authorize_url.clone());
@@ -374,7 +381,14 @@ async fn initiate(
     .await?;
 
     let proxied = format!("{}/gated-authorize?id={}", state.config.public_url, flow_id);
-    let short = mint_short_url(&state, &proxied, expires_at).await;
+    let short = mint_short_url(
+        &state.http_client,
+        state.config.oversla_sh_base_url.as_deref(),
+        state.config.oversla_sh_api_key.as_deref(),
+        &proxied,
+        expires_at,
+    )
+    .await;
     let raw = req.include_raw.then(|| raw_authorize_url.clone());
 
     Ok(Json(InitiateResponse::PendingAuth {
@@ -386,63 +400,6 @@ async fn initiate(
             raw,
         },
     }))
-}
-
-/// Best-effort short-URL minting via the `oversla.sh` service. Returns
-/// `None` if the service isn't configured or the request fails — the
-/// proxied URL is the source of truth and a missing short URL never blocks
-/// the flow.
-async fn mint_short_url(
-    state: &AppState,
-    proxied: &str,
-    expires_at: OffsetDateTime,
-) -> Option<String> {
-    let base = state.config.oversla_sh_base_url.as_deref()?;
-    let api_key = state.config.oversla_sh_api_key.as_deref()?;
-    let ttl_seconds = (expires_at - OffsetDateTime::now_utc())
-        .whole_seconds()
-        .max(60) as u64;
-    let resp = match state
-        .http_client
-        .post(format!("{}/api/links", base.trim_end_matches('/')))
-        .bearer_auth(api_key)
-        .header(header::ACCEPT, "application/json")
-        .json(&serde_json::json!({
-            "url": proxied,
-            "ttl_seconds": ttl_seconds,
-        }))
-        .timeout(HTTP_TIMEOUT)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(err) => {
-            tracing::warn!(error = %err, "oversla.sh transport error; returning proxied URL only");
-            return None;
-        }
-    };
-    if !resp.status().is_success() {
-        tracing::warn!(
-            status = %resp.status(),
-            "oversla.sh short URL mint failed; returning proxied URL only"
-        );
-        return None;
-    }
-    let body: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(err) => {
-            tracing::warn!(error = %err, "oversla.sh response was not valid JSON");
-            return None;
-        }
-    };
-    let short = body
-        .get("short_url")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    if short.is_none() {
-        tracing::warn!("oversla.sh response missing short_url field");
-    }
-    short
 }
 
 fn callback_redirect_uri(public_url: &str) -> String {

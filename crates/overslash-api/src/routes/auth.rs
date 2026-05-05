@@ -1986,7 +1986,7 @@ fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 pub(crate) fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
-    hex::decode(signing_key).unwrap_or_else(|_| signing_key.as_bytes().to_vec())
+    crate::services::jwt::signing_key_bytes(signing_key)
 }
 
 // ---------------------------------------------------------------------------

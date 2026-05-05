@@ -992,15 +992,16 @@ async fn dispatch_overslash_platform(
             let path = format!("/v1/approvals/{}/cancel", urlencoding::encode(id));
             forward(state, bearer, Method::POST, &path, None).await
         }
-        // Service-instance kernels — forward through `/v1/actions/call` so the
+        // Platform kernels — forward through `/v1/actions/call` so the
         // platform_target dispatcher in `routes/actions.rs` runs the kernel via
         // `state.platform_registry`. Permission gating is handled by the
         // action's `permission:` anchor in `services/overslash.yaml` (the
-        // `manage_services_own` / `manage_services_share` split). When the
+        // `manage_services_own` / `manage_services_share` and
+        // `request_secrets_own` / `request_secrets_share` splits). When the
         // caller is the read tool, `require_risk` is forwarded so the action
         // handler enforces the risk gate.
         "list_services" | "get_service" | "create_service" | "update_service"
-        | "list_templates" | "get_template" | "create_template" => {
+        | "list_templates" | "get_template" | "create_template" | "request_secret" => {
             forward_overslash_action(state, bearer, action, params, require_risk).await
         }
         other => Err(format!(
