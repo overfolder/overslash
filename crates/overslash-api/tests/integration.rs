@@ -1541,11 +1541,25 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         !webhooks.is_empty(),
         "expected at least one webhook delivery"
     );
-    assert_eq!(webhooks[0]["status"], "allowed");
-    assert!(webhooks[0]["approval_id"].is_string());
 
-    // Verify HMAC signature was sent
+    // Envelope: { id, type, created_at, data: <inner payload> }
+    assert_eq!(webhooks[0]["type"], "approval.resolved");
+    let delivery_id = webhooks[0]["id"].as_str().expect("envelope.id");
+    assert!(uuid::Uuid::parse_str(delivery_id).is_ok());
+    assert!(webhooks[0]["created_at"].is_string());
+    assert_eq!(webhooks[0]["data"]["status"], "allowed");
+    assert!(webhooks[0]["data"]["approval_id"].is_string());
+
+    // Verify routing + signature headers
     let headers = received["headers"].as_array().unwrap();
+    assert_eq!(
+        headers[0]["x-overslash-event"].as_str().unwrap(),
+        "approval.resolved"
+    );
+    assert_eq!(
+        headers[0]["x-overslash-delivery"].as_str().unwrap(),
+        delivery_id
+    );
     let sig_header = headers[0]["x-overslash-signature"].as_str().unwrap();
     assert!(
         sig_header.starts_with("sha256="),

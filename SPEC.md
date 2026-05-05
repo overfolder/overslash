@@ -1196,6 +1196,19 @@ Many flows are asynchronous from the agent's perspective: OAuth callback, secret
 
 The same event payload is delivered regardless of transport. Agents may use any combination — e.g., SSE for liveness during a foreground task, webhooks for background events, polling as a fallback.
 
+**Webhook envelope.** Webhook bodies are always wrapped in a stable envelope so receivers can deserialize uniformly:
+
+```json
+{
+  "id": "<delivery uuid>",
+  "type": "approval.resolved",
+  "created_at": "2026-05-05T12:34:56.789Z",
+  "data": { /* per-event payload */ }
+}
+```
+
+The `id` and `created_at` are stable across retries, so receivers can dedupe by `id` and reject stale replays by `created_at`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id). `X-Overslash-Signature: sha256=<hex>` is HMAC-SHA256 over the raw body bytes (the envelope JSON), keyed with the subscription secret.
+
 When `notifications.managed_by_platform` is set (§5), Overslash's user-facing notifications (bell, email, 1-minute delayed webhook) are suppressed — but the event-stream transports above still fire normally, because the platform is the consumer.
 
 ---
