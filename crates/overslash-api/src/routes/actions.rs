@@ -2191,7 +2191,14 @@ async fn needs_authentication_for_service(
     // only sees one consent screen instead of two (consenting to nothing,
     // then being bounced through `missing_scopes` for the real set). When
     // the action declares no scopes, the empty vec is what we want anyway.
-    let auth_url = platform_connections::mint_initial_auth_url(
+    //
+    // If the URL mint fails (most commonly: provider row is missing from
+    // the DB so the `oauth_provider::get_by_key` lookup 404s, but also
+    // crypto/DB hiccups), don't propagate the raw NotFound — the client
+    // would see a 404 on `/v1/actions/call` and think the *action* is
+    // missing. Surface as Internal so operators can spot the misconfig,
+    // and stop trying to mint a URL the user can't act on anyway.
+    let auth_url = match platform_connections::mint_initial_auth_url(
         state,
         org_id,
         caller_identity_id,
@@ -2199,7 +2206,18 @@ async fn needs_authentication_for_service(
         &action.required_scopes,
         None,
     )
-    .await?;
+    .await
+    {
+        Ok(url) => url,
+        Err(mint_err) => {
+            tracing::error!(
+                "needs_authentication: failed to mint initial auth url for provider '{provider}': {mint_err}"
+            );
+            return Err(AppError::Internal(format!(
+                "OAuth provider '{provider}' is not configured for this org: {mint_err}"
+            )));
+        }
+    };
 
     Ok(Some(AppError::NeedsAuthentication {
         service: Some(service_key.to_string()),
@@ -2244,62 +2262,85 @@ async fn resolve_service_auth(
             ..
         } = service_auth
         {
-            if let Ok(Some(conn)) = user_scope.find_my_connection_by_provider(provider).await {
-                let enc_key = match crypto::parse_hex_key(&state.config.secrets_encryption_key) {
-                    Ok(k) => k,
-                    Err(_) => continue,
-                };
-                let creds = match crate::services::client_credentials::resolve(
-                    &state.db,
-                    &enc_key,
-                    org_id,
-                    Some(identity_id),
-                    provider,
-                    Some(&conn),
-                    None,
-                )
-                .await
-                {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-
-                match crate::services::oauth::resolve_access_token(
-                    scope,
-                    &state.http_client,
-                    &enc_key,
-                    &conn,
-                    &creds.client_id,
-                    &creds.client_secret,
-                )
-                .await
-                {
-                    Ok(access_token) => {
-                        // Inject directly into headers
-                        let value = match &token_injection.prefix {
-                            Some(p) => format!("{p}{access_token}"),
-                            None => access_token,
-                        };
-                        if let Some(header_name) = &token_injection.header_name {
-                            headers.insert(header_name.clone(), value);
-                        }
-                        return Ok((vec![], true));
-                    }
-                    Err(e) => match classify_reauth(&e) {
-                        Some(reason) => {
-                            return Err(reauth_required_envelope(
-                                state,
-                                org_id,
-                                identity_id,
-                                &conn,
-                                reason,
-                                &e,
-                            )
-                            .await);
-                        }
-                        None => continue,
-                    },
+            // `find_my_connection_by_provider` returning Err is a DB
+            // failure. Surface it as Internal so the caller doesn't see
+            // a misleading 401 needs_authentication when the real
+            // problem is server-side. `Ok(None)` (the *no connection
+            // exists yet* case) keeps the legacy fall-through.
+            let conn = match user_scope.find_my_connection_by_provider(provider).await {
+                Ok(Some(conn)) => conn,
+                Ok(None) => continue,
+                Err(e) => {
+                    return Err(AppError::Internal(format!(
+                        "connection lookup for provider '{provider}' failed: {e}"
+                    )));
                 }
+            };
+            // Crypto config / BYOC resolution failures are server-side
+            // problems too. Same treatment — propagate as Internal
+            // instead of swallowing and confusing the user with a
+            // needs_authentication prompt.
+            let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+                .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
+            let creds = crate::services::client_credentials::resolve(
+                &state.db,
+                &enc_key,
+                org_id,
+                Some(identity_id),
+                provider,
+                Some(&conn),
+                None,
+            )
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!(
+                    "OAuth client credentials resolution for '{provider}' failed: {e}"
+                ))
+            })?;
+
+            match crate::services::oauth::resolve_access_token(
+                scope,
+                &state.http_client,
+                &enc_key,
+                &conn,
+                &creds.client_id,
+                &creds.client_secret,
+            )
+            .await
+            {
+                Ok(access_token) => {
+                    // Inject directly into headers
+                    let value = match &token_injection.prefix {
+                        Some(p) => format!("{p}{access_token}"),
+                        None => access_token,
+                    };
+                    if let Some(header_name) = &token_injection.header_name {
+                        headers.insert(header_name.clone(), value);
+                    }
+                    return Ok((vec![], true));
+                }
+                Err(e) => match classify_reauth(&e) {
+                    Some(reason) => {
+                        return Err(reauth_required_envelope(
+                            state,
+                            org_id,
+                            identity_id,
+                            &conn,
+                            reason,
+                            &e,
+                        )
+                        .await);
+                    }
+                    None => {
+                        // Non-reauth OAuth errors (HTTP transport, parse
+                        // failures from the provider) — surface as
+                        // BadGateway so the caller sees an upstream
+                        // error, not a fake "needs auth" prompt.
+                        return Err(AppError::BadGateway(format!(
+                            "OAuth token resolution failed: {e}"
+                        )));
+                    }
+                },
             }
         }
     }
