@@ -233,6 +233,7 @@ CREATE TABLE public.identities (
     preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
     is_org_admin boolean DEFAULT false NOT NULL,
     user_id uuid,
+    auto_call_on_approve boolean DEFAULT true NOT NULL,
     CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
@@ -261,8 +262,7 @@ CREATE TABLE public.mcp_client_agent_bindings (
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    elicitation_enabled boolean DEFAULT false NOT NULL,
-    auto_call_on_approve boolean DEFAULT true NOT NULL
+    elicitation_enabled boolean DEFAULT false NOT NULL
 );
 
 
@@ -494,6 +494,7 @@ CREATE TABLE public.orgs (
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
     is_personal boolean DEFAULT false NOT NULL,
     plan text DEFAULT 'standard'::text NOT NULL,
+    default_deferred_execution boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );

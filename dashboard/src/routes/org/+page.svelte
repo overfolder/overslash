@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ApiError, session } from '$lib/session';
 	import type {
+		ExecutionSettings,
 		IdpConfig,
 		McpClient,
 		OAuthCredential,
@@ -31,6 +32,9 @@
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
 	let secretRequestError = $state<string | null>(null);
+	let executionSettings = $state<ExecutionSettings | null>(null);
+	let executionSaving = $state(false);
+	let executionError = $state<string | null>(null);
 	let subscription = $state<OrgSubscription | null>(null);
 	$effect(() => {
 		org = data.org;
@@ -40,6 +44,7 @@
 		serviceKeys = data.serviceKeys;
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
+		executionSettings = data.executionSettings;
 		subscription = data.subscription;
 	});
 
@@ -442,6 +447,24 @@
 		}
 	}
 
+	async function toggleDefaultDeferredExecution(nextValue?: boolean) {
+		if (!org || !executionSettings) return;
+		const next = nextValue ?? !executionSettings.default_deferred_execution;
+		executionSaving = true;
+		executionError = null;
+		try {
+			const updated = await session.patch<ExecutionSettings>(
+				`/v1/orgs/${org.id}/execution-settings`,
+				{ default_deferred_execution: next }
+			);
+			executionSettings = updated;
+		} catch (err) {
+			executionError = asMessage(err);
+		} finally {
+			executionSaving = false;
+		}
+	}
+
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
 		if (!org || !secretRequestSettings) return;
 		const next = nextValue ?? !secretRequestSettings.allow_unsigned_secret_provide;
@@ -582,6 +605,42 @@
 						<span class="field-value mono">{org.id}</span>
 					</div>
 				</div>
+			{/if}
+		</section>
+
+		<!-- Execution defaults (deferred-execution policy) -->
+		<section class="card">
+			<h2>Approval execution</h2>
+			<p class="section-desc">
+				Default behavior when an approval is allowed. Existing agents are not
+				touched when this flips — they keep their per-agent override on the
+				agent detail page.
+			</p>
+			{#if executionSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Deferred execution by default for new agents</div>
+						<div class="toggle-help">
+							When off (default), newly-created agents auto-execute the call as
+							soon as a reviewer hits Allow — the result lands on the
+							execution record and any subscribed webhook receives it. When on,
+							new agents are seeded in "deferred execution" mode: the
+							resolver or the agent must call
+							<code>POST /v1/approvals/&#123;id&#125;/call</code> explicitly
+							after Allow. Useful for white-label embeddings that want full
+							control over when the upstream call fires.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={executionSettings.default_deferred_execution}
+						onchange={toggleDefaultDeferredExecution}
+						disabled={executionSaving}
+						label="Deferred execution by default for new agents"
+					/>
+				</div>
+				{#if executionError}
+					<div class="form-error">{executionError}</div>
+				{/if}
 			{/if}
 		</section>
 

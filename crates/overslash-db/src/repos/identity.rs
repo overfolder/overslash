@@ -30,6 +30,7 @@ pub struct IdentityRow {
     pub preferences: serde_json::Value,
     pub is_org_admin: bool,
     pub user_id: Option<Uuid>,
+    pub auto_call_on_approve: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -43,10 +44,16 @@ pub async fn create(
     kind: &str,
     external_id: Option<&str>,
 ) -> Result<IdentityRow, sqlx::Error> {
+    // `auto_call_on_approve` is seeded from the inverse of
+    // `orgs.default_deferred_execution`: when the org has flipped its policy
+    // to deferred-by-default, a new agent is born with auto-call OFF. The
+    // value is meaningless for `user`-kind rows but storing it uniformly
+    // avoids branching here.
     sqlx::query_as!(
         IdentityRow,
-        "INSERT INTO identities (org_id, name, kind, external_id) VALUES ($1, $2, $3, $4)
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+        "INSERT INTO identities (org_id, name, kind, external_id, auto_call_on_approve)
+         VALUES ($1, $2, $3, $4, (SELECT NOT default_deferred_execution FROM orgs WHERE id = $1))
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         org_id,
         name,
         kind,
@@ -67,9 +74,9 @@ pub async fn create_with_email(
 ) -> Result<IdentityRow, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "INSERT INTO identities (org_id, name, kind, external_id, email, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+        "INSERT INTO identities (org_id, name, kind, external_id, email, metadata, auto_call_on_approve)
+         VALUES ($1, $2, $3, $4, $5, $6, (SELECT NOT default_deferred_execution FROM orgs WHERE id = $1))
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         org_id,
         name,
         kind,
@@ -95,9 +102,9 @@ pub async fn create_with_parent(
 ) -> Result<IdentityRow, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "INSERT INTO identities (org_id, name, kind, external_id, parent_id, depth, owner_id, inherit_permissions)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+        "INSERT INTO identities (org_id, name, kind, external_id, parent_id, depth, owner_id, inherit_permissions, auto_call_on_approve)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT NOT default_deferred_execution FROM orgs WHERE id = $1))
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         org_id,
         name,
         kind,
@@ -121,7 +128,7 @@ pub(crate) async fn find_user_by_email_global(
 ) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE email = $1 AND kind = 'user'",
         email,
     )
@@ -139,7 +146,7 @@ pub async fn find_user_by_external_id_in_org(
 ) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE org_id = $1 AND external_id = $2 AND kind = 'user'",
         org_id,
         external_id,
@@ -158,7 +165,7 @@ pub async fn find_by_org_and_user(
 ) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE org_id = $1 AND user_id = $2 AND kind = 'user'",
         org_id,
         user_id,
@@ -174,7 +181,7 @@ pub async fn get_by_id(
 ) -> Result<Option<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -199,7 +206,7 @@ pub(crate) async fn list_by_org(
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE org_id = $1 ORDER BY created_at",
         org_id,
     )
@@ -214,7 +221,7 @@ pub async fn list_children(
 ) -> Result<Vec<IdentityRow>, sqlx::Error> {
     sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE parent_id = $1 AND org_id = $2 ORDER BY created_at",
         parent_id,
         org_id,
@@ -231,14 +238,14 @@ pub async fn get_ancestor_chain(
     sqlx::query_as!(
         IdentityRow,
         r#"WITH RECURSIVE chain AS (
-            SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at,
+            SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at,
                    1 AS _depth
             FROM identities WHERE id = $1 AND org_id = $2
             UNION ALL
             SELECT i.id, i.org_id, i.name, i.kind, i.external_id, i.email, i.metadata,
                    i.parent_id, i.depth, i.owner_id, i.inherit_permissions,
                    i.last_active_at, i.archived_at, i.archived_reason, i.preferences,
-                   i.is_org_admin, i.user_id,
+                   i.is_org_admin, i.user_id, i.auto_call_on_approve,
                    i.created_at, i.updated_at, c._depth + 1
             FROM identities i
             INNER JOIN chain c ON i.id = c.parent_id
@@ -253,6 +260,7 @@ pub async fn get_ancestor_chain(
                preferences as "preferences!",
                is_org_admin as "is_org_admin!",
                user_id,
+               auto_call_on_approve as "auto_call_on_approve!",
                created_at as "created_at!", updated_at as "updated_at!"
         FROM chain ORDER BY depth ASC"#,
         identity_id,
@@ -274,7 +282,7 @@ pub async fn update_profile(
         IdentityRow,
         "UPDATE identities SET name = $3, metadata = $4, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         id,
         org_id,
         name,
@@ -392,10 +400,11 @@ pub async fn get_or_create_org_service_agent(
     // external_id) index is the single source of truth either way.
     let inserted = sqlx::query_as!(
         IdentityRow,
-        "INSERT INTO identities (org_id, name, kind, external_id)
-         VALUES ($1, 'org-service', 'agent', $2)
+        "INSERT INTO identities (org_id, name, kind, external_id, auto_call_on_approve)
+         VALUES ($1, 'org-service', 'agent', $2,
+                 (SELECT NOT default_deferred_execution FROM orgs WHERE id = $1))
          ON CONFLICT (org_id, external_id) DO NOTHING
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         org_id,
         ORG_SERVICE_EXTERNAL_ID,
     )
@@ -407,7 +416,7 @@ pub async fn get_or_create_org_service_agent(
             IdentityRow,
             "UPDATE identities SET owner_id = id, updated_at = now()
              WHERE id = $1
-             RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+             RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
             agent.id,
         )
         .fetch_one(&mut *tx)
@@ -428,7 +437,7 @@ pub async fn get_or_create_org_service_agent(
 
     let agent = sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities
          WHERE org_id = $1 AND external_id = $2",
         org_id,
@@ -438,6 +447,28 @@ pub async fn get_or_create_org_service_agent(
     .await?;
     tx.commit().await?;
     Ok((agent, false))
+}
+
+/// Toggle the per-agent `auto_call_on_approve` flag. Default for new
+/// identities is TRUE; flipping to FALSE puts the agent in "deferred
+/// execution" mode where the resolver/agent must call `POST
+/// /v1/approvals/{id}/call` explicitly after approve.
+pub async fn set_auto_call_on_approve(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    value: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE identities SET auto_call_on_approve = $3, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn set_inherit_permissions(
@@ -479,7 +510,7 @@ pub(crate) async fn rename(
         IdentityRow,
         "UPDATE identities SET name = $3, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         id,
         org_id,
         name,
@@ -686,7 +717,7 @@ pub(crate) async fn apply_patch(
 
     let row = sqlx::query_as!(
         IdentityRow,
-        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
          FROM identities WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -732,7 +763,7 @@ pub(crate) async fn move_under(
         IdentityRow,
         "UPDATE identities SET parent_id = $3, depth = $4, owner_id = $5, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         id,
         org_id,
         parent_id,
@@ -1018,7 +1049,7 @@ pub(crate) async fn restore(
         "UPDATE identities
          SET archived_at = NULL, archived_reason = NULL, last_active_at = now(), updated_at = now()
          WHERE id = $1
-         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, created_at, updated_at",
+         RETURNING id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at",
         id,
     )
     .fetch_one(&mut *tx)

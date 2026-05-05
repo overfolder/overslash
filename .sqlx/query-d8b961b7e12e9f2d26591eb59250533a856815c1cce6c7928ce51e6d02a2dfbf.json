@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE identities SET auto_call_on_approve = $3, updated_at = now()\n         WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d8b961b7e12e9f2d26591eb59250533a856815c1cce6c7928ce51e6d02a2dfbf"
+}

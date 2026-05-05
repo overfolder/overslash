@@ -1,6 +1,7 @@
 import type { PageLoad } from './$types';
 import { ApiError, session, type MeIdentity } from '$lib/session';
 import type {
+	ExecutionSettings,
 	IdpConfig,
 	McpClient,
 	OAuthCredential,
@@ -39,6 +40,7 @@ export interface OrgPageData {
 	serviceKeys: ServiceKeySummary[];
 	webhooks: Webhook[];
 	secretRequestSettings: SecretRequestSettings | null;
+	executionSettings: ExecutionSettings | null;
 	subscription: OrgSubscription | null;
 	error: { status: number; message: string } | null;
 }
@@ -63,6 +65,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				serviceKeys: [],
 				webhooks: [],
 				secretRequestSettings: null,
+				executionSettings: null,
 				subscription: null,
 				error: { status: 403, message: 'Admin access required to view org settings.' }
 			};
@@ -75,7 +78,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			mcpClientsResp,
 			serviceKeys,
 			webhooks,
-			secretRequestSettings
+			secretRequestSettings,
+			executionSettings
 		] = await Promise.all([
 			orgId
 				? session.get<OrgInfo>(`/v1/orgs/${orgId}`)
@@ -87,6 +91,9 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			session.get<Webhook[]>('/v1/webhooks'),
 			orgId
 				? session.get<SecretRequestSettings>(`/v1/orgs/${orgId}/secret-request-settings`)
+				: Promise.resolve(null),
+			orgId
+				? session.get<ExecutionSettings>(`/v1/orgs/${orgId}/execution-settings`)
 				: Promise.resolve(null)
 		]);
 
@@ -109,6 +116,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			serviceKeys,
 			webhooks,
 			secretRequestSettings,
+			executionSettings,
 			subscription,
 			error: null
 		};
@@ -125,6 +133,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			serviceKeys: [],
 			webhooks: [],
 			secretRequestSettings: null,
+			executionSettings: null,
 			subscription: null,
 			error: { status, message }
 		};

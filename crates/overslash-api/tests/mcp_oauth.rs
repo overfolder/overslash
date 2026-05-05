@@ -2291,6 +2291,19 @@ async fn mcp_overslash_call_resumes_pending_approval() {
         .await
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
+    // Disable auto-call so this test's manual `overslash_call` resume
+    // path wins the execution claim. The universal default is true; a
+    // background auto-call after `/resolve` would race the resume and
+    // return 409 Conflict here.
+    client
+        .patch(format!(
+            "{base}/v1/identities/{ident_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
     let agent_key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
         .header("Authorization", format!("Bearer {admin_key}"))
