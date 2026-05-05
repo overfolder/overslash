@@ -131,11 +131,15 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 	};
 
 	try {
-		// Step 1 — create a github service in `draft` state.
+		// Step 1 — create a github service. Use the default `active`
+		// status (not `draft`) so the later `service_status` poll can
+		// resolve it without `include_inactive=true`. The service still
+		// surfaces `credentials_status: 'needs_authentication'` until the
+		// OAuth dance completes — that's the bit this scenario asserts.
 		const createServiceStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'create_service',
-			params: { template_key: 'github', name: serviceName, status: 'draft' }
+			params: { template_key: 'github', name: serviceName }
 		});
 		expect(createServiceStep.kind).toBe('final');
 		if (createServiceStep.kind !== 'final') return;
