@@ -2317,6 +2317,15 @@ async fn resolve_service_auth(
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
         .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
 
+    // Track the first transient upstream error we hit while iterating
+    // providers. If no provider succeeds AND at least one had a
+    // connection that failed transiently, return BadGateway instead of
+    // falling through to `needs_authentication` — otherwise the caller
+    // would prompt the user to create a *duplicate* connection on a
+    // template they're already authenticated against, just because the
+    // provider had a hiccup.
+    let mut first_upstream_blip: Option<String> = None;
+
     for service_auth in &svc.auth {
         if let overslash_core::types::ServiceAuth::OAuth {
             provider,
@@ -2385,20 +2394,32 @@ async fn resolve_service_auth(
                     return Ok((vec![], true));
                 }
                 Err(e) => {
+                    let err_str = e.to_string();
                     if let Some(err) =
                         oauth_error_to_app_error_or_continue(state, org_id, identity_id, &conn, e)
                             .await
                     {
                         return Err(err);
                     }
-                    // Upstream blip — fall through to the next OAuth
-                    // provider in the template.
+                    // Upstream blip — keep trying the next OAuth provider
+                    // in the template, but remember it so we can surface
+                    // BadGateway after the loop instead of misleading the
+                    // user into a duplicate-connection prompt.
+                    if first_upstream_blip.is_none() {
+                        first_upstream_blip =
+                            Some(format!("provider '{}': {err_str}", conn.provider_key));
+                    }
                     continue;
                 }
             }
         }
     }
 
+    if let Some(detail) = first_upstream_blip {
+        return Err(AppError::BadGateway(format!(
+            "OAuth provider returned an error: {detail}"
+        )));
+    }
     Ok((Vec::new(), false))
 }
 
