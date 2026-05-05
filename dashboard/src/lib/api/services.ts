@@ -101,7 +101,12 @@ export async function validateTemplate(yaml: string): Promise<ValidationResult |
 
 // -- Service instances --
 
-export const listServices = () => session.get<ServiceInstanceSummary[]>('/v1/services');
+export const listServices = (opts: { includeUserLevel?: boolean } = {}) => {
+	const path = opts.includeUserLevel
+		? '/v1/services?include_user_level=true'
+		: '/v1/services';
+	return session.get<ServiceInstanceSummary[]>(path);
+};
 
 export const getService = (name: string, signal?: AbortSignal) =>
 	session.get<ServiceInstanceDetail>(

@@ -158,8 +158,15 @@ pub enum CredentialsStatus {
 
 // ── Kernels ───────────────────────────────────────────────────────────────
 
+/// List service instances visible to the caller.
+///
+/// When `admin_view_all` is true, the group ceiling is bypassed and every
+/// service instance in the org is returned (org-level + every owner's
+/// user-level rows). The caller is responsible for asserting `is_org_admin`
+/// before passing `true` — the kernel does not re-check.
 pub async fn kernel_list_services(
     ctx: PlatformCallContext,
+    admin_view_all: bool,
 ) -> Result<Vec<ServiceInstanceSummary>, AppError> {
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
     // Service-instance kernels require an identity binding (group ceiling +
@@ -170,16 +177,19 @@ pub async fn kernel_list_services(
     })?;
     let identity_id = Some(auth_identity);
 
-    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?;
-    let visible_ids = scope.get_visible_service_ids(ceiling_user_id).await?;
-
-    let rows = scope
-        .list_available_service_instances_with_groups(
-            identity_id,
-            Some(ceiling_user_id),
-            Some(&visible_ids),
-        )
-        .await?;
+    let rows = if admin_view_all {
+        scope.list_all_service_instances_in_org().await?
+    } else {
+        let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?;
+        let visible_ids = scope.get_visible_service_ids(ceiling_user_id).await?;
+        scope
+            .list_available_service_instances_with_groups(
+                identity_id,
+                Some(ceiling_user_id),
+                Some(&visible_ids),
+            )
+            .await?
+    };
 
     // Bulk grants → ServiceGroupRef map.
     let service_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
