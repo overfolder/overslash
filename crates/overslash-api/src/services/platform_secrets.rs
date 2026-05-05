@@ -56,7 +56,14 @@ pub async fn kernel_request_secret(
         return Err(AppError::BadRequest("secret_name is required".into()));
     }
 
-    let target = input.identity_id.unwrap_or(ctx.identity_id);
+    // Org-level API keys (no identity binding) cannot mint a request — the
+    // row's `identity_id` and `requested_by` are NOT NULL, and there's no
+    // sensible default that wouldn't drop us straight into the share path
+    // without an admin gate.
+    let caller_identity = ctx
+        .identity_id
+        .ok_or_else(|| AppError::BadRequest("identity required to request a secret".into()))?;
+    let target = input.identity_id.unwrap_or(caller_identity);
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
     let _target_row = scope
         .get_identity(target)
@@ -68,8 +75,8 @@ pub async fn kernel_request_secret(
     // additionally requires admin-level overslash access (i.e. the holder
     // of `request_secrets_share`). Mirrors the pattern in
     // routes/groups.rs:333-342.
-    if target != ctx.identity_id
-        && !permission_chain::is_self_or_ancestor(&scope, ctx.identity_id, target).await?
+    if target != caller_identity
+        && !permission_chain::is_self_or_ancestor(&scope, caller_identity, target).await?
         && ctx.access_level < AccessLevel::Admin
     {
         return Err(AppError::Forbidden(
@@ -108,7 +115,7 @@ pub async fn kernel_request_secret(
         ctx.org_id,
         target,
         input.secret_name.trim(),
-        ctx.identity_id,
+        caller_identity,
         input.purpose.as_deref(),
         &token_hash,
         expires_at,
@@ -131,7 +138,7 @@ pub async fn kernel_request_secret(
     let _ = scope
         .log_audit(AuditEntry {
             org_id: ctx.org_id,
-            identity_id: Some(ctx.identity_id),
+            identity_id: Some(caller_identity),
             action: "secret_request.created",
             resource_type: Some("secret_request"),
             resource_id: None,

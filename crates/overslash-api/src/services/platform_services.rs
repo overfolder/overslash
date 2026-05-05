@@ -162,9 +162,15 @@ pub async fn kernel_list_services(
     ctx: PlatformCallContext,
 ) -> Result<Vec<ServiceInstanceSummary>, AppError> {
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
-    let identity_id = Some(ctx.identity_id);
+    // Service-instance kernels require an identity binding (group ceiling +
+    // owner-tier filtering both need a user-tier ancestor); org-level API
+    // keys go through the HTTP route, not this kernel.
+    let auth_identity = ctx.identity_id.ok_or_else(|| {
+        AppError::BadRequest("listing services requires an identity-bound API key".into())
+    })?;
+    let identity_id = Some(auth_identity);
 
-    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, ctx.identity_id).await?;
+    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?;
     let visible_ids = scope.get_visible_service_ids(ceiling_user_id).await?;
 
     let rows = scope
@@ -238,22 +244,25 @@ pub async fn kernel_get_service(
     input: GetServiceInput,
 ) -> Result<ServiceInstanceDetail, AppError> {
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
+    let auth_identity = ctx.identity_id.ok_or_else(|| {
+        AppError::BadRequest("getting a service requires an identity-bound API key".into())
+    })?;
 
     let row = if let Ok(uuid) = input.name.parse::<Uuid>() {
         scope.get_service_instance(uuid).await?
     } else {
-        let ceiling = Some(group_ceiling::resolve_ceiling_user_id(&scope, ctx.identity_id).await?);
+        let ceiling = Some(group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?);
         if input.include_inactive {
             scope
                 .resolve_service_instance_by_name_any_status(
-                    Some(ctx.identity_id),
+                    Some(auth_identity),
                     ceiling,
                     &input.name,
                 )
                 .await?
         } else {
             scope
-                .resolve_service_instance_by_name(Some(ctx.identity_id), ceiling, &input.name)
+                .resolve_service_instance_by_name(Some(auth_identity), ceiling, &input.name)
                 .await?
         }
     }
@@ -272,7 +281,9 @@ pub async fn kernel_create_service(
     input: CreateServiceInput,
 ) -> Result<ServiceInstanceDetail, AppError> {
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
-    let auth_identity = ctx.identity_id;
+    let auth_identity = ctx.identity_id.ok_or_else(|| {
+        AppError::BadRequest("creating a service requires an identity-bound API key".into())
+    })?;
     let name = input.name.as_deref().unwrap_or(&input.template_key);
 
     // Resolve owner identity.
@@ -501,6 +512,9 @@ pub async fn kernel_update_service(
     input: UpdateServiceInput,
 ) -> Result<ServiceInstanceDetail, AppError> {
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
+    let auth_identity = ctx.identity_id.ok_or_else(|| {
+        AppError::BadRequest("updating a service requires an identity-bound API key".into())
+    })?;
 
     let existing = scope
         .get_service_instance(id)
@@ -512,7 +526,7 @@ pub async fn kernel_update_service(
 
     if let Some(Some(ref new_secret)) = input.secret_name {
         if !new_secret.is_empty() {
-            let template_lookup_identity = existing.owner_identity_id.or(Some(ctx.identity_id));
+            let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
             let template_def = resolve_template_definition(
                 &ctx.db,
                 &ctx.registry,

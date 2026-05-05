@@ -169,6 +169,20 @@ async fn provider_login(
 
     let nonce = Uuid::new_v4().to_string();
 
+    // Sanitized org slug to persist across the IdP round-trip so the
+    // callback can resolve DB-stored credentials. Value is "none" when
+    // there's no org context (env-var social providers). Sanitization
+    // doubles as header-injection protection for the cookie path.
+    let org_slug_value = effective_org_slug
+        .as_deref()
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+        .unwrap_or("none");
+    let sanitized_next = query.next.as_deref().and_then(sanitize_next);
+
     // Optionally append a preview-handoff id to the OAuth `state` so the
     // callback can route the user back to a Vercel preview origin instead
     // of `dashboard_url`. Gated by `is_preview_handoff_enabled()` AND the
@@ -176,13 +190,25 @@ async fn provider_login(
     // `preview_origin` query param is silently ignored. The id is opaque
     // (random UUID); the actual origin lives server-side in
     // `oauth_preview_origins` so we don't leak the URL into IdP logs.
+    //
+    // We also stash the nonce / PKCE verifier / org slug / next path on
+    // the row. The cookie-domain gap between `*.vercel.app` and the API
+    // means the browser rejects the `oss_auth_*` cookies on previews; the
+    // callback reads these values from the row instead when `preview_id`
+    // is present in `state`.
     let preview_id = match query.preview_origin.as_deref() {
         Some(origin) if state.config.preview_origin_allowed(origin) => {
             let id = Uuid::new_v4();
+            let verifier_for_row = pkce.as_ref().map(|p| p.verifier.as_str());
+            let org_slug_for_row = effective_org_slug.as_deref().filter(|s| !s.is_empty());
             overslash_db::repos::oauth_preview_handoff::insert_preview_origin(
                 &state.db,
                 id,
                 origin,
+                &nonce,
+                verifier_for_row,
+                org_slug_for_row,
+                sanitized_next.as_deref(),
                 PREVIEW_ORIGIN_TTL_SECS,
             )
             .await?;
@@ -209,40 +235,37 @@ async fn provider_login(
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
-    // The OAuth callback always lands on `public_url/auth/callback/<provider>`
-    // (typically the root apex), so when login kicks off from a corp
-    // subdomain the auth-state cookies MUST be set on the shared parent
-    // domain (`session_cookie_domain`, e.g. `.app.overslash.com`) or the
-    // browser won't send them to the callback host. Without this, login
-    // from a subdomain silently fails with "missing auth nonce cookie".
-    let nonce_cookie = auth_cookie(&state, "oss_auth_nonce", &nonce);
-    let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
-    let verifier_cookie = auth_cookie(&state, "oss_auth_verifier", verifier_value);
-    // Persist org slug across the OAuth redirect so the callback can resolve
-    // DB-stored credentials. Value is "none" when org context isn't needed
-    // (env-var social providers). Sanitize to prevent header injection.
-    let org_slug_value = effective_org_slug
-        .as_deref()
-        .filter(|s| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        })
-        .unwrap_or("none");
-    let org_cookie = auth_cookie(&state, "oss_auth_org", org_slug_value);
-
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
-    headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
-    headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
 
-    // Persist `next` across the IdP round-trip so the callback can resume
-    // wherever the caller wanted (used by `/oauth/authorize` to bounce
-    // through login). Only accept path-only targets to keep this from
-    // turning into an open redirect.
-    if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
-        let next_cookie = auth_cookie(&state, "oss_auth_next", &next);
-        headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+    // Auth-state cookies are only meaningful on the non-preview path: when
+    // login starts on a Vercel preview, the response's effective host is
+    // `*.vercel.app` and the browser would reject any `Set-Cookie` with
+    // `Domain=.app.<apex>`. The preview branch reads its state from the
+    // `oauth_preview_origins` row instead — set above.
+    if preview_id.is_none() {
+        // The OAuth callback always lands on `public_url/auth/callback/<provider>`
+        // (typically the root apex), so when login kicks off from a corp
+        // subdomain the auth-state cookies MUST be set on the shared parent
+        // domain (`session_cookie_domain`, e.g. `.app.overslash.com`) or the
+        // browser won't send them to the callback host. Without this, login
+        // from a subdomain silently fails with "missing auth nonce cookie".
+        let nonce_cookie = auth_cookie(&state, "oss_auth_nonce", &nonce);
+        let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
+        let verifier_cookie = auth_cookie(&state, "oss_auth_verifier", verifier_value);
+        let org_cookie = auth_cookie(&state, "oss_auth_org", org_slug_value);
+
+        headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
+        headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
+        headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
+
+        // Persist `next` across the IdP round-trip so the callback can resume
+        // wherever the caller wanted (used by `/oauth/authorize` to bounce
+        // through login). Only accept path-only targets to keep this from
+        // turning into an open redirect.
+        if let Some(next) = sanitized_next.as_deref() {
+            let next_cookie = auth_cookie(&state, "oss_auth_next", next);
+            headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+        }
     }
 
     Ok((headers, Redirect::to(&auth_url)).into_response())
@@ -312,10 +335,51 @@ async fn provider_callback(
         None => None,
     };
 
-    // Verify CSRF nonce
-    let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
-        .ok_or_else(|| AppError::BadRequest("missing auth nonce cookie".into()))?;
-    if cookie_nonce != nonce {
+    // Source the auth-state. On the non-preview path it lives in cookies
+    // set during `provider_login`. On the preview path the cookies don't
+    // survive the cookie-domain gap (`*.vercel.app` ↔ `api.<apex>`), so the
+    // values were stashed on the `oauth_preview_origins` row instead. We
+    // load them here before any cookie checks so the preview branch never
+    // 400s with "missing auth nonce cookie".
+    let (
+        state_nonce_expected,
+        code_verifier,
+        slug_from_state,
+        next_from_state,
+        preview_origin_for_handoff,
+    ) = if let Some(pid) = preview_id {
+        let row = overslash_db::repos::oauth_preview_handoff::get_preview_origin(&state.db, pid)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("preview origin expired or unknown".into()))?;
+        // Re-check against the live allowlist so a tightened policy
+        // takes effect even on in-flight logins minted under the old
+        // rules.
+        if !state.config.preview_origin_allowed(&row.origin) {
+            return Err(AppError::Forbidden(
+                "preview origin not in allowlist".into(),
+            ));
+        }
+        (
+            row.nonce.clone(),
+            row.pkce_verifier.clone(),
+            row.org_slug.clone(),
+            row.next_path.clone(),
+            Some(row.origin),
+        )
+    } else {
+        // CSRF anti-replay: the nonce in `state` must match the cookie
+        // we set during login. The preview branch substitutes a
+        // server-side row for this cookie because it can't be set
+        // cross-domain.
+        let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
+            .ok_or_else(|| AppError::BadRequest("missing auth nonce cookie".into()))?;
+        let verifier = extract_cookie(&headers, "oss_auth_verifier").filter(|v| v != "none");
+        let slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
+        let next = extract_cookie(&headers, "oss_auth_next").and_then(|v| sanitize_next(&v));
+        (cookie_nonce, verifier, slug, next, None)
+    };
+
+    if state_nonce_expected != nonce {
         return Err(AppError::BadRequest("nonce mismatch".into()));
     }
 
@@ -323,25 +387,22 @@ async fn provider_callback(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
-    // Recover org slug from cookie (set during provider_login). Subdomain
-    // context is authoritative and takes precedence — even if the cookie
-    // says otherwise, a callback hitting `<slug>.app.overslash.com` must
-    // be treated as that org's login path.
-    let cookie_slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
+    // Subdomain context is authoritative — even if the stored slug says
+    // otherwise, a callback hitting `<slug>.app.overslash.com` must be
+    // treated as that org's login path.
     let ctx = ctx
         .map(|axum::extract::Extension(c)| c)
         .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
     let org_slug = match ctx {
         crate::middleware::subdomain::RequestOrgContext::Org { slug, .. } => Some(slug),
-        crate::middleware::subdomain::RequestOrgContext::Root => cookie_slug,
+        crate::middleware::subdomain::RequestOrgContext::Root => slug_from_state,
     };
 
     let (client_id, client_secret) =
         resolve_auth_credentials(&state, &provider_key, org_slug.as_deref()).await?;
 
-    // PKCE verifier (may be "none" if provider doesn't support PKCE)
-    let code_verifier = extract_cookie(&headers, "oss_auth_verifier");
-    let verifier_ref = code_verifier.as_deref().filter(|v| *v != "none");
+    // PKCE verifier (None if provider doesn't support PKCE).
+    let verifier_ref = code_verifier.as_deref();
 
     let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
 
@@ -389,70 +450,51 @@ async fn provider_callback(
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
 
-    // Always clear the auth-state cookies we set during login. Same Domain
-    // attribute used at set time, otherwise the browser keeps a stale copy.
-    let clear_nonce = clear_auth_cookie(&state, "oss_auth_nonce");
-    let clear_verifier = clear_auth_cookie(&state, "oss_auth_verifier");
-    let clear_org = clear_auth_cookie(&state, "oss_auth_org");
-    let clear_next = clear_auth_cookie(&state, "oss_auth_next");
-
-    // Path-only `next` carried across the IdP bounce. The dashboard_url
-    // fallback is intentionally only applied to the non-preview branch:
-    // for previews it points at the corporate dashboard host
-    // (e.g. `https://app.dev.overslash.com`), which would defeat the whole
-    // point of routing the user back to their preview origin.
-    let cookie_next = extract_cookie(&headers, "oss_auth_next").and_then(|v| sanitize_next(&v));
-
     // Vercel preview-deployment handoff branch. The session cookie can't
     // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`
     // (no shared parent domain), so we mint a one-time code, hand it to
     // the preview, and let the preview adopt the JWT via a host-only
-    // cookie set on the proxied response. Login-time `preview_id` is the
-    // tamper-resistant binding between the state param and the preview
-    // origin we stashed server-side.
-    if let Some(pid) = preview_id {
-        let origin_row =
-            overslash_db::repos::oauth_preview_handoff::get_preview_origin(&state.db, pid)
-                .await?
-                .ok_or_else(|| AppError::BadRequest("preview origin expired or unknown".into()))?;
-        // Re-check against the live allowlist so a tightened policy takes
-        // effect even on in-flight logins minted under the old rules.
-        if !state.config.preview_origin_allowed(&origin_row.origin) {
-            return Err(AppError::Forbidden(
-                "preview origin not in allowlist".into(),
-            ));
-        }
+    // cookie set on the proxied response. The `preview_id` carried in
+    // `state` is the tamper-resistant binding to the preview origin we
+    // stashed server-side at login time.
+    if let Some(origin) = preview_origin_for_handoff {
         let handoff_code = preview_handoff_code();
-        // Only path-only values get persisted (`cookie_next` already sanitized).
-        // No fallback to `dashboard_url` — that points at the corp host, not
-        // the preview origin. Missing → handoff endpoint defaults to `/` on
-        // the preview, which is the correct landing for someone whose login
+        // `next_from_state` was already sanitized at login time; re-check
+        // it defensively in case anyone hand-edits the row. No fallback to
+        // `dashboard_url` — that points at the corp host, not the preview
+        // origin. Missing → handoff endpoint defaults to `/` on the
+        // preview, which is the correct landing for someone whose login
         // had no specific intent.
+        let safe_next = next_from_state.as_deref().and_then(sanitize_next);
         overslash_db::repos::oauth_preview_handoff::insert_handoff_code(
             &state.db,
             &handoff_code,
             &token,
-            &origin_row.origin,
-            cookie_next.as_deref(),
+            &origin,
+            safe_next.as_deref(),
             PREVIEW_HANDOFF_CODE_TTL_SECS,
         )
         .await?;
         let target = format!(
             "{}/auth/handoff?code={}",
-            origin_row.origin.trim_end_matches('/'),
+            origin.trim_end_matches('/'),
             urlencoding::encode(&handoff_code),
         );
-
-        let mut resp_headers = HeaderMap::new();
-        resp_headers.insert(header::SET_COOKIE, clear_nonce.parse().unwrap());
-        resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
-        resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
-        resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
-        return Ok((resp_headers, Redirect::to(&target)).into_response());
+        // No clear-cookie headers: the preview path never set the
+        // `oss_auth_*` cookies (browser would have rejected them anyway),
+        // so there's nothing to clear.
+        return Ok(Redirect::to(&target).into_response());
     }
 
     // Non-preview path: set the session cookie on the API origin and bounce
-    // to the dashboard / org subdomain as before.
+    // to the dashboard / org subdomain as before. Always clear the auth-state
+    // cookies we set during login — same Domain attribute, otherwise the
+    // browser keeps a stale copy.
+    let clear_nonce = clear_auth_cookie(&state, "oss_auth_nonce");
+    let clear_verifier = clear_auth_cookie(&state, "oss_auth_verifier");
+    let clear_org = clear_auth_cookie(&state, "oss_auth_org");
+    let clear_next = clear_auth_cookie(&state, "oss_auth_next");
+
     let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie);
@@ -464,7 +506,7 @@ async fn provider_callback(
     // Non-preview path: fall back to the configured dashboard URL when the
     // caller had no explicit `next`. (The preview branch above handles its
     // own fallback because `dashboard_url` is the wrong host for a preview.)
-    let next_path = cookie_next.unwrap_or_else(|| state.config.dashboard_url.clone());
+    let next_path = next_from_state.unwrap_or_else(|| state.config.dashboard_url.clone());
 
     // When login kicks off on `<slug>.<apex>` but the OAuth callback lands
     // at `state.config.public_url/auth/callback/<provider>` (typical: a
