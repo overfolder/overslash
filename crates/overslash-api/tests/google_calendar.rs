@@ -53,7 +53,7 @@ async fn test_google_calendar_three_modes() {
     // Bootstrap org + identity + API key
     let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
-    // Create broad permission rules: http:** for Mode A/B, google_calendar:*:* for Mode C
+    // Create broad permission rules: http:** for raw HTTP, google_calendar:*:* for service shapes
     client
         .post(format!("{base}/v1/permissions"))
         .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
@@ -106,24 +106,24 @@ async fn test_google_calendar_three_modes() {
     let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(
         echo["headers"]["authorization"], "Bearer manual-token-xyz",
-        "Mode A: secret should be injected as Authorization header"
+        "http pseudo-service: secret should be injected as Authorization header"
     );
 
-    // ===== MODE B: Connection-based OAuth =====
+    // Create an OAuth connection that the service-instance binding can pick
+    // up for the action-shape calls below. (The previous incarnation of this
+    // test created the connection inside the now-deleted Mode B block.)
+    let pool_for_setup = pool.clone();
     let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
     let encrypted_token =
         overslash_core::crypto::encrypt(&enc_key, b"google-oauth-token-123").unwrap();
     let future_time = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-
-    // Create a BYOC credential so client_credentials::resolve succeeds
     let encrypted_cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
     let encrypted_csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
-    let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+    let byoc = overslash_db::scopes::OrgScope::new(org_id, pool_for_setup.clone())
         .create_byoc_credential(ident_id, "google", &encrypted_cid, &encrypted_csec)
         .await
         .unwrap();
-
-    let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
+    let _conn = overslash_db::scopes::OrgScope::new(org_id, pool_for_setup)
         .create_connection(overslash_db::repos::connection::CreateConnection {
             org_id,
             identity_id: ident_id,
@@ -137,26 +137,6 @@ async fn test_google_calendar_three_modes() {
         })
         .await
         .unwrap();
-
-    let resp = client
-        .post(format!("{base}/v1/actions/call"))
-        .header(common::auth(&key).0, common::auth(&key).1)
-        .json(&json!({
-            "connection": conn.id.to_string(),
-            "method": "GET",
-            "url": format!("http://{mock_addr}/echo")
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        echo["headers"]["authorization"], "Bearer google-oauth-token-123",
-        "Mode B: OAuth token should be injected from connection"
-    );
 
     // ===== MODE C (POST): create_event — path template + JSON body + OAuth auto-resolve =====
     let resp = client
@@ -559,19 +539,17 @@ async fn test_google_calendar_real_byoc() {
     let raw_fetched: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(raw_fetched["id"].as_str().unwrap(), event_id);
-    eprintln!("  Mode A raw HTTP: verified event via direct URL");
+    eprintln!("  http pseudo-service: verified event via direct URL");
 
-    // ===== TEST 7: Mode B — connection-based =====
-    eprintln!("  [7/8] Mode B connection ...");
+    // ===== TEST 7: Service + HTTP verb (SPEC §8) =====
+    eprintln!("  [7/8] Service + HTTP verb ...");
     let resp = client
         .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
-            "connection": conn.id.to_string(),
+            "service": "google_calendar",
             "method": "GET",
-            "url": format!(
-                "https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
-            )
+            "path": format!("/calendar/v3/calendars/primary/events/{event_id}")
         }))
         .send()
         .await
@@ -582,9 +560,10 @@ async fn test_google_calendar_real_byoc() {
     let conn_fetched: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(conn_fetched["id"].as_str().unwrap(), event_id);
-    eprintln!("  Mode B connection: verified event via OAuth connection");
+    eprintln!("  Service + HTTP verb: verified event via instance binding");
+    let _ = conn; // Connection still used by the service-instance binding above.
 
-    // ===== CLEANUP: delete_event (Mode C) =====
+    // ===== CLEANUP: delete_event (action shape) =====
     eprintln!("  [8/8] delete_event (cleanup) ...");
     let resp = client
         .post(format!("{base}/v1/actions/call"))

@@ -8,9 +8,10 @@ use crate::types::{PermissionEffect, PermissionRule};
 
 /// A derived permission key from an action request.
 ///
-/// Two formats depending on execution mode:
-/// - Raw HTTP / connection: `http:{METHOD}:{host}{path}`
-/// - Service action (Mode C): `{service}:{action}:{arg}`
+/// Three formats depending on call shape (SPEC §8):
+/// - `http` pseudo-service: `http:{METHOD}:{host}{path}`
+/// - Service + defined action: `{service}:{action}:{arg}`
+/// - Service + HTTP verb: `{service}:{METHOD}:{path}`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionKey(pub String);
 
@@ -31,7 +32,7 @@ pub struct SuggestedTier {
 }
 
 impl PermissionKey {
-    /// Derive permission keys from an HTTP request (Mode A / Mode B).
+    /// Derive permission keys from an `http` pseudo-service request.
     /// Format: `http:{METHOD}:{host}{path}`
     pub fn from_http(method: &str, url: &str) -> Vec<Self> {
         let host_path = url
@@ -42,7 +43,20 @@ impl PermissionKey {
         vec![Self(format!("http:{method}:{host_path}"))]
     }
 
-    /// Derive permission keys from a service action request (Mode C).
+    /// Derive permission keys from a Service + HTTP verb request (SPEC §8).
+    /// Format: `{service}:{METHOD}:{path}` — host is omitted because the
+    /// service instance bounds it via `svc.hosts`.
+    ///
+    /// The method is normalized to uppercase so `"post"` and `"POST"` both
+    /// match a rule like `github:POST:/**`. Permission rules are written
+    /// with uppercase methods by convention; without normalization, a
+    /// caller using lowercase would silently fail authorization.
+    pub fn from_service_http(service_key: &str, method: &str, path: &str) -> Vec<Self> {
+        let method = method.to_ascii_uppercase();
+        vec![Self(format!("{service_key}:{method}:{path}"))]
+    }
+
+    /// Derive permission keys from a service action request.
     /// Format: `{service}:{action}:{arg}` where arg comes from `scope_param` or defaults to `*`.
     pub fn from_service_action(
         service_key: &str,
@@ -108,11 +122,24 @@ fn broadening_ladder(dk: &DerivedKey) -> Vec<String> {
             }
         }
         _ => {
-            // Service action: {service}:{action}:{arg} → {service}:{action}:* → {service}:*:*
-            if dk.arg != "*" {
-                ladder.push(format!("{}:{}:*", dk.service, dk.action));
+            // Service-HTTP keys (`{service}:{METHOD}:{path}`) carry a path
+            // in `arg` starting with `/`. Path globs need `/**` because
+            // `*` does not span `/` in `glob_match`. Detect and emit the
+            // path-aware ladder.
+            if dk.arg.starts_with('/') {
+                // {service}:{METHOD}:{path} → {service}:{METHOD}:/** → {service}:*:/**
+                let method_wildcard = format!("{}:{}:/**", dk.service, dk.action);
+                if method_wildcard != dk.key {
+                    ladder.push(method_wildcard);
+                }
+                ladder.push(format!("{}:*:/**", dk.service));
+            } else {
+                // Service action: {service}:{action}:{arg} → {service}:{action}:* → {service}:*:*
+                if dk.arg != "*" {
+                    ladder.push(format!("{}:{}:*", dk.service, dk.action));
+                }
+                ladder.push(format!("{}:*:*", dk.service));
             }
-            ladder.push(format!("{}:*:*", dk.service));
         }
     }
 
@@ -498,6 +525,18 @@ mod tests {
     }
 
     #[test]
+    fn derive_keys_from_service_http() {
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
+    }
+
+    #[test]
+    fn derive_keys_from_service_http_uppercases_method() {
+        let keys = PermissionKey::from_service_http("github", "post", "/repos/x/pulls");
+        assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
+    }
+
+    #[test]
     fn service_action_with_scope_param() {
         let mut params = HashMap::new();
         params.insert(
@@ -539,6 +578,44 @@ mod tests {
             "github:create_pull_request:overfolder/backend".into(),
         )];
         assert_eq!(check_permissions(&rules, &keys), PermissionResult::Allowed);
+    }
+
+    /// Service-HTTP keys (`{service}:{METHOD}:{path}`) need globstar (`/**`)
+    /// to span path segments — plain `*` does not match across `/`. Pin the
+    /// matching contract so a rule like `github:POST:/**` actually allows
+    /// `github:POST:/repos/x/pulls`.
+    #[test]
+    fn glob_matches_service_http_keys_with_globstar() {
+        let rules = vec![rule("github:POST:/**", PermissionEffect::Allow)];
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert_eq!(check_permissions(&rules, &keys), PermissionResult::Allowed);
+    }
+
+    /// Sanity: `*` (without globstar) does NOT match a path containing `/`.
+    /// This is what motivates the path-aware broadening ladder for
+    /// service-HTTP keys (it suggests `/**`, not `*`).
+    #[test]
+    fn glob_star_without_globstar_does_not_span_slashes() {
+        let rules = vec![rule("github:POST:*", PermissionEffect::Allow)];
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert!(matches!(
+            check_permissions(&rules, &keys),
+            PermissionResult::NeedsApproval { .. }
+        ));
+    }
+
+    #[test]
+    fn broadening_ladder_for_service_http_uses_globstar() {
+        let dk = parse_derived_key("github:POST:/repos/x/pulls");
+        let ladder = broadening_ladder(&dk);
+        assert_eq!(
+            ladder,
+            vec![
+                "github:POST:/repos/x/pulls".to_string(),
+                "github:POST:/**".to_string(),
+                "github:*:/**".to_string(),
+            ]
+        );
     }
 
     // ── DerivedKey / SuggestedTier tests ───────────────────────────────
