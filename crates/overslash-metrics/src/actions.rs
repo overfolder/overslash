@@ -1,6 +1,7 @@
-//! Action execution metrics — Mode A (raw HTTP), Mode B (connection-based),
-//! Mode C (service+action). `template_key` is the OpenAPI service template
-//! identifier; for raw HTTP it is the literal `"_raw"`.
+//! Action execution metrics — `mode` is one of `a` (`http` pseudo-service),
+//! `c` (Service + defined action), or `c_verb` (Service + HTTP verb, SPEC
+//! §8). `template_key` is the OpenAPI service template identifier; for raw
+//! HTTP it is the literal `"_raw"`.
 
 use std::time::Duration;
 

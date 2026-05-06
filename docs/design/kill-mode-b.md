@@ -1,6 +1,6 @@
 # Auth by Service Instance — Removing the `connection`-id call mode
 
-**Status:** Draft
+**Status:** Done — single PR, Phases 2/4/5; Phase 1 (in-place security plug) and Phase 3 (deprecation window) dropped because the deleted code path goes away in the same PR and there are no external callers in-tree.
 
 ## TL;DR
 

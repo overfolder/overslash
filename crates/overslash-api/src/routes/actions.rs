@@ -1,20 +1,22 @@
 //! Action execution endpoints (`POST /v1/actions/call`, `POST /v1/actions/validate`).
 //!
-//! Three call modes, distinguished by which request fields are populated:
+//! Three call shapes per SPEC §8, distinguished by which request fields are
+//! populated:
 //!
-//! - **Mode A — raw HTTP**: caller supplies `method` + `url` (+ optional
-//!   `headers`, `body`, `secrets[]` to inject into headers/query).
-//! - **Mode B — connection**: caller supplies a `connection` UUID (a stored
-//!   OAuth connection) plus a `url`. We resolve/refresh the access token and
-//!   inject it as `Authorization: Bearer …`.
-//! - **Mode C — service + action**: caller supplies `service` + `action` keys
-//!   and `params`. We resolve the template (user → org → global), build the
-//!   URL from the action's path template, fail-fast on missing OAuth scopes,
-//!   and inject auth from the instance's bound connection or the template's
-//!   `auth` config.
+//! - **Service + defined action**: caller supplies `service` + `action` keys
+//!   and `params`. The template's path/method/auth are used; permission keys
+//!   derive as `{service}:{action}:{arg}`.
+//! - **Service + HTTP verb**: caller supplies `service` + `method` +
+//!   (`path` or `url`). Auth comes from the instance binding; `svc.hosts`
+//!   bounds where the bearer can land. Permission keys derive as
+//!   `{service}:{METHOD}:{path}`.
+//! - **`http` pseudo-service (raw HTTP)**: caller supplies `method` + `url`
+//!   (+ optional `headers`, `body`, `secrets[]`). Permission keys derive as
+//!   `http:{METHOD}:{host}{path}` (and `secret:{name}:{host}` for each injected
+//!   secret).
 //!
-//! Precedence in `resolve_request`: Mode B (if `connection` set) → Mode C
-//! (if `service`+`action` set) → Mode A (fallback).
+//! Precedence in `resolve_request`: Service + HTTP verb (if `service` set
+//! without `action`) → Service + action (if both set) → raw HTTP (fallback).
 
 use std::collections::HashMap;
 
@@ -86,30 +88,22 @@ async fn call_action(
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     let start = std::time::Instant::now();
-    // Mode resolution mirrors `resolve_request` exactly: `connection` wins
-    // over `service+action` when both are present, so the metric label
-    // matches the execution path that actually runs downstream.
-    let mode = if req.connection.is_some() {
-        "b"
-    } else if req.service.is_some() {
-        "c"
-    } else {
-        "a"
+    // Mode resolution mirrors `resolve_request`: service-without-action is
+    // the verb shape, service+action is the defined-action shape, neither
+    // is the http pseudo-service (raw HTTP).
+    let mode = match (req.service.is_some(), req.action.is_some()) {
+        (true, true) => "c",
+        (true, false) => "c_verb",
+        _ => "a",
     };
     // Bound the `template_key` label to keys that actually exist in the
     // registry. A client could otherwise submit `service: "<arbitrary>"`
     // and explode Prometheus cardinality even on requests that fail
-    // validation inside the inner handler. When `connection` wins (mode b),
-    // any `service` field is ignored downstream — emit `_raw` so labels
-    // don't lie about which template was used.
-    let template_key = if req.connection.is_some() {
-        "_raw".to_string()
-    } else {
-        match req.service.as_deref() {
-            Some(key) if state.registry.get(key).is_some() => key.to_string(),
-            Some(_) => "_unknown".to_string(),
-            None => "_raw".to_string(),
-        }
+    // validation inside the inner handler.
+    let template_key = match req.service.as_deref() {
+        Some(key) if state.registry.get(key).is_some() => key.to_string(),
+        Some(_) => "_unknown".to_string(),
+        None => "_raw".to_string(),
     };
 
     let result = call_action_impl(State(state), auth, scope, ip, Json(req)).await;
@@ -158,21 +152,15 @@ async fn validate_action(
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     let start = std::time::Instant::now();
-    let mode = if req.connection.is_some() {
-        "b"
-    } else if req.service.is_some() {
-        "c"
-    } else {
-        "a"
+    let mode = match (req.service.is_some(), req.action.is_some()) {
+        (true, true) => "c",
+        (true, false) => "c_verb",
+        _ => "a",
     };
-    let template_key = if req.connection.is_some() {
-        "_raw".to_string()
-    } else {
-        match req.service.as_deref() {
-            Some(key) if state.registry.get(key).is_some() => key.to_string(),
-            Some(_) => "_unknown".to_string(),
-            None => "_raw".to_string(),
-        }
+    let template_key = match req.service.as_deref() {
+        Some(key) if state.registry.get(key).is_some() => key.to_string(),
+        Some(_) => "_unknown".to_string(),
+        None => "_raw".to_string(),
     };
 
     let result = validate_action_impl(State(state), auth, scope, Json(req)).await;
@@ -180,10 +168,9 @@ async fn validate_action(
     let outcome = match &result {
         Ok((_, label)) => *label,
         // Only the `InvalidActionArgs` 400 counts as `invalid_args`;
-        // Mode B rejection, filter-syntax errors, and require_risk
-        // mismatches are all 400s but unrelated to the schema check, so
-        // they fall into `rejected` — keeps the dashboard panel for
-        // schema misses honest.
+        // filter-syntax errors and require_risk mismatches are also 400s
+        // but unrelated to the schema check, so they fall into `rejected`
+        // — keeps the dashboard panel for schema misses honest.
         Err(AppError::InvalidActionArgs { .. }) => "invalid_args",
         Err(err) => {
             let code = err.status_code().as_u16();
@@ -210,18 +197,6 @@ async fn validate_action_impl(
     scope: OrgScope,
     Json(req): Json<CallRequest>,
 ) -> Result<(Response, &'static str), AppError> {
-    // Mode B (raw connection) has no schema to validate against, and
-    // resolving the connection would require a real OAuth token refresh
-    // — not appropriate for a dry-run probe. The caller can hit
-    // `/v1/actions/call` directly to test that path.
-    if req.connection.is_some() {
-        return Err(AppError::BadRequest(
-            "validate does not support raw connection mode; \
-             use /v1/actions/call to test connection-based requests"
-                .into(),
-        ));
-    }
-
     // Filter syntax — same gate as `/call`. A malformed expression is a
     // 400, not a wasted upstream burn.
     if let Some(filter) = req.filter.as_ref() {
@@ -237,10 +212,11 @@ async fn validate_action_impl(
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     let ceiling_user_id = group_ceiling::ceiling_user_id_from_identity(&identity)?;
 
-    // Cheap resolution — loads the action template (Mode C) without
-    // running OAuth, param resolvers, or scope checks. The resolved
-    // template/instance ride along but the validate path doesn't
-    // forward them anywhere; they're dropped at the end of this scope.
+    // Cheap resolution — loads the action template (service shapes)
+    // without running OAuth, param resolvers, or scope checks. The
+    // resolved template/instance ride along but the validate path
+    // doesn't forward them anywhere; they're dropped at the end of
+    // this scope.
     let (meta, _resolved_mode_c) =
         resolve_action_metadata(&state, &auth, &scope, ceiling_user_id, &req).await?;
 
@@ -276,12 +252,16 @@ async fn validate_action_impl(
     // Permission key derivation — same logic as `/call` runs after
     // `resolve_request` returns, using the resolved scope and method.
     let perm_keys = if let Some(ref svc) = meta.service_scope {
-        PermissionKey::from_service_action(
-            &svc.service_key,
-            &svc.action_key,
-            svc.scope_param.as_deref(),
-            &req.params,
-        )
+        if let Some(ref verb) = svc.http_verb {
+            PermissionKey::from_service_http(&svc.service_key, &verb.method, &verb.path)
+        } else {
+            PermissionKey::from_service_action(
+                &svc.service_key,
+                &svc.action_key,
+                svc.scope_param.as_deref(),
+                &req.params,
+            )
+        }
     } else {
         PermissionKey::from_http(&meta.raw_method, &meta.raw_url)
     };
@@ -388,11 +368,13 @@ async fn validate_action_impl(
     Ok(((StatusCode::OK, Json(body)).into_response(), label))
 }
 
-/// Unified call request: supports Mode A (raw HTTP), Mode B (connection),
-/// and Mode C (service + action). See module docs for mode selection rules.
+/// Unified call request — supports the three SPEC §8 shapes (Service +
+/// defined action, Service + HTTP verb, `http` pseudo-service). See module
+/// docs for the field-presence selection rules.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CallRequest {
-    // Mode A fields
+    // Raw HTTP fields (also reused by service + HTTP verb)
     method: Option<String>,
     url: Option<String>,
     #[serde(default)]
@@ -401,14 +383,14 @@ struct CallRequest {
     #[serde(default)]
     secrets: Vec<SecretRef>,
 
-    // Mode C fields
+    // Service + action / Service + HTTP verb fields
     service: Option<String>,
     action: Option<String>,
+    /// Service + HTTP verb (SPEC §8): path-only form (host comes from
+    /// `svc.hosts`). Mutually exclusive with `action`.
+    path: Option<String>,
     #[serde(default)]
     params: HashMap<String, serde_json::Value>,
-
-    // Mode B: explicit connection
-    connection: Option<Uuid>,
 
     // Large file handling
     #[serde(default)]
@@ -452,20 +434,20 @@ enum CallResponse {
 struct ResolvedMeta {
     description: Option<String>,
     auth_injected: bool,
-    /// Present only for Mode C — carries info needed to derive service-action permission keys.
+    /// Present for service shapes (action / verb); carries info to derive
+    /// service permission keys.
     service_scope: Option<ServiceScope>,
-    /// Risk level of the action (Mode C only, from the action definition).
+    /// Risk level of the action (action shape only, from the action definition).
     risk: Option<Risk>,
-    /// Disclosure declarations from the action template (Mode C only, empty
-    /// for Mode A/B). Runs at approval-create and audit-write time.
+    /// Disclosure declarations from the action template (action shape only;
+    /// empty for verb / `http`). Runs at approval-create and audit-write time.
     disclose: Vec<DisclosureField>,
-    /// Redact paths from the action template (Mode C only, empty for Mode
-    /// A/B). Applied to the request projection before it's persisted as
-    /// `approvals.action_detail`.
+    /// Redact paths from the action template (action shape only; empty for
+    /// verb / `http`). Applied to the request projection before it's
+    /// persisted as `approvals.action_detail`.
     redact: Vec<String>,
     /// Original resolved params (before url/body assembly), retained for the
-    /// disclosure `.params.*` projection. Empty for Mode A/B where no
-    /// disclosure runs.
+    /// disclosure `.params.*` projection. Empty for verb / `http` shapes.
     params: HashMap<String, serde_json::Value>,
     /// When the resolved service has `runtime: Mcp`, dispatch skips the HTTP
     /// executor and goes through `mcp_caller::invoke` with this payload.
@@ -491,8 +473,18 @@ struct PlatformTarget {
 
 struct ServiceScope {
     service_key: String,
+    /// Empty string for the Service + HTTP verb shape (then `http_verb` is `Some`).
     action_key: String,
     scope_param: Option<String>,
+    /// Service + HTTP verb (SPEC §8) — when `Some`, permission keys derive as
+    /// `{service_key}:{METHOD}:{path}` instead of `{service_key}:{action_key}:{arg}`.
+    http_verb: Option<HttpVerb>,
+}
+
+#[derive(Clone)]
+struct HttpVerb {
+    method: String,
+    path: String,
 }
 
 async fn call_action_impl(
@@ -539,9 +531,10 @@ async fn call_action_impl(
     // branch — is what guarantees the ordering structurally: a future
     // refactor of `resolve_request` can't reintroduce the bug where a
     // user clicks "Allow" on a request that then fails validation.
-    // Mode A/B carry an empty schema so the call is a no-op for them.
+    // The verb / `http` shapes carry an empty schema so the call is a
+    // no-op for them.
     //
-    // The Mode C branch threads the resolved `(svc, instance)` into
+    // The service shapes thread the resolved `(svc, instance)` into
     // `resolve_request` below so the call hot path doesn't re-fetch
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
@@ -557,7 +550,7 @@ async fn call_action_impl(
     }
 
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
-    // the identity lookup above so Mode C name resolution doesn't re-fetch it.
+    // the identity lookup above so service-name resolution doesn't re-fetch it.
     let (action_req, meta) = resolve_request(
         &state,
         &auth,
@@ -571,8 +564,9 @@ async fn call_action_impl(
 
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
     // permission/approval work if the resolved action mutates. We use the
-    // template-declared `risk` for Mode C and fall back to the HTTP-method
-    // inference for Mode A/B — same logic as the ceiling check below.
+    // template-declared `risk` for the action shape and fall back to the
+    // HTTP-method inference for verb / `http` shapes — same logic as the
+    // ceiling check below.
     if let Some(required) = req.require_risk {
         let effective = meta
             .risk
@@ -590,12 +584,16 @@ async fn call_action_impl(
     }
 
     let perm_keys = if let Some(ref scope) = meta.service_scope {
-        PermissionKey::from_service_action(
-            &scope.service_key,
-            &scope.action_key,
-            scope.scope_param.as_deref(),
-            &req.params,
-        )
+        if let Some(ref verb) = scope.http_verb {
+            PermissionKey::from_service_http(&scope.service_key, &verb.method, &verb.path)
+        } else {
+            PermissionKey::from_service_action(
+                &scope.service_key,
+                &scope.action_key,
+                scope.scope_param.as_deref(),
+                &req.params,
+            )
+        }
     } else {
         PermissionKey::from_http(&action_req.method, &action_req.url)
     };
@@ -644,8 +642,7 @@ async fn call_action_impl(
     // has_groups == false → NoGroups → permissive (no ceiling enforced)
 
     // ── Layer 2: Hierarchical permission check (agents/sub-agents only) ──
-    let needs_gate =
-        !action_req.secrets.is_empty() || req.connection.is_some() || meta.auth_injected;
+    let needs_gate = !action_req.secrets.is_empty() || meta.auth_injected;
 
     // Users are gated by groups only — they are their own approvers.
     // Agents walk the ancestor chain; first gap → approval at gap level.
@@ -1369,46 +1366,165 @@ fn unknown_service_error(service_key: &str, available: Vec<String>) -> AppError 
 ///
 /// Returns enough information for the top-level handler to:
 ///   1. Validate caller-supplied args against the action's schema
-///      (Mode C only; A/B carry an empty schema).
+///      (action shape only; verb / `http` carry an empty schema).
 ///   2. Derive permission keys.
 ///   3. Run the caller-asserted risk gate.
 ///
-/// Mode A / Mode B don't touch the DB. Mode C loads the service template
-/// and looks up the action — no OAuth refresh, no `param_resolver` HTTP,
-/// no scope checks, no audit. Used by both `/v1/actions/call` (so
-/// `validate_args` can sit at the top of the handler, structurally before
-/// any approval-creation work) and `/v1/actions/validate` (which only
-/// runs the cheap path and never builds a real request).
+/// Raw HTTP doesn't touch the DB. Service shapes load the template and
+/// (for the action shape) look up the action — no OAuth refresh, no
+/// `param_resolver` HTTP, no scope checks, no audit. Used by both
+/// `/v1/actions/call` (so `validate_args` can sit at the top of the
+/// handler, structurally before any approval-creation work) and
+/// `/v1/actions/validate` (which only runs the cheap path and never
+/// builds a real request).
 ///
-/// For Mode C, the resolved template + instance ride along in the
-/// returned tuple so `resolve_request` can reuse them and avoid the
+/// For service shapes, the resolved template + instance ride along in
+/// the returned tuple so `resolve_request` can reuse them and avoid the
 /// duplicate DB lookup that a separate metadata pre-resolve would
 /// otherwise force on the call hot path.
 struct ActionMetadata {
-    /// Schema for `validate_args`. Empty for Mode A/B (no contract to enforce).
+    /// Schema for `validate_args`. Empty for verb / `http` shapes.
     validation_params: HashMap<String, overslash_core::types::ActionParam>,
-    /// Service/action keys for permission key derivation (Mode C only).
+    /// Service info for permission-key derivation (service shapes only).
     service_scope: Option<ServiceScope>,
-    /// Risk class — Mode C reads it from the template; A/B leave it
-    /// `None` and the caller infers from the HTTP method.
+    /// Risk class — action shape reads it from the template; verb /
+    /// `http` shapes leave it `None` and the caller infers from method.
     risk: Option<Risk>,
-    /// Caller-supplied raw HTTP fields used for Mode A/B permission key
-    /// derivation. Mode C ignores these (uses `service_scope`).
+    /// Caller-supplied raw HTTP fields used for `http`-pseudo-service
+    /// permission-key derivation. Service shapes use `service_scope`.
     raw_method: String,
     raw_url: String,
     /// Whether this request needs Layer 2 (permission-chain) gating.
-    /// Mode C is always gated (templates ship with auth or are
-    /// platform/MCP). Mode A is gated only when secrets are injected.
-    /// Mode B is always gated.
+    /// Service shapes are always gated (templates ship with auth or are
+    /// platform/MCP); raw HTTP is gated only when secrets are injected.
     needs_gate: bool,
 }
 
-/// Mode-C pre-resolution: the looked-up template + instance, threaded
+/// Pre-resolved service template + instance, threaded
 /// from `resolve_action_metadata` into `resolve_request` so the call
 /// path doesn't re-fetch them.
 struct ResolvedModeC {
     svc: overslash_core::types::ServiceDefinition,
     instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+}
+
+/// Look up the service template + instance for a Service + HTTP verb call.
+/// Mirrors the (service, action) arm's resolution, minus the action lookup.
+async fn resolve_service_for_verb_shape(
+    state: &AppState,
+    auth: &AuthContext,
+    scope: &OrgScope,
+    ceiling_user_id: Uuid,
+    service_key: &str,
+) -> Result<
+    (
+        Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
+        overslash_core::types::ServiceDefinition,
+    ),
+    AppError,
+> {
+    let instance = scope
+        .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
+        .await?;
+
+    let svc = if let Some(ref inst) = instance {
+        super::templates::resolve_template_definition(
+            state,
+            auth.org_id,
+            auth.identity_id,
+            &inst.template_key,
+        )
+        .await?
+    } else {
+        let from_template = super::templates::resolve_template_definition(
+            state,
+            auth.org_id,
+            auth.identity_id,
+            service_key,
+        )
+        .await
+        .ok();
+        match from_template.or_else(|| state.registry.get(service_key).cloned()) {
+            Some(s) => s,
+            None => {
+                let available =
+                    caller_visible_instance_names(scope, auth.identity_id, Some(ceiling_user_id))
+                        .await?;
+                return Err(unknown_service_error(service_key, available));
+            }
+        }
+    };
+    Ok((instance, svc))
+}
+
+/// Resolve the path + outgoing URL for a Service + HTTP verb call.
+///
+/// Two input shapes:
+/// - `path: "/x"`             → prefixes the first of `svc.hosts`.
+/// - `url: "https://h/x"`     → host must match any of `svc.hosts`.
+///
+/// Returns `(path, url)`. `path` is what permission keys derive from
+/// (`{service}:{METHOD}:{path}`); `url` is what the executor sends.
+fn resolve_verb_host_and_path(
+    svc: &overslash_core::types::ServiceDefinition,
+    service_key: &str,
+    url: &Option<String>,
+    path: &Option<String>,
+) -> Result<(String, String), AppError> {
+    if svc.hosts.is_empty() {
+        return Err(AppError::Internal(format!(
+            "service '{service_key}' has no hosts"
+        )));
+    }
+    match (url, path) {
+        (Some(_), Some(_)) => Err(AppError::BadRequest(
+            "'url' and 'path' are mutually exclusive — pick one".into(),
+        )),
+        (None, None) => Err(AppError::BadRequest(
+            "service + HTTP verb requires either 'path' or 'url'".into(),
+        )),
+        (None, Some(p)) => {
+            if !p.starts_with('/') {
+                return Err(AppError::BadRequest(format!(
+                    "'path' must start with '/' (got '{p}')"
+                )));
+            }
+            let host = &svc.hosts[0];
+            let url = if host.contains("://") {
+                format!("{host}{p}")
+            } else {
+                format!("https://{host}{p}")
+            };
+            Ok((p.clone(), url))
+        }
+        (Some(u), None) => {
+            let parsed = url::Url::parse(u)
+                .map_err(|e| AppError::BadRequest(format!("invalid 'url': {e}")))?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| AppError::BadRequest("'url' has no host".into()))?;
+            // Hosts in the template can be "host" or "scheme://host[:port]".
+            let host_matches = svc.hosts.iter().any(|h| {
+                let stripped = h
+                    .strip_prefix("https://")
+                    .or_else(|| h.strip_prefix("http://"))
+                    .unwrap_or(h);
+                stripped.split('/').next() == Some(host)
+            });
+            if !host_matches {
+                return Err(AppError::BadRequest(format!(
+                    "host '{host}' is not in service '{service_key}' hosts (allowed: {})",
+                    svc.hosts.join(", ")
+                )));
+            }
+            let mut path = parsed.path().to_string();
+            if let Some(q) = parsed.query() {
+                path.push('?');
+                path.push_str(q);
+            }
+            Ok((path, u.clone()))
+        }
+    }
 }
 
 async fn resolve_action_metadata(
@@ -1418,25 +1534,45 @@ async fn resolve_action_metadata(
     ceiling_user_id: Uuid,
     req: &CallRequest,
 ) -> Result<(ActionMetadata, Option<ResolvedModeC>), AppError> {
-    // Mode B: no schema, no template lookup. Permission keys are derived
-    // from the caller's url/method.
-    if req.connection.is_some() {
-        let raw_method = req.method.clone().unwrap_or_else(|| "GET".into());
-        let raw_url = req.url.clone().unwrap_or_default();
-        return Ok((
-            ActionMetadata {
-                validation_params: HashMap::new(),
-                service_scope: None,
-                risk: None,
-                raw_method,
-                raw_url,
-                needs_gate: true,
-            },
-            None,
-        ));
+    // Service + HTTP verb (SPEC §8). Caller names a service instance and
+    // an HTTP method + path/url; auth is auto-injected from the instance's
+    // binding; the template's `hosts[]` bounds where the bearer can land.
+    if let (Some(service_key), None) = (&req.service, &req.action) {
+        let raw_method = req.method.clone().ok_or_else(|| {
+            AppError::BadRequest(
+                "'method' required for service + HTTP verb (set 'action' for the action shape)"
+                    .into(),
+            )
+        })?;
+        let (instance, svc) =
+            resolve_service_for_verb_shape(state, auth, scope, ceiling_user_id, service_key)
+                .await?;
+        let (path, raw_url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
+        let auth_injected_estimate = !svc.auth.is_empty()
+            || instance
+                .as_ref()
+                .map(|i| i.connection_id.is_some() || i.secret_name.is_some())
+                .unwrap_or(false);
+        let metadata = ActionMetadata {
+            validation_params: HashMap::new(),
+            service_scope: Some(ServiceScope {
+                service_key: service_key.clone(),
+                action_key: String::new(),
+                scope_param: None,
+                http_verb: Some(HttpVerb {
+                    method: raw_method.clone(),
+                    path,
+                }),
+            }),
+            risk: None,
+            raw_method,
+            raw_url,
+            needs_gate: !req.secrets.is_empty() || auth_injected_estimate,
+        };
+        return Ok((metadata, Some(ResolvedModeC { svc, instance })));
     }
 
-    // Mode C: service + action. Load template, look up action, expose
+    // Service + defined action: load template, look up action, expose
     // schema + scope for validation and permission derivation.
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
         let instance = scope
@@ -1531,6 +1667,7 @@ async fn resolve_action_metadata(
                 service_key: service_key.clone(),
                 action_key: perm_action_key,
                 scope_param: action.scope_param.clone(),
+                http_verb: None,
             }),
             risk: Some(action.risk),
             raw_method: String::new(),
@@ -1540,7 +1677,8 @@ async fn resolve_action_metadata(
         return Ok((metadata, Some(ResolvedModeC { svc, instance })));
     }
 
-    // Mode A: raw HTTP. No schema. Permission keys from caller's url/method.
+    // `http` pseudo-service: raw HTTP, no schema. Permission keys from
+    // caller's url/method.
     let raw_method = req.method.clone().ok_or_else(|| {
         AppError::BadRequest("either 'method'+'url' or 'service'+'action' required".into())
     })?;
@@ -1588,12 +1726,13 @@ fn invalid_action_args_error(
 }
 
 /// Resolve a CallRequest into a concrete ActionRequest + metadata.
-/// Handles Mode A (raw HTTP), Mode B (connection-based), and Mode C (service+action).
+/// Handles all three SPEC §8 shapes (Service + action, Service + HTTP
+/// verb, `http` pseudo-service).
 ///
 /// `pre_resolved_mode_c` lets the caller hand in the template+instance
-/// already looked up by `resolve_action_metadata`, so Mode C doesn't
-/// pay for a duplicate DB lookup. `None` is fine for the validate path
-/// or for callers that don't share that work.
+/// already looked up by `resolve_action_metadata`, so service shapes
+/// don't pay for a duplicate DB lookup. `None` is fine for the validate
+/// path or for callers that don't share that work.
 async fn resolve_request(
     state: &AppState,
     auth: &AuthContext,
@@ -1603,69 +1742,63 @@ async fn resolve_request(
     req: &CallRequest,
     pre_resolved_mode_c: Option<ResolvedModeC>,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
-    // Mode B: explicit connection — resolve OAuth token and inject as header
-    // Node: Mode B might be just a header injector that then fallbacks to service+action or URL direct
-    if let Some(conn_id) = req.connection {
-        let conn = scope.get_connection(conn_id).await?;
-        let conn = crate::ownership::require_org_owned(conn, auth.org_id, "connection")?;
-
-        // NOTE: Cant we parse this and save to AppState? or a place where debugging/controlling what code accesses it is easier
-        let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
-        let provider_key = conn.provider_key.clone();
-        // CRAZY: Can we inject credentials from connections to others services that have nothing to do???
-
-        // NOTE: Path too long, we should use crate::services::client_credentials
-        // NOTE: resolve() should retrieve or access the enc key inside, it might even get the full &state
-        let creds = crate::services::client_credentials::resolve(
-            &state.db,
-            &enc_key,
-            auth.org_id,
-            auth.identity_id,
-            &provider_key,
-            Some(&conn),
-            None,
-        )
-        .await?;
-
-        let access_token = match crate::services::oauth::resolve_access_token(
-            scope,
-            &state.http_client,
-            &enc_key,
-            &conn,
-            &creds.client_id,
-            &creds.client_secret,
-        )
-        .await
-        {
-            Ok(token) => token,
-            Err(e) => {
-                return Err(
-                    oauth_error_to_app_error(state, scope.org_id(), identity_id, &conn, e).await,
-                );
-            }
+    // Service + HTTP verb (SPEC §8): caller-supplied method + path/url
+    // against a service instance. Auth is auto-injected from the binding;
+    // `svc.hosts` bounds where the bearer can land.
+    if let (Some(service_key), None) = (&req.service, &req.action) {
+        let raw_method = req.method.clone().ok_or_else(|| {
+            AppError::BadRequest(
+                "'method' required for service + HTTP verb (set 'action' for the action shape)"
+                    .into(),
+            )
+        })?;
+        let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
+            (pre.instance, pre.svc)
+        } else {
+            resolve_service_for_verb_shape(state, auth, scope, ceiling_user_id, service_key).await?
         };
 
-        let method = req.method.clone().unwrap_or_else(|| "GET".into());
-        let url = req
-            .url
-            .clone()
-            .ok_or_else(|| AppError::BadRequest("'url' required for connection mode".into()))?;
+        let (path, url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
 
         let mut headers = req.headers.clone();
-        headers.insert("Authorization".into(), format!("Bearer {access_token}"));
+        let (secrets, oauth_injected) = if let Some(ref inst) = instance {
+            resolve_instance_auth(
+                state,
+                scope,
+                identity_id,
+                inst,
+                &svc,
+                &req.secrets,
+                &mut headers,
+            )
+            .await?
+        } else {
+            resolve_service_auth(state, scope, identity_id, &svc, &req.secrets, &mut headers)
+                .await?
+        };
+
+        let description = format!("{} {} ({})", raw_method, path, svc.display_name);
 
         return Ok((
             ActionRequest {
-                method,
+                method: raw_method.clone(),
                 url,
                 headers,
                 body: req.body.clone(),
-                secrets: vec![],
+                secrets,
             },
             ResolvedMeta {
-                description: Some(format!("OAuth request via {provider_key} connection")),
-                auth_injected: true,
-                service_scope: None,
+                description: Some(description),
+                auth_injected: oauth_injected,
+                service_scope: Some(ServiceScope {
+                    service_key: service_key.clone(),
+                    action_key: String::new(),
+                    scope_param: None,
+                    http_verb: Some(HttpVerb {
+                        method: raw_method,
+                        path,
+                    }),
+                }),
                 risk: None,
                 disclose: Vec::new(),
                 redact: Vec::new(),
@@ -1676,7 +1809,7 @@ async fn resolve_request(
         ));
     }
 
-    // Mode C: service + action
+    // Service + defined action
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
         // Reuse the template/instance lookup performed by
         // `resolve_action_metadata` if the caller threaded it through.
@@ -1842,6 +1975,7 @@ async fn resolve_request(
                         service_key: service_key.clone(),
                         action_key: action_key.clone(),
                         scope_param: action.scope_param.clone(),
+                        http_verb: None,
                     }),
                     risk: Some(action.risk),
                     disclose: action.disclose.clone(),
@@ -1889,6 +2023,7 @@ async fn resolve_request(
                         service_key: service_key.clone(),
                         action_key: perm_action_key,
                         scope_param: action.scope_param.clone(),
+                        http_verb: None,
                     }),
                     risk: Some(action.risk),
                     disclose: Vec::new(),
@@ -2057,6 +2192,7 @@ async fn resolve_request(
                     service_key: service_key.clone(),
                     action_key: action_key.clone(),
                     scope_param: action.scope_param.clone(),
+                    http_verb: None,
                 }),
                 risk: Some(action_risk),
                 disclose: action.disclose.clone(),
@@ -2068,7 +2204,7 @@ async fn resolve_request(
         ));
     }
 
-    // Mode A: raw HTTP
+    // `http` pseudo-service: raw HTTP
     let method = req.method.clone().ok_or_else(|| {
         AppError::BadRequest("either 'method'+'url' or 'service'+'action' required".into())
     })?;
@@ -2138,11 +2274,11 @@ fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
 /// the Reauth-vs-Internal-vs-Upstream split so both auth resolvers
 /// (instance- and service-level) make the same call.
 ///
-/// Mode B and the instance-bound branch of Mode C call this directly:
-/// they target a *specific* connection, so an upstream blip can't
+/// The instance-bound branch of the action shape calls this directly:
+/// it targets a *specific* connection, so an upstream blip can't
 /// recover by trying another provider — we surface BadGateway. The
-/// Mode C provider loop calls a non-bailing variant: see
-/// [`oauth_error_to_app_error_or_continue`].
+/// per-provider auth loop (when no instance is bound) calls a
+/// non-bailing variant: see [`oauth_error_to_app_error_or_continue`].
 async fn oauth_error_to_app_error(
     state: &AppState,
     org_id: Uuid,

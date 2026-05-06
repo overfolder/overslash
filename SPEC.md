@@ -672,6 +672,8 @@ All action execution goes through a single endpoint. The caller specifies a serv
 
 These are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
 
+Direct `connection: <uuid>` requests (a previously-shipped implementation deviation that paired a stored OAuth connection with an arbitrary URL) are **not supported**. Free-form authed calls go through "Service + HTTP verb" — naming the service instance is what bounds where the bearer can land via the template's `hosts[]`. See DECISIONS.md D14.
+
 ### Gating
 
 Every request derives permission keys. Resolution follows the two-layer model (§5):

@@ -45,10 +45,12 @@
 - User-level services always visible to owner and their agents (PR #130)
 - Per-service OAuth scopes declared end-to-end on templates and propagated through the authorization URL (PR #127)
 - Service+action execution (registry-resolved, auth auto-resolved)
+- Service + HTTP verb execution (SPEC §8) — instance + caller-supplied `method` + (`path`|`url`); auth from instance binding, host bounded by `svc.hosts`. Permission keys derive as `{service}:{METHOD}:{path}`.
+- `connection: <uuid>` action calls removed (DECISIONS D14) — closes the host-binding gap; free-form authed calls go through Service + HTTP verb.
 - `scope_param` on service actions — permission keys use specific args from action params
 - `on_behalf_of` for agent-initiated operations (PR #90) — agents create secrets and connections at the owner-user level so sibling agents share them
 - Description interpolation — `{param}` substitution and `[optional segments]` in action descriptions
-- Human-readable audit descriptions — interpolated descriptions for Mode C, `METHOD host/path` for Mode A, `identity_name` resolved in audit responses
+- Human-readable audit descriptions — interpolated descriptions for the action shape, `METHOD host/path` for the `http` pseudo-service, `identity_name` resolved in audit responses
 - Suggested tiers + derived_keys on approval payloads (2-4 broadening levels)
 - Approval resolution API aligned with spec (`resolution` + `remember_keys` + `ttl`)
 - X.com OAuth with PKCE support

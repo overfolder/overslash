@@ -8,9 +8,10 @@ use crate::types::{PermissionEffect, PermissionRule};
 
 /// A derived permission key from an action request.
 ///
-/// Two formats depending on execution mode:
-/// - Raw HTTP / connection: `http:{METHOD}:{host}{path}`
-/// - Service action (Mode C): `{service}:{action}:{arg}`
+/// Three formats depending on call shape (SPEC §8):
+/// - `http` pseudo-service: `http:{METHOD}:{host}{path}`
+/// - Service + defined action: `{service}:{action}:{arg}`
+/// - Service + HTTP verb: `{service}:{METHOD}:{path}`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionKey(pub String);
 
@@ -31,7 +32,7 @@ pub struct SuggestedTier {
 }
 
 impl PermissionKey {
-    /// Derive permission keys from an HTTP request (Mode A / Mode B).
+    /// Derive permission keys from an `http` pseudo-service request.
     /// Format: `http:{METHOD}:{host}{path}`
     pub fn from_http(method: &str, url: &str) -> Vec<Self> {
         let host_path = url
@@ -42,7 +43,14 @@ impl PermissionKey {
         vec![Self(format!("http:{method}:{host_path}"))]
     }
 
-    /// Derive permission keys from a service action request (Mode C).
+    /// Derive permission keys from a Service + HTTP verb request (SPEC §8).
+    /// Format: `{service}:{METHOD}:{path}` — host is omitted because the
+    /// service instance bounds it via `svc.hosts`.
+    pub fn from_service_http(service_key: &str, method: &str, path: &str) -> Vec<Self> {
+        vec![Self(format!("{service_key}:{method}:{path}"))]
+    }
+
+    /// Derive permission keys from a service action request.
     /// Format: `{service}:{action}:{arg}` where arg comes from `scope_param` or defaults to `*`.
     pub fn from_service_action(
         service_key: &str,
@@ -495,6 +503,12 @@ mod tests {
     fn derive_keys_from_http() {
         let keys = PermissionKey::from_http("POST", "https://api.github.com/repos/x/pulls");
         assert_eq!(keys[0].0, "http:POST:api.github.com/repos/x/pulls");
+    }
+
+    #[test]
+    fn derive_keys_from_service_http() {
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
     }
 
     #[test]

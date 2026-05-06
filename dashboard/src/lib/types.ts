@@ -490,17 +490,18 @@ export interface SecretRef {
 }
 
 export interface CallRequest {
-  // Mode A: Raw HTTP
+  // `http` pseudo-service: raw HTTP
   method?: string;
   url?: string;
   headers?: Record<string, string>;
   body?: string;
   secrets?: SecretRef[];
-  // Mode B: Connection
-  connection?: string;
-  // Mode C: Service + Action
+  // Service + defined action / Service + HTTP verb (SPEC §8)
   service?: string;
   action?: string;
+  /// Service + HTTP verb path (host comes from the service template).
+  /// Mutually exclusive with `action`.
+  path?: string;
   params?: Record<string, unknown>;
   // Optional server-side filter applied to the upstream JSON response.
   prefer_stream?: boolean;

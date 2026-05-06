@@ -15,9 +15,9 @@
 //!   2. A permission gap surfaces as `would_require_approval` *without*
 //!      an approval row hitting the database — the dry-run is truly
 //!      side-effect-free.
-//!   3. Mode B (raw `connection`) is rejected up-front because resolving
-//!      the connection would require a real OAuth token refresh, which
-//!      is not appropriate for a dry-run probe.
+//!   3. Removed `connection` field is rejected at parse time (400 from
+//!      `deny_unknown_fields`), so callers that haven't migrated to
+//!      Service + HTTP verb get a clear error instead of silent acceptance.
 
 mod common;
 
@@ -383,12 +383,14 @@ x-overslash-mcp:
     );
 }
 
-/// Mode B (raw `connection`) is rejected with 400. The validate endpoint
-/// has no schema to check against in Mode B, and resolving the connection
-/// would force a real OAuth token refresh — both reasons to keep this
-/// path off the dry-run.
+/// The removed `connection` field is rejected at parse time. Serde's
+/// `deny_unknown_fields` surfaces through axum's `Json` extractor as a
+/// 4xx with the `unknown field` error before any handler logic runs —
+/// the exact code (400 vs 422) depends on the fixture's rejection
+/// handler, both are acceptable. Callers that haven't migrated to
+/// Service + HTTP verb get a clear message instead of silent acceptance.
 #[tokio::test]
-async fn mode_b_connection_is_rejected() {
+async fn removed_connection_field_is_rejected() {
     let fx = setup_with_template("validate_mode_b").await;
 
     let resp = fx
@@ -403,12 +405,15 @@ async fn mode_b_connection_is_rejected() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
-    let body: Value = resp.json().await.unwrap();
-    let err = body["error"].as_str().unwrap_or_default();
+    let status = resp.status().as_u16();
     assert!(
-        err.contains("connection"),
-        "expected connection-mode rejection, got: {body}"
+        status == 400 || status == 422,
+        "expected 400 or 422 for parse-rejected unknown field, got: {status}"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("unknown field") && body.contains("connection"),
+        "expected unknown-field rejection naming `connection`, got: {body}"
     );
 }
 
