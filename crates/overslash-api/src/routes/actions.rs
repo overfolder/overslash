@@ -1568,6 +1568,17 @@ async fn resolve_action_metadata(
         let (instance, svc) =
             resolve_service_for_verb_shape(state, auth, scope, ceiling_user_id, service_key)
                 .await?;
+        // Verb shape is HTTP-only — MCP / Platform runtimes have no
+        // notion of "method + path" and would crash downstream when we
+        // hand them an `ActionRequest` with a method. Reject up-front
+        // with a clear 400 instead of bubbling out as a 500.
+        if svc.runtime != Runtime::Http {
+            return Err(AppError::BadRequest(format!(
+                "service '{service_key}' has runtime={:?}; service + HTTP verb is HTTP-only. \
+                 Use 'action' to call the runtime's tool / kernel.",
+                svc.runtime
+            )));
+        }
         let (path, raw_url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
         let auth_injected_estimate = !svc.auth.is_empty()
             || instance
@@ -1778,6 +1789,15 @@ async fn resolve_request(
         } else {
             resolve_service_for_verb_shape(state, auth, scope, ceiling_user_id, service_key).await?
         };
+        // Defense in depth: `resolve_action_metadata` already rejects
+        // non-HTTP runtimes for the verb shape, so reaching here is a
+        // bug. Re-check rather than crashing in the executor.
+        if svc.runtime != Runtime::Http {
+            return Err(AppError::BadRequest(format!(
+                "service '{service_key}' has runtime={:?}; service + HTTP verb is HTTP-only.",
+                svc.runtime
+            )));
+        }
 
         let (path, url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
 
