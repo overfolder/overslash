@@ -1508,20 +1508,33 @@ fn resolve_verb_host_and_path(
         (Some(u), None) => {
             let parsed = url::Url::parse(u)
                 .map_err(|e| AppError::BadRequest(format!("invalid 'url': {e}")))?;
-            let host = parsed
+            let req_host = parsed
                 .host_str()
                 .ok_or_else(|| AppError::BadRequest("'url' has no host".into()))?;
-            // Hosts in the template can be "host" or "scheme://host[:port]".
+            // Match host AND port: a `svc.hosts` entry of `api.example.com`
+            // implies the scheme's default port (443/https, 80/http); an
+            // entry of `host:port` requires that exact port. Without this,
+            // a caller could redirect the bearer to an arbitrary port on
+            // an allowed host (e.g. an internal admin service).
+            let req_port = parsed.port_or_known_default();
             let host_matches = svc.hosts.iter().any(|h| {
-                let stripped = h
-                    .strip_prefix("https://")
-                    .or_else(|| h.strip_prefix("http://"))
-                    .unwrap_or(h);
-                stripped.split('/').next() == Some(host)
+                let with_scheme = if h.contains("://") {
+                    h.to_string()
+                } else {
+                    format!("https://{h}")
+                };
+                let Ok(allowed) = url::Url::parse(&with_scheme) else {
+                    return false;
+                };
+                allowed.host_str() == Some(req_host) && allowed.port_or_known_default() == req_port
             });
             if !host_matches {
+                let req_authority = match parsed.port() {
+                    Some(p) => format!("{req_host}:{p}"),
+                    None => req_host.to_string(),
+                };
                 return Err(AppError::BadRequest(format!(
-                    "host '{host}' is not in service '{service_key}' hosts (allowed: {})",
+                    "host '{req_authority}' is not in service '{service_key}' hosts (allowed: {})",
                     svc.hosts.join(", ")
                 )));
             }
@@ -3040,5 +3053,125 @@ mod tests {
                 "{err:?} should be Upstream"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod verb_host_path_tests {
+    use super::*;
+    use overslash_core::types::ServiceDefinition;
+
+    fn svc_with_hosts(hosts: Vec<&str>) -> ServiceDefinition {
+        ServiceDefinition {
+            key: "github".into(),
+            display_name: "GitHub".into(),
+            description: None,
+            hosts: hosts.into_iter().map(String::from).collect(),
+            category: None,
+            auth: vec![],
+            actions: std::collections::HashMap::new(),
+            runtime: overslash_core::types::Runtime::Http,
+            mcp: None,
+        }
+    }
+
+    #[test]
+    fn path_form_prefixes_first_host() {
+        let svc = svc_with_hosts(vec!["api.github.com"]);
+        let (path, url) =
+            resolve_verb_host_and_path(&svc, "github", &None, &Some("/repos/x/pulls".into()))
+                .unwrap();
+        assert_eq!(path, "/repos/x/pulls");
+        assert_eq!(url, "https://api.github.com/repos/x/pulls");
+    }
+
+    #[test]
+    fn url_form_accepts_matching_host() {
+        let svc = svc_with_hosts(vec!["api.github.com"]);
+        let (path, url) = resolve_verb_host_and_path(
+            &svc,
+            "github",
+            &Some("https://api.github.com/repos/x/pulls".into()),
+            &None,
+        )
+        .unwrap();
+        assert_eq!(path, "/repos/x/pulls");
+        assert_eq!(url, "https://api.github.com/repos/x/pulls");
+    }
+
+    #[test]
+    fn url_form_rejects_unallowed_host() {
+        let svc = svc_with_hosts(vec!["api.github.com"]);
+        let err = resolve_verb_host_and_path(
+            &svc,
+            "github",
+            &Some("https://attacker.example.com/exfil".into()),
+            &None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    /// Port-bypass closure: a `svc.hosts` entry without a port implies the
+    /// scheme's default; a caller cannot redirect the bearer to an
+    /// arbitrary port on an allowed host.
+    #[test]
+    fn url_form_rejects_arbitrary_port_on_allowed_host() {
+        let svc = svc_with_hosts(vec!["api.github.com"]);
+        let err = resolve_verb_host_and_path(
+            &svc,
+            "github",
+            &Some("https://api.github.com:8443/repos/x/pulls".into()),
+            &None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[test]
+    fn url_form_accepts_explicit_port_when_template_specifies_it() {
+        let svc = svc_with_hosts(vec!["http://localhost:1234"]);
+        let (_, url) = resolve_verb_host_and_path(
+            &svc,
+            "local",
+            &Some("http://localhost:1234/api".into()),
+            &None,
+        )
+        .unwrap();
+        assert_eq!(url, "http://localhost:1234/api");
+    }
+
+    #[test]
+    fn url_form_rejects_port_mismatch_when_template_specifies_port() {
+        let svc = svc_with_hosts(vec!["http://localhost:1234"]);
+        let err = resolve_verb_host_and_path(
+            &svc,
+            "local",
+            &Some("http://localhost:9999/api".into()),
+            &None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[test]
+    fn url_and_path_together_rejected() {
+        let svc = svc_with_hosts(vec!["api.github.com"]);
+        let err = resolve_verb_host_and_path(
+            &svc,
+            "github",
+            &Some("https://api.github.com/x".into()),
+            &Some("/x".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[test]
+    fn path_must_start_with_slash() {
+        let svc = svc_with_hosts(vec!["api.github.com"]);
+        let err =
+            resolve_verb_host_and_path(&svc, "github", &None, &Some("repos".into())).unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
     }
 }
