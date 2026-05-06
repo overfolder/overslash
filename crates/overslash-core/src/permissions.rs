@@ -46,7 +46,13 @@ impl PermissionKey {
     /// Derive permission keys from a Service + HTTP verb request (SPEC §8).
     /// Format: `{service}:{METHOD}:{path}` — host is omitted because the
     /// service instance bounds it via `svc.hosts`.
+    ///
+    /// The method is normalized to uppercase so `"post"` and `"POST"` both
+    /// match a rule like `github:POST:/**`. Permission rules are written
+    /// with uppercase methods by convention; without normalization, a
+    /// caller using lowercase would silently fail authorization.
     pub fn from_service_http(service_key: &str, method: &str, path: &str) -> Vec<Self> {
+        let method = method.to_ascii_uppercase();
         vec![Self(format!("{service_key}:{method}:{path}"))]
     }
 
@@ -508,6 +514,12 @@ mod tests {
     #[test]
     fn derive_keys_from_service_http() {
         let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
+    }
+
+    #[test]
+    fn derive_keys_from_service_http_uppercases_method() {
+        let keys = PermissionKey::from_service_http("github", "post", "/repos/x/pulls");
         assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
     }
 

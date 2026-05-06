@@ -433,7 +433,6 @@ enum CallResponse {
 /// Metadata from request resolution, used to derive the correct permission key type.
 struct ResolvedMeta {
     description: Option<String>,
-    auth_injected: bool,
     /// Present for service shapes (action / verb); carries info to derive
     /// service permission keys.
     service_scope: Option<ServiceScope>,
@@ -642,7 +641,16 @@ async fn call_action_impl(
     // has_groups == false → NoGroups → permissive (no ceiling enforced)
 
     // ── Layer 2: Hierarchical permission check (agents/sub-agents only) ──
-    let needs_gate = !action_req.secrets.is_empty() || meta.auth_injected;
+    //
+    // Use the conservative pre-resolution estimate (`pre_meta.needs_gate`)
+    // rather than the post-resolution `meta.auth_injected`. If OAuth token
+    // resolution fails silently (provider down, expired refresh, etc.),
+    // `meta.auth_injected` would be `false` and the gate would silently
+    // disengage — bypassing Layer 2 on a request that `/validate` would
+    // have flagged as `would_require_approval`. The estimate stays `true`
+    // whenever the instance has a binding or the template declares auth,
+    // so the two endpoints agree even when OAuth resolution fails.
+    let needs_gate = pre_meta.needs_gate;
 
     // Users are gated by groups only — they are their own approvers.
     // Agents walk the ancestor chain; first gap → approval at gap level.
@@ -1761,7 +1769,7 @@ async fn resolve_request(
         let (path, url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
 
         let mut headers = req.headers.clone();
-        let (secrets, oauth_injected) = if let Some(ref inst) = instance {
+        let (secrets, _oauth_injected) = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
                 scope,
@@ -1789,7 +1797,6 @@ async fn resolve_request(
             },
             ResolvedMeta {
                 description: Some(description),
-                auth_injected: oauth_injected,
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
                     action_key: String::new(),
@@ -1970,7 +1977,6 @@ async fn resolve_request(
                 },
                 ResolvedMeta {
                     description: Some(description),
-                    auth_injected: true,
                     service_scope: Some(ServiceScope {
                         service_key: service_key.clone(),
                         action_key: action_key.clone(),
@@ -2018,7 +2024,6 @@ async fn resolve_request(
                 },
                 ResolvedMeta {
                     description: Some(description),
-                    auth_injected: true,
                     service_scope: Some(ServiceScope {
                         service_key: service_key.clone(),
                         action_key: perm_action_key,
@@ -2187,7 +2192,6 @@ async fn resolve_request(
             },
             ResolvedMeta {
                 description: Some(description),
-                auth_injected: oauth_injected,
                 service_scope: Some(ServiceScope {
                     service_key: service_key.clone(),
                     action_key: action_key.clone(),
@@ -2231,7 +2235,6 @@ async fn resolve_request(
         },
         ResolvedMeta {
             description: Some(description),
-            auth_injected: false,
             service_scope: None,
             risk: None,
             disclose: Vec::new(),
