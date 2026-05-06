@@ -15,12 +15,12 @@ services:
       timeout: 5s
       retries: 5
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   valkey:
     image: valkey/valkey:8-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
