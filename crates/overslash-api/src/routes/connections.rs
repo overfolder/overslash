@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use axum::{
     Json, Router,
@@ -29,6 +29,7 @@ use crate::{
         platform_caller::PlatformCallContext,
         platform_connections::{
             CreateConnectionInput, CreateConnectionResponse, RequestMeta, kernel_create_connection,
+            merge_scopes,
         },
     },
 };
@@ -117,6 +118,10 @@ async fn initiate_connection(
         scopes: req.scopes,
         byoc_credential_id: req.byoc_credential_id,
         on_behalf_of: req.on_behalf_of,
+        // REST `POST /v1/connections` is the create-from-scratch entry
+        // point. The reauth/upgrade flows go through the action handler's
+        // recovery arms (or the dedicated `/upgrade_scopes` route).
+        upgrade_connection_id: None,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -453,16 +458,6 @@ async fn oauth_callback(
         "account_email": account_email,
         "scopes": granted_scopes,
     })))
-}
-
-/// Return the union of `existing` and `incoming`, preserving an order that's
-/// deterministic for downstream comparison (lexicographic via BTreeSet).
-fn merge_scopes(existing: &[String], incoming: &[String]) -> Vec<String> {
-    let mut set: BTreeSet<String> = existing.iter().cloned().collect();
-    for s in incoming {
-        set.insert(s.clone());
-    }
-    set.into_iter().collect()
 }
 
 #[derive(Serialize)]

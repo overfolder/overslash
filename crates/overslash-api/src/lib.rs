@@ -187,6 +187,23 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Auto-bubbled {n} approvals"),
                 )
                 .await;
+                // Reap expired gate-flow rows. Both `oauth_connection_flows`
+                // and `mcp_upstream_flows` carry a 10-minute TTL but
+                // accumulate indefinitely if the user never clicks the
+                // gated URL — agents that retry an unauthenticated action
+                // would otherwise grow this table without bound.
+                instrumented_step(
+                    "oauth_connection_flow_expiry",
+                    async { overslash_db::repos::oauth_connection_flow::delete_expired(&db).await },
+                    |n| tracing::info!("Expired {n} oauth_connection_flows"),
+                )
+                .await;
+                instrumented_step(
+                    "mcp_upstream_flow_expiry",
+                    async { overslash_db::repos::mcp_upstream_flow::delete_expired(&db).await },
+                    |n| tracing::info!("Expired {n} mcp_upstream_flows"),
+                )
+                .await;
             }
         });
 

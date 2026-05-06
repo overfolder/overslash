@@ -31,13 +31,14 @@
 //! mismatch before 302ing to the provider. White-label REST callers that
 //! still need the raw provider URL can opt in via `include_raw: true`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
 
 use overslash_core::crypto;
+use overslash_db::repos::connection::ConnectionRow;
 use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
 use overslash_db::scopes::OrgScope;
 
@@ -46,6 +47,7 @@ use super::oauth;
 use super::oauth_upstream as svc;
 use super::platform_caller::PlatformCallContext;
 use super::short_url;
+use crate::AppState;
 use crate::error::AppError;
 
 /// Gate-flow TTL. Matches `mcp_upstream_flow` (10 min) — long enough to
@@ -68,6 +70,15 @@ pub struct CreateConnectionInput {
     /// the user itself).
     #[serde(default)]
     pub on_behalf_of: Option<Uuid>,
+    /// When set, the OAuth callback updates the named connection in place
+    /// instead of minting a new row. Used by the action handler's
+    /// `reauth_required` and `missing_scopes` arms — without this, a
+    /// reauth would orphan the broken connection alongside a brand-new
+    /// row, leaving `service_instances.connection_id` pointing at the
+    /// dead one. See `routes/connections.rs::oauth_callback` for the
+    /// state-segment parser.
+    #[serde(default)]
+    pub upgrade_connection_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,9 +166,19 @@ pub async fn kernel_create_connection(
         caller_identity_id.to_string()
     };
 
+    let upgrade_segment = input
+        .upgrade_connection_id
+        .map_or_else(|| "_".to_string(), |id| id.to_string());
+
     let oauth_state = format!(
-        "{}:{}:{}:{}:{}:{}:_",
-        ctx.org_id, identity_id, input.provider, byoc_segment, verifier_segment, actor_segment
+        "{}:{}:{}:{}:{}:{}:{}",
+        ctx.org_id,
+        identity_id,
+        input.provider,
+        byoc_segment,
+        verifier_segment,
+        actor_segment,
+        upgrade_segment
     );
 
     let raw_authorize_url = oauth::build_auth_url(
@@ -233,6 +254,19 @@ pub struct RequestMeta<'a> {
     pub user_agent: Option<&'a str>,
 }
 
+/// Return the union of `existing` and `incoming`, preserving an order
+/// that's deterministic for downstream comparison (lexicographic via
+/// `BTreeSet`). Used by both the REST upgrade-scopes route and the
+/// action handler's reauth/missing-scopes URL minters so they can't
+/// drift on dedup or ordering.
+pub fn merge_scopes(existing: &[String], incoming: &[String]) -> Vec<String> {
+    let mut set: BTreeSet<String> = existing.iter().cloned().collect();
+    for s in incoming {
+        set.insert(s.clone());
+    }
+    set.into_iter().collect()
+}
+
 /// Adapter used by the platform_registry handler — accepts a JSON params
 /// map and dispatches into [`kernel_create_connection`] with no network
 /// metadata.
@@ -248,4 +282,123 @@ pub async fn dispatch_create_connection(
     }
     let response = kernel_create_connection(ctx, input, RequestMeta::default()).await?;
     Ok(serde_json::to_value(response).unwrap_or(serde_json::Value::Null))
+}
+
+/// Build a `PlatformCallContext` from `AppState` + caller identity, suitable
+/// for dispatching `kernel_create_connection` from inside a non-platform
+/// route handler (e.g. `routes/actions.rs`). Centralised so the
+/// auth-recovery arms in the action handler don't each re-derive the same
+/// shape.
+fn ctx_from_state(
+    state: &AppState,
+    org_id: Uuid,
+    identity_id: Option<Uuid>,
+) -> PlatformCallContext {
+    PlatformCallContext {
+        org_id,
+        identity_id,
+        // Auth-recovery URL minting doesn't itself trip the access-level
+        // gate — the action handler's normal Layer 1/2 path has already
+        // run by the time we mint a reauth URL. `Read` is the lowest
+        // ceiling and matches the read-only nature of "give me a URL".
+        access_level: overslash_core::permissions::AccessLevel::Read,
+        db: state.db.clone(),
+        registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
+    }
+}
+
+/// Mint a fresh-create gated `/connect-authorize` URL for an action call
+/// that hit a service with no live credentials yet. The caller supplies
+/// the template's OAuth provider plus any required scopes. The returned
+/// URL is what the agent should hand the user — clicking it walks the
+/// gated flow and creates a new connection on the calling identity (or
+/// `on_behalf_of` if set).
+pub async fn mint_initial_auth_url(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    provider: &str,
+    scopes: &[String],
+    on_behalf_of: Option<Uuid>,
+) -> Result<String, AppError> {
+    let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
+    let response = kernel_create_connection(
+        ctx,
+        CreateConnectionInput {
+            provider: provider.to_string(),
+            scopes: scopes.to_vec(),
+            byoc_credential_id: None,
+            on_behalf_of,
+            upgrade_connection_id: None,
+        },
+        RequestMeta::default(),
+    )
+    .await?;
+    Ok(response.auth_url)
+}
+
+/// Mint a gated `/connect-authorize` URL that, when consumed, refreshes
+/// the *existing* connection in place (sets segment 7 of the OAuth state
+/// so the callback updates the row instead of creating a new one). Used
+/// by the action handler's `reauth_required` arm (refresh-token failed)
+/// and the `missing_scopes` arm (incremental scope upgrade).
+///
+/// Scopes default to the connection's existing set unioned with
+/// `extra_scopes` — Google with `include_granted_scopes=true` would
+/// preserve the old ones anyway, but sending the full union makes
+/// non-Google providers work too. Mirrors `merge_scopes` in
+/// `routes/connections.rs::upgrade_connection_scopes`.
+pub async fn mint_upgrade_auth_url(
+    state: &AppState,
+    org_id: Uuid,
+    caller_identity_id: Uuid,
+    conn: &ConnectionRow,
+    extra_scopes: &[String],
+) -> Result<String, AppError> {
+    let scopes = merge_scopes(&conn.scopes, extra_scopes);
+
+    // If the connection belongs to a different identity than the caller
+    // (agent-on-behalf-of-user case), thread `on_behalf_of` so the kernel's
+    // ceiling-validation runs and the resulting flow updates the
+    // user-bound row rather than failing cross-identity.
+    let on_behalf_of = (conn.identity_id != caller_identity_id).then_some(conn.identity_id);
+
+    let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
+    let response = kernel_create_connection(
+        ctx,
+        CreateConnectionInput {
+            provider: conn.provider_key.clone(),
+            scopes,
+            byoc_credential_id: conn.byoc_credential_id,
+            on_behalf_of,
+            upgrade_connection_id: Some(conn.id),
+        },
+        RequestMeta::default(),
+    )
+    .await?;
+    Ok(response.auth_url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_scopes_dedupes_and_sorts() {
+        let existing = vec!["b".into(), "a".into()];
+        let incoming = vec!["a".into(), "c".into()];
+        assert_eq!(
+            merge_scopes(&existing, &incoming),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_scopes_handles_empty_inputs() {
+        assert!(merge_scopes(&[], &[]).is_empty());
+        assert_eq!(merge_scopes(&["x".into()], &[]), vec!["x".to_string()]);
+        assert_eq!(merge_scopes(&[], &["x".into()]), vec!["x".to_string()]);
+    }
 }

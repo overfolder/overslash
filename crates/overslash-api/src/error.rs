@@ -127,6 +127,35 @@ pub enum AppError {
         available_instances: Vec<String>,
         hint: Option<String>,
     },
+
+    /// The service the agent called has no live credentials yet (no
+    /// connection bound, no inline secret on an auth-bearing template). The
+    /// agent should hand `auth_url` to the user — clicking it walks the
+    /// gated `/connect-authorize` flow and lands on the provider consent
+    /// page. Returned as 401 with a structured body (`error: needs_authentication`)
+    /// so the MCP layer can branch on the typed error rather than parsing
+    /// a free-form string.
+    #[error("needs_authentication: {service:?}")]
+    NeedsAuthentication {
+        service: Option<String>,
+        service_instance_id: Option<uuid::Uuid>,
+        connection_id: Option<uuid::Uuid>,
+        auth_url: String,
+    },
+
+    /// An existing connection's refresh token can no longer mint a new
+    /// access token (e.g. revoked, expired Google testing-client refresh).
+    /// Returned as 401; `auth_url` points at a freshly-minted gated link
+    /// that — when the user completes consent — updates the *same*
+    /// connection in place via the upgrade-flow callback path. Without the
+    /// in-place upgrade we'd orphan the broken row and any service
+    /// instance bound to its id would still be broken.
+    #[error("reauth_required: {connection_id}")]
+    ReauthRequired {
+        connection_id: uuid::Uuid,
+        auth_url: String,
+        reason: String,
+    },
 }
 
 impl AppError {
@@ -149,6 +178,9 @@ impl AppError {
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::TemplateValidationFailed { .. } => StatusCode::BAD_REQUEST,
             Self::ServiceResolution { status, .. } => *status,
+            Self::NeedsAuthentication { .. } | Self::ReauthRequired { .. } => {
+                StatusCode::UNAUTHORIZED
+            }
             Self::Internal(_) | Self::Database(_) | Self::Json(_) | Self::Crypto(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -304,6 +336,43 @@ impl IntoResponse for AppError {
                     body["hint"] = json!(h);
                 }
                 return (*status, Json(body)).into_response();
+            }
+            Self::NeedsAuthentication {
+                service,
+                service_instance_id,
+                connection_id,
+                auth_url,
+            } => {
+                let mut body = json!({
+                    "error": "needs_authentication",
+                    "auth_url": auth_url,
+                });
+                if let Some(s) = service {
+                    body["service"] = json!(s);
+                }
+                if let Some(id) = service_instance_id {
+                    body["service_instance_id"] = json!(id);
+                }
+                if let Some(id) = connection_id {
+                    body["connection_id"] = json!(id);
+                }
+                return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
+            }
+            Self::ReauthRequired {
+                connection_id,
+                auth_url,
+                reason,
+            } => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": "reauth_required",
+                        "connection_id": connection_id,
+                        "auth_url": auth_url,
+                        "reason": reason,
+                    })),
+                )
+                    .into_response();
             }
         };
 
