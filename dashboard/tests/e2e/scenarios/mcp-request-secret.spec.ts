@@ -3,8 +3,9 @@
 // missing credential:
 //
 //   1. Agent calls `overslash_call(<resend-instance>, list_domains)` and gets
-//      back a `credential_missing` error whose message names
-//      `overslash.request_secret`.
+//      back a typed `credential_missing` envelope (error code +
+//      `secret_name`); the agent branches on the code and knows the
+//      recovery action is `overslash.request_secret`.
 //   2. Agent calls `overslash_call(overslash, request_secret, { secret_name })`
 //      and receives a signed `provide_url`.
 //   3. The user (any same-org session) POSTs the value to that URL — the
@@ -133,8 +134,9 @@ test('agent uses request_secret to fulfil a credential_missing error end-to-end'
 	});
 	let provide: ProvidePayload;
 	try {
-		// 1. credential_missing on the Resend action — message must name
-		// request_secret so an agent reading the error knows the next step.
+		// 1. credential_missing on the Resend action — the typed envelope
+		// (error code + secret_name) is the discriminator the agent branches
+		// on to learn the recovery action is overslash.request_secret.
 		const missingStep = await mcp.callTool('overslash_call', {
 			service: instance.name,
 			action: 'list_domains',
@@ -146,8 +148,11 @@ test('agent uses request_secret to fulfil a credential_missing error end-to-end'
 			error: missingStep.error,
 			result: missingStep.result
 		});
+		// The typed envelope (error: "credential_missing", secret_name) is
+		// the discriminator an agent branches on to learn the next step is
+		// overslash.request_secret. The recovery action is no longer encoded
+		// as a free-text hint string in the error body.
 		expect(missingText).toContain('credential_missing');
-		expect(missingText).toContain('request_secret');
 		expect(missingText).toContain(secretName);
 
 		// 2. Mint a provide URL via request_secret.

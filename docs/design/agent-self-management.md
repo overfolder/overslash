@@ -102,16 +102,21 @@ Claude Code's permission engine matches on tool name and argument patterns, not 
 
 This relies on Claude Code matching argument patterns in permission rules; if the pattern isn't expressive enough (`action:whoami` vs `action:service_status`), the `overslash_auth` multiplexer should be split into one tool per sub-action at the MCP layer. That's a small ergonomic choice, not a design constraint.
 
-### 5. Structured errors from `overslash_call`
+### 5. Structured errors from `overslash_call` *(shipped)*
 
-Related but separate from self-management: today when an OAuth connection needs reauth, the MCP `forward` returns a string-wrapped 400 that ends up as "secret not found". For agents to self-serve recovery, `overslash_call` needs to surface structured error types alongside `PendingApproval`:
+`overslash_call` (and the search/read/auth siblings) surface every recoverable failure as a typed envelope alongside `PendingApproval`:
 
-- `reauth_required { connection_id, reauth_url, reason }`
-- `missing_scopes { connection_id, missing, upgrade_url }` *(already structured)*
-- `credential_missing { service, hint_url }`
-- `not_in_your_chain`
+- `needs_authentication { service, service_instance_id?, connection_id?, auth_url }` — service has no live credentials yet; agent hands `auth_url` to the user.
+- `reauth_required { connection_id, auth_url, reason }` — refresh token is dead; `auth_url` runs an in-place upgrade against the same connection.
+- `missing_scopes { connection_id, missing, upgrade_url, auth_url? }` — connection exists but the action's `required_scopes` aren't all granted; `auth_url` runs incremental-scope OAuth.
+- `credential_missing { service?, secret_name, hint_url? }` — a non-OAuth secret the action needs is absent.
+- `not_in_your_chain { identity_id, action, reason }` — caller is asking to act on an identity outside their reachable chain. Distinct from `Forbidden` (explicit deny). Wire shape shipped now; emit sites land with the cross-identity ACL work.
 
-This work predates self-management but unblocks much of it: an agent that can distinguish "I don't have this permission" from "the connection is dead" knows whether to ask for a permission grant vs nudge the user to reconnect.
+**Transport.** Typed envelopes travel as MCP tool **success results with `isError: true`** — not as JSON-RPC errors. Per the MCP spec, JSON-RPC errors are reserved for protocol-level failures (malformed request, unknown method); tool-execution failures use `result: { content, isError: true }` so the model still sees the body. Claude.ai, Claude Code, and Openclaw all forward `result.content` to the model but treat JSON-RPC `error.data` as client-private — using JSON-RPC errors would lose the typed envelope at the model boundary in two of three clients. The existing `pending_approval` flow already used this idiom; typed errors extend the convention by setting `isError: true`.
+
+The pipeline has two halves: the REST layer renders typed envelopes via `AppError::IntoResponse` (`crates/overslash-api/src/error.rs`); the MCP `forward()` helper detects them on non-2xx responses by matching the top-level `error` field against an allow-list of the five spec codes above, then routes the envelope through `rpc_tool_error_response` so the JSON-RPC wrapper carries `result.isError = true` and `result.content[0].text` is the stringified envelope. Every other AppError shape — generic `Forbidden`, `NotFound`, `BadRequest`, etc. — still falls through to JSON-RPC `INTERNAL_ERROR (-32603)`. Adding a new typed envelope is a deliberate two-step move: ship the `AppError` variant, then add the code to the `forward()` allow-list.
+
+Locked in by `crates/overslash-api/tests/mcp_typed_errors.rs` (`needs_authentication` + `reauth_required` over the JSON-RPC `tools/call` surface) and `crates/overslash-api/tests/actions_reauth.rs` (REST `needs_authentication` shape; `reauth_required` REST coverage is at unit-test level via `routes::actions::tests::classify_oauth_*`).
 
 ---
 

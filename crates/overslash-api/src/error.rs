@@ -156,6 +156,46 @@ pub enum AppError {
         auth_url: String,
         reason: String,
     },
+
+    /// An OAuth connection exists but lacks one or more scopes the action
+    /// declares as required. `upgrade_url` is the raw REST endpoint white-label
+    /// callers can POST to; `auth_url` is the chat-deliverable gated
+    /// `/connect-authorize` link that runs incremental-scope OAuth against the
+    /// existing connection (preferred for agents). Returned as 403.
+    #[error("missing_scopes: {connection_id}")]
+    MissingScopes {
+        connection_id: uuid::Uuid,
+        missing: Vec<String>,
+        upgrade_url: String,
+        auth_url: Option<String>,
+    },
+
+    /// The action's template declared a required secret (an inline API key,
+    /// HMAC secret, etc.) and no value is present for the calling identity.
+    /// Distinct from `needs_authentication`, which is OAuth-shaped: this is
+    /// the secret-bag analogue. `hint_url` (when present) points at the
+    /// dashboard surface where a human can supply the value. Returned as 400.
+    #[error("credential_missing: secret {secret_name} on service {service:?}")]
+    CredentialMissing {
+        service: Option<String>,
+        secret_name: String,
+        hint_url: Option<String>,
+    },
+
+    /// The caller is asking to act on an identity outside their reachable
+    /// chain (e.g. a sub-agent trying to read a sibling's secrets). Distinct
+    /// from `Forbidden` (which carries explicit-deny semantics): an explicit
+    /// deny means "you have a path but a rule says no"; not-in-your-chain
+    /// means "there is no path at all". Returned as 403.
+    ///
+    /// Wire shape is shipped now so slice 5 (cross-identity access control)
+    /// can flip its emit sites without changing the agent-facing contract.
+    #[error("not_in_your_chain: {action}")]
+    NotInYourChain {
+        identity_id: uuid::Uuid,
+        action: String,
+        reason: String,
+    },
 }
 
 impl AppError {
@@ -166,10 +206,14 @@ impl AppError {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            Self::Forbidden(_) | Self::IdentityArchived { .. } => StatusCode::FORBIDDEN,
-            Self::BadRequest(_) | Self::FilterSyntax(_) | Self::InvalidActionArgs { .. } => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::Forbidden(_)
+            | Self::IdentityArchived { .. }
+            | Self::MissingScopes { .. }
+            | Self::NotInYourChain { .. } => StatusCode::FORBIDDEN,
+            Self::BadRequest(_)
+            | Self::FilterSyntax(_)
+            | Self::InvalidActionArgs { .. }
+            | Self::CredentialMissing { .. } => StatusCode::BAD_REQUEST,
             Self::BadGateway(_) | Self::Request(_) | Self::ResponseTooLarge { .. } => {
                 StatusCode::BAD_GATEWAY
             }
@@ -369,6 +413,56 @@ impl IntoResponse for AppError {
                         "error": "reauth_required",
                         "connection_id": connection_id,
                         "auth_url": auth_url,
+                        "reason": reason,
+                    })),
+                )
+                    .into_response();
+            }
+            Self::MissingScopes {
+                connection_id,
+                missing,
+                upgrade_url,
+                auth_url,
+            } => {
+                let mut body = json!({
+                    "error": "missing_scopes",
+                    "missing": missing,
+                    "connection_id": connection_id,
+                    "upgrade_url": upgrade_url,
+                });
+                if let Some(url) = auth_url {
+                    body["auth_url"] = json!(url);
+                }
+                return (StatusCode::FORBIDDEN, Json(body)).into_response();
+            }
+            Self::CredentialMissing {
+                service,
+                secret_name,
+                hint_url,
+            } => {
+                let mut body = json!({
+                    "error": "credential_missing",
+                    "secret_name": secret_name,
+                });
+                if let Some(s) = service {
+                    body["service"] = json!(s);
+                }
+                if let Some(url) = hint_url {
+                    body["hint_url"] = json!(url);
+                }
+                return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+            }
+            Self::NotInYourChain {
+                identity_id,
+                action,
+                reason,
+            } => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": "not_in_your_chain",
+                        "identity_id": identity_id,
+                        "action": action,
                         "reason": reason,
                     })),
                 )
