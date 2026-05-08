@@ -541,13 +541,17 @@ async fn update_grant(
     if owner_managing_self {
         // Owner-managed Myself group: allow.
     } else if is_locked_system {
+        // Admin gate runs first so a non-admin gets 403 regardless of which
+        // fields they sent — surfacing 400 for a body that the caller wasn't
+        // allowed to submit in the first place would leak the field-shape
+        // policy to unauthorized callers.
+        if caller_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
         if req.access_level.is_some() {
             return Err(AppError::BadRequest(
                 "cannot change access_level on system groups".into(),
             ));
-        }
-        if caller_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden("admin access required".into()));
         }
     } else if caller_level < AccessLevel::Admin {
         return Err(AppError::Forbidden("admin access required".into()));

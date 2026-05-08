@@ -729,6 +729,19 @@ async fn patch_grant_requires_admin_for_system_groups() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 403);
+
+    // A non-admin sending `access_level` on a system group must also 403 —
+    // the admin gate runs before the field-shape check, so the response
+    // doesn't leak that `access_level` is even a contested field for
+    // callers who weren't allowed to PATCH this grant in the first place.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
 }
 
 #[tokio::test]
