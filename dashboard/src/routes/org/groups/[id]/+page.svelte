@@ -176,6 +176,9 @@
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
 			grantError = apiErrText(e);
+			// Force a re-render so any control whose DOM diverged from the
+			// prop snaps back to the unchanged grant value.
+			grants = [...grants];
 		}
 	}
 
@@ -186,6 +189,10 @@
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
 			grantError = apiErrText(e);
+			// `<select value={...}>` is one-way; without forcing a re-render
+			// the dropdown would keep showing the rejected value the user
+			// picked, even though the underlying grant didn't change.
+			grants = [...grants];
 		}
 	}
 
