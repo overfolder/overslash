@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO secrets (org_id, name) VALUES ($1, $2)\n             ON CONFLICT (org_id, name) DO UPDATE SET\n               current_version = secrets.current_version + 1,\n               updated_at = now(),\n               deleted_at = NULL\n             RETURNING id, org_id, name, current_version, deleted_at, created_at, updated_at",
+  "query": "INSERT INTO secrets (org_id, name, owner_identity_id) VALUES ($1, $2, $3)\n         ON CONFLICT (org_id, name) DO UPDATE SET\n           current_version = secrets.current_version + 1,\n           updated_at = now(),\n           deleted_at = NULL,\n           owner_identity_id = COALESCE(secrets.owner_identity_id, EXCLUDED.owner_identity_id)\n         RETURNING id, org_id, name, current_version, owner_identity_id, deleted_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -25,16 +25,21 @@
       },
       {
         "ordinal": 4,
+        "name": "owner_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
         "name": "deleted_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -42,7 +47,8 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text"
+        "Text",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -51,9 +57,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "a1f141fe320b85570fc33fe704da60fdbf628f3b114cc1072c53e7971d215a56"
+  "hash": "0e0f2fb0cce05cefda4d5d04cb79400e12a697cfda3c58b3e8cf14acd4232567"
 }

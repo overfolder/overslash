@@ -161,9 +161,13 @@ async fn put_credentials(
     // Atomic: both secret versions land in one transaction. If the second
     // write fails, the first rolls back too — no half-configured state
     // where the id is rotated but the secret is stale.
+    // Org-OAuth credentials are admin-only (AdminAcl gates this route). The
+    // calling admin owns the slot for visibility purposes; in practice the
+    // dashboard list path admin-shortcuts so all admins see it regardless.
     scope
         .put_secrets(
             &[(&id_name, &encrypted_id), (&secret_name, &encrypted_secret)],
+            acl.identity_id,
             acl.identity_id,
         )
         .await?;

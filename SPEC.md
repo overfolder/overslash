@@ -620,16 +620,18 @@ Secrets belong to the identity that created them. When agents set up integration
 
 Secret values are encrypted at rest. Access to values depends on the actor:
 
-| Actor | Own secrets | Child identity secrets | Other user secrets |
-|-------|-----------|----------------------|------------------|
-| **User** (dashboard) | read/write | read/write | — |
-| **Agent** (API) | — | — | — |
-| **Org admin** (User with `is_org_admin = true`) | read/write | read/write | read/write (all org) |
+| Actor | List names | Read values | Write |
+|-------|------------|-------------|-------|
+| **User** (dashboard) | own subtree | own subtree | own subtree |
+| **Agent** (API) | own subtree (names only, via bearer GET `/v1/secrets`) | — | own subtree |
+| **Org admin** (User with `is_org_admin = true`) | all org | all org | all org |
+
+Each secret carries an explicit `owner_identity_id` (the identity that wrote v1, or `on_behalf_of` target). Visibility for non-admin callers is "the owner is the caller, or any descendant of the caller via `identities.parent_id`". The namespace is org-wide — `(org_id, name)` is unique — so two agents under the same user cannot mint the same name.
 
 > **Org admin** is an attribute on a User identity, not a separate principal. There is no standalone "org" identity that can authenticate or hold API keys — every authenticated caller is a User or an Agent. Agents earn admin authority the same way they earn any other permission: by being placed in a group with `admin` access on the **`overslash`** meta service (a system-managed `service_instance` that represents Overslash itself within each org). The `is_org_admin` flag is the fast path for Users and is kept in sync with membership of the system **Admins** group.
 
 - **Users** can view and manage secret values for all secrets in their subtree (their own + their agents' secrets) via the dashboard.
-- **Agents** have **no read access to the secret vault via API key** — not even names or version numbers. Secret values are only injected at action execution time, gated by the permission chain. Listing and inspection of secrets is dashboard-only (JWT session auth), so the secret namespace is never exposed to a compromised agent token. Agents that need to confirm a rotation must rely on the audit trail or on a successful action execution.
+- **Agents** can list the *names* of secrets in their own subtree via bearer-authenticated `GET /v1/secrets` — the response is a narrow `{name, version_count, last_rotated_at}` shape with no values, no owner identity, and no creation timestamps. Reveal/restore/detail remain dashboard-only. Secret values are only injected at action execution time, gated by the permission chain.
 - **Org admins** can view and manage all secrets across the org. This follows the standard model for org-managed credential stores (same as 1Password Teams, AWS Secrets Manager, etc.) and is required for compliance, debugging, and offboarding scenarios.
 
 ---

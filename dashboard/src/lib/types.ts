@@ -594,7 +594,9 @@ export interface ActionResult {
 export interface SecretSummary {
   name: string;
   current_version: number;
-  /** Identity that wrote v1 — the slot owner (SPEC §6). */
+  /** Slot-owner identity (`secrets.owner_identity_id` column). Set on
+   * first insert and preserved across subsequent versions; NULL for
+   * legacy/org-wide rows that are admin-only (SPEC §6). */
   owner_identity_id: string | null;
   created_at: string;
   updated_at: string;

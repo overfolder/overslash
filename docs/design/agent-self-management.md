@@ -69,15 +69,35 @@ Approvals today have one `overslash_approve` MCP tool and one `POST /v1/approval
 
 **Tool-selection ergonomics**: the `PendingApproval` response from `overslash_call` already carries `approval_id`. Extend it to also carry `relationship: "self" | "downstream"` (from the classifier above, evaluated at creation time) so the agent knows which tool to call without trial-and-error. This avoids fatigue approvals where the human is prompted once per mis-chosen tool.
 
-### 3. Identity-scoped secret visibility
+### 3. Identity-scoped secret visibility *(shipped)*
 
-Today `GET /v1/secrets` uses the dashboard `SessionAuth` extractor and the MCP dispatch map advertises `list_secrets` but the call 401s — a broken promise. The right shape is not to remove the feature but to scope it:
+`GET /v1/secrets` now accepts session, MCP bearer, and `osk_` API key
+auth uniformly via the `AuthContext` extractor. To make per-identity
+visibility well-defined the data model was extended: `secrets` gained
+an `owner_identity_id` column (NULL = legacy/org-wide / admin-only),
+written on first insert and preserved across versions via COALESCE.
 
-- Accept bearer on `GET /v1/secrets` in addition to session.
-- When called with a bearer, return only secret *names* visible to the calling identity — i.e. the intersection of the org's secrets with the permission rules in the caller's identity chain.
-- Never return values, regardless of auth.
+Visibility for a non-admin caller is "the secret's owner is the caller
+or any descendant of the caller via `identities.parent_id`" — the same
+recursive subtree pattern used by approvals and the identity hierarchy.
+Admins (`is_org_admin` flag, or `overslash` ceiling Admin grant) see
+every row. The same predicate gates session, bearer, and the
+detail/reveal/restore checks.
 
-The visibility query is non-trivial because Overslash secrets today are org-wide rows; "which identity can see which" is derived from permission rules at execution time. The filtering logic should reuse whatever `get_current_secret_value` uses to decide access, not reimplement it. Prior work on this codepath is the baseline.
+Two response shapes branch on the calling identity's kind: user-kind
+callers see the full `SecretMetadata` (name, current_version,
+owner_identity_id, timestamps); agent and sub-agent callers see a
+narrow `SecretNameRow` (name, version_count, last_rotated_at) — no
+value, no owner identity, no creation timestamp.
+
+The MCP dispatch map's `list_secrets` arm was *not* added — agents
+already hold a bearer and can call `GET /v1/secrets` directly. The
+broken-promise advertisement was removed at the dispatch layer.
+
+Detail (`GET /v1/secrets/:name`) and reveal/restore stay session-only
+in this iteration: detail surfaces `versions[].provisioned_by_user_id`,
+which leaks human identities outside the agent's view. Extending the
+detail surface with a parallel narrowed shape is a follow-up.
 
 ### 4. Claude Code permission-rule recommendations
 
