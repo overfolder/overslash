@@ -565,6 +565,172 @@ async fn patch_grant_requires_admin_for_org_group() {
     assert_eq!(resp.status(), 403);
 }
 
+/// `auto_approve_reads` is a UX toggle — flipping it on the Everyone group
+/// is a real operator workflow (e.g. "let everyone skip approval for read
+/// calls on this service"). The system-group guard must allow it.
+#[tokio::test]
+async fn patch_grant_allows_auto_approve_reads_on_system_groups() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-everyone").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+            "auto_approve_reads": false,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["auto_approve_reads"], true);
+    assert_eq!(patched["access_level"], "read");
+}
+
+/// `access_level` on Everyone/Admins stays immutable: changing it would shift
+/// the org-wide ACL surface, which the system-group guard exists to protect.
+#[tokio::test]
+async fn patch_grant_rejects_access_level_on_system_groups() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-everyone-lvl").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Combined patch with both fields is also rejected — the guard rejects
+    // access_level outright rather than silently dropping it.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin", "auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// Non-admins still can't toggle `auto_approve_reads` on system groups even
+/// though the field itself is now mutable — the admin gate still applies.
+#[tokio::test]
+async fn patch_grant_requires_admin_for_system_groups() {
+    let (base, org_key, _, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-everyone-auth").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
 #[tokio::test]
 async fn patch_grant_404_for_unknown_grant_id() {
     let (base, org_key, _, _) = bootstrap().await;
