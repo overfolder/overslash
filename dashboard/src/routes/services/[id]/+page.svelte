@@ -33,7 +33,7 @@
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
-	const name = $derived($page.params.name ?? '');
+	const id = $derived($page.params.id ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 
@@ -212,7 +212,7 @@
 		loading = true;
 		error = null;
 		try {
-			const fresh = await getService(name, ctrl.signal);
+			const fresh = await getService(id, ctrl.signal);
 			if (ctrl.signal.aborted) return;
 			svc = fresh;
 			editName = fresh.name;
@@ -274,9 +274,6 @@
 					editUrl !== (svc.url ?? '') ? editUrl.trim() || null : undefined
 			});
 			svc = updated;
-			if (updated.name !== name) {
-				await goto(`/services/${encodeURIComponent(updated.name)}`);
-			}
 		} catch (e) {
 			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';
 		} finally {
@@ -500,7 +497,7 @@
 
 	$effect(() => {
 		// Re-run when the route param changes (client-side nav between services).
-		if (name && !destroyed) {
+		if (id && !destroyed) {
 			secretsLoaded = false;
 			availableSecrets = [];
 			void load();
@@ -545,7 +542,7 @@
 	});
 </script>
 
-<svelte:head><title>{name} - Services - Overslash</title></svelte:head>
+<svelte:head><title>{svc?.name ?? 'Service'} - Services - Overslash</title></svelte:head>
 
 <div class="page">
 	<a href="/services" class="back">← Back to services</a>
@@ -577,7 +574,7 @@
 						type="button"
 						class="btn"
 						title="Open in API Explorer"
-						onclick={() => goto(`/services?tab=api-explorer&service=${encodeURIComponent(name)}`)}
+						onclick={() => goto(`/services?tab=api-explorer&service=${encodeURIComponent(svc?.name ?? '')}`)}
 					>
 						⌘ Try it
 					</button>

@@ -379,7 +379,7 @@
 				status: 'active',
 				user_level: userLevel
 			});
-			await goto(`/services/${encodeURIComponent(created.name)}`);
+			await goto(`/services/${created.id}`);
 		} catch (e) {
 			error = e instanceof ApiError
 				? `Failed to create service (${e.status}): ${JSON.stringify(e.body)}`

@@ -67,7 +67,7 @@ try {
 	{
 		const { page, ctx } = await snap.navigateAndSnap(
 			'grant-controls-service-detail',
-			`/services/${encodeURIComponent(github.name)}`,
+			`/services/${github.id}`,
 			{
 				viewport: { width: 1280, height: 900 },
 				waitFor: async (p) => {

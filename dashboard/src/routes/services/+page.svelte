@@ -296,7 +296,7 @@
 						{#each filtered as s (s.id)}
 							<tr>
 								<td>
-									<a href={`/services/${encodeURIComponent(s.name)}`} class="link">{s.name}</a>
+									<a href={`/services/${s.id}`} class="link">{s.name}</a>
 								</td>
 								<td>
 									<span class="mono">{s.template_key}</span>
