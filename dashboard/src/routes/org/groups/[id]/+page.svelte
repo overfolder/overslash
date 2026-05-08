@@ -168,21 +168,24 @@
 		}
 	}
 
-	// Auto-approve toggle: backend has no PATCH, so DELETE + recreate.
-	// Tracked in TECH_DEBT.md.
 	async function toggleAutoApprove(grant: GroupGrant) {
 		try {
-			await groupsApi.removeGrant(groupId, grant.id);
-			const fresh = await groupsApi.addGrant(groupId, {
-				service_instance_id: grant.service_instance_id,
-				access_level: grant.access_level,
+			const fresh = await groupsApi.patchGrant(groupId, grant.id, {
 				auto_approve_reads: !grant.auto_approve_reads
 			});
 			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
 		} catch (e) {
 			grantError = apiErrText(e);
-			// Reload to recover from partial state.
-			load();
+		}
+	}
+
+	async function changeAccessLevel(grant: GroupGrant, access_level: string) {
+		if (access_level === grant.access_level) return;
+		try {
+			const fresh = await groupsApi.patchGrant(groupId, grant.id, { access_level });
+			grants = grants.map((g) => (g.id === grant.id ? fresh : g));
+		} catch (e) {
+			grantError = apiErrText(e);
 		}
 	}
 
@@ -290,7 +293,23 @@
 								<td>
 									<code>{g.service_name}</code>
 								</td>
-								<td>{g.access_level}</td>
+								<td>
+									{#if !isSelfGroup || isSelfOwner}
+										<select
+											class="access-select"
+											value={g.access_level}
+											onchange={(e) =>
+												changeAccessLevel(g, (e.currentTarget as HTMLSelectElement).value)}
+											aria-label="Access level"
+										>
+											<option value="read">read</option>
+											<option value="write">write</option>
+											<option value="admin">admin</option>
+										</select>
+									{:else}
+										{g.access_level}
+									{/if}
+								</td>
 								<td>
 									{#if !isSelfGroup || isSelfOwner}
 										<ToggleSwitch
@@ -472,7 +491,8 @@
 	}
 	.form input,
 	.form textarea,
-	.add-grant select {
+	.add-grant select,
+	.access-select {
 		padding: var(--space-2) var(--space-3);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);

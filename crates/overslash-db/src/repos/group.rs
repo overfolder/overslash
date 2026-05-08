@@ -300,6 +300,35 @@ pub(crate) async fn remove_grant(
     Ok(result.rows_affected() > 0)
 }
 
+/// Partial-update a grant. Each field is optional; `None` leaves that column
+/// untouched (`COALESCE`). Returns `None` when the grant id doesn't belong to
+/// a group in this org — same scoping shape as `add_grant` / `remove_grant`.
+pub(crate) async fn update_grant(
+    pool: &PgPool,
+    org_id: Uuid,
+    grant_id: Uuid,
+    group_id: Uuid,
+    access_level: Option<&str>,
+    auto_approve_reads: Option<bool>,
+) -> Result<Option<GroupGrantRow>, sqlx::Error> {
+    sqlx::query_as!(
+        GroupGrantRow,
+        "UPDATE group_grants
+            SET access_level       = COALESCE($4, access_level),
+                auto_approve_reads = COALESCE($5, auto_approve_reads)
+          WHERE id = $1 AND group_id = $2
+            AND EXISTS (SELECT 1 FROM groups WHERE id = $2 AND org_id = $3)
+        RETURNING id, group_id, service_instance_id, access_level, auto_approve_reads, created_at",
+        grant_id,
+        group_id,
+        org_id,
+        access_level,
+        auto_approve_reads,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 // ── Identity ↔ Group membership ──────────────────────────────────────
 
 pub(crate) async fn assign_identity(

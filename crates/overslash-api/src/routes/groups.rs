@@ -27,7 +27,10 @@ pub fn router() -> Router<AppState> {
             get(get_group).put(update_group).delete(delete_group),
         )
         .route("/v1/groups/{id}/grants", post(add_grant).get(list_grants))
-        .route("/v1/groups/{id}/grants/{grant_id}", delete(remove_grant))
+        .route(
+            "/v1/groups/{id}/grants/{grant_id}",
+            delete(remove_grant).patch(update_grant),
+        )
         .route(
             "/v1/groups/{id}/members",
             post(assign_identity).get(list_members),
@@ -64,6 +67,14 @@ struct AddGrantRequest {
     access_level: String,
     #[serde(default)]
     auto_approve_reads: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchGrantRequest {
+    #[serde(default)]
+    access_level: Option<String>,
+    #[serde(default)]
+    auto_approve_reads: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -490,6 +501,105 @@ async fn remove_grant(
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+async fn update_grant(
+    State(state): State<AppState>,
+    OrgAcl {
+        org_id: caller_org,
+        identity_id: caller_identity,
+        access_level: caller_level,
+    }: OrgAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path((group_id, grant_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<PatchGrantRequest>,
+) -> Result<Json<GroupGrantResponse>> {
+    // Reject no-op patches outright. PATCH semantics make this ambiguous —
+    // either "leave everything alone" (succeed but do nothing) or "you forgot
+    // a field" (400). Picking 400 keeps the dashboard's error path honest.
+    if req.access_level.is_none() && req.auto_approve_reads.is_none() {
+        return Err(AppError::BadRequest("no fields to update".into()));
+    }
+
+    if let Some(level) = req.access_level.as_deref()
+        && !matches!(level, "read" | "write" | "admin")
+    {
+        return Err(AppError::BadRequest(format!(
+            "invalid access_level '{level}': must be read, write, or admin"
+        )));
+    }
+
+    // Verify group belongs to org and apply the same auth gate as add_grant /
+    // remove_grant: org admins for non-self groups; the owner of a Myself
+    // group for their own self-group; system Everyone/Admins are off-limits
+    // (mirroring remove_grant — there's no current need to mutate their
+    // grants from the API and keeping them immutable preserves the org-ACL
+    // invariant remove_grant already guards).
+    let grp = scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+
+    let owner_managing_self =
+        grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
+    if owner_managing_self {
+        // Owner-managed Myself group: allow.
+    } else if grp.system_kind.as_deref() == Some("everyone")
+        || grp.system_kind.as_deref() == Some("admins")
+    {
+        return Err(AppError::BadRequest(
+            "cannot modify grants on system groups".into(),
+        ));
+    } else if caller_level < AccessLevel::Admin {
+        return Err(AppError::Forbidden("admin access required".into()));
+    }
+
+    let grant_row = scope
+        .update_group_grant(
+            grant_id,
+            group_id,
+            req.access_level.as_deref(),
+            req.auto_approve_reads,
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound("grant not found".into()))?;
+
+    // Resolve the service name for the response — update_group_grant returns
+    // the bare row, not the joined detail shape.
+    let svc = scope
+        .get_service_instance(grant_row.service_instance_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+
+    let _ = OrgScope::new(caller_org, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: caller_org,
+            identity_id: caller_identity,
+            action: "group_grant.updated",
+            resource_type: Some("group_grant"),
+            resource_id: Some(grant_row.id),
+            detail: serde_json::json!({
+                "group_id": group_id,
+                "service_instance_id": grant_row.service_instance_id,
+                "service_name": &svc.name,
+                "access_level": req.access_level,
+                "auto_approve_reads": req.auto_approve_reads,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(GroupGrantResponse {
+        id: grant_row.id,
+        group_id: grant_row.group_id,
+        service_instance_id: grant_row.service_instance_id,
+        service_name: svc.name,
+        access_level: grant_row.access_level,
+        auto_approve_reads: grant_row.auto_approve_reads,
+        created_at: fmt_time(grant_row.created_at),
+    }))
 }
 
 // ── Member handlers ──────────────────────────────────────────────────

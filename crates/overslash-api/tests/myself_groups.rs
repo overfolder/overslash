@@ -242,6 +242,43 @@ async fn create_user_service_auto_grants_admin_to_self_group() {
     assert_eq!(grant["auto_approve_reads"], true);
 }
 
+/// Owner of a Myself group can PATCH a grant on it without admin auth —
+/// same authority gate the add/remove paths use, so toggling
+/// auto_approve_reads from the dashboard works for regular users on their
+/// own self-group, not just for org admins.
+#[tokio::test]
+async fn owner_can_patch_self_grant() {
+    let (base, _pool, admin_key, user_id, user_key, _agent_id, _agent_key) =
+        setup_org_with_user_and_agent().await;
+    let client = reqwest::Client::new();
+
+    let svc_id = create_user_service(&base, &admin_key, &user_key, "patchable").await;
+    let myself = find_self_group(&base, &user_key, user_id).await;
+    let self_id = myself["id"].as_str().unwrap();
+
+    let grants = list_self_grants(&base, &user_key, self_id).await;
+    let grant = grants
+        .iter()
+        .find(|g| g["service_instance_id"].as_str() == Some(&svc_id.to_string()))
+        .expect("auto-grant exists");
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+    // The auto-grant created by service creation is admin + auto_approve=true.
+    assert_eq!(grant["auto_approve_reads"], true);
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{self_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_reads": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["id"].as_str().unwrap(), grant_id);
+    assert_eq!(patched["auto_approve_reads"], false);
+    assert_eq!(patched["access_level"], "admin");
+}
+
 #[tokio::test]
 async fn owner_can_delete_and_re_add_self_grant() {
     let (base, _pool, admin_key, user_id, user_key, _agent_id, _agent_key) =
