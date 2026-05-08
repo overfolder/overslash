@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE group_grants\n            SET access_level       = COALESCE($4, access_level),\n                auto_approve_reads = COALESCE($5, auto_approve_reads)\n          WHERE id = $1 AND group_id = $2\n            AND EXISTS (SELECT 1 FROM groups WHERE id = $2 AND org_id = $3)\n        RETURNING id, group_id, service_instance_id, access_level, auto_approve_reads, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "group_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "service_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "access_level",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "auto_approve_reads",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "33c412ed7bb15124ad1954319766ed588ff9f4dc1e618b2a5efc2edbca4fc2c2"
+}

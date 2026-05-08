@@ -41,6 +41,11 @@ export interface AddGrantRequest {
 	auto_approve_reads?: boolean;
 }
 
+export interface PatchGrantRequest {
+	access_level?: string;
+	auto_approve_reads?: boolean;
+}
+
 export interface ServiceInstanceSummary {
 	id: string;
 	name: string;
@@ -84,6 +89,8 @@ export const groupsApi = {
 	listGrants: (id: string) => session.get<GroupGrant[]>(`/v1/groups/${id}/grants`),
 	addGrant: (id: string, body: AddGrantRequest) =>
 		session.post<GroupGrant>(`/v1/groups/${id}/grants`, body),
+	patchGrant: (id: string, grantId: string, body: PatchGrantRequest) =>
+		session.patch<GroupGrant>(`/v1/groups/${id}/grants/${grantId}`, body),
 	removeGrant: (id: string, grantId: string) =>
 		session.delete<{ deleted: boolean }>(`/v1/groups/${id}/grants/${grantId}`),
 

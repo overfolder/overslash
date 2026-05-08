@@ -389,6 +389,209 @@ async fn grants_accept_owned_services_for_admin_sharing() {
     assert_eq!(resp.status(), 200);
 }
 
+/// PATCH preserves the grant id and patches the requested fields without
+/// going through DELETE+POST. The grant id is the receipt the dashboard
+/// keys off of, so any "toggle" UX that swaps the id breaks downstream
+/// references and audit continuity.
+#[tokio::test]
+async fn patch_grant_preserves_id_and_patches_fields() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-patch").await;
+
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+            "auto_approve_reads": false,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+
+    // Toggle auto_approve_reads alone.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(
+        patched["id"].as_str().unwrap(),
+        grant_id,
+        "patch must preserve grant id"
+    );
+    assert_eq!(patched["auto_approve_reads"], true);
+    assert_eq!(
+        patched["access_level"], "read",
+        "omitted field stays untouched"
+    );
+
+    // Now patch access_level alone — auto_approve_reads must persist.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "admin");
+    assert_eq!(patched["auto_approve_reads"], true);
+    assert_eq!(patched["service_name"], "svc-patch");
+}
+
+#[tokio::test]
+async fn patch_grant_rejects_empty_and_invalid_bodies() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-empty").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    // Empty body — both fields absent.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Invalid access_level value.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "owner"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn patch_grant_requires_admin_for_org_group() {
+    let (base, org_key, user_id, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-auth").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    // Make the test user a member of the group so they can otherwise see it,
+    // but they aren't an admin — PATCH on a non-self group must 403.
+    client
+        .post(format!("{base}/v1/groups/{group_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_id}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn patch_grant_404_for_unknown_grant_id() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let stranger = Uuid::new_v4();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{stranger}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
 #[tokio::test]
 async fn service_visibility_filtered_by_groups() {
     let (base, org_key, user_id, user_key) = bootstrap().await;

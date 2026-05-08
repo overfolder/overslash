@@ -138,6 +138,27 @@ impl OrgScope {
         group::remove_grant(self.db(), self.org_id(), grant_id, group_id).await
     }
 
+    /// Partial-update a grant on a group, scoped to this org. Each field is
+    /// optional; `None` means "leave that column untouched". Returns `None`
+    /// when the grant id doesn't belong to a group in this org.
+    pub async fn update_group_grant(
+        &self,
+        grant_id: Uuid,
+        group_id: Uuid,
+        access_level: Option<&str>,
+        auto_approve_reads: Option<bool>,
+    ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
+        group::update_grant(
+            self.db(),
+            self.org_id(),
+            grant_id,
+            group_id,
+            access_level,
+            auto_approve_reads,
+        )
+        .await
+    }
+
     /// List the groups that grant access to a single service instance. The
     /// service instance and groups are bounded to this org.
     pub async fn list_groups_for_service(
