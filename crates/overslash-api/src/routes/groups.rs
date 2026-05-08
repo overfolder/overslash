@@ -514,20 +514,15 @@ async fn update_grant(
         return Err(AppError::BadRequest("no fields to update".into()));
     }
 
-    if let Some(level) = req.access_level.as_deref()
-        && !matches!(level, "read" | "write" | "admin")
-    {
-        return Err(AppError::BadRequest(format!(
-            "invalid access_level '{level}': must be read, write, or admin"
-        )));
-    }
-
     // Verify group belongs to org and apply the same auth gate as add_grant /
-    // remove_grant: org admins for non-self groups; the owner of a Myself
-    // group for their own self-group; system Everyone/Admins are off-limits
-    // (mirroring remove_grant — there's no current need to mutate their
-    // grants from the API and keeping them immutable preserves the org-ACL
-    // invariant remove_grant already guards).
+    // remove_grant, with one carve-out for system Everyone/Admins: org admins
+    // can toggle `auto_approve_reads` on those groups (a UX affordance that
+    // doesn't shift the permission surface), but `access_level` stays
+    // immutable to preserve the org-ACL invariant remove_grant already guards.
+    //
+    // Auth runs before any field-shape validation so unauthorized callers
+    // can't probe what `access_level` values are syntactically valid by
+    // watching 400-vs-other responses.
     let grp = scope
         .get_group(group_id)
         .await?
@@ -535,16 +530,31 @@ async fn update_grant(
 
     let owner_managing_self =
         grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
+    let is_locked_system = matches!(
+        grp.system_kind.as_deref(),
+        Some("everyone") | Some("admins")
+    );
     if owner_managing_self {
         // Owner-managed Myself group: allow.
-    } else if grp.system_kind.as_deref() == Some("everyone")
-        || grp.system_kind.as_deref() == Some("admins")
-    {
-        return Err(AppError::BadRequest(
-            "cannot modify grants on system groups".into(),
-        ));
+    } else if is_locked_system {
+        if caller_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
+        if req.access_level.is_some() {
+            return Err(AppError::BadRequest(
+                "cannot change access_level on system groups".into(),
+            ));
+        }
     } else if caller_level < AccessLevel::Admin {
         return Err(AppError::Forbidden("admin access required".into()));
+    }
+
+    if let Some(level) = req.access_level.as_deref()
+        && !matches!(level, "read" | "write" | "admin")
+    {
+        return Err(AppError::BadRequest(format!(
+            "invalid access_level '{level}': must be read, write, or admin"
+        )));
     }
 
     let grant_row = scope
