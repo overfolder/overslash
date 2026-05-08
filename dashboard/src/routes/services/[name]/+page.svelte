@@ -31,6 +31,7 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	const name = $derived($page.params.name ?? '');
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
@@ -465,6 +466,38 @@
 		}
 	}
 
+	async function toggleGrantAutoApprove(ref: ServiceGroupRef) {
+		try {
+			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, {
+				auto_approve_reads: !ref.auto_approve_reads
+			});
+			serviceGroups = serviceGroups.map((g) =>
+				g.grant_id === ref.grant_id ? { ...g, auto_approve_reads: fresh.auto_approve_reads } : g
+			);
+		} catch (e) {
+			error = e instanceof ApiError ? `Failed to update grant (${e.status})` : 'Failed to update grant';
+			// Force a re-render so any control whose DOM diverged from the
+			// prop snaps back to the unchanged grant value.
+			serviceGroups = [...serviceGroups];
+		}
+	}
+
+	async function changeGrantAccessLevel(ref: ServiceGroupRef, access_level: string) {
+		if (access_level === ref.access_level) return;
+		try {
+			const fresh = await groupsApi.patchGrant(ref.group_id, ref.grant_id, { access_level });
+			serviceGroups = serviceGroups.map((g) =>
+				g.grant_id === ref.grant_id ? { ...g, access_level: fresh.access_level } : g
+			);
+		} catch (e) {
+			error = e instanceof ApiError ? `Failed to update grant (${e.status})` : 'Failed to update grant';
+			// `<select value={...}>` is one-way; without forcing a re-render
+			// the dropdown would keep showing the rejected value the user
+			// picked, even though the underlying grant didn't change.
+			serviceGroups = [...serviceGroups];
+		}
+	}
+
 	$effect(() => {
 		// Re-run when the route param changes (client-side nav between services).
 		if (name && !destroyed) {
@@ -656,8 +689,34 @@
 											<a class="link" href={`/org/groups/${g.group_id}`}>{g.group_name}</a>
 										{/if}
 									</td>
-									<td><span class="mono">{g.access_level}</span></td>
-									<td>{g.auto_approve_reads ? 'Yes' : 'No'}</td>
+									<td>
+										{#if canRemoveGrant(g)}
+											<select
+												class="access-select"
+												value={g.access_level}
+												onchange={(e) =>
+													changeGrantAccessLevel(g, (e.currentTarget as HTMLSelectElement).value)}
+												aria-label="Access level"
+											>
+												<option value="read">read</option>
+												<option value="write">write</option>
+												<option value="admin">admin</option>
+											</select>
+										{:else}
+											<span class="mono">{g.access_level}</span>
+										{/if}
+									</td>
+									<td>
+										{#if canRemoveGrant(g)}
+											<ToggleSwitch
+												checked={g.auto_approve_reads}
+												onchange={() => toggleGrantAutoApprove(g)}
+												label="Auto-approve reads"
+											/>
+										{:else}
+											{g.auto_approve_reads ? 'Yes' : 'No'}
+										{/if}
+									</td>
 									{#if !isSystem}
 										<td class="actions-col">
 											{#if canRemoveGrant(g)}
@@ -991,7 +1050,8 @@
 		gap: 0.4rem;
 	}
 	.field input[type='text'],
-	.field select {
+	.field select,
+	.access-select {
 		padding: 0.5rem 0.7rem;
 		border-radius: 6px;
 		border: 1px solid var(--color-border);
