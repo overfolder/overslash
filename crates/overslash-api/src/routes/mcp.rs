@@ -275,6 +275,31 @@ fn rpc_ok_response(id: Value, result: Value) -> Response {
     (StatusCode::OK, Json(body)).into_response()
 }
 
+/// Wrap a typed-error envelope (a JSON object whose top-level `error` field
+/// names the typed code) as an MCP tool result with `isError: true`. Per
+/// the MCP spec, tool execution failures live on the success path with the
+/// error flag set so the LLM still sees the body — JSON-RPC errors are
+/// reserved for protocol-level failures.
+///
+/// The body is stringified into `content[0].text` because the MCP `content`
+/// array contract is `text | image | resource`, and `text` is what every
+/// model-facing client (Claude.ai, Claude Code, Openclaw) actually surfaces
+/// to the model.
+fn rpc_tool_error_response(id: Value, envelope: &Value) -> Response {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string(envelope).unwrap_or_default(),
+            }],
+            "isError": true,
+        },
+    });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 async fn initialize_response(
     state: &AppState,
     auth: &AuthContext,
@@ -500,12 +525,13 @@ async fn tools_call(
     };
 
     match outcome {
-        Ok(v) => rpc_ok_response(
+        Ok(ForwardOutcome::Ok(v)) => rpc_ok_response(
             req.id,
             json!({
                 "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }]
             }),
         ),
+        Ok(ForwardOutcome::TypedError(envelope)) => rpc_tool_error_response(req.id, &envelope),
         Err(msg) => rpc_error_response(req.id, INTERNAL_ERROR, msg),
     }
 }
@@ -528,7 +554,14 @@ async fn tools_call_overslash_call(
     req_session_id: Option<Uuid>,
 ) -> Response {
     let outcome = match dispatch_call(state, bearer, args).await {
-        Ok(v) => v,
+        Ok(ForwardOutcome::Ok(v)) => v,
+        Ok(ForwardOutcome::TypedError(envelope)) => {
+            // Typed envelopes (needs_authentication, reauth_required,
+            // missing_scopes, credential_missing, not_in_your_chain) bypass
+            // the elicitation fork: the agent has structured branching info
+            // already, no human-in-the-loop dialog applies.
+            return rpc_tool_error_response(req.id.clone(), &envelope);
+        }
         Err(msg) => return rpc_error_response(req.id.clone(), INTERNAL_ERROR, msg),
     };
 
@@ -813,7 +846,11 @@ fn normalize_stringified_params(args: &mut Value) {
     }
 }
 
-async fn dispatch_search(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_search(
+    state: &AppState,
+    bearer: &str,
+    args: &Value,
+) -> Result<ForwardOutcome, String> {
     // Empty query is supported: it triggers browse mode in the REST handler,
     // returning every visible *connected* service (without actions) so an
     // agent can catalog what it can run right now before issuing a scoped
@@ -839,7 +876,11 @@ async fn dispatch_search(state: &AppState, bearer: &str, args: &Value) -> Result
 /// `approval_id` is rejected here: approval resume always replays a previously
 /// permission-gated (i.e. write/delete) action, so it has no place on a tool
 /// annotated `readOnlyHint: true`.
-async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_read(
+    state: &AppState,
+    bearer: &str,
+    args: &Value,
+) -> Result<ForwardOutcome, String> {
     if args.get("approval_id").is_some() {
         return Err(
             "approval_id is not allowed on overslash_read; use overslash_call to resume a pending approval".into(),
@@ -902,7 +943,11 @@ async fn dispatch_read(state: &AppState, bearer: &str, args: &Value) -> Result<V
     .await
 }
 
-async fn dispatch_call(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_call(
+    state: &AppState,
+    bearer: &str,
+    args: &Value,
+) -> Result<ForwardOutcome, String> {
     // Resume-mode: caller is triggering the replay of a previously-approved
     // action. Forwards to POST /v1/approvals/{id}/call.
     if let Some(approval_id) = args.get("approval_id").and_then(|v| v.as_str()) {
@@ -956,11 +1001,11 @@ async fn dispatch_overslash_platform(
     action: &str,
     args: &Value,
     require_risk: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<ForwardOutcome, String> {
     let params = args.get("params");
     match action {
         "list_pending" => {
-            let mut result = forward(
+            let outcome = forward(
                 state,
                 bearer,
                 Method::GET,
@@ -970,16 +1015,19 @@ async fn dispatch_overslash_platform(
             .await?;
             // An approval's status stays 'allowed' even after its execution
             // has been dispatched, failed, or expired. Only return entries
-            // where the execution is still dispatchable.
-            if let Some(arr) = result.as_array_mut() {
-                arr.retain(|item| {
-                    item.get("execution")
-                        .and_then(|e| e.get("status"))
-                        .and_then(Value::as_str)
-                        == Some("pending")
-                });
-            }
-            Ok(result)
+            // where the execution is still dispatchable. `map_ok` skips this
+            // filter for typed-error envelopes (which aren't arrays).
+            Ok(outcome.map_ok(|mut value| {
+                if let Some(arr) = value.as_array_mut() {
+                    arr.retain(|item| {
+                        item.get("execution")
+                            .and_then(|e| e.get("status"))
+                            .and_then(Value::as_str)
+                            == Some("pending")
+                    });
+                }
+                value
+            }))
         }
         "call_pending" => {
             let id = params
@@ -1029,7 +1077,7 @@ async fn forward_overslash_action(
     action: &str,
     params: Option<&Value>,
     require_risk: Option<&str>,
-) -> Result<Value, String> {
+) -> Result<ForwardOutcome, String> {
     let mut body = serde_json::Map::new();
     body.insert("service".into(), Value::String("overslash".into()));
     body.insert("action".into(), Value::String(action.into()));
@@ -1049,7 +1097,11 @@ async fn forward_overslash_action(
     .await
 }
 
-async fn dispatch_auth(state: &AppState, bearer: &str, args: &Value) -> Result<Value, String> {
+async fn dispatch_auth(
+    state: &AppState,
+    bearer: &str,
+    args: &Value,
+) -> Result<ForwardOutcome, String> {
     let action = args
         .get("action")
         .and_then(|v| v.as_str())
@@ -1084,13 +1136,46 @@ async fn dispatch_auth(state: &AppState, bearer: &str, args: &Value) -> Result<V
     forward(state, bearer, method, &path, body).await
 }
 
+/// Result of a `forward()` call. The split lets the MCP layer distinguish
+/// "upstream returned a typed error envelope the agent can branch on" from
+/// "upstream blew up in a way the agent can't act on" without losing the
+/// structured body to a `format!()`.
+///
+/// Why this matters: the REST layer renders `needs_authentication`,
+/// `reauth_required`, `missing_scopes`, `credential_missing`, and
+/// `not_in_your_chain` as JSON objects with a top-level `"error"` string
+/// field (see `crate::error::AppError::into_response`). Stringifying those
+/// destroys the structure the agent needs to self-recover.
+#[derive(Debug)]
+enum ForwardOutcome {
+    /// 2xx response — value is the parsed body (or `Value::Null` for empty).
+    Ok(Value),
+    /// Non-2xx response carrying a JSON object body with a top-level
+    /// `"error": "<typed_code>"` string field. Forward as-is so the MCP
+    /// wrapper can hand it back as a tool result with `isError: true`.
+    TypedError(Value),
+}
+
+impl ForwardOutcome {
+    /// Apply `f` to the inner value when this is a success outcome; pass
+    /// typed errors through unchanged. Lets dispatchers manipulate happy-path
+    /// payloads (e.g. filter an array) without accidentally rewriting an
+    /// error envelope.
+    fn map_ok<F: FnOnce(Value) -> Value>(self, f: F) -> Self {
+        match self {
+            ForwardOutcome::Ok(v) => ForwardOutcome::Ok(f(v)),
+            ForwardOutcome::TypedError(v) => ForwardOutcome::TypedError(v),
+        }
+    }
+}
+
 async fn forward(
     state: &AppState,
     bearer: &str,
     method: Method,
     path: &str,
     body: Option<Value>,
-) -> Result<Value, String> {
+) -> Result<ForwardOutcome, String> {
     let url = format!("{}{}", state.config.public_url.trim_end_matches('/'), path);
     let mut req = state.http_client.request(method, &url).bearer_auth(bearer);
     if let Some(b) = body {
@@ -1103,12 +1188,37 @@ async fn forward(
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("body error: {e}"))?;
     if !status.is_success() {
+        // Whitelist the five SPEC §5 envelopes (`docs/design/agent-self-management.md`
+        // §5) that an agent can branch on. Every `AppError::into_response`
+        // arm renders a `{"error": "<msg>"}` object, so a generic "any JSON
+        // with `error` field" check would silently reframe every NotFound /
+        // BadRequest / Forbidden as a tool result with `isError: true`,
+        // widening the contract beyond what the slice promises. The
+        // whitelist keeps unrecognized errors flowing through JSON-RPC
+        // `INTERNAL_ERROR (-32603)` until they're explicitly added here
+        // alongside spec coverage.
+        const TYPED_ERROR_CODES: &[&str] = &[
+            "needs_authentication",
+            "reauth_required",
+            "missing_scopes",
+            "credential_missing",
+            "not_in_your_chain",
+        ];
+        if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+            if let Some(code) = parsed.get("error").and_then(Value::as_str) {
+                if TYPED_ERROR_CODES.contains(&code) {
+                    return Ok(ForwardOutcome::TypedError(parsed));
+                }
+            }
+        }
         return Err(format!("API {status}: {text}"));
     }
     if text.is_empty() {
-        return Ok(Value::Null);
+        return Ok(ForwardOutcome::Ok(Value::Null));
     }
-    Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    Ok(ForwardOutcome::Ok(
+        serde_json::from_str(&text).unwrap_or(Value::String(text)),
+    ))
 }
 
 #[cfg(test)]

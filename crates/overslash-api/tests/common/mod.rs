@@ -1206,6 +1206,12 @@ pub async fn start_api_with_registry(
         }
     }
 
+    // Bind first so `public_url` matches the real bound address — the MCP
+    // dispatcher's `forward()` helper uses `public_url` to loop back to
+    // `/v1/...` REST routes inside the same process. A hardcoded
+    // `localhost:3000` would silently route to a non-existent host.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
@@ -1220,7 +1226,7 @@ pub async fn start_api_with_registry(
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         filter_timeout_ms: 2000,
@@ -1310,8 +1316,6 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::search::router())
         .with_state(state);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())

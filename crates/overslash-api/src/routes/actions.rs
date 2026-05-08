@@ -998,14 +998,13 @@ async fn call_action_impl(
         let version = scope
             .get_current_secret_value(&secret_ref.name)
             .await?
-            .ok_or_else(|| {
-                // TODO(slice-4): replace with structured JSON-RPC `data` payload.
-                AppError::BadRequest(format!(
-                    "credential_missing: secret '{name}' not found. \
-                     Hint: call overslash.request_secret with \
-                     {{\"secret_name\":\"{name}\"}} to ask the user to provide a value.",
-                    name = secret_ref.name,
-                ))
+            .ok_or_else(|| AppError::CredentialMissing {
+                service: req.service.clone(),
+                secret_name: secret_ref.name.clone(),
+                hint_url: Some(state.config.dashboard_url_for(&format!(
+                    "/secrets?name={}",
+                    urlencoding::encode(&secret_ref.name)
+                ))),
             })?;
         let decrypted = crypto::decrypt(&enc_key, &version.encrypted_value)?;
         let value = String::from_utf8(decrypted)
@@ -2632,8 +2631,11 @@ async fn resolve_service_auth(
 /// template doesn't declare `required_scopes`, returns `Ok(())` — preserves
 /// today's behavior for templates that haven't adopted the field.
 ///
-/// Returns `AppError::Forbidden` with a body carrying `missing_scopes` and an
-/// `upgrade_url` the caller can `POST` to kick off an incremental-auth flow.
+/// Returns `AppError::MissingScopes`, rendered as 403 with the typed
+/// `missing_scopes` envelope (`{ error, missing, connection_id, upgrade_url,
+/// auth_url? }`). The `upgrade_url` is the raw REST endpoint white-label
+/// callers can POST to; `auth_url` is the chat-deliverable gated link agents
+/// should hand to the user.
 async fn check_required_scopes(
     state: &AppState,
     scope: &OrgScope,
@@ -2727,16 +2729,12 @@ async fn check_required_scopes(
         state.config.public_url.trim_end_matches('/'),
         connection.id
     );
-    let mut body = serde_json::json!({
-        "error": "missing_scopes",
-        "missing": missing,
-        "connection_id": connection.id,
-        "upgrade_url": upgrade_url,
-    });
-    if let Some(url) = auth_url {
-        body["auth_url"] = serde_json::Value::String(url);
-    }
-    Err(AppError::Forbidden(body.to_string()))
+    Err(AppError::MissingScopes {
+        connection_id: connection.id,
+        missing,
+        upgrade_url,
+        auth_url,
+    })
 }
 
 /// Resolve auth for a service instance. If the instance has a bound connection_id or secret_name,
