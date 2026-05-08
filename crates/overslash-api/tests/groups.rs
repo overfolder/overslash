@@ -563,6 +563,18 @@ async fn patch_grant_requires_admin_for_org_group() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 403);
+
+    // A syntactically invalid `access_level` from a non-admin must still
+    // 403, not 400 — running field-shape validation before the admin gate
+    // would let unauthorized callers probe valid enum values.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"access_level": "owner"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
 }
 
 /// `auto_approve_reads` is a UX toggle — flipping it on the Everyone group

@@ -514,19 +514,15 @@ async fn update_grant(
         return Err(AppError::BadRequest("no fields to update".into()));
     }
 
-    if let Some(level) = req.access_level.as_deref()
-        && !matches!(level, "read" | "write" | "admin")
-    {
-        return Err(AppError::BadRequest(format!(
-            "invalid access_level '{level}': must be read, write, or admin"
-        )));
-    }
-
     // Verify group belongs to org and apply the same auth gate as add_grant /
     // remove_grant, with one carve-out for system Everyone/Admins: org admins
     // can toggle `auto_approve_reads` on those groups (a UX affordance that
     // doesn't shift the permission surface), but `access_level` stays
     // immutable to preserve the org-ACL invariant remove_grant already guards.
+    //
+    // Auth runs before any field-shape validation so unauthorized callers
+    // can't probe what `access_level` values are syntactically valid by
+    // watching 400-vs-other responses.
     let grp = scope
         .get_group(group_id)
         .await?
@@ -541,10 +537,6 @@ async fn update_grant(
     if owner_managing_self {
         // Owner-managed Myself group: allow.
     } else if is_locked_system {
-        // Admin gate runs first so a non-admin gets 403 regardless of which
-        // fields they sent — surfacing 400 for a body that the caller wasn't
-        // allowed to submit in the first place would leak the field-shape
-        // policy to unauthorized callers.
         if caller_level < AccessLevel::Admin {
             return Err(AppError::Forbidden("admin access required".into()));
         }
@@ -555,6 +547,14 @@ async fn update_grant(
         }
     } else if caller_level < AccessLevel::Admin {
         return Err(AppError::Forbidden("admin access required".into()));
+    }
+
+    if let Some(level) = req.access_level.as_deref()
+        && !matches!(level, "read" | "write" | "admin")
+    {
+        return Err(AppError::BadRequest(format!(
+            "invalid access_level '{level}': must be read, write, or admin"
+        )));
     }
 
     let grant_row = scope
