@@ -11,7 +11,6 @@ use overslash_db::repos::identity::IdentityRow;
 /// Resolved ceiling data ready for checking.
 pub struct ResolvedCeiling {
     pub has_groups: bool,
-    pub allow_raw_http: bool,
     pub grants: Vec<CeilingGrant>,
 }
 
@@ -151,11 +150,7 @@ pub async fn load_ceiling(
         })
         .collect();
 
-    Ok(ResolvedCeiling {
-        has_groups,
-        allow_raw_http: ceiling.allow_raw_http,
-        grants,
-    })
+    Ok(ResolvedCeiling { has_groups, grants })
 }
 
 /// Check if a request is within the group ceiling.
@@ -168,11 +163,5 @@ pub fn check_ceiling(
     if !ceiling.has_groups {
         return GroupCeilingResult::NoGroups;
     }
-    check_group_ceiling(
-        service_name,
-        risk,
-        &ceiling.grants,
-        ceiling.allow_raw_http,
-        true,
-    )
+    check_group_ceiling(service_name, risk, &ceiling.grants, true)
 }

@@ -654,7 +654,9 @@ async fn test_audit_api_response_shape() {
     client
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+        .json(
+            &json!({"service": "http", "method": "GET", "url": format!("http://{mock_addr}/echo")}),
+        )
         .send()
         .await
         .unwrap();
@@ -693,7 +695,7 @@ async fn test_audit_api_pagination() {
         client
             .post(format!("{base}/v1/actions/call"))
             .header(auth(&key).0, auth(&key).1)
-            .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+            .json(&json!({"service": "http", "method": "GET", "url": format!("http://{mock_addr}/echo")}))
             .send()
             .await
             .unwrap();
@@ -792,7 +794,9 @@ async fn test_audit_api_org_isolation() {
     client
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key_a).0, auth(&key_a).1)
-        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+        .json(
+            &json!({"service": "http", "method": "GET", "url": format!("http://{mock_addr}/echo")}),
+        )
         .send()
         .await
         .unwrap();
@@ -818,6 +822,7 @@ async fn test_audit_action_called() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "body": "hello"
@@ -885,6 +890,7 @@ async fn test_audit_approval_created() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "my_token", "inject_as": "header", "header_name": "X-Token"}]
@@ -937,6 +943,7 @@ async fn test_audit_approval_resolved() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tok", "inject_as": "header", "header_name": "X-T"}]
@@ -1298,7 +1305,9 @@ async fn test_audit_mixed_events() {
     client
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+        .json(
+            &json!({"service": "http", "method": "GET", "url": format!("http://{mock_addr}/echo")}),
+        )
         .send()
         .await
         .unwrap();
@@ -1398,7 +1407,9 @@ async fn test_audit_api_includes_identity_path() {
     client
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
-        .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+        .json(
+            &json!({"service": "http", "method": "GET", "url": format!("http://{mock_addr}/echo")}),
+        )
         .send()
         .await
         .unwrap();
@@ -1434,7 +1445,7 @@ async fn test_audit_api_filter_by_event_id() {
         client
             .post(format!("{base}/v1/actions/call"))
             .header(auth(&key).0, auth(&key).1)
-            .json(&json!({"method": "GET", "url": format!("http://{mock_addr}/echo")}))
+            .json(&json!({"service": "http", "method": "GET", "url": format!("http://{mock_addr}/echo")}))
             .send()
             .await
             .unwrap();

@@ -1,7 +1,7 @@
 //! Action execution endpoints (`POST /v1/actions/call`, `POST /v1/actions/validate`).
 //!
-//! Three call shapes per SPEC §8, distinguished by which request fields are
-//! populated:
+//! Two call shapes per SPEC §8 — `service` is always required (the legacy
+//! no-`service` raw-HTTP shape is rejected with 400):
 //!
 //! - **Service + defined action**: caller supplies `service` + `action` keys
 //!   and `params`. The template's path/method/auth are used; permission keys
@@ -10,13 +10,16 @@
 //!   (`path` or `url`). Auth comes from the instance binding; `svc.hosts`
 //!   bounds where the bearer can land. Permission keys derive as
 //!   `{service}:{METHOD}:{path}`.
-//! - **`http` pseudo-service (raw HTTP)**: caller supplies `method` + `url`
-//!   (+ optional `headers`, `body`, `secrets[]`). Permission keys derive as
-//!   `http:{METHOD}:{host}{path}` (and `secret:{name}:{host}` for each injected
-//!   secret).
+//!
+//! Mode A (raw HTTP) is the verb shape against the synthetic `http`
+//! pseudo-service (`service: "http"`). Its template ships with `hosts: []`
+//! and `auth: []`, so `resolve_verb_host_and_path` extracts the host from
+//! the caller-supplied `url` and per-call `secrets[]` are the only auth.
+//! Permission keys derive identically to other services
+//! (`http:{METHOD}:{host}{path}`).
 //!
 //! Precedence in `resolve_request`: Service + HTTP verb (if `service` set
-//! without `action`) → Service + action (if both set) → raw HTTP (fallback).
+//! without `action`) → Service + action (if both set).
 
 use std::collections::HashMap;
 
@@ -89,12 +92,13 @@ async fn call_action(
 ) -> Result<Response, AppError> {
     let start = std::time::Instant::now();
     // Mode resolution mirrors `resolve_request`: service-without-action is
-    // the verb shape, service+action is the defined-action shape, neither
-    // is the http pseudo-service (raw HTTP).
+    // the verb shape (which `http` rides on for raw-HTTP), service+action
+    // is the defined-action shape. A request with no `service` is rejected
+    // by `resolve_action_metadata` and shows up as `_invalid` here.
     let mode = match (req.service.is_some(), req.action.is_some()) {
-        (true, true) => "c",
-        (true, false) => "c_verb",
-        _ => "a",
+        (true, true) => "action",
+        (true, false) => "verb",
+        _ => "_invalid",
     };
     // Bound the `template_key` label to keys that actually exist in the
     // registry. A client could otherwise submit `service: "<arbitrary>"`
@@ -103,7 +107,7 @@ async fn call_action(
     let template_key = match req.service.as_deref() {
         Some(key) if state.registry.get(key).is_some() => key.to_string(),
         Some(_) => "_unknown".to_string(),
-        None => "_raw".to_string(),
+        None => "_invalid".to_string(),
     };
 
     let result = call_action_impl(State(state), auth, scope, ip, Json(req)).await;
@@ -153,14 +157,14 @@ async fn validate_action(
 ) -> Result<Response, AppError> {
     let start = std::time::Instant::now();
     let mode = match (req.service.is_some(), req.action.is_some()) {
-        (true, true) => "c",
-        (true, false) => "c_verb",
-        _ => "a",
+        (true, true) => "action",
+        (true, false) => "verb",
+        _ => "_invalid",
     };
     let template_key = match req.service.as_deref() {
         Some(key) if state.registry.get(key).is_some() => key.to_string(),
         Some(_) => "_unknown".to_string(),
-        None => "_raw".to_string(),
+        None => "_invalid".to_string(),
     };
 
     let result = validate_action_impl(State(state), auth, scope, Json(req)).await;
@@ -251,29 +255,27 @@ async fn validate_action_impl(
 
     // Permission key derivation — same logic as `/call` runs after
     // `resolve_request` returns, using the resolved scope and method.
-    let perm_keys = if let Some(ref svc) = meta.service_scope {
-        if let Some(ref verb) = svc.http_verb {
-            PermissionKey::from_service_http(&svc.service_key, &verb.method, &verb.path)
-        } else {
-            PermissionKey::from_service_action(
-                &svc.service_key,
-                &svc.action_key,
-                svc.scope_param.as_deref(),
-                &req.params,
-            )
-        }
+    // After the no-`service` rejection in `resolve_action_metadata`,
+    // `meta.service_scope` is always `Some` (both action and verb shapes
+    // populate it; `http` flows through the verb shape).
+    let svc = meta.service_scope.as_ref().expect(
+        "resolve_action_metadata always sets service_scope after the no-service-rejection gate",
+    );
+    let perm_keys = if let Some(ref verb) = svc.http_verb {
+        PermissionKey::from_service_http(&svc.service_key, &verb.method, &verb.path)
     } else {
-        PermissionKey::from_http(&meta.raw_method, &meta.raw_url)
+        PermissionKey::from_service_action(
+            &svc.service_key,
+            &svc.action_key,
+            svc.scope_param.as_deref(),
+            &req.params,
+        )
     };
 
     // Layer 1: group ceiling. Surfaced as a permission status, not a
     // 403 — validate always returns 200 on a well-formed call so the
     // caller has a single decode path.
-    let ceiling_service = meta
-        .service_scope
-        .as_ref()
-        .map(|s| s.service_key.clone())
-        .unwrap_or_else(|| "http".to_string());
+    let ceiling_service = svc.service_key.clone();
     let ceiling_risk = meta
         .risk
         .unwrap_or_else(|| Risk::from_http_method(&meta.raw_method));
@@ -368,9 +370,11 @@ async fn validate_action_impl(
     Ok(((StatusCode::OK, Json(body)).into_response(), label))
 }
 
-/// Unified call request — supports the three SPEC §8 shapes (Service +
-/// defined action, Service + HTTP verb, `http` pseudo-service). See module
-/// docs for the field-presence selection rules.
+/// Unified call request — `service` is required and selects between the
+/// two SPEC §8 shapes: Service + defined action (when `action` is set) and
+/// Service + HTTP verb (when only `method` + `url`/`path` is set). Mode A
+/// raw HTTP rides on the verb shape against the synthetic `http`
+/// pseudo-service. See module docs for the field-presence selection rules.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CallRequest {
@@ -582,19 +586,22 @@ async fn call_action_impl(
         }
     }
 
-    let perm_keys = if let Some(ref scope) = meta.service_scope {
-        if let Some(ref verb) = scope.http_verb {
-            PermissionKey::from_service_http(&scope.service_key, &verb.method, &verb.path)
-        } else {
-            PermissionKey::from_service_action(
-                &scope.service_key,
-                &scope.action_key,
-                scope.scope_param.as_deref(),
-                &req.params,
-            )
-        }
+    // After the no-`service` rejection in `resolve_action_metadata`,
+    // `meta.service_scope` is always `Some` — both the action shape and
+    // the verb shape (including `service: "http"`) populate it.
+    let scope_meta = meta
+        .service_scope
+        .as_ref()
+        .expect("resolve_request always sets service_scope after the no-service-rejection gate");
+    let perm_keys = if let Some(ref verb) = scope_meta.http_verb {
+        PermissionKey::from_service_http(&scope_meta.service_key, &verb.method, &verb.path)
     } else {
-        PermissionKey::from_http(&action_req.method, &action_req.url)
+        PermissionKey::from_service_action(
+            &scope_meta.service_key,
+            &scope_meta.action_key,
+            scope_meta.scope_param.as_deref(),
+            &req.params,
+        )
     };
 
     // ── Layer 1: Group ceiling check ─────────────────────────────────
@@ -603,13 +610,7 @@ async fn call_action_impl(
     // group grant (admin + auto_approve_reads = true by default), so every
     // call runs through this same ceiling — including ones targeting a
     // service owned by the caller's ceiling user.
-
-    // Determine service name and risk for ceiling check
-    let ceiling_service = if let Some(ref scope) = meta.service_scope {
-        scope.service_key.clone()
-    } else {
-        "http".to_string()
-    };
+    let ceiling_service = scope_meta.service_key.clone();
     let ceiling_risk = if let Some(risk) = meta.risk {
         risk
     } else {
@@ -1472,6 +1473,12 @@ async fn resolve_service_for_verb_shape(
 ///
 /// Returns `(path, url)`. `path` is what permission keys derive from
 /// (`{service}:{METHOD}:{path}`); `url` is what the executor sends.
+///
+/// The synthetic `http` pseudo-service ships with `hosts: []` — the caller
+/// supplies the full URL on every call, no host binding. In that case the
+/// returned `path` is `host[:port]/path?query` (no leading `/`) so the
+/// derived permission key matches the legacy `http:{METHOD}:{host}{path}`
+/// shape from before the Mode-A collapse.
 fn resolve_verb_host_and_path(
     svc: &overslash_core::types::ServiceDefinition,
     service_key: &str,
@@ -1479,9 +1486,49 @@ fn resolve_verb_host_and_path(
     path: &Option<String>,
 ) -> Result<(String, String), AppError> {
     if svc.hosts.is_empty() {
-        return Err(AppError::Internal(format!(
-            "service '{service_key}' has no hosts"
-        )));
+        // `http` pseudo-service: no host binding. Caller MUST supply `url`;
+        // a path-only request has no base to prefix.
+        let u = match (url, path) {
+            (Some(u), None) => u,
+            (None, Some(_)) => {
+                return Err(AppError::BadRequest(format!(
+                    "service '{service_key}' has no hosts; supply a full 'url' instead of 'path'"
+                )));
+            }
+            (Some(_), Some(_)) => {
+                return Err(AppError::BadRequest(
+                    "'url' and 'path' are mutually exclusive — pick one".into(),
+                ));
+            }
+            (None, None) => {
+                return Err(AppError::BadRequest(format!(
+                    "service '{service_key}' requires 'url' (raw HTTP)"
+                )));
+            }
+        };
+        let parsed =
+            url::Url::parse(u).map_err(|e| AppError::BadRequest(format!("invalid 'url': {e}")))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(AppError::BadRequest(format!(
+                "'url' scheme must be http or https (got '{}')",
+                parsed.scheme()
+            )));
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| AppError::BadRequest("'url' has no host".into()))?;
+        // Build `host[:port]/path?query` — the `path` segment that feeds
+        // the derived permission key (`{service}:{METHOD}:{path}`).
+        let mut perm_path = match parsed.port() {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+        perm_path.push_str(parsed.path());
+        if let Some(q) = parsed.query() {
+            perm_path.push('?');
+            perm_path.push_str(q);
+        }
+        return Ok((perm_path, u.clone()));
     }
     match (url, path) {
         (Some(_), Some(_)) => Err(AppError::BadRequest(
@@ -1554,9 +1601,21 @@ async fn resolve_action_metadata(
     ceiling_user_id: Uuid,
     req: &CallRequest,
 ) -> Result<(ActionMetadata, Option<ResolvedModeC>), AppError> {
+    // `service` is required. Mode A's legacy no-`service` raw-HTTP shape
+    // is rejected with a clear migration hint — callers send
+    // `service: "http"` instead, which routes through the verb shape
+    // below against the synthetic `http` pseudo-service.
+    if req.service.is_none() {
+        return Err(AppError::BadRequest(
+            "'service' is required (use service: 'http' for raw HTTP)".into(),
+        ));
+    }
+
     // Service + HTTP verb (SPEC §8). Caller names a service instance and
     // an HTTP method + path/url; auth is auto-injected from the instance's
     // binding; the template's `hosts[]` bounds where the bearer can land.
+    // For `service: "http"`, `hosts` is empty and the caller's `url`
+    // carries the full target (see `resolve_verb_host_and_path`).
     if let (Some(service_key), None) = (&req.service, &req.action) {
         let raw_method = req.method.clone().ok_or_else(|| {
             AppError::BadRequest(
@@ -1708,25 +1767,11 @@ async fn resolve_action_metadata(
         return Ok((metadata, Some(ResolvedModeC { svc, instance })));
     }
 
-    // `http` pseudo-service: raw HTTP, no schema. Permission keys from
-    // caller's url/method.
-    let raw_method = req.method.clone().ok_or_else(|| {
-        AppError::BadRequest("either 'method'+'url' or 'service'+'action' required".into())
-    })?;
-    let raw_url = req
-        .url
-        .clone()
-        .ok_or_else(|| AppError::BadRequest("'url' required for raw HTTP mode".into()))?;
-    Ok((
-        ActionMetadata {
-            validation_params: HashMap::new(),
-            service_scope: None,
-            risk: None,
-            raw_method,
-            raw_url,
-            needs_gate: !req.secrets.is_empty(),
-        },
-        None,
+    // Unreachable: the no-service rejection at the top + the two
+    // shape branches above (verb when `action` is None, action when both
+    // are Some) cover every well-formed request.
+    Err(AppError::BadRequest(
+        "request must include 'service' plus either 'action' or ('method' + 'url'/'path')".into(),
     ))
 }
 
@@ -1757,8 +1802,9 @@ fn invalid_action_args_error(
 }
 
 /// Resolve a CallRequest into a concrete ActionRequest + metadata.
-/// Handles all three SPEC §8 shapes (Service + action, Service + HTTP
-/// verb, `http` pseudo-service).
+/// Handles both SPEC §8 shapes (Service + action, Service + HTTP verb).
+/// Mode A raw HTTP rides on the verb shape against the synthetic `http`
+/// pseudo-service.
 ///
 /// `pre_resolved_mode_c` lets the caller hand in the template+instance
 /// already looked up by `resolve_action_metadata`, so service shapes
@@ -2240,41 +2286,10 @@ async fn resolve_request(
         ));
     }
 
-    // `http` pseudo-service: raw HTTP
-    let method = req.method.clone().ok_or_else(|| {
-        AppError::BadRequest("either 'method'+'url' or 'service'+'action' required".into())
-    })?;
-    let url = req
-        .url
-        .clone()
-        .ok_or_else(|| AppError::BadRequest("'url' required for raw HTTP mode".into()))?;
-
-    let description = {
-        let display_url = url
-            .strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .unwrap_or(&url);
-        format!("{method} {display_url}")
-    };
-
-    Ok((
-        ActionRequest {
-            method,
-            url,
-            headers: req.headers.clone(),
-            body: req.body.clone(),
-            secrets: req.secrets.clone(),
-        },
-        ResolvedMeta {
-            description: Some(description),
-            service_scope: None,
-            risk: None,
-            disclose: Vec::new(),
-            redact: Vec::new(),
-            params: HashMap::new(),
-            mcp_target: None,
-            platform_target: None,
-        },
+    // Unreachable: `resolve_action_metadata` rejects no-`service` requests
+    // up front, and the two arms above cover both well-formed shapes.
+    Err(AppError::BadRequest(
+        "request must include 'service' plus either 'action' or ('method' + 'url'/'path')".into(),
     ))
 }
 

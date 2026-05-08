@@ -45,8 +45,6 @@ struct CreateGroupRequest {
     name: String,
     #[serde(default)]
     description: String,
-    #[serde(default)]
-    allow_raw_http: bool,
 }
 
 #[derive(Deserialize)]
@@ -54,8 +52,6 @@ struct UpdateGroupRequest {
     name: String,
     #[serde(default)]
     description: String,
-    #[serde(default)]
-    allow_raw_http: bool,
 }
 
 #[derive(Deserialize)]
@@ -79,7 +75,6 @@ struct GroupResponse {
     org_id: Uuid,
     name: String,
     description: String,
-    allow_raw_http: bool,
     is_system: bool,
     /// `'everyone'`, `'admins'`, or `'self'` for system groups; `null` otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,7 +93,6 @@ impl From<GroupRow> for GroupResponse {
             org_id: r.org_id,
             name: r.name,
             description: r.description,
-            allow_raw_http: r.allow_raw_http,
             is_system: r.is_system,
             system_kind: r.system_kind,
             owner_identity_id: r.owner_identity_id,
@@ -137,7 +131,7 @@ async fn create_group(
 ) -> Result<Json<GroupResponse>> {
     let auth = acl;
     let row = scope
-        .create_group(&req.name, &req.description, req.allow_raw_http)
+        .create_group(&req.name, &req.description)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db_err)
@@ -157,7 +151,6 @@ async fn create_group(
             resource_id: Some(row.id),
             detail: serde_json::json!({
                 "name": &row.name,
-                "allow_raw_http": row.allow_raw_http,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -230,7 +223,7 @@ async fn update_group(
     }
 
     let row = scope
-        .update_group(id, &req.name, &req.description, req.allow_raw_http)
+        .update_group(id, &req.name, &req.description)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db_err)
@@ -251,7 +244,6 @@ async fn update_group(
             resource_id: Some(row.id),
             detail: serde_json::json!({
                 "name": &row.name,
-                "allow_raw_http": row.allow_raw_http,
             }),
             description: None,
             ip_address: ip.0.as_deref(),

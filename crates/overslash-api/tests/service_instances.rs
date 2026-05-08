@@ -78,7 +78,7 @@ async fn setup(pool: PgPool) -> (String, Client, Uuid, Uuid, String, String) {
 // -- Template Tests --
 
 #[tokio::test]
-async fn test_list_templates_empty_registry() {
+async fn test_list_templates_only_http_pseudo_service() {
     let pool = common::test_pool().await;
     let (base, client, _org_id, _ident_id, api_key, _admin_key) = setup(pool).await;
 
@@ -92,8 +92,19 @@ async fn test_list_templates_empty_registry() {
         .await
         .unwrap();
 
-    // Empty registry in test mode — no templates initially
-    assert!(resp.is_empty());
+    // Test registries use `with_builtins()` which only carries the synthetic
+    // `http` pseudo-service (the Mode-A anchor — see DECISIONS.md D15). No
+    // shipped YAML templates are loaded in tests, so the listing should
+    // contain exactly that one entry.
+    let keys: Vec<&str> = resp
+        .iter()
+        .filter_map(|v| v.get("key").and_then(|k| k.as_str()))
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["http"],
+        "test registry should expose only `http`"
+    );
 }
 
 #[tokio::test]

@@ -490,19 +490,20 @@ export interface SecretRef {
 }
 
 export interface CallRequest {
-  // `http` pseudo-service: raw HTTP
+  // `service` is required (use 'http' for raw HTTP via the synthetic
+  // pseudo-service — the legacy no-service shape is rejected with 400).
+  service: string;
+  // Service + defined action shape: set `action` + `params`.
+  action?: string;
+  params?: Record<string, unknown>;
+  // Service + HTTP verb shape: set `method` + (`path` or `url`).
+  // For `service: "http"`, `url` is required (no host base to prefix).
   method?: string;
+  path?: string;
   url?: string;
   headers?: Record<string, string>;
   body?: string;
   secrets?: SecretRef[];
-  // Service + defined action / Service + HTTP verb (SPEC §8)
-  service?: string;
-  action?: string;
-  /// Service + HTTP verb path (host comes from the service template).
-  /// Mutually exclusive with `action`.
-  path?: string;
-  params?: Record<string, unknown>;
   // Optional server-side filter applied to the upstream JSON response.
   prefer_stream?: boolean;
   filter?: ResponseFilter;

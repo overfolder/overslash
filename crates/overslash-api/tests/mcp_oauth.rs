@@ -2328,6 +2328,7 @@ async fn mcp_overslash_call_resumes_pending_approval() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service":"http",
             "method":"GET",
             "url":format!("http://{mock_addr}/echo"),
             "secrets":[{"name":"tk","inject_as":"header","header_name":"X-Auth"}]

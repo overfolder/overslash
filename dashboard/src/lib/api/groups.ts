@@ -9,7 +9,6 @@ export interface Group {
 	org_id: string;
 	name: string;
 	description: string;
-	allow_raw_http: boolean;
 	is_system: boolean;
 	/** "everyone" | "admins" | "self" for system groups; absent otherwise. */
 	system_kind?: 'everyone' | 'admins' | 'self';
@@ -22,7 +21,6 @@ export interface Group {
 export interface CreateGroupRequest {
 	name: string;
 	description?: string;
-	allow_raw_http?: boolean;
 }
 
 export type UpdateGroupRequest = CreateGroupRequest;

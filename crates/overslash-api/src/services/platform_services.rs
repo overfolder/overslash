@@ -290,6 +290,15 @@ pub async fn kernel_create_service(
     ctx: PlatformCallContext,
     input: CreateServiceInput,
 ) -> Result<ServiceInstanceDetail, AppError> {
+    // The `http` template is system-managed: every org gets exactly one
+    // org-level instance at bootstrap time, and there's nothing to
+    // configure on it (no auth, no host binding). Reject create attempts
+    // up front so callers can't shadow the singleton with a duplicate row.
+    if input.template_key == "http" {
+        return Err(AppError::BadRequest(
+            "the 'http' service is system-managed; instances cannot be created".into(),
+        ));
+    }
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
     let auth_identity = ctx.identity_id.ok_or_else(|| {
         AppError::BadRequest("creating a service requires an identity-bound API key".into())

@@ -88,6 +88,7 @@ async fn test_google_calendar_three_modes() {
         .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{
@@ -519,6 +520,7 @@ async fn test_google_calendar_real_byoc() {
         .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!(
                 "https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"

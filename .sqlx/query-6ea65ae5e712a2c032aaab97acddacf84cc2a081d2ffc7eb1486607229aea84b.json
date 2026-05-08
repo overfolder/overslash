@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO groups (org_id, name, description, is_system, system_kind)\n         VALUES ($1, 'Admins', 'Organization administrators', true, 'admins')\n         ON CONFLICT (org_id, name) DO UPDATE SET system_kind = 'admins'\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6ea65ae5e712a2c032aaab97acddacf84cc2a081d2ffc7eb1486607229aea84b"
+}

@@ -592,6 +592,7 @@ async fn complete_from_elicitation_accept_allow_resolves_and_calls() {
         .post(format!("{}/v1/actions/call", fx.base))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -701,6 +702,7 @@ async fn complete_from_elicitation_allow_remember_without_keys_creates_rule() {
         .post(format!("{}/v1/actions/call", fx.base))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]

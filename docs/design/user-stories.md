@@ -2,6 +2,8 @@
 
 Concrete end-to-end narratives showing how different actors interact with Overslash. These stories ground the abstract spec (§§4–11) in real flows and clarify which surfaces (REST API, dashboard standalone pages, MCP, platform-mediated UX) each actor touches.
 
+> **Note (DECISIONS.md D15, May 2026).** Several stories below refer to a per-group `allow_raw_http: true` flag — that boolean was retired. Raw HTTP is now the system-managed `http` service instance; granting raw HTTP to a group means adding an `http (admin)` grant via the standard groups UI. Read the references through that lens. The rest of each story (escape-hatch positioning, secret-host keys, audit redaction) is unchanged.
+
 Each story names: the **actors**, the **happy path**, the **Overslash surfaces** involved, and the **spec sections** exercised.
 
 ---
@@ -230,7 +232,7 @@ The key shift: **Alice never opens the Overslash dashboard.** Service connection
 2. **IdP configuration.** Erin opens **Settings → Identity Providers → Add IdP → Okta**. She pastes ACME's Okta issuer URL (`https://acme.okta.com`). Overslash hits `.well-known/openid-configuration`, autodiscovers all endpoints (§4 *OIDC Discovery*). Erin pastes the client ID + secret she generated in Okta, saves. She tests with her own login by signing out and signing back in via Okta — round-trip works.
 3. **Group creation.** Erin opens **Settings → Groups** and creates three groups:
    - **Engineering**: grants `github (write, auto_approve_reads=true)`, `slack (write)`, `jira (write)`. The `auto_approve_reads` flag (§5) means agents in this group auto-approve any non-mutating GitHub/Slack/Jira actions without prompting users — large UX win for read-heavy agent workflows.
-   - **Admin**: grants `github (admin)`, `slack (admin)`, `jira (admin)`, plus `allow_raw_http: true`. Reserved for Erin and a couple of senior engineers.
+   - **Admin**: grants `github (admin)`, `slack (admin)`, `jira (admin)`, plus `http (admin)` (raw HTTP — see SPEC §5 / DECISIONS D15). Reserved for Erin and a couple of senior engineers.
    - **Read-only**: grants `github (read)`, `slack (read)`, `jira (read)`. For the security team and contractors.
 4. **Org GitHub service via BYOC.** Erin doesn't want to wait for CASA on Overslash's system Google credentials, and for GitHub specifically, she wants ACME's *own* GitHub OAuth app so PRs and audit trails attribute to ACME's brand. She:
    - Goes to her ACME GCP project (a separate one from Overslash), creates an OAuth client for GitHub (web application type)... actually GitHub doesn't use GCP. She creates a GitHub OAuth App at `github.com/settings/developers`, copies client ID + secret.

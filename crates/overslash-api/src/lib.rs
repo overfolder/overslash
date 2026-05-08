@@ -110,11 +110,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         }
     }
 
-    // Load service registry
+    // Load service registry. Falling back to `with_builtins()` (rather
+    // than `default()`) preserves the synthetic `http` pseudo-service even
+    // when shipped templates fail to load — without it, `service: "http"`
+    // requests would 404 in the same boot where the migration created the
+    // `http` service_instances row.
     let registry = ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir))
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to load service registry: {e}");
-            ServiceRegistry::default()
+            ServiceRegistry::with_builtins()
         });
     tracing::info!("Loaded {} service definitions", registry.len());
 

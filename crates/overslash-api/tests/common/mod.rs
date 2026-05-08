@@ -619,7 +619,7 @@ where
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -749,7 +749,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -870,7 +870,7 @@ pub async fn start_api_with_auth_providers(
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -1481,7 +1481,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),

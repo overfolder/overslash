@@ -123,8 +123,7 @@
 		try {
 			const updated = await groupsApi.update(groupId, {
 				name: editName.trim(),
-				description: editDescription.trim(),
-				allow_raw_http: group.allow_raw_http
+				description: editDescription.trim()
 			});
 			group = updated;
 		} catch (e) {

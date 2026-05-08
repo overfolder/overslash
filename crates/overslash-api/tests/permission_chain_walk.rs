@@ -28,6 +28,7 @@ async fn call_action(
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},
@@ -232,6 +233,7 @@ async fn action_detail_truncated_at_100kb_on_char_boundary() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "text/plain"},
