@@ -23,6 +23,7 @@ async fn call_echo(
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},
@@ -45,6 +46,7 @@ async fn call_other(
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/large-file?size=8"),
             "secrets": [{"name": "test_token", "inject_as": "header", "header_name": "X-Token"}]

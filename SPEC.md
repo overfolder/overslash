@@ -284,7 +284,7 @@ Access levels map to the `Risk` enum:
 - **write** — read + mutating actions (`risk: write`, + POST/PUT/PATCH)
 - **admin** — full access including destructive actions (`risk: delete`, + DELETE)
 
-Raw HTTP access (Mode A) is gated by a separate `allow_raw_http` boolean on the group — it is not a service instance.
+Raw HTTP access goes through the system-managed `http` service instance (one per org, created at bootstrap). Group access is granted via the standard `group_grants` mechanism, with the same access-level → risk mapping as any other service: `read` covers GET/HEAD/OPTIONS, `write` adds POST/PUT/PATCH, `admin` adds DELETE. There is no `allow_raw_http` boolean — raw HTTP is just another service from the ceiling's point of view, and most orgs leave it un-granted on `Everyone`.
 
 **Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`. The owner can downgrade these grants (cap at `read`, disable auto-approve) or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
 

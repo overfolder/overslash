@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict JdtwU9YfjhceOLJB43bpzrmwjQMtMhbQj8i1OaX5U7MyRKK7zcXa56tc3xNHJ36
+\restrict pYdNRxBDb4acj21vVWeo80INoW8RG6xoHvGJVL4dUwwRlePCMh2SxheM7HKuQrf
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -198,7 +198,6 @@ CREATE TABLE public.groups (
     org_id uuid NOT NULL,
     name text NOT NULL,
     description text DEFAULT ''::text NOT NULL,
-    allow_raw_http boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_system boolean DEFAULT false NOT NULL,
@@ -2317,5 +2316,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JdtwU9YfjhceOLJB43bpzrmwjQMtMhbQj8i1OaX5U7MyRKK7zcXa56tc3xNHJ36
+\unrestrict pYdNRxBDb4acj21vVWeo80INoW8RG6xoHvGJVL4dUwwRlePCMh2SxheM7HKuQrf
 

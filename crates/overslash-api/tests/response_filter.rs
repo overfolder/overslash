@@ -22,6 +22,7 @@ async fn test_filter_jq_happy_path() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"content-type": "application/json"},
@@ -75,6 +76,7 @@ async fn test_filter_jq_syntax_error_returns_400() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             // Unclosed bracket — jq syntax error.
@@ -106,6 +108,7 @@ async fn test_filter_body_not_json_returns_200_with_envelope() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/large-file?size=64"),
             "filter": {"lang": "jq", "expr": "."},
@@ -142,6 +145,7 @@ async fn test_filter_runtime_error_returns_envelope() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"content-type": "application/json"},
@@ -172,6 +176,7 @@ async fn test_filter_rejected_with_prefer_stream() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "prefer_stream": true,
@@ -204,6 +209,7 @@ async fn test_filter_does_not_rescue_oversized_upstream() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/large-file?size=10240"),
             // Even with a filter that would shrink the result drastically,

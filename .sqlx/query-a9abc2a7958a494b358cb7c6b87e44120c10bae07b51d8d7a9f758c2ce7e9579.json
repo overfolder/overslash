@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at\n         FROM groups\n         WHERE org_id = $1 AND system_kind = 'self' AND owner_identity_id = $2",
+  "query": "INSERT INTO groups (org_id, name, description)\n         VALUES ($1, $2, $3)\n         RETURNING id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -25,31 +25,26 @@
       },
       {
         "ordinal": 4,
-        "name": "allow_raw_http",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 5,
         "name": "is_system",
         "type_info": "Bool"
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "system_kind",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "owner_identity_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -57,11 +52,11 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
-      false,
       false,
       false,
       false,
@@ -73,5 +68,5 @@
       false
     ]
   },
-  "hash": "8af7a82b0cea6bc463b1d0dc4cc0a1f29d96a068f98e1a6c3e67708bcb39ce68"
+  "hash": "a9abc2a7958a494b358cb7c6b87e44120c10bae07b51d8d7a9f758c2ce7e9579"
 }

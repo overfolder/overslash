@@ -15,6 +15,7 @@ async fn call_action(base: &str, api_key: &str, mock_addr: std::net::SocketAddr)
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},

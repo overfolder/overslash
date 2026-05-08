@@ -215,7 +215,10 @@
 	function buildRawHttpRequest(): CallRequest | null {
 		if (!rawUrl.trim()) return null;
 		const { literal, secrets: parsedSecrets } = parseHeaders(rawHeaders);
+		// Mode A is now `service: "http"` against the synthetic pseudo-service.
+		// The API rejects no-`service` raw HTTP shapes with a 400.
 		return attachFilter({
+			service: 'http',
 			method: rawMethod,
 			url: rawUrl.trim(),
 			headers: literal,

@@ -23,9 +23,8 @@ impl OrgScope {
         &self,
         name: &str,
         description: &str,
-        allow_raw_http: bool,
     ) -> Result<GroupRow, sqlx::Error> {
-        group::create(self.db(), self.org_id(), name, description, allow_raw_http).await
+        group::create(self.db(), self.org_id(), name, description).await
     }
 
     /// Look up a group by id, scoped to this org. Returns `None` if the id
@@ -45,17 +44,8 @@ impl OrgScope {
         id: Uuid,
         name: &str,
         description: &str,
-        allow_raw_http: bool,
     ) -> Result<Option<GroupRow>, sqlx::Error> {
-        group::update(
-            self.db(),
-            id,
-            self.org_id(),
-            name,
-            description,
-            allow_raw_http,
-        )
-        .await
+        group::update(self.db(), id, self.org_id(), name, description).await
     }
 
     /// Delete a group, scoped to this org.
@@ -210,11 +200,12 @@ impl OrgScope {
 
     // ── Ceiling queries (hot auth path) ──────────────────────────────
 
-    /// Aggregate the user's group ceiling (grants + `allow_raw_http`) within
-    /// this org. The user identity, the groups, and the granted service
-    /// instances must all live in `self.org_id()` — cross-tenant rows are
-    /// excluded at the SQL boundary, which is what makes this safe to call
-    /// from the auth-time `OrgAcl` extractor.
+    /// Aggregate the user's group ceiling (grants) within this org. The user
+    /// identity, the groups, and the granted service instances must all live
+    /// in `self.org_id()` — cross-tenant rows are excluded at the SQL
+    /// boundary, which is what makes this safe to call from the auth-time
+    /// `OrgAcl` extractor. Raw HTTP access is just another grant in the
+    /// returned set (on the system-managed `http` instance).
     pub async fn get_ceiling_for_user(
         &self,
         user_identity_id: Uuid,

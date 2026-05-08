@@ -19,6 +19,7 @@ async fn test_response_too_large() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/large-file?size=10240"),
         }))
@@ -52,6 +53,7 @@ async fn test_prefer_stream_large_file() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/large-file?size=102400"),
             "prefer_stream": true,
@@ -108,6 +110,7 @@ async fn test_prefer_stream_with_auth() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/large-file?size=2048"),
             "prefer_stream": true,
@@ -170,6 +173,7 @@ async fn test_google_drive_redirect_stream() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/drive/files/download?size=8192"),
             "prefer_stream": true,

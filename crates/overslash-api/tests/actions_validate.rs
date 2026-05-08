@@ -417,6 +417,34 @@ async fn removed_connection_field_is_rejected() {
     );
 }
 
+/// After the Mode A collapse, the legacy no-`service` raw-HTTP shape
+/// (`{method, url}` without `service`) is rejected with a 400 carrying
+/// the migration hint `service: 'http'`. Pinning this contract here so
+/// callers that haven't migrated to the new shape get a single
+/// recognisable error string instead of a different message every release.
+#[tokio::test]
+async fn no_service_field_is_rejected_with_migration_hint() {
+    let fx = setup_with_template("validate_no_service_hint").await;
+
+    let resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header(auth_header(&fx.agent_key).0, auth_header(&fx.agent_key).1)
+        .json(&json!({
+            "method": "GET",
+            "url": "https://api.example.com/whoami"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("'service' is required") && body.contains("'http'"),
+        "expected migration hint pointing at service: 'http', got: {body}"
+    );
+}
+
 /// Well-formed args + caller has full permissions → 200 `allowed`.
 /// Pins the happy path and confirms the permission check actually runs
 /// (and produces a different outcome than the gap test) rather than

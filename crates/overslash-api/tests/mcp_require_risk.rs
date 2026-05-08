@@ -27,6 +27,7 @@ async fn require_risk_read_rejects_post_method_in_raw_http_mode() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": "http://127.0.0.1:1/never-reached",
             "require_risk": "read",
@@ -59,6 +60,7 @@ async fn require_risk_read_rejects_delete_method_in_raw_http_mode() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "DELETE",
             "url": "http://127.0.0.1:1/never-reached",
             "require_risk": "read",
@@ -97,6 +99,7 @@ async fn actions_call_rejects_explicit_null_params() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "params": null,
@@ -116,6 +119,7 @@ async fn actions_call_rejects_explicit_null_params() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
         }))
@@ -146,6 +150,7 @@ async fn require_risk_read_does_not_block_get_method() {
         .post(format!("{base}/v1/actions/call"))
         .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "require_risk": "read",

@@ -58,7 +58,6 @@ import { api } from './api.mjs';
  *   org_id: string,
  *   name: string,
  *   description: string,
- *   allow_raw_http: boolean,
  *   is_system: boolean,
  * }} Group
  *
@@ -217,7 +216,7 @@ export async function seedServices(session, inputs) {
 
 /**
  * @param {import('./auth.mjs').Session} session
- * @param {{ name: string, description?: string, allowRawHttp?: boolean }} input
+ * @param {{ name: string, description?: string }} input
  * @returns {Promise<Group>}
  */
 export async function seedGroup(session, input) {
@@ -225,8 +224,7 @@ export async function seedGroup(session, input) {
 		method: 'POST',
 		body: {
 			name: input.name,
-			description: input.description ?? '',
-			allow_raw_http: input.allowRawHttp ?? false
+			description: input.description ?? ''
 		},
 		expect: [200, 201]
 	});

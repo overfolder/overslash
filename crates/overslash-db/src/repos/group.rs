@@ -10,7 +10,6 @@ pub struct GroupRow {
     pub org_id: Uuid,
     pub name: String,
     pub description: String,
-    pub allow_raw_http: bool,
     pub is_system: bool,
     /// `'everyone'`, `'admins'`, or `'self'` for system groups; `NULL` for
     /// admin-created groups.
@@ -79,7 +78,6 @@ pub struct UserCeilingGrantRow {
 
 /// Aggregated ceiling data for a user.
 pub struct UserCeiling {
-    pub allow_raw_http: bool,
     pub grants: Vec<UserCeilingGrantRow>,
 }
 
@@ -90,17 +88,15 @@ pub(crate) async fn create(
     org_id: Uuid,
     name: &str,
     description: &str,
-    allow_raw_http: bool,
 ) -> Result<GroupRow, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "INSERT INTO groups (org_id, name, description, allow_raw_http)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at",
+        "INSERT INTO groups (org_id, name, description)
+         VALUES ($1, $2, $3)
+         RETURNING id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at",
         org_id,
         name,
         description,
-        allow_raw_http,
     )
     .fetch_one(pool)
     .await
@@ -113,7 +109,7 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
+        "SELECT id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at
          FROM groups WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -125,7 +121,7 @@ pub(crate) async fn get_by_id(
 pub(crate) async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
+        "SELECT id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at
          FROM groups WHERE org_id = $1 ORDER BY name",
         org_id,
     )
@@ -139,18 +135,16 @@ pub(crate) async fn update(
     org_id: Uuid,
     name: &str,
     description: &str,
-    allow_raw_http: bool,
 ) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "UPDATE groups SET name = $3, description = $4, allow_raw_http = $5, updated_at = now()
+        "UPDATE groups SET name = $3, description = $4, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at",
+         RETURNING id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at",
         id,
         org_id,
         name,
         description,
-        allow_raw_http,
     )
     .fetch_optional(pool)
     .await
@@ -349,7 +343,7 @@ pub(crate) async fn list_groups_for_identity(
 ) -> Result<Vec<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT g.id, g.org_id, g.name, g.description, g.allow_raw_http, g.is_system, g.system_kind, g.owner_identity_id, g.created_at, g.updated_at
+        "SELECT g.id, g.org_id, g.name, g.description, g.is_system, g.system_kind, g.owner_identity_id, g.created_at, g.updated_at
          FROM groups g
          JOIN identity_groups ig ON ig.group_id = g.id
          JOIN identities i ON i.id = ig.identity_id
@@ -427,7 +421,7 @@ pub(crate) async fn find_everyone_group(
 ) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
+        "SELECT id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at
          FROM groups WHERE org_id = $1 AND system_kind = 'everyone'",
         org_id,
     )
@@ -443,7 +437,7 @@ pub(crate) async fn find_self_group(
 ) -> Result<Option<GroupRow>, sqlx::Error> {
     sqlx::query_as!(
         GroupRow,
-        "SELECT id, org_id, name, description, allow_raw_http, is_system, system_kind, owner_identity_id, created_at, updated_at
+        "SELECT id, org_id, name, description, is_system, system_kind, owner_identity_id, created_at, updated_at
          FROM groups
          WHERE org_id = $1 AND system_kind = 'self' AND owner_identity_id = $2",
         org_id,
@@ -480,8 +474,8 @@ pub(crate) async fn ensure_self_group(
         &identity_id.simple().to_string()[..8]
     );
     let row = sqlx::query!(
-        "INSERT INTO groups (org_id, name, description, is_system, system_kind, owner_identity_id, allow_raw_http)
-         VALUES ($1, $2, 'Personal services and Layer-1 grants for this user', true, 'self', $3, true)
+        "INSERT INTO groups (org_id, name, description, is_system, system_kind, owner_identity_id)
+         VALUES ($1, $2, 'Personal services and Layer-1 grants for this user', true, 'self', $3)
          ON CONFLICT (org_id, owner_identity_id) WHERE system_kind = 'self'
          DO NOTHING
          RETURNING id",
@@ -550,30 +544,19 @@ pub(crate) async fn grant_to_self_group(
 // ── Ceiling queries (hot path) ───────────────────────────────────────
 
 /// Get the aggregated group ceiling for a user, bounded by `org_id`.
-/// Returns all grants across all groups the user belongs to (within the org),
-/// plus the OR of `allow_raw_http` across those groups. The user identity, the
-/// groups, and the granted service instances must all live in the same org —
-/// rows from any other tenant are excluded at the SQL boundary.
+/// Returns all grants across all groups the user belongs to (within the org).
+/// The user identity, the groups, and the granted service instances must all
+/// live in the same org — rows from any other tenant are excluded at the SQL
+/// boundary.
+///
+/// Raw HTTP access is no longer a separate boolean: the org's system-managed
+/// `http` service instance is included in `grants` whenever the user's groups
+/// have a grant on it.
 pub(crate) async fn get_ceiling_for_user(
     pool: &PgPool,
     org_id: Uuid,
     user_identity_id: Uuid,
 ) -> Result<UserCeiling, sqlx::Error> {
-    // Check if the user has allow_raw_http on any group, bounded by org.
-    let raw_http_row = sqlx::query!(
-        "SELECT COALESCE(bool_or(g.allow_raw_http), false) AS allow_raw_http
-         FROM groups g
-         JOIN identity_groups ig ON ig.group_id = g.id
-         JOIN identities i ON i.id = ig.identity_id
-         WHERE ig.identity_id = $1 AND g.org_id = $2 AND i.org_id = $2",
-        user_identity_id,
-        org_id,
-    )
-    .fetch_one(pool)
-    .await?;
-
-    let allow_raw_http = raw_http_row.allow_raw_http.unwrap_or(false);
-
     // Get all grants across all groups, bounded by org on the user, the
     // group, and the service instance.
     let grants = sqlx::query_as!(
@@ -595,10 +578,7 @@ pub(crate) async fn get_ceiling_for_user(
     .fetch_all(pool)
     .await?;
 
-    Ok(UserCeiling {
-        allow_raw_http,
-        grants,
-    })
+    Ok(UserCeiling { grants })
 }
 
 /// Get service instance IDs visible to a user through their group memberships,

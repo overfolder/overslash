@@ -1,8 +1,15 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Bootstrap system assets for a new org: overslash service instance, Everyone + Admins groups,
-/// and default group grants. Idempotent — safe to call if assets already exist.
+/// Bootstrap system assets for a new org: `overslash` and `http` system service
+/// instances, Everyone + Admins groups, and default group grants on both
+/// instances (Everyone gets `write` on `overslash` and `admin` on `http`;
+/// Admins gets `admin` on both). Idempotent — safe to call if assets already
+/// exist.
+///
+/// The `http` instance is the singleton anchor for raw HTTP access — granting
+/// `http` to a group is what permits raw HTTP for that group's members
+/// (replaces the old `allow_raw_http` boolean, see DECISIONS.md D15).
 ///
 /// If `creator_identity_id` is provided, that user is added to both Everyone and Admins groups
 /// and gets a Myself group created.
@@ -38,11 +45,11 @@ pub async fn bootstrap_org(
         }
     };
 
-    // 2. Create Everyone group (allow_raw_http = true for backward compat).
-    // Tagged with system_kind = 'everyone' so lookups don't depend on the localized name.
+    // 2. Create Everyone group. Tagged with system_kind = 'everyone' so
+    // lookups don't depend on the localized name.
     let everyone = sqlx::query!(
-        "INSERT INTO groups (org_id, name, description, is_system, system_kind, allow_raw_http)
-         VALUES ($1, 'Everyone', 'All users in this organization', true, 'everyone', true)
+        "INSERT INTO groups (org_id, name, description, is_system, system_kind)
+         VALUES ($1, 'Everyone', 'All users in this organization', true, 'everyone')
          ON CONFLICT (org_id, name) DO UPDATE SET system_kind = 'everyone'
          RETURNING id",
         org_id,
@@ -65,8 +72,8 @@ pub async fn bootstrap_org(
 
     // 3. Create Admins group
     let admins = sqlx::query!(
-        "INSERT INTO groups (org_id, name, description, is_system, system_kind, allow_raw_http)
-         VALUES ($1, 'Admins', 'Organization administrators', true, 'admins', true)
+        "INSERT INTO groups (org_id, name, description, is_system, system_kind)
+         VALUES ($1, 'Admins', 'Organization administrators', true, 'admins')
          ON CONFLICT (org_id, name) DO UPDATE SET system_kind = 'admins'
          RETURNING id",
         org_id,
@@ -109,7 +116,54 @@ pub async fn bootstrap_org(
     .execute(&mut *tx)
     .await?;
 
-    // 6. Add creator to both groups + ensure their Myself group
+    // 6. Create the org-level `http` system instance (Mode A's pseudo-service).
+    // No credentials, no host binding — the caller supplies the full URL on
+    // each call. Group access flows through the standard grant mechanism.
+    let http_svc = sqlx::query!(
+        "INSERT INTO service_instances (org_id, name, template_source, template_key, status, is_system)
+         VALUES ($1, 'http', 'global', 'http', 'active', true)
+         ON CONFLICT (org_id, name) WHERE owner_identity_id IS NULL DO NOTHING
+         RETURNING id",
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let http_svc_id = match http_svc {
+        Some(row) => row.id,
+        None => sqlx::query!(
+            "SELECT id FROM service_instances WHERE org_id = $1 AND name = 'http' AND is_system = true",
+            org_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?
+        .id,
+    };
+
+    // 7. Grant Everyone admin on http (preserves the prior allow_raw_http=true
+    // default so the Mode A → http migration doesn't silently revoke access).
+    sqlx::query!(
+        "INSERT INTO group_grants (group_id, service_instance_id, access_level)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT (group_id, service_instance_id) DO NOTHING",
+        everyone_id,
+        http_svc_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 8. Grant Admins admin on http
+    sqlx::query!(
+        "INSERT INTO group_grants (group_id, service_instance_id, access_level)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT (group_id, service_instance_id) DO NOTHING",
+        admins_id,
+        http_svc_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 9. Add creator to both groups + ensure their Myself group
     if let Some(user_id) = creator_identity_id {
         sqlx::query!(
             "INSERT INTO identity_groups (identity_id, group_id)

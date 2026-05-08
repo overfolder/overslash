@@ -97,7 +97,7 @@
 
 - `groups`, `group_grants`, `identity_groups` tables (migration 020)
 - Group grants reference org-level service instances with structured access levels (`read`/`write`/`admin`)
-- `allow_raw_http` per-group for Mode A raw HTTP access
+- Raw HTTP is the synthetic `http` service instance (one system-managed singleton per org) — group access uses the standard grant mechanism with read/write/admin levels mapping to verb risk
 - `auto_approve_reads` per-grant — auto-creates permission keys for non-mutating agent requests
 - Full CRUD API: `POST/GET/PUT/DELETE /v1/groups`, grants, and member management
 - Group ceiling check in action execution (Layer 1, before permission key check)

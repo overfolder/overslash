@@ -70,7 +70,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -416,6 +416,7 @@ async fn test_happy_path_call_with_permission() {
     let resp = client.post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},
@@ -454,6 +455,7 @@ async fn test_approval_flow() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -557,6 +559,7 @@ async fn test_allow_remember_creates_rule() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -605,6 +608,7 @@ async fn test_allow_remember_creates_rule() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -635,6 +639,7 @@ async fn test_call_is_at_most_once() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -694,6 +699,7 @@ async fn test_user_cancels_pending_execution_blocks_agent() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -758,6 +764,7 @@ async fn test_agent_can_cancel_own_pending_execution() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -807,6 +814,7 @@ async fn test_deny_creates_no_execution_row() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -873,6 +881,7 @@ async fn test_allow_remember_failed_call_does_not_create_rule() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": "http://127.0.0.1:1/definitely-not-listening",
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -910,6 +919,7 @@ async fn test_allow_remember_failed_call_does_not_create_rule() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -939,6 +949,7 @@ async fn test_get_execution_endpoint_shape() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1000,6 +1011,7 @@ async fn test_resolve_rejects_invalid_remember_keys() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1046,6 +1058,7 @@ async fn test_resolve_rejects_invalid_ttl() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1145,6 +1158,7 @@ async fn test_deny_keeps_gating() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1171,6 +1185,7 @@ async fn test_deny_keeps_gating() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1193,6 +1208,7 @@ async fn test_unauthenticated_request_no_gate() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},
@@ -1225,6 +1241,7 @@ async fn test_audit_trail() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo")
         }))
@@ -1267,6 +1284,7 @@ async fn test_mode_c_service_action() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "body": "{\"test\": true}"
@@ -1501,6 +1519,7 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2469,6 +2488,7 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2540,6 +2560,7 @@ async fn test_resolve_with_broader_remember_keys_succeeds() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2616,6 +2637,7 @@ async fn test_resolve_with_unrelated_broader_keys_still_fails() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2728,6 +2750,7 @@ async fn test_sweeper_expires_pending_executions() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2795,6 +2818,7 @@ async fn test_sweeper_reaps_orphaned_executing_rows() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2873,6 +2897,7 @@ async fn test_filter_preserved_across_approval_and_replay() {
         .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}],
@@ -2938,6 +2963,7 @@ async fn create_allowed_approval(
         .post(format!("{base}/v1/actions/call"))
         .header(auth(agent_key).0, auth(agent_key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "pending-tk", "inject_as": "header", "header_name": "X-Auth"}]

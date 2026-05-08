@@ -252,8 +252,25 @@ removal. In rough priority order:
 - `crates/overslash-api/src/services/oauth.rs::resolve_access_token`
 - `crates/overslash-api/src/services/client_credentials.rs::resolve`
 - `crates/overslash-api/src/services/permission_chain.rs` — chain walk.
-- `crates/overslash-core/src/permissions.rs::PermissionKey::from_http`
-  (and the `from_service_action` companion that "Service + HTTP verb"
-  will join).
+- `crates/overslash-api/src/routes/actions.rs::resolve_verb_host_and_path`
+  — the unified verb-shape resolver that Mode A now also flows through
+  (see Postscript). The legacy `PermissionKey::from_http` builder was
+  deleted; raw-HTTP keys are now produced by `from_service_http` with
+  `service_key = "http"`.
 - `SPEC.md` §5 (permission keys), §8 (action execution).
-- `DECISIONS.md` — pending entry for Phase 5.
+- `DECISIONS.md` — D14 records this change; D15 records the follow-up
+  Mode A collapse (see Postscript).
+
+## Postscript: Mode A collapsed too (DECISIONS.md D15)
+
+After Mode B was killed, Mode A (raw HTTP) was the only remaining
+SPEC-§8 shape with its own resolution branch in `actions.rs` and its own
+`service_name == "http"` special case in the ceiling check. A follow-up
+PR collapsed it the same way: `http` became a real (synthetic) global
+template plus a system-managed org-level singleton instance, raw HTTP
+access flows through the standard `group_grants` mechanism, the
+`groups.allow_raw_http` column was dropped in migration 063, and Mode A
+requests now ride the same Service + HTTP verb code path with
+`service: "http"`. `PermissionKey::from_http` and the `service_name ==
+"http"` ceiling branch are gone. This file remains as the historical
+reference for the Mode-B kill that set up the simplification.

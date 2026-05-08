@@ -105,7 +105,6 @@ async fn group_crud() {
         .json(&json!({
             "name": "Engineering",
             "description": "Dev team",
-            "allow_raw_http": false,
         }))
         .send()
         .await
@@ -114,7 +113,6 @@ async fn group_crud() {
     let group: Value = resp.json().await.unwrap();
     let group_id = group["id"].as_str().unwrap();
     assert_eq!(group["name"], "Engineering");
-    assert_eq!(group["allow_raw_http"], false);
 
     // List groups
     let resp = client
@@ -147,14 +145,12 @@ async fn group_crud() {
         .json(&json!({
             "name": "Engineering",
             "description": "Updated desc",
-            "allow_raw_http": true,
         }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     let updated: Value = resp.json().await.unwrap();
-    assert_eq!(updated["allow_raw_http"], true);
     assert_eq!(updated["description"], "Updated desc");
 
     // Delete group

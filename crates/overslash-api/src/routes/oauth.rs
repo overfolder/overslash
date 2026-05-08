@@ -870,7 +870,7 @@ async fn consent_finish(
                         }
                         g.id
                     } else {
-                        match scope.create_group(name, "", false).await {
+                        match scope.create_group(name, "").await {
                             Ok(g) => g.id,
                             Err(e) => {
                                 tracing::warn!("consent: create group '{name}' failed: {e}");
