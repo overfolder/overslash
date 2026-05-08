@@ -190,7 +190,7 @@
 			{:else}
 				<div class="usedby-list">
 					{#each detail.used_by as svc (svc.id)}
-						<a class="usedby-row" href={`/services/${encodeURIComponent(svc.name)}`}>
+						<a class="usedby-row" href={`/services/${svc.id}`}>
 							<div class="svc-logo">{svc.name[0]?.toUpperCase() ?? '?'}</div>
 							<div class="svc-body">
 								<div class="svc-name">{svc.name}</div>

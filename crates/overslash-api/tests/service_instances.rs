@@ -657,3 +657,86 @@ async fn test_template_actions_listing() {
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0]["key"], "list");
 }
+
+/// The dashboard links each service-list row to `/services/<uuid>`. That URL
+/// segment is forwarded verbatim into `GET /v1/services/{name}`, which must
+/// resolve a UUID-shaped path identically to a name-shaped path. Two rows
+/// with the same display name (e.g. user-level shadowing org-level) are the
+/// motivating case — the name path silently picks one, while the id path
+/// must address each instance unambiguously.
+#[tokio::test]
+async fn test_service_lookup_by_uuid_path() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
+
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "openapi": common::minimal_openapi("uuid-lookup-svc"),
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let create: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "template_key": "uuid-lookup-svc", "status": "active" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = create["id"].as_str().unwrap();
+    let name = create["name"].as_str().unwrap();
+
+    let by_id: Value = client
+        .get(format!("{base}/v1/services/{id}"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let by_name: Value = client
+        .get(format!("{base}/v1/services/{name}"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(by_id["id"], by_name["id"]);
+    assert_eq!(by_id["id"].as_str().unwrap(), id);
+
+    // Sublist also accepts a UUID path (used when the dashboard refreshes
+    // actions after navigating from the list).
+    let actions_resp = client
+        .get(format!("{base}/v1/services/{id}/actions"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(actions_resp.status(), 200);
+
+    // Delete by UUID and confirm the row is gone.
+    let del = client
+        .delete(format!("{base}/v1/services/{id}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 200);
+    let after = client
+        .get(format!("{base}/v1/services/{id}"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status(), 404);
+}
