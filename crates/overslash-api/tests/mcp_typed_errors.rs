@@ -265,3 +265,55 @@ async fn mcp_call_expired_no_refresh_returns_typed_reauth_required() {
         "reason must be non-empty: {envelope}"
     );
 }
+
+// `credential_missing` envelope coverage: the REST render arm is unit-
+// tested in `crates/overslash-api/src/error.rs::tests`; the call-site
+// migration is exercised by the existing
+// `mcp_external::mcp_missing_secret_returns_400_before_upstream_call` test
+// (asserts the 400 status). The MCP-layer transport for typed errors is
+// covered by the two OAuth tests above plus the negative-path test below
+// — a dedicated `credential_missing` MCP integration test would duplicate
+// that coverage, so it's intentionally left as a future addition once
+// slice 5's secret-bag scenarios need the explicit assertion.
+
+/// Non-whitelisted error codes must NOT travel as tool results — they
+/// land as JSON-RPC `INTERNAL_ERROR (-32603)` so the contract widens
+/// only when a typed envelope is explicitly added to the
+/// `forward()` allow-list (see `crates/overslash-api/src/routes/mcp.rs`
+/// `TYPED_ERROR_CODES`).
+///
+/// Calling `overslash_call` against a service that does not exist for
+/// the caller's org produces a 404 envelope whose `error` string ("not
+/// found ...") is *not* in the allow-list. The MCP wrapper must keep
+/// it as a JSON-RPC error rather than reframing as `isError: true`.
+#[tokio::test]
+async fn mcp_call_unknown_service_stays_jsonrpc_error_not_tool_result() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_registry(pool, None).await;
+    let (_org_id, _ident_id, api_key, _admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let frame = rpc_tools_call(
+        &client,
+        &base,
+        &api_key,
+        4,
+        json!({"service": "this_service_does_not_exist", "action": "noop", "params": {}}),
+    )
+    .await;
+
+    // The whitelist gate's negative path: response carries `error.code`
+    // (JSON-RPC error envelope), and `result` is absent. If a future
+    // change loosens the gate to "any JSON with an error field", this
+    // test fails because the body would land as a tool result instead.
+    assert!(
+        frame.get("error").is_some() && !frame["error"].is_null(),
+        "expected JSON-RPC error frame for non-typed failure; got: {frame}"
+    );
+    assert!(
+        frame.get("result").is_none_or(Value::is_null),
+        "result must be absent on JSON-RPC error path; got: {frame}"
+    );
+    let code = frame["error"]["code"].as_i64().unwrap();
+    assert_eq!(code, -32603, "expected INTERNAL_ERROR code; got: {frame}");
+}
