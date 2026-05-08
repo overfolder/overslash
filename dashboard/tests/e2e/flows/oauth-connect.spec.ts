@@ -6,7 +6,7 @@ import { test, expect, loginAs } from '../fixtures/auth';
 // token / userinfo endpoints point at `crates/overslash-fakes`. The fake AS
 // at `/oauth/authorize` auto-approves with `code=mock_code`, the API
 // callback exchanges the code, encrypts and persists the tokens, and the
-// dashboard's polling loop on /services/<name> notices the new row in
+// dashboard's polling loop on /services/<id> notices the new row in
 // /v1/connections.
 //
 // `OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` are set in the
@@ -38,7 +38,7 @@ test('admin can complete the GitHub Connect flow against the fake AS', async ({
 	const svc = await create.json();
 	expect(svc.connection_id).toBeFalsy();
 
-	await page.goto(`/services/${encodeURIComponent(svc.name)}`);
+	await page.goto(`/services/${svc.id}`);
 	await page.getByRole('button', { name: 'credentials' }).click();
 
 	// "Needs setup" is the pre-connect badge on the Credentials tab.

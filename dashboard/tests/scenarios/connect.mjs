@@ -39,9 +39,9 @@ import { seedService } from './seed.mjs';
 export async function connectGithubService(session, page, opts = {}) {
 	const suffix = opts.suffix ?? 'connect';
 	const name = `github-e2e-${suffix}-${Date.now().toString(36)}`;
-	await seedService(session, { templateKey: 'github', name });
+	const seeded = await seedService(session, { templateKey: 'github', name });
 
-	await page.goto(`${session.dashboardUrl}/services/${encodeURIComponent(name)}`);
+	await page.goto(`${session.dashboardUrl}/services/${seeded.id}`);
 	await page.getByRole('button', { name: 'credentials' }).click();
 	await expect(page.getByText('needs setup')).toBeVisible();
 

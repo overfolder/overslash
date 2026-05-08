@@ -85,7 +85,7 @@ try {
 	{
 		const { page, ctx } = await snap.navigateAndSnap(
 			'services-edit-secret-picker-prefill',
-			`/services/${encodeURIComponent(svc.name)}`,
+			`/services/${svc.id}`,
 			{
 				fullPage: false,
 				waitFor: async (p) => {
