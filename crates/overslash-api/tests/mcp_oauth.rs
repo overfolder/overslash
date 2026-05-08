@@ -352,15 +352,23 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(frame["jsonrpc"], "2.0");
     assert_eq!(frame["id"], 1);
     let tools = frame["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4);
+    // 5 tools by default: search, read, call, auth, approve_downstream.
+    // approve_self is binding-flag-gated and stays hidden until the
+    // operator flips `self_approve_enabled` on the MCP binding.
+    assert_eq!(tools.len(), 5);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"overslash_search"));
     assert!(names.contains(&"overslash_read"));
     assert!(names.contains(&"overslash_call"));
     assert!(names.contains(&"overslash_auth"));
+    assert!(names.contains(&"overslash_approve_downstream"));
+    assert!(
+        !names.contains(&"overslash_approve_self"),
+        "overslash_approve_self must stay hidden until the binding's self_approve_enabled flag is on"
+    );
     assert!(
         !names.contains(&"overslash_approve"),
-        "overslash_approve must not be exposed — self-management is dashboard-only"
+        "overslash_approve was split into _self / _downstream — the unsplit name is gone"
     );
 
     // Every tool must carry a `title` and the appropriate annotation hints

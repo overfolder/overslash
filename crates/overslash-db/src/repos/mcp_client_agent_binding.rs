@@ -19,6 +19,7 @@ pub struct McpClientAgentBindingRow {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
     pub elicitation_enabled: bool,
+    pub self_approve_enabled: bool,
 }
 
 pub async fn get_for(
@@ -29,7 +30,7 @@ pub async fn get_for(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled
+                created_at, updated_at, elicitation_enabled, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE user_identity_id = $1 AND client_id = $2",
         user_identity_id,
@@ -50,7 +51,7 @@ pub async fn get_by_agent_identity(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled
+                created_at, updated_at, elicitation_enabled, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE agent_identity_id = $1
           ORDER BY updated_at DESC
@@ -75,7 +76,7 @@ pub async fn get_for_agent_and_client(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled
+                created_at, updated_at, elicitation_enabled, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE agent_identity_id = $1 AND client_id = $2
           ORDER BY updated_at DESC
@@ -99,7 +100,7 @@ pub async fn set_elicitation_enabled(
                 updated_at = now()
           WHERE id = $1
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled",
+                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
         binding_id,
         enabled,
     )
@@ -130,6 +131,47 @@ pub async fn set_elicitation_enabled_for_agent(
     Ok(r.rows_affected())
 }
 
+pub async fn set_self_approve_enabled(
+    pool: &PgPool,
+    binding_id: Uuid,
+    enabled: bool,
+) -> Result<Option<McpClientAgentBindingRow>, sqlx::Error> {
+    sqlx::query_as!(
+        McpClientAgentBindingRow,
+        "UPDATE mcp_client_agent_bindings
+            SET self_approve_enabled = $2,
+                updated_at = now()
+          WHERE id = $1
+         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
+                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+        binding_id,
+        enabled,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Apply the self-approve toggle to *every* binding for this agent — same
+/// fan-out rationale as `set_elicitation_enabled_for_agent`. Returns
+/// rows_affected.
+pub async fn set_self_approve_enabled_for_agent(
+    pool: &PgPool,
+    agent_identity_id: Uuid,
+    enabled: bool,
+) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query!(
+        "UPDATE mcp_client_agent_bindings
+            SET self_approve_enabled = $2,
+                updated_at = now()
+          WHERE agent_identity_id = $1",
+        agent_identity_id,
+        enabled,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// Delete every binding for this agent. The reauth flow lets a single user
 /// stack multiple `(client_id)` bindings under one agent, so the DELETE can
 /// match more than one row — return them all so the caller can audit each
@@ -144,7 +186,7 @@ pub async fn delete_by_agent_identity(
         "DELETE FROM mcp_client_agent_bindings
           WHERE agent_identity_id = $1
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled",
+                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
         agent_identity_id,
     )
     .fetch_all(pool)
@@ -167,7 +209,7 @@ pub async fn upsert(
            DO UPDATE SET agent_identity_id = EXCLUDED.agent_identity_id,
                          updated_at = now()
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled",
+                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
         org_id,
         user_identity_id,
         client_id,
@@ -184,7 +226,7 @@ pub async fn list_for_user(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled
+                created_at, updated_at, elicitation_enabled, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE user_identity_id = $1
           ORDER BY updated_at DESC",

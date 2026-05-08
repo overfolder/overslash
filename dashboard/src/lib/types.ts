@@ -90,6 +90,15 @@ export interface McpConnection {
   last_seen_at: string | null;
   elicitation_enabled: boolean;
   elicitation_supported: boolean;
+  /**
+   * When true, the agent on this binding may resolve approvals it itself
+   * requested via the `overslash_approve_self` MCP tool, and that tool
+   * becomes visible in `tools/list`. Default `false` — flipping it on is
+   * the human-at-the-keyboard escape hatch for sessions where the operator
+   * is comfortable letting the agent rubber-stamp its own actions. See
+   * docs/design/agent-self-management.md §2.
+   */
+  self_approve_enabled: boolean;
 }
 
 /**
@@ -541,6 +550,15 @@ export type CallResponse =
       approval_url: string;
       action_description: string;
       expires_at: string;
+      /**
+       * Caller↔requester relationship classified server-side. Always
+       * `"self"` here (the caller of `overslash_call` is the requester);
+       * the field is present so the same envelope shape works when an
+       * ancestor inspects the row via `list_pending` and sees
+       * `"downstream"`. MCP clients use it to pick
+       * `overslash_approve_self` vs `overslash_approve_downstream`.
+       */
+      relationship: 'self' | 'downstream' | 'not_in_your_chain';
     }
   | { status: 'denied'; reason: string };
 

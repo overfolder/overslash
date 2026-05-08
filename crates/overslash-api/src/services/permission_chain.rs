@@ -505,3 +505,51 @@ pub async fn is_self_or_ancestor(
     let chain = scope.get_identity_ancestor_chain(target).await?;
     Ok(chain.iter().any(|c| c.id == candidate))
 }
+
+/// Caller↔requester relationship for an approval. The split between
+/// `overslash_approve_self` and `overslash_approve_downstream` is UX (it
+/// lets Claude Code permission-rule each tool separately); this classifier
+/// is the actual security boundary, evaluated server-side at every resolve.
+/// See docs/design/agent-self-management.md §2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalRelationship {
+    /// Caller is the requester. Permitted only when the caller's MCP
+    /// binding has `self_approve_enabled = true` — i.e. a trusted human is
+    /// at the keyboard.
+    SelfApproval,
+    /// Caller is a proper ancestor of the requester. Always permitted —
+    /// this is the delegation case (user approves agent, agent approves
+    /// subagent).
+    Downstream,
+    /// Caller is a sibling or otherwise unrelated to the requester. Always
+    /// rejected with the typed `not_in_your_chain` envelope.
+    NotInYourChain,
+}
+
+impl ApprovalRelationship {
+    /// Wire form embedded in the `relationship` field of `PendingApproval`
+    /// payloads so MCP clients can pre-pick the right tool.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApprovalRelationship::SelfApproval => "self",
+            ApprovalRelationship::Downstream => "downstream",
+            ApprovalRelationship::NotInYourChain => "not_in_your_chain",
+        }
+    }
+}
+
+pub async fn classify_approval_relationship(
+    scope: &OrgScope,
+    caller: Uuid,
+    requester: Uuid,
+) -> Result<ApprovalRelationship, AppError> {
+    if caller == requester {
+        return Ok(ApprovalRelationship::SelfApproval);
+    }
+    let chain = scope.get_identity_ancestor_chain(requester).await?;
+    if chain.iter().any(|c| c.id == caller) {
+        Ok(ApprovalRelationship::Downstream)
+    } else {
+        Ok(ApprovalRelationship::NotInYourChain)
+    }
+}

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pYdNRxBDb4acj21vVWeo80INoW8RG6xoHvGJVL4dUwwRlePCMh2SxheM7HKuQrf
+\restrict cMlUcoEuRRUF5aymo8BUXMxYCFrUZIpE6ow4h4d4aZniGoPbyH0558zkM1VuRxe
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -261,7 +261,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    elicitation_enabled boolean DEFAULT false NOT NULL
+    elicitation_enabled boolean DEFAULT false NOT NULL,
+    self_approve_enabled boolean DEFAULT false NOT NULL
 );
 
 
@@ -2316,5 +2317,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pYdNRxBDb4acj21vVWeo80INoW8RG6xoHvGJVL4dUwwRlePCMh2SxheM7HKuQrf
+\unrestrict cMlUcoEuRRUF5aymo8BUXMxYCFrUZIpE6ow4h4d4aZniGoPbyH0558zkM1VuRxe
 
