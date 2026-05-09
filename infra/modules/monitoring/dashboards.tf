@@ -12,11 +12,12 @@ locals {
   # templates, so the embedded quotes must be JSON-escaped or the rendered
   # output is invalid JSON.
   dashboard_vars = {
-    display_prefix  = var.base_prefix
-    api_filter      = replace(local.api_filter, "\"", "\\\"")
-    db_filter       = replace(local.db_filter, "\"", "\\\"")
-    business_filter = replace(local.business_filter, "\"", "\\\"")
-    uptime_check_id = var.api_domain != "" ? google_monitoring_uptime_check_config.api_health[0].uptime_check_id : ""
+    display_prefix   = var.base_prefix
+    api_filter       = replace(local.api_filter, "\"", "\\\"")
+    db_filter        = replace(local.db_filter, "\"", "\\\"")
+    business_filter  = replace(local.business_filter, "\"", "\\\"")
+    uptime_check_id  = var.api_domain != "" ? google_monitoring_uptime_check_config.api_health[0].uptime_check_id : ""
+    api_service_name = var.api_service_name
   }
 }
 

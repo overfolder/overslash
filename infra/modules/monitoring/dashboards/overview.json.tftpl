@@ -82,7 +82,7 @@
           "xyChart": {
             "dataSets": [{
               "timeSeriesQuery": {
-                "prometheusQuery": "time() - max by (task) (overslash_background_task_last_success_timestamp)"
+                "prometheusQuery": "time() - max by (task) (overslash_background_task_last_success_timestamp{job=\"${api_service_name}\"})"
               },
               "plotType": "LINE"
             }],
