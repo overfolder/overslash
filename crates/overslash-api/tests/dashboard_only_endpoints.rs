@@ -43,9 +43,10 @@ async fn test_get_secret_with_session_cookie_works() {
     let (org_id, ident_id, agent_key, _org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    // PUT via the agent's identity-bound key so the secret has a real
-    // creator (not NULL) — non-admin visibility (SPEC §6) needs a slot
-    // owner to compare against the session's ceiling user.
+    // PUT via the agent's identity-bound key so the secret slot has a
+    // real owner_identity_id — non-admin visibility (SPEC §6) walks the
+    // calling identity's parent_id subtree and matches against the slot
+    // owner.
     let put = client
         .put(format!("{base}/v1/secrets/db_password"))
         .header("Authorization", format!("Bearer {agent_key}"))

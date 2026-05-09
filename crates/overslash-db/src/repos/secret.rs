@@ -8,6 +8,11 @@ pub struct SecretRow {
     pub org_id: Uuid,
     pub name: String,
     pub current_version: i32,
+    /// Identity that owns this secret slot. NULL = legacy/org-wide,
+    /// visible only to admins. Set on first insert (the resolved
+    /// caller, or `on_behalf_of` per `validate_on_behalf_of`) and
+    /// preserved across subsequent versions.
+    pub owner_identity_id: Option<Uuid>,
     pub deleted_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -30,12 +35,16 @@ pub struct SecretVersionRow {
 }
 
 /// Store or update a secret. Creates a new version each time.
+///
+/// `owner_identity_id` is written only on first insert; subsequent versions
+/// of the same slot preserve the original owner via COALESCE on conflict.
 pub(crate) async fn put(
     pool: &PgPool,
     org_id: Uuid,
     name: &str,
     encrypted_value: &[u8],
     created_by: Option<Uuid>,
+    owner_identity_id: Option<Uuid>,
     provisioned_by_user_id: Option<Uuid>,
 ) -> Result<(SecretRow, SecretVersionRow), sqlx::Error> {
     let mut tx = pool.begin().await?;
@@ -43,14 +52,16 @@ pub(crate) async fn put(
     // Upsert the secret row
     let secret = sqlx::query_as!(
         SecretRow,
-        "INSERT INTO secrets (org_id, name) VALUES ($1, $2)
+        "INSERT INTO secrets (org_id, name, owner_identity_id) VALUES ($1, $2, $3)
          ON CONFLICT (org_id, name) DO UPDATE SET
            current_version = secrets.current_version + 1,
            updated_at = now(),
-           deleted_at = NULL
-         RETURNING id, org_id, name, current_version, deleted_at, created_at, updated_at",
+           deleted_at = NULL,
+           owner_identity_id = COALESCE(secrets.owner_identity_id, EXCLUDED.owner_identity_id)
+         RETURNING id, org_id, name, current_version, owner_identity_id, deleted_at, created_at, updated_at",
         org_id,
         name,
+        owner_identity_id,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -81,7 +92,7 @@ pub(crate) async fn get_by_name(
 ) -> Result<Option<SecretRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretRow,
-        "SELECT id, org_id, name, current_version, deleted_at, created_at, updated_at
+        "SELECT id, org_id, name, current_version, owner_identity_id, deleted_at, created_at, updated_at
          FROM secrets WHERE org_id = $1 AND name = $2 AND deleted_at IS NULL",
         org_id,
         name,
@@ -114,7 +125,7 @@ pub(crate) async fn list_by_org(
 ) -> Result<Vec<SecretRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretRow,
-        "SELECT id, org_id, name, current_version, deleted_at, created_at, updated_at
+        "SELECT id, org_id, name, current_version, owner_identity_id, deleted_at, created_at, updated_at
          FROM secrets WHERE org_id = $1 AND deleted_at IS NULL ORDER BY name",
         org_id,
     )
@@ -122,61 +133,66 @@ pub(crate) async fn list_by_org(
     .await
 }
 
-/// List secrets visible to a non-admin user — i.e. secrets whose original
-/// creator (version 1's `created_by`) sits in this user's subtree
-/// (the user themselves, or any agent/sub-agent whose `owner_id` is the
-/// user). SPEC §6.
-pub(crate) async fn list_visible_to_user(
+/// List secrets whose `owner_identity_id` is in `caller_id`'s downward
+/// `parent_id` subtree (the caller itself plus all descendants). Mirrors
+/// the descendants CTE in `repos/approval.rs` and `repos/identity.rs`.
+///
+/// Rows with NULL `owner_identity_id` are omitted — they're admin-only
+/// (post-migration) and the caller-list path is non-admin by definition.
+pub(crate) async fn list_visible_to_identity(
     pool: &PgPool,
     org_id: Uuid,
-    user_id: Uuid,
+    caller_id: Uuid,
 ) -> Result<Vec<SecretRow>, sqlx::Error> {
     sqlx::query_as!(
         SecretRow,
-        "SELECT s.id, s.org_id, s.name, s.current_version, s.deleted_at, s.created_at, s.updated_at
-         FROM secrets s
-         WHERE s.org_id = $1 AND s.deleted_at IS NULL
-         AND EXISTS (
-           SELECT 1 FROM secret_versions sv
-           JOIN identities i ON i.id = sv.created_by
-           WHERE sv.secret_id = s.id AND sv.version = 1
-           AND (
-             (i.kind = 'user' AND i.id = $2)
-             OR (i.kind IN ('agent','sub_agent') AND i.owner_id = $2)
-           )
-         )
-         ORDER BY s.name",
+        r#"WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM identities WHERE id = $2 AND org_id = $1
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN subtree s ON i.parent_id = s.id
+            WHERE i.org_id = $1
+        )
+        SELECT s.id, s.org_id, s.name, s.current_version, s.owner_identity_id,
+               s.deleted_at, s.created_at, s.updated_at
+        FROM secrets s
+        WHERE s.org_id = $1
+          AND s.deleted_at IS NULL
+          AND s.owner_identity_id IN (SELECT id FROM subtree)
+        ORDER BY s.name"#,
         org_id,
-        user_id,
+        caller_id,
     )
     .fetch_all(pool)
     .await
 }
 
-/// True if the secret's slot owner (version 1 creator's ceiling user) is
-/// `user_id`. Used to gate detail/reveal/restore/delete for non-admins.
-pub(crate) async fn is_visible_to_user(
+/// True if `name` is owned by `caller_id` or any descendant via
+/// `identities.parent_id`. Used to gate detail/reveal/restore for
+/// non-admins.
+pub(crate) async fn is_visible_to_identity(
     pool: &PgPool,
     org_id: Uuid,
     name: &str,
-    user_id: Uuid,
+    caller_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     let row = sqlx::query!(
-        "SELECT 1 AS exists FROM secrets s
-         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL
-         AND EXISTS (
-           SELECT 1 FROM secret_versions sv
-           JOIN identities i ON i.id = sv.created_by
-           WHERE sv.secret_id = s.id AND sv.version = 1
-           AND (
-             (i.kind = 'user' AND i.id = $3)
-             OR (i.kind IN ('agent','sub_agent') AND i.owner_id = $3)
-           )
-         )
-         LIMIT 1",
+        r#"WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM identities WHERE id = $3 AND org_id = $1
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN subtree s ON i.parent_id = s.id
+            WHERE i.org_id = $1
+        )
+        SELECT 1 AS exists FROM secrets s
+        WHERE s.org_id = $1
+          AND s.name = $2
+          AND s.deleted_at IS NULL
+          AND s.owner_identity_id IN (SELECT id FROM subtree)
+        LIMIT 1"#,
         org_id,
         name,
-        user_id,
+        caller_id,
     )
     .fetch_optional(pool)
     .await?;
@@ -241,29 +257,6 @@ pub(crate) async fn get_value_at_version(
     .await
 }
 
-/// Return the `created_by` of the *first* version of a secret. The original
-/// creator owns the slot — later versions written by other agents under the
-/// same user don't transfer ownership.
-pub(crate) async fn first_version_creator(
-    pool: &PgPool,
-    org_id: Uuid,
-    name: &str,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    let row = sqlx::query!(
-        "SELECT sv.created_by
-         FROM secret_versions sv
-         JOIN secrets s ON sv.secret_id = s.id
-         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL
-         ORDER BY sv.version ASC
-         LIMIT 1",
-        org_id,
-        name,
-    )
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.and_then(|r| r.created_by))
-}
-
 #[derive(Debug, sqlx::FromRow)]
 pub struct SecretVersionMeta {
     pub version: i32,
@@ -311,19 +304,22 @@ pub(crate) async fn put_many(
     org_id: Uuid,
     entries: &[(&str, &[u8])],
     created_by: Option<Uuid>,
+    owner_identity_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     for (name, encrypted_value) in entries {
         let secret = sqlx::query_as!(
             SecretRow,
-            "INSERT INTO secrets (org_id, name) VALUES ($1, $2)
+            "INSERT INTO secrets (org_id, name, owner_identity_id) VALUES ($1, $2, $3)
              ON CONFLICT (org_id, name) DO UPDATE SET
                current_version = secrets.current_version + 1,
                updated_at = now(),
-               deleted_at = NULL
-             RETURNING id, org_id, name, current_version, deleted_at, created_at, updated_at",
+               deleted_at = NULL,
+               owner_identity_id = COALESCE(secrets.owner_identity_id, EXCLUDED.owner_identity_id)
+             RETURNING id, org_id, name, current_version, owner_identity_id, deleted_at, created_at, updated_at",
             org_id,
             name,
+            owner_identity_id,
         )
         .fetch_one(&mut *tx)
         .await?;

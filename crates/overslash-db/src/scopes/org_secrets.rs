@@ -11,8 +11,11 @@ use crate::scopes::OrgScope;
 impl OrgScope {
     /// Store or update a secret. Creates a new version each time.
     ///
-    /// `created_by` names the identity the secret slot *belongs to* (API
-    /// writes: the caller; request fulfillment: the target identity).
+    /// `created_by` names the identity that wrote *this version* (audit
+    /// attribution). `owner_identity_id` names the identity that owns the
+    /// *slot* — written only on first insert; preserved across subsequent
+    /// versions of the same slot. Visibility (subtree of owner) is keyed
+    /// off the slot owner, not the per-version creator.
     /// `provisioned_by_user_id` names the human who physically pasted the
     /// value on the standalone provide page — only set by the secret-request
     /// flow, and only when a same-org session cookie was present.
@@ -21,6 +24,7 @@ impl OrgScope {
         name: &str,
         encrypted_value: &[u8],
         created_by: Option<Uuid>,
+        owner_identity_id: Option<Uuid>,
         provisioned_by_user_id: Option<Uuid>,
     ) -> Result<(SecretRow, SecretVersionRow), sqlx::Error> {
         crate::repos::secret::put(
@@ -29,6 +33,7 @@ impl OrgScope {
             name,
             encrypted_value,
             created_by,
+            owner_identity_id,
             provisioned_by_user_id,
         )
         .await
@@ -48,30 +53,31 @@ impl OrgScope {
     }
 
     /// List all live secrets in this org. Admin-only callers should use
-    /// this; non-admins must use `list_secrets_visible_to_user`.
+    /// this; non-admins must use `list_secrets_visible_to_identity`.
     pub async fn list_secrets(&self) -> Result<Vec<SecretRow>, sqlx::Error> {
         crate::repos::secret::list_by_org(self.db(), self.org_id()).await
     }
 
-    /// List secrets owned by a user's subtree. SPEC §6: a non-admin user
-    /// sees their own secrets and any secret created by an agent/sub-agent
-    /// whose ceiling user is them.
-    pub async fn list_secrets_visible_to_user(
+    /// List secrets whose `owner_identity_id` is in `caller_id`'s downward
+    /// `parent_id` subtree (the caller plus all descendants). Used for
+    /// non-admin list views — admins use `list_secrets`.
+    pub async fn list_secrets_visible_to_identity(
         &self,
-        user_id: Uuid,
+        caller_id: Uuid,
     ) -> Result<Vec<SecretRow>, sqlx::Error> {
-        crate::repos::secret::list_visible_to_user(self.db(), self.org_id(), user_id).await
+        crate::repos::secret::list_visible_to_identity(self.db(), self.org_id(), caller_id).await
     }
 
-    /// True if the named secret's slot owner (version 1 creator's ceiling
-    /// user) is `user_id`. Detail / reveal / restore / delete must check
-    /// this before letting a non-admin see the secret.
-    pub async fn secret_visible_to_user(
+    /// True if the named secret is owned by `caller_id` or any descendant.
+    /// Detail / reveal / restore must check this before letting a non-admin
+    /// see the secret.
+    pub async fn secret_visible_to_identity(
         &self,
         name: &str,
-        user_id: Uuid,
+        caller_id: Uuid,
     ) -> Result<bool, sqlx::Error> {
-        crate::repos::secret::is_visible_to_user(self.db(), self.org_id(), name, user_id).await
+        crate::repos::secret::is_visible_to_identity(self.db(), self.org_id(), name, caller_id)
+            .await
     }
 
     /// Soft-delete a secret by name in this org. Returns true if a row was affected.
@@ -89,12 +95,23 @@ impl OrgScope {
     /// Put multiple secrets atomically. All writes commit together or none
     /// do — useful when a logical resource (e.g. an OAuth App Credential
     /// pair) spans two secret names.
+    ///
+    /// `owner_identity_id` is written only on first insert; subsequent
+    /// versions of an existing slot preserve the original owner.
     pub async fn put_secrets(
         &self,
         entries: &[(&str, &[u8])],
         created_by: Option<Uuid>,
+        owner_identity_id: Option<Uuid>,
     ) -> Result<(), sqlx::Error> {
-        crate::repos::secret::put_many(self.db(), self.org_id(), entries, created_by).await
+        crate::repos::secret::put_many(
+            self.db(),
+            self.org_id(),
+            entries,
+            created_by,
+            owner_identity_id,
+        )
+        .await
     }
 
     /// List every version of a secret (newest first) without exposing
@@ -114,13 +131,6 @@ impl OrgScope {
         version: i32,
     ) -> Result<Option<SecretVersionRow>, sqlx::Error> {
         crate::repos::secret::get_value_at_version(self.db(), self.org_id(), name, version).await
-    }
-
-    /// Identity that wrote version 1 of this secret — the slot owner per
-    /// SPEC §6. Returns None if the version 1 row's `created_by` was set to
-    /// NULL (e.g. the creator identity was later deleted).
-    pub async fn secret_owner_identity(&self, name: &str) -> Result<Option<Uuid>, sqlx::Error> {
-        crate::repos::secret::first_version_creator(self.db(), self.org_id(), name).await
     }
 
     /// Service instances that reference this secret by name (any status).

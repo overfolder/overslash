@@ -1118,9 +1118,9 @@ async fn test_secret_versioning() {
         .unwrap();
     assert_eq!(r["version"], 2);
 
-    // GET /v1/secrets/{name} is dashboard-only (JWT session). API keys
-    // must be rejected so a compromised agent token can't enumerate the
-    // secret namespace.
+    // GET /v1/secrets/{name} (detail) is still session-only. Detail
+    // would surface `versions[].provisioned_by_user_id` which leaks
+    // human identities, so agent bearers are rejected.
     let resp = client
         .get(format!("{base}/v1/secrets/s1"))
         .header(auth(&key).0, auth(&key).1)
@@ -1129,13 +1129,30 @@ async fn test_secret_versioning() {
         .unwrap();
     assert_eq!(resp.status(), 401);
 
+    // GET /v1/secrets (list) accepts bearer auth and returns the narrow
+    // {name, version_count, last_rotated_at} shape for agent callers,
+    // scoped to the calling identity's parent_id subtree. The agent
+    // here owns `s1` (it wrote v1 and v2), so it sees that one row —
+    // and crucially no value field.
     let resp = client
         .get(format!("{base}/v1/secrets"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401);
+    assert_eq!(resp.status(), 200);
+    let body: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(body.len(), 1, "agent should see exactly one owned secret");
+    assert_eq!(body[0]["name"], "s1");
+    assert_eq!(body[0]["version_count"], 2);
+    assert!(body[0]["last_rotated_at"].is_string());
+    let obj = body[0].as_object().unwrap();
+    for forbidden in ["value", "encrypted_value", "secret", "ciphertext"] {
+        assert!(
+            !obj.contains_key(forbidden),
+            "list response leaked {forbidden:?}"
+        );
+    }
 }
 
 #[tokio::test]

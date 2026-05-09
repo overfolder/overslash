@@ -1,9 +1,12 @@
 /**
  * Dashboard secret-management API client.
  *
- * Every endpoint here is gated by `SessionAuth` server-side — bearer API
- * keys are rejected, so secret values never leak to agent runtimes via
- * the API surface (SPEC §6).
+ * Detail (`GET /v1/secrets/{name}`), reveal, restore, put, and delete are
+ * gated by `SessionAuth` server-side — bearer API keys are rejected. The
+ * list endpoint (`GET /v1/secrets`) also accepts bearer for agents but
+ * returns a narrow `{name, version_count, last_rotated_at}` shape with
+ * no values; this client only ever calls it with the dashboard session
+ * cookie, which gets the full `SecretSummary` shape (SPEC §6).
  */
 import { session } from '$lib/session';
 import type {

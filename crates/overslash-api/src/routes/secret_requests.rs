@@ -303,10 +303,15 @@ async fn submit_provide(
     let encrypted = crypto::encrypt(&enc_key, body.value.as_bytes())?;
 
     let scope = OrgScope::new(row.org_id, state.db.clone());
+    // The target identity captured at request-creation time owns the slot
+    // (visibility) and is also the version's `created_by` (attribution).
+    // The slot's `owner_identity_id` is set on first insert and preserved
+    // by repo `put`'s COALESCE on subsequent versions.
     let (stored, _ver) = scope
         .put_secret(
             &row.secret_name,
             &encrypted,
+            Some(row.identity_id),
             Some(row.identity_id),
             provisioned_by_user_id,
         )

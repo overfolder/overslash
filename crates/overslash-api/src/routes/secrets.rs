@@ -12,7 +12,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp, SessionAuth, WriteAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, SessionAuth, WriteAcl},
 };
 use overslash_core::crypto;
 
@@ -44,21 +44,37 @@ struct PutSecretRequest {
     on_behalf_of: Option<uuid::Uuid>,
 }
 
-/// Dashboard-shaped metadata. The original `name + current_version` shape
-/// is a strict subset of this — extending the response is safe because the
-/// secret routes are dashboard-only (SessionAuth rejects bearer tokens).
+/// Dashboard-shaped metadata. Returned to user-kind callers (session auth
+/// or, in principle, a user-bound API key). Includes the slot owner so
+/// the dashboard can render an "Owner" column.
 #[derive(Serialize)]
 struct SecretMetadata {
     name: String,
     current_version: i32,
-    /// Identity that created version 1 — the slot owner (SPEC §6). `None`
-    /// if the version 1 row's `created_by` was nulled out (e.g. the
-    /// creating identity was deleted) or the secret has no versions yet.
+    /// Identity that owns the slot (`secrets.owner_identity_id`). `None` for
+    /// legacy/org-wide rows (admin-only). Set on first insert and preserved
+    /// across subsequent versions.
     owner_identity_id: Option<uuid::Uuid>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     updated_at: OffsetDateTime,
+}
+
+/// Narrow shape for agent/sub-agent callers (bearer auth). Deliberately
+/// excludes value, ciphertext, owner identity, and timestamps other than
+/// last-rotation — agents shouldn't need to inventory metadata they
+/// already know about themselves.
+#[derive(Serialize)]
+struct SecretNameRow {
+    name: String,
+    /// Number of versions of the slot. Equal to `secrets.current_version`
+    /// (which is incremented on each new write).
+    version_count: i32,
+    /// `secrets.updated_at`. Bumps on every new version write and on
+    /// soft-restore — consistent with `SecretMetadata.updated_at`.
+    #[serde(with = "time::serde::rfc3339")]
+    last_rotated_at: OffsetDateTime,
 }
 
 #[derive(Serialize)]
@@ -113,18 +129,39 @@ async fn put_secret(
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
     let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
 
-    let created_by = crate::services::group_ceiling::resolve_owner_identity(
+    let owner = crate::services::group_ceiling::resolve_owner_identity(
         &scope,
         auth.identity_id,
         req.on_behalf_of,
     )
     .await?;
 
-    // API-driven writes: `created_by` already names the caller, so there is
-    // no distinct "provisioning user" to record. That column is reserved for
-    // the standalone secret-provide page flow.
+    // If the slot already exists, the resolved owner must match it
+    // exactly (admins exempt). Otherwise the COALESCE in repo `put`
+    // would silently let an agent rotate someone else's secret — the
+    // original owner stays put, but the value flips. Strict match
+    // forces explicit `on_behalf_of` for shared rotation: an agent
+    // wanting to rotate a parent-user-owned slot must declare
+    // `on_behalf_of: <user_id>`. Mirror the read-path 404 so an
+    // out-of-reach slot's existence isn't leaked.
+    let caller_id = auth.identity_id.ok_or_else(|| {
+        AppError::Unauthorized("identity-bound auth required to write secrets".into())
+    })?;
+    if let Some(existing) = scope.get_secret_by_name(&name).await?
+        && !is_admin(&scope, caller_id).await?
+        && existing.owner_identity_id != owner
+    {
+        return Err(AppError::NotFound(format!("secret '{name}' not found")));
+    }
+
+    // API-driven writes: the resolved identity is both the version's
+    // `created_by` (audit attribution) and the slot's `owner_identity_id`
+    // (visibility key). The slot's owner is fixed by the first writer;
+    // the COALESCE in repo `put` preserves it on subsequent versions.
+    // No distinct "provisioning user" — that's only set by the standalone
+    // secret-provide page flow.
     let (secret, _version) = scope
-        .put_secret(&name, &encrypted, created_by, None)
+        .put_secret(&name, &encrypted, owner, owner, None)
         .await?;
 
     let _ = OrgScope::new(auth.org_id, state.db.clone())
@@ -134,7 +171,11 @@ async fn put_secret(
             action: "secret.put",
             resource_type: Some("secret"),
             resource_id: None,
-            detail: serde_json::json!({ "name": &secret.name, "version": secret.current_version }),
+            detail: serde_json::json!({
+                "name": &secret.name,
+                "version": secret.current_version,
+                "owner_identity_id": secret.owner_identity_id,
+            }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
@@ -145,18 +186,6 @@ async fn put_secret(
         name: secret.name,
         version: secret.current_version,
     }))
-}
-
-/// Resolve the human-user behind a session, used for visibility filtering.
-/// Prefers the JWT's `user_id` claim (set on multi-org sessions). Falls back
-/// to walking the session identity to its ceiling user — covers both
-/// pre-multi-org sessions and any test/programmatic flow that mints a
-/// session JWT for an agent identity.
-async fn caller_user_id(scope: &OrgScope, session: &SessionAuth) -> Result<uuid::Uuid> {
-    if let Some(uid) = session.user_id {
-        return Ok(uid);
-    }
-    crate::services::group_ceiling::resolve_ceiling_user_id(scope, session.identity_id).await
 }
 
 async fn is_admin(scope: &OrgScope, identity_id: uuid::Uuid) -> Result<bool> {
@@ -186,24 +215,28 @@ async fn is_admin(scope: &OrgScope, identity_id: uuid::Uuid) -> Result<bool> {
     Ok(level >= AccessLevel::Admin)
 }
 
-async fn build_secret_meta(
-    scope: &OrgScope,
-    row: overslash_db::repos::secret::SecretRow,
-) -> Result<SecretMetadata> {
-    let owner = scope.secret_owner_identity(&row.name).await?;
-    Ok(SecretMetadata {
+fn build_secret_meta(row: overslash_db::repos::secret::SecretRow) -> SecretMetadata {
+    SecretMetadata {
         name: row.name,
         current_version: row.current_version,
-        owner_identity_id: owner,
+        owner_identity_id: row.owner_identity_id,
         created_at: row.created_at,
         updated_at: row.updated_at,
-    })
+    }
+}
+
+fn build_secret_name_row(row: overslash_db::repos::secret::SecretRow) -> SecretNameRow {
+    SecretNameRow {
+        name: row.name,
+        version_count: row.current_version,
+        last_rotated_at: row.updated_at,
+    }
 }
 
 async fn get_secret(
-    // Dashboard-only: secret metadata is never exposed to API keys.
-    // `SessionAuth` rejects bearer tokens; `OrgScope` enforces org_id at
-    // the SQL boundary.
+    // Dashboard-only: secret detail (version list + provisioning users)
+    // is never exposed to bearer-mode callers. `SessionAuth` rejects
+    // bearer tokens; agents use the bearer list endpoint.
     session: SessionAuth,
     scope: OrgScope,
     Path(name): Path<String>,
@@ -214,18 +247,19 @@ async fn get_secret(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("secret '{name}' not found")))?;
 
-    if !is_admin(&scope, session.identity_id).await? {
-        let caller = caller_user_id(&scope, &session).await?;
-        if !scope.secret_visible_to_user(&name, caller).await? {
-            // Same shape as the not-found above to avoid leaking the
-            // existence of an out-of-subtree secret name.
-            return Err(AppError::NotFound(format!("secret '{name}' not found")));
-        }
+    if !is_admin(&scope, session.identity_id).await?
+        && !scope
+            .secret_visible_to_identity(&name, session.identity_id)
+            .await?
+    {
+        // Same shape as the not-found above to avoid leaking the
+        // existence of an out-of-subtree secret name.
+        return Err(AppError::NotFound(format!("secret '{name}' not found")));
     }
 
     let versions = scope.list_secret_versions(&name).await?;
     let used_by = scope.list_services_using_secret(&name).await?;
-    let meta = build_secret_meta(&scope, secret).await?;
+    let meta = build_secret_meta(secret);
 
     Ok(Json(SecretDetail {
         meta,
@@ -249,25 +283,51 @@ async fn get_secret(
     }))
 }
 
-async fn list_secrets(
-    // Dashboard-only — see `get_secret`.
-    session: SessionAuth,
-    scope: OrgScope,
-) -> Result<Json<Vec<SecretMetadata>>> {
-    debug_assert_eq!(session.org_id, scope.org_id());
+/// Wire envelope for the list response. User-kind callers (dashboard or
+/// user-bound API key) see the full `SecretMetadata` shape; agent and
+/// sub-agent callers see the narrow `SecretNameRow` shape — no value, no
+/// owner identity, no creation timestamp. The structural split is the
+/// belt-and-braces guarantee that values can never leak through this path.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum SecretListResponse {
+    Dashboard(Vec<SecretMetadata>),
+    BearerNarrow(Vec<SecretNameRow>),
+}
 
-    let rows = if is_admin(&scope, session.identity_id).await? {
+async fn list_secrets(
+    // Accepts session cookie, MCP bearer (aud=mcp), and `osk_` API keys.
+    // Visibility is computed against the caller's identity subtree
+    // (descendants via `identities.parent_id`); admins see everything.
+    auth: AuthContext,
+    scope: OrgScope,
+) -> Result<Json<SecretListResponse>> {
+    debug_assert_eq!(auth.org_id, scope.org_id());
+
+    let identity_id = auth.identity_id.ok_or_else(|| {
+        AppError::Unauthorized("identity-bound auth required for /v1/secrets".into())
+    })?;
+
+    let rows = if is_admin(&scope, identity_id).await? {
         scope.list_secrets().await?
     } else {
-        let caller = caller_user_id(&scope, &session).await?;
-        scope.list_secrets_visible_to_user(caller).await?
+        scope.list_secrets_visible_to_identity(identity_id).await?
     };
 
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        out.push(build_secret_meta(&scope, row).await?);
-    }
-    Ok(Json(out))
+    // Branch on the calling identity's kind: user-kind (or admin via flag)
+    // gets the dashboard shape; agent/sub_agent gets the narrow shape.
+    let identity = scope
+        .get_identity(identity_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("calling identity no longer exists".into()))?;
+
+    let response = if identity.kind == "user" {
+        SecretListResponse::Dashboard(rows.into_iter().map(build_secret_meta).collect())
+    } else {
+        SecretListResponse::BearerNarrow(rows.into_iter().map(build_secret_name_row).collect())
+    };
+
+    Ok(Json(response))
 }
 
 async fn reveal_version(
@@ -279,11 +339,12 @@ async fn reveal_version(
 ) -> Result<Json<RevealResponse>> {
     debug_assert_eq!(session.org_id, scope.org_id());
 
-    if !is_admin(&scope, session.identity_id).await? {
-        let caller = caller_user_id(&scope, &session).await?;
-        if !scope.secret_visible_to_user(&name, caller).await? {
-            return Err(AppError::NotFound(format!("secret '{name}' not found")));
-        }
+    if !is_admin(&scope, session.identity_id).await?
+        && !scope
+            .secret_visible_to_identity(&name, session.identity_id)
+            .await?
+    {
+        return Err(AppError::NotFound(format!("secret '{name}' not found")));
     }
 
     let row = scope
@@ -326,11 +387,12 @@ async fn restore_version(
     debug_assert_eq!(session.org_id, scope.org_id());
     let auth = acl;
 
-    if !is_admin(&scope, session.identity_id).await? {
-        let caller = caller_user_id(&scope, &session).await?;
-        if !scope.secret_visible_to_user(&name, caller).await? {
-            return Err(AppError::NotFound(format!("secret '{name}' not found")));
-        }
+    if !is_admin(&scope, session.identity_id).await?
+        && !scope
+            .secret_visible_to_identity(&name, session.identity_id)
+            .await?
+    {
+        return Err(AppError::NotFound(format!("secret '{name}' not found")));
     }
 
     let row = scope
@@ -343,9 +405,11 @@ async fn restore_version(
     // Re-use the existing put path so the new version row inherits all the
     // standard book-keeping (next version number, created_by, audit). We
     // attribute restoration to the caller — the original creator is still
-    // visible in the version list.
+    // visible in the version list. `owner_identity_id` is preserved by the
+    // repo's COALESCE on conflict; pass `None` here to make that explicit
+    // (the slot already exists, so no first-insert branch can run).
     let (secret, new_version) = scope
-        .put_secret(&name, &row.encrypted_value, auth.identity_id, None)
+        .put_secret(&name, &row.encrypted_value, auth.identity_id, None, None)
         .await?;
 
     let _ = OrgScope::new(auth.org_id, state.db.clone())
@@ -398,5 +462,43 @@ async fn delete_secret(
         Ok(Json(serde_json::json!({ "deleted": true })))
     } else {
         Err(AppError::NotFound(format!("secret '{name}' not found")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::datetime;
+
+    #[test]
+    fn secret_name_row_does_not_serialize_any_value_field() {
+        // Belt-and-braces: the type system already prevents values from
+        // reaching this struct (no value/encrypted_value field exists).
+        // Catch any future field rename that accidentally introduces a
+        // value-shaped key into the wire format.
+        let row = SecretNameRow {
+            name: "stripe_key".into(),
+            version_count: 3,
+            last_rotated_at: datetime!(2026-05-08 12:00 UTC),
+        };
+        let json = serde_json::to_value(&row).expect("serialize");
+        let obj = json.as_object().expect("object");
+        for forbidden in [
+            "value",
+            "encrypted_value",
+            "secret",
+            "ciphertext",
+            "plaintext",
+            "encrypted",
+        ] {
+            assert!(
+                !obj.contains_key(forbidden),
+                "SecretNameRow leaked field {forbidden:?}: {json}"
+            );
+        }
+        // Positive assertion — the contract this struct is meant to fulfil.
+        let mut keys: Vec<&String> = obj.keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["last_rotated_at", "name", "version_count"]);
     }
 }
