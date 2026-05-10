@@ -160,8 +160,12 @@ resource "google_monitoring_alert_policy" "background_task_stale" {
     display_name = "Background task last success > 5m for 10m"
 
     condition_prometheus_query_language {
+      # Scope to the API Cloud Run service. The OTel collector populates
+      # `job` from service.name (← faas.name), so this filters out any
+      # accidental matches if another service ever emits a metric with the
+      # same name.
       query               = <<-PROMQL
-        (time() - max by (task) (overslash_background_task_last_success_timestamp{task=~"approval_expiry|execution_expiry|orphan_execution_reap|subagent_archive|subagent_purge|auto_bubble|rate_limit_evict|db_pool_poller|webhook_retry"})) > 300
+        (time() - max by (task) (overslash_background_task_last_success_timestamp{job="${var.api_service_name}",task=~"approval_expiry|execution_expiry|orphan_execution_reap|subagent_archive|subagent_purge|auto_bubble|rate_limit_evict|db_pool_poller|webhook_retry"})) > 300
       PROMQL
       duration            = "600s"
       evaluation_interval = "60s"

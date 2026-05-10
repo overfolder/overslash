@@ -13,8 +13,32 @@ receivers:
             - targets: ["localhost:$${env:METRICS_PORT}"]
 
 processors:
+  # Detects Cloud Run resource attributes (faas.name = service name,
+  # faas.instance = unique per-container ID, cloud.region, etc.).
+  # No-op outside GCP — falls through gracefully in local dev.
+  resourcedetection/gcp:
+    detectors: [gcp]
+    timeout: 2s
+    override: false
+
   resource:
     attributes:
+      # Map the Cloud Run service name into service.name → GMP `job` label.
+      # Without this, the Prometheus receiver's static "app" job is the only
+      # disambiguator — fine today (one service) but collapses if a second
+      # service ever ships with the same scrape config.
+      - key: "service.name"
+        from_attribute: "faas.name"
+        action: upsert
+      # Map the unique Cloud Run instance ID into service.instance.id →
+      # GMP `instance` label. Without this, every container reports
+      # instance="localhost:<port>", and concurrent containers (rolling
+      # revisions, scale-up beyond min=1) collide on the same series — GMP
+      # rejects the slower writer with "Points must be written in order",
+      # silently dropping background-task liveness gauges.
+      - key: "service.instance.id"
+        from_attribute: "faas.instance"
+        action: upsert
       - key: "location"
         value: "${region}"
         action: upsert
@@ -33,5 +57,5 @@ service:
   pipelines:
     metrics:
       receivers: [prometheus]
-      processors: [resource]
+      processors: [resourcedetection/gcp, resource]
       exporters: [googlemanagedprometheus]
