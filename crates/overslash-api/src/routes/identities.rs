@@ -570,6 +570,7 @@ struct McpConnectionDto {
     last_seen_at: Option<String>,
     elicitation_enabled: bool,
     elicitation_supported: bool,
+    self_approve_enabled: bool,
 }
 
 async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<McpConnectionDto>> {
@@ -599,6 +600,7 @@ async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<
         last_seen_at: client.last_seen_at.map(fmt_time),
         elicitation_enabled: binding.elicitation_enabled,
         elicitation_supported,
+        self_approve_enabled: binding.self_approve_enabled,
     }))
 }
 
@@ -629,6 +631,7 @@ async fn get_mcp_connection(
 #[derive(Debug, Deserialize)]
 struct PatchMcpConnectionRequest {
     elicitation_enabled: Option<bool>,
+    self_approve_enabled: Option<bool>,
 }
 
 async fn patch_mcp_connection(
@@ -666,6 +669,40 @@ async fn patch_mcp_connection(
                 resource_id: Some(id),
                 detail: serde_json::json!({
                     "elicitation_enabled": enabled,
+                    "bindings_updated": updated,
+                }),
+                description: None,
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+    }
+
+    if let Some(enabled) = req.self_approve_enabled {
+        // Same fan-out rationale as `elicitation_enabled`: the dashboard
+        // surfaces a single per-agent toggle, and the MCP visibility check
+        // (in `routes/mcp.rs::tools_list_response`) plus the resolve-time
+        // gate (in `routes/approvals.rs::resolve_approval`) both read the
+        // calling client's binding row, so all bindings under the agent
+        // need to stay in lockstep.
+        let updated =
+            overslash_db::repos::mcp_client_agent_binding::set_self_approve_enabled_for_agent(
+                &state.db, id, enabled,
+            )
+            .await?;
+        if updated == 0 {
+            return Err(AppError::NotFound(
+                "no MCP connection bound to this agent".into(),
+            ));
+        }
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: acl.org_id,
+                identity_id: acl.identity_id,
+                action: "mcp_connection.self_approve_toggled",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "self_approve_enabled": enabled,
                     "bindings_updated": updated,
                 }),
                 description: None,

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_client_agent_bindings\n            SET self_approve_enabled = $2,\n                updated_at = now()\n          WHERE agent_identity_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e61ad4bdec1d1ea3b1fe6d09643a10ec0616557c29c22272bfd34955002c1515"
+}

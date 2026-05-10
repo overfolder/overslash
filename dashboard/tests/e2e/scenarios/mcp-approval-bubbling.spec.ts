@@ -3,8 +3,10 @@
 //
 //   1. Authenticate to Overslash MCP as a SubAgent via an `osk_…` API key.
 //   2. Negotiate `initialize` (capture `Mcp-Session-Id`, server capabilities).
-//   3. List the four tools Overslash exposes (`overslash_search`,
-//      `overslash_read`, `overslash_call`, `overslash_auth`).
+//   3. List the five default tools Overslash exposes (`overslash_search`,
+//      `overslash_read`, `overslash_call`, `overslash_auth`, plus
+//      `overslash_approve`). `overslash_approve_self` is hidden
+//      until the operator flips `self_approve_enabled` on the binding.
 //   4. Call `overslash_auth { action: "whoami" }` and parse the result back
 //      into the SubAgent's identity.
 //
@@ -44,7 +46,13 @@ test('puppet authenticates to Overslash /mcp as a SubAgent and runs whoami', asy
 
 		const tools = (await mcp.listTools()) as { tools: { name: string }[] };
 		const names = tools.tools.map((t) => t.name).sort();
-		expect(names).toEqual(['overslash_auth', 'overslash_call', 'overslash_read', 'overslash_search']);
+		expect(names).toEqual([
+			'overslash_approve',
+			'overslash_auth',
+			'overslash_call',
+			'overslash_read',
+			'overslash_search'
+		]);
 
 		const step = await mcp.callTool('overslash_auth', { action: 'whoami' });
 		expect(step.kind).toBe('final');

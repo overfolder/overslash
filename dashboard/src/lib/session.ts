@@ -255,6 +255,12 @@ export interface ApprovalResponse {
 	 *  Read → "low", Write → "med", Delete → "high". Defaults to "med" when
 	 *  the lookup misses. */
 	risk: 'low' | 'med' | 'high';
+	/** Caller↔requester relationship from the *viewing* identity's
+	 *  perspective. Populated on identity-bound reads (API key tied to an
+	 *  identity); omitted on dashboard-session reads where the relationship
+	 *  has no defined viewer. MCP clients use this to pick
+	 *  `overslash_approve_self` vs `overslash_approve`. */
+	relationship?: 'self' | 'downstream' | 'not_in_your_chain';
 }
 
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */

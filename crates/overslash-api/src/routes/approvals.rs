@@ -207,6 +207,15 @@ struct ApprovalResponse {
     /// `Write → "med"`, `Delete → "high"`. Defaults to `"med"` when the
     /// service / action lookup misses.
     risk: String,
+    /// Caller↔requester relationship from the *viewing* identity's
+    /// perspective: `"self"` when the viewer is the requester, `"downstream"`
+    /// when the viewer is an ancestor, `"not_in_your_chain"` otherwise.
+    /// Populated only when the request carried an identity-bound auth
+    /// (`auth.identity_id = Some`); omitted on dashboard-session reads where
+    /// the relationship lookup has no defined viewer. MCP clients use this
+    /// to pre-pick `overslash_approve_self` vs `overslash_approve`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relationship: Option<String>,
 }
 
 /// Derive the dashboard-facing risk class (`"low" | "med" | "high"`) for an
@@ -293,7 +302,29 @@ impl ApprovalResponse {
             execution: execution.map(ExecutionSummary::from_row),
             cascaded_approval_ids: Vec::new(),
             risk,
+            relationship: None,
         }
+    }
+
+    /// Decorate the response with the caller↔requester relationship from
+    /// the given viewer's perspective. No-op when `viewer` is `None`
+    /// (dashboard session reads), so the field is simply omitted.
+    async fn decorate_relationship(
+        &mut self,
+        scope: &OrgScope,
+        viewer: Option<Uuid>,
+    ) -> Result<()> {
+        let Some(viewer) = viewer else {
+            return Ok(());
+        };
+        let rel = crate::services::permission_chain::classify_approval_relationship(
+            scope,
+            viewer,
+            self.requesting_identity_id,
+        )
+        .await?;
+        self.relationship = Some(rel.as_str().to_string());
+        Ok(())
     }
 }
 
@@ -301,6 +332,7 @@ async fn build_response(
     scope: &OrgScope,
     registry: &ServiceRegistry,
     row: overslash_db::repos::approval::ApprovalRow,
+    viewer: Option<Uuid>,
 ) -> Result<ApprovalResponse> {
     let (identity_path, identity_path_ids) =
         crate::services::identity_path::build_for_identity(scope, row.identity_id)
@@ -312,13 +344,10 @@ async fn build_response(
             .map(|(p, ids)| (Some(p), ids))
             .unwrap_or((None, Vec::new()));
     let execution = scope.get_execution_by_approval(row.id).await?;
-    Ok(ApprovalResponse::from_row(
-        row,
-        identity_path,
-        identity_path_ids,
-        execution,
-        registry,
-    ))
+    let mut resp =
+        ApprovalResponse::from_row(row, identity_path, identity_path_ids, execution, registry);
+    resp.decorate_relationship(scope, viewer).await?;
+    Ok(resp)
 }
 
 #[derive(Deserialize)]
@@ -358,7 +387,9 @@ async fn list_approvals(
             .await?
             .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
         let rows = scope.list_mine_approvals(identity_id).await?;
-        return Ok(Json(batch_responses(&scope, &state.registry, rows).await?));
+        return Ok(Json(
+            batch_responses(&scope, &state.registry, rows, auth.identity_id).await?,
+        ));
     }
     let rows = match q.scope.as_deref() {
         Some("mine") => {
@@ -369,7 +400,9 @@ async fn list_approvals(
                 let rows = scope
                     .list_mine_approvals_by_status(identity_id, status)
                     .await?;
-                return Ok(Json(batch_responses(&scope, &state.registry, rows).await?));
+                return Ok(Json(
+                    batch_responses(&scope, &state.registry, rows, auth.identity_id).await?,
+                ));
             }
             scope.list_mine_approvals(identity_id).await?
         }
@@ -396,16 +429,26 @@ async fn list_approvals(
     if let Some(ref s) = q.status {
         rows.retain(|r| r.status == *s);
     }
-    Ok(Json(batch_responses(&scope, &state.registry, rows).await?))
+    Ok(Json(
+        batch_responses(&scope, &state.registry, rows, auth.identity_id).await?,
+    ))
 }
 
 /// Assemble `ApprovalResponse`s for a list of approvals, batching the
 /// execution lookup with a single `WHERE approval_id = ANY(...)` to avoid
-/// the N+1 that a per-row `build_response` would produce.
+/// the N+1 a per-row `build_response` would produce on that path. When
+/// `viewer` is `Some`, each response is also decorated with the
+/// caller↔requester relationship — that decoration walks the requester's
+/// ancestor chain per row (still one query each, the existing recursive
+/// CTE), so the function is no longer fully batch-shaped on identity-bound
+/// callers. Worth revisiting if approval lists grow long enough to feel it
+/// in latency; for now it's a single recursive CTE per row, not the wider
+/// N+1 the execution batching avoids.
 async fn batch_responses(
     scope: &OrgScope,
     registry: &ServiceRegistry,
     rows: Vec<overslash_db::repos::approval::ApprovalRow>,
+    viewer: Option<Uuid>,
 ) -> Result<Vec<ApprovalResponse>> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -426,19 +469,17 @@ async fn batch_responses(
                 .map(|(p, ids)| (Some(p), ids))
                 .unwrap_or((None, Vec::new()));
         let execution = exec_map.remove(&row.id);
-        out.push(ApprovalResponse::from_row(
-            row,
-            identity_path,
-            identity_path_ids,
-            execution,
-            registry,
-        ));
+        let mut resp =
+            ApprovalResponse::from_row(row, identity_path, identity_path_ids, execution, registry);
+        resp.decorate_relationship(scope, viewer).await?;
+        out.push(resp);
     }
     Ok(out)
 }
 
 async fn get_approval(
     State(state): State<AppState>,
+    auth: AuthContext,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
@@ -446,7 +487,9 @@ async fn get_approval(
         .get_approval(id)
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
-    Ok(Json(build_response(&scope, &state.registry, row).await?))
+    Ok(Json(
+        build_response(&scope, &state.registry, row, auth.identity_id).await?,
+    ))
 }
 
 async fn get_execution(
@@ -490,6 +533,7 @@ struct ResolveRequest {
 
 async fn resolve_approval(
     State(state): State<AppState>,
+    auth_ctx: AuthContext,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -497,6 +541,9 @@ async fn resolve_approval(
     Json(req): Json<ResolveRequest>,
 ) -> Result<Json<ApprovalResponse>> {
     let auth = acl;
+    // `auth` (`OrgAcl`) carries org/identity/access_level; `auth_ctx`
+    // (`AuthContext`) carries the raw API-key context including
+    // `mcp_client_id` — required to look up the binding on a self-approval.
 
     // Load the approval through the org-scoped lookup. A foreign id returns
     // None at the SQL boundary — 404 (not 403) avoids leaking existence.
@@ -505,27 +552,91 @@ async fn resolve_approval(
         .await?
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
-    // ── Authorize the caller as the current resolver (or an ancestor of them).
+    // ── Authorize the caller via the caller↔requester classifier. The split
+    // between `overslash_approve_self` and `overslash_approve` MCP
+    // tools is purely UX (per-tool Claude Code permission rules); the actual
+    // security boundary is here. See docs/design/agent-self-management.md §2.
+    use crate::services::permission_chain::{ApprovalRelationship, classify_approval_relationship};
     use overslash_core::permissions::AccessLevel;
+    let mut relationship: Option<ApprovalRelationship> = None;
+    let mut self_approve_binding_id: Option<Uuid> = None;
     if let Some(caller_identity) = auth.identity_id {
-        if caller_identity == approval_pre.identity_id {
-            return Err(AppError::Forbidden(
-                "agents cannot resolve their own approval requests".into(),
-            ));
-        }
-        if auth.access_level < AccessLevel::Admin {
-            let allowed = crate::services::permission_chain::is_self_or_ancestor(
-                &scope,
-                caller_identity,
-                approval_pre.current_resolver_identity_id,
-            )
+        let rel = classify_approval_relationship(&scope, caller_identity, approval_pre.identity_id)
             .await?;
-            if !allowed {
-                return Err(AppError::Forbidden(
-                    "caller is not authorized to resolve this approval".into(),
-                ));
+        match rel {
+            ApprovalRelationship::SelfApproval => {
+                // A trusted human at the keyboard authorizes self-approval by
+                // flipping `self_approve_enabled` on their MCP binding. Pure
+                // REST callers (no `mcp_client_id`) have no binding to consult
+                // and are rejected.
+                let client_id =
+                    auth_ctx
+                        .mcp_client_id
+                        .as_deref()
+                        .ok_or_else(|| AppError::NotInYourChain {
+                            identity_id: caller_identity,
+                            action: "approvals.resolve".into(),
+                            reason: "self_approval_disabled".into(),
+                        })?;
+                let binding =
+                    overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
+                        &state.db,
+                        caller_identity,
+                        client_id,
+                    )
+                    .await
+                    .map_err(|e| AppError::Internal(format!("binding lookup failed: {e}")))?;
+                let binding = binding.ok_or_else(|| AppError::NotInYourChain {
+                    identity_id: caller_identity,
+                    action: "approvals.resolve".into(),
+                    reason: "self_approval_disabled".into(),
+                })?;
+                if !binding.self_approve_enabled {
+                    return Err(AppError::NotInYourChain {
+                        identity_id: caller_identity,
+                        action: "approvals.resolve".into(),
+                        reason: "self_approval_disabled".into(),
+                    });
+                }
+                self_approve_binding_id = Some(binding.id);
+            }
+            ApprovalRelationship::Downstream => {
+                // Existing ladder: a Downstream caller still has to be in the
+                // resolver's ancestor chain (so a great-grandparent can't leap
+                // over a delegated mid-chain reviewer). Admins keep the
+                // existing bypass on this check.
+                if auth.access_level < AccessLevel::Admin {
+                    let allowed = crate::services::permission_chain::is_self_or_ancestor(
+                        &scope,
+                        caller_identity,
+                        approval_pre.current_resolver_identity_id,
+                    )
+                    .await?;
+                    if !allowed {
+                        return Err(AppError::Forbidden(
+                            "caller is not authorized to resolve this approval".into(),
+                        ));
+                    }
+                }
+            }
+            ApprovalRelationship::NotInYourChain => {
+                // Org admins can resolve any approval in their org regardless
+                // of chain membership — preserves the historical "admin can
+                // step in for any user" behavior the dashboard relies on.
+                // Non-admins get the typed envelope. SelfApproval above is
+                // intentionally NOT covered by this bypass: self-approval
+                // requires a trusted human at the keyboard (binding flag),
+                // not just elevated org permissions.
+                if auth.access_level < AccessLevel::Admin {
+                    return Err(AppError::NotInYourChain {
+                        identity_id: caller_identity,
+                        action: "approvals.resolve".into(),
+                        reason: "caller is not in the requester's identity chain".into(),
+                    });
+                }
             }
         }
+        relationship = Some(rel);
     }
 
     // ── BubbleUp: advance the resolver instead of resolving.
@@ -573,7 +684,7 @@ async fn resolve_approval(
             .await;
 
         return Ok(Json(
-            build_response(&scope, &state.registry, updated).await?,
+            build_response(&scope, &state.registry, updated, auth.identity_id).await?,
         ));
     }
 
@@ -803,6 +914,31 @@ async fn resolve_approval(
         None
     };
 
+    // Audit detail tags the relationship every time so reviewers can filter
+    // self-approvals out of "boring" downstream approvals at a glance. For
+    // self-approvals we additionally record the MCP client + binding that
+    // authorized it — that's the whole audit trail for "who let this
+    // happen?".
+    let mut audit_detail = serde_json::json!({
+        "resolution": &req.resolution,
+        "status": &row.status,
+        "action_summary": &row.action_summary,
+        "execution_id": execution.as_ref().map(|e| e.id),
+        "relationship": relationship.map(|r| r.as_str()),
+    });
+    if let ApprovalRelationship::SelfApproval =
+        relationship.unwrap_or(ApprovalRelationship::NotInYourChain)
+    {
+        if let Some(obj) = audit_detail.as_object_mut() {
+            obj.insert(
+                "mcp_client_id".into(),
+                serde_json::Value::String(auth_ctx.mcp_client_id.clone().unwrap_or_default()),
+            );
+            if let Some(b) = self_approve_binding_id {
+                obj.insert("binding_id".into(), serde_json::json!(b));
+            }
+        }
+    }
     let _ = scope
         .log_audit(AuditEntry {
             org_id: auth.org_id,
@@ -810,12 +946,7 @@ async fn resolve_approval(
             action: "approval.resolved",
             resource_type: Some("approval"),
             resource_id: Some(id),
-            detail: serde_json::json!({
-                "resolution": &req.resolution,
-                "status": &row.status,
-                "action_summary": &row.action_summary,
-                "execution_id": execution.as_ref().map(|e| e.id),
-            }),
+            detail: audit_detail,
             description: None,
             ip_address: ip.0.as_deref(),
         })
@@ -868,13 +999,15 @@ async fn resolve_approval(
             })
             .map(|(p, ids)| (Some(p), ids))
             .unwrap_or((None, Vec::new()));
-    Ok(Json(ApprovalResponse::from_row(
+    let mut resp = ApprovalResponse::from_row(
         row,
         identity_path,
         identity_path_ids,
         execution,
         &state.registry,
-    )))
+    );
+    resp.decorate_relationship(&scope, auth.identity_id).await?;
+    Ok(Json(resp))
 }
 
 async fn call_approval(
@@ -964,6 +1097,9 @@ async fn call_approval(
         &state.registry,
     );
     response.cascaded_approval_ids = cascaded_approval_ids;
+    response
+        .decorate_relationship(&scope, auth.identity_id)
+        .await?;
     Ok(Json(response))
 }
 
@@ -1454,13 +1590,15 @@ async fn cancel_approval_execution(
             .unwrap_or(None)
             .map(|(p, ids)| (Some(p), ids))
             .unwrap_or((None, Vec::new()));
-    Ok(Json(ApprovalResponse::from_row(
+    let mut resp = ApprovalResponse::from_row(
         approval,
         identity_path,
         identity_path_ids,
         Some(cancelled),
         &state.registry,
-    )))
+    );
+    resp.decorate_relationship(&scope, auth.identity_id).await?;
+    Ok(Json(resp))
 }
 
 /// Map a "claim / cancel returned None" to a specific user-facing error.

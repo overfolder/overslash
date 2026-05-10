@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pYdNRxBDb4acj21vVWeo80INoW8RG6xoHvGJVL4dUwwRlePCMh2SxheM7HKuQrf
+\restrict 3zDjXsS5RzWy2XvuhoQe1q8Wmg74ATRFM98XfjAuLXHjFfjuCuain2Jd6OFNW3B
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,13 +23,6 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
-
-
---
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
---
-
-COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -261,7 +254,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    elicitation_enabled boolean DEFAULT false NOT NULL
+    elicitation_enabled boolean DEFAULT false NOT NULL,
+    self_approve_enabled boolean DEFAULT false NOT NULL
 );
 
 
@@ -611,7 +605,8 @@ CREATE TABLE public.secrets (
     current_version integer DEFAULT 1 NOT NULL,
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    owner_identity_id uuid
 );
 
 
@@ -1572,6 +1567,13 @@ CREATE INDEX idx_secret_versions_secret ON public.secret_versions USING btree (s
 
 
 --
+-- Name: idx_secrets_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secrets_owner ON public.secrets USING btree (owner_identity_id) WHERE (owner_identity_id IS NOT NULL);
+
+
+--
 -- Name: idx_service_instances_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2209,6 +2211,14 @@ ALTER TABLE ONLY public.secrets
 
 
 --
+-- Name: secrets secrets_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secrets
+    ADD CONSTRAINT secrets_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
 -- Name: service_action_embeddings service_action_embeddings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2316,5 +2326,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pYdNRxBDb4acj21vVWeo80INoW8RG6xoHvGJVL4dUwwRlePCMh2SxheM7HKuQrf
+\unrestrict 3zDjXsS5RzWy2XvuhoQe1q8Wmg74ATRFM98XfjAuLXHjFfjuCuain2Jd6OFNW3B
 

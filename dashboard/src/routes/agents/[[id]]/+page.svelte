@@ -47,6 +47,8 @@
 		mcpError: string | null;
 		togglingElicitation: boolean;
 		elicitationError: string | null;
+		togglingSelfApprove: boolean;
+		selfApproveError: string | null;
 		togglingAutoCall: boolean;
 		autoCallError: string | null;
 		confirmDisconnect: boolean;
@@ -67,6 +69,8 @@
 			mcpError: null,
 			togglingElicitation: false,
 			elicitationError: null,
+			togglingSelfApprove: false,
+			selfApproveError: null,
 			togglingAutoCall: false,
 			autoCallError: null,
 			confirmDisconnect: false,
@@ -144,6 +148,7 @@
 		// otherwise healthy card after a polling tick fixes things up.
 		detail.mcpError = null;
 		detail.elicitationError = null;
+		detail.selfApproveError = null;
 		detail.autoCallError = null;
 		detail.disconnectError = null;
 		try {
@@ -257,6 +262,42 @@
 		} finally {
 			if (detail?.agentId === targetId) {
 				detail.togglingElicitation = false;
+			}
+		}
+	}
+
+	async function setSelfApprove(next: boolean) {
+		if (!detail || !detail.mcp) return;
+		const targetId = detail.agentId;
+		detail.togglingSelfApprove = true;
+		detail.selfApproveError = null;
+		try {
+			const resp = await session.patch<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
+				{ self_approve_enabled: next }
+			);
+			if (detail?.agentId === targetId) {
+				if (resp.connection) {
+					detail.mcp = resp.connection;
+				} else {
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+				}
+			}
+		} catch (e) {
+			if (detail?.agentId === targetId) {
+				if (e instanceof ApiError && e.status === 404) {
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+					detail.selfApproveError = null;
+				} else {
+					detail.selfApproveError =
+						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+				}
+			}
+		} finally {
+			if (detail?.agentId === targetId) {
+				detail.togglingSelfApprove = false;
 			}
 		}
 	}
@@ -819,6 +860,28 @@
 									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
 									labelledby="opt-elicitation-label"
 									onchange={(v) => setElicitation(v)}
+								/>
+							</div>
+							<div class="mcp-option">
+								<div class="mcp-option-text">
+									<div class="opt-title" id="opt-self-approve-label">Allow self-approval</div>
+									<div class="opt-desc">
+										Lets the agent on this connection resolve its own approval
+										requests. Surfaces the <code>overslash_approve_self</code>
+										MCP tool and skips the human-approval check on agent-initiated
+										actions. Only enable when a trusted human is at the keyboard
+										reviewing each call. <a href="/docs/claude-code">See the
+										recommended Claude Code rules</a>.
+									</div>
+									{#if detail.selfApproveError}
+										<div class="opt-warn">{detail.selfApproveError}</div>
+									{/if}
+								</div>
+								<ToggleSwitch
+									checked={detail.mcp.self_approve_enabled}
+									disabled={detail.togglingSelfApprove}
+									labelledby="opt-self-approve-label"
+									onchange={(v) => setSelfApprove(v)}
 								/>
 							</div>
 						</div>

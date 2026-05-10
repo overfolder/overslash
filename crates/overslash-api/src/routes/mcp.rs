@@ -178,7 +178,7 @@ async fn post_mcp(
         }
         return match req.method.as_str() {
             "initialize" => initialize_response(&state, &auth, &req).await,
-            "tools/list" => tools_list_response(req.id),
+            "tools/list" => tools_list_response(&state, &auth, req.id).await,
             "tools/call" => tools_call(&state, &auth, req, bearer.as_deref(), req_session_id).await,
             "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
             other => rpc_error_response(
@@ -367,108 +367,179 @@ async fn initialize_response(
         .into_response()
 }
 
-fn tools_list_response(id: Value) -> Response {
-    rpc_ok_response(
-        id,
+async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) -> Response {
+    // The two `overslash_approve_*` tools both forward to the same resolve
+    // endpoint; the split exists so Claude Code permission rules can
+    // separately allowlist `overslash_approve` (the always-on downstream-only
+    // tool, delegation) and
+    // ask for `overslash_approve_self` (the agent rubber-stamping its own
+    // request). The self variant is hidden from `tools/list` by default —
+    // only surfaces when the operator flips `self_approve_enabled` on the
+    // MCP binding for this client. See docs/design/agent-self-management.md
+    // §2 + §4.
+    let mut self_approve_visible = false;
+    if let (Some(identity_id), Some(client_id)) = (auth.identity_id, auth.mcp_client_id.as_deref())
+    {
+        if let Ok(Some(binding)) =
+            overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
+                &state.db,
+                identity_id,
+                client_id,
+            )
+            .await
+        {
+            self_approve_visible = binding.self_approve_enabled;
+        }
+    }
+
+    let approve_input_schema = json!({
+        "type": "object",
+        "properties": {
+            "approval_id": { "type": "string" },
+            "resolution": {
+                "type": "string",
+                "enum": ["allow", "deny", "allow_remember"],
+                "description": "Allow / deny outcome. Use `allow_remember` together with `remember_keys` + `ttl` to mint a permission rule for future calls."
+            },
+            "remember_keys": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Permission keys to remember when `resolution` is `allow_remember`. Must be a subset of the approval's suggested tiers."
+            },
+            "ttl": {
+                "type": "string",
+                "description": "Duration the remembered rule stays live (e.g. `24h`, `30d`). Only meaningful with `allow_remember`."
+            }
+        },
+        "required": ["approval_id", "resolution"],
+        "additionalProperties": false
+    });
+
+    let mut tools = vec![
         json!({
-            "tools": [
-                {
-                    "name": "overslash_search",
-                    "title": "Search Overslash services",
-                    "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. An empty `query` lists every callable instance without actions (browse mode).",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Free-text query. Pass an empty string to list every callable instance (no actions)."
-                            },
-                            "include_catalog": {
-                                "type": "boolean",
-                                "default": false,
-                                "description": "When true, also surface un-connected templates as `setup_required: true` rows. Default returns only configured instances the caller can call right now."
-                            }
-                        },
-                        "additionalProperties": false
+            "name": "overslash_search",
+            "title": "Search Overslash services",
+            "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. An empty `query` lists every callable instance without actions (browse mode).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text query. Pass an empty string to list every callable instance (no actions)."
                     },
-                    "annotations": {
-                        "readOnlyHint": true,
-                        "idempotentHint": true,
-                        "openWorldHint": false
+                    "include_catalog": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "When true, also surface un-connected templates as `setup_required: true` rows. Default returns only configured instances the caller can call right now."
                     }
                 },
-                {
-                    "name": "overslash_read",
-                    "title": "Read via Overslash",
-                    "description": "Call a read-class Overslash action on a configured service instance. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "service": {
-                                "type": "string",
-                                "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
-                            },
-                            "action":  { "type": "string" },
-                            "params":  {}
-                        },
-                        "required": ["service", "action"],
-                        "additionalProperties": false
-                    },
-                    "annotations": {
-                        "readOnlyHint": true,
-                        "idempotentHint": true,
-                        "openWorldHint": true
-                    }
-                },
-                {
-                    "name": "overslash_call",
-                    "title": "Call an Overslash action",
-                    "description": "Call any Overslash action (read, write, or delete) on a configured service instance, or resume a pending approval. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "service": {
-                                "type": "string",
-                                "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
-                            },
-                            "action":      { "type": "string" },
-                            "params":      {},
-                            "approval_id": {
-                                "type": "string",
-                                "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
-                            }
-                        },
-                        "additionalProperties": false
-                    },
-                    "annotations": {
-                        "readOnlyHint": false,
-                        "destructiveHint": true,
-                        "idempotentHint": false,
-                        "openWorldHint": true
-                    }
-                },
-                {
-                    "name": "overslash_auth",
-                    "title": "Identity & service status",
-                    "description": "Identity introspection sub-actions: whoami, service_status.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "action": { "type": "string" },
-                            "params": {}
-                        },
-                        "required": ["action"],
-                        "additionalProperties": false
-                    },
-                    "annotations": {
-                        "readOnlyHint": true,
-                        "idempotentHint": true,
-                        "openWorldHint": false
-                    }
-                }
-            ]
+                "additionalProperties": false
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "idempotentHint": true,
+                "openWorldHint": false
+            }
         }),
-    )
+        json!({
+            "name": "overslash_read",
+            "title": "Read via Overslash",
+            "description": "Call a read-class Overslash action on a configured service instance. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "service": {
+                        "type": "string",
+                        "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                    },
+                    "action":  { "type": "string" },
+                    "params":  {}
+                },
+                "required": ["service", "action"],
+                "additionalProperties": false
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "idempotentHint": true,
+                "openWorldHint": true
+            }
+        }),
+        json!({
+            "name": "overslash_call",
+            "title": "Call an Overslash action",
+            "description": "Call any Overslash action (read, write, or delete) on a configured service instance, or resume a pending approval. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. Prefer overslash_read for read-only actions so clients can skip the confirmation prompt.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "service": {
+                        "type": "string",
+                        "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                    },
+                    "action":      { "type": "string" },
+                    "params":      {},
+                    "approval_id": {
+                        "type": "string",
+                        "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
+                    }
+                },
+                "additionalProperties": false
+            },
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": true
+            }
+        }),
+        json!({
+            "name": "overslash_auth",
+            "title": "Identity & service status",
+            "description": "Identity introspection sub-actions: whoami, service_status.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string" },
+                    "params": {}
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "idempotentHint": true,
+                "openWorldHint": false
+            }
+        }),
+        json!({
+            "name": "overslash_approve",
+            "title": "Approve a downstream agent's pending action",
+            "description": "Resolve a pending approval that was requested by a *descendant* of the caller (delegation). Forwards to POST /v1/approvals/{approval_id}/resolve. The server classifies caller↔requester relationship and rejects if the caller is not an ancestor of the requester — the tool name is for permission scoping in clients like Claude Code, not the security boundary. Use the `approval_id` from the `pending_approval` envelope returned by an earlier `overslash_call`; the envelope's `relationship` field tells you whether to use this tool (`\"downstream\"`) or `overslash_approve_self` (`\"self\"`).",
+            "inputSchema": approve_input_schema,
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": false
+            }
+        }),
+    ];
+
+    if self_approve_visible {
+        tools.push(json!({
+            "name": "overslash_approve_self",
+            "title": "Approve the caller's own pending action",
+            "description": "Resolve a pending approval that the *caller itself* requested. Only available when the human at the keyboard has enabled self-approval for this MCP connection — without that flag this tool is hidden from tools/list. Forwards to POST /v1/approvals/{approval_id}/resolve; the server re-checks the binding flag on every call so a revoked toggle takes effect immediately. Use the `approval_id` from a `pending_approval` envelope whose `relationship` is `\"self\"`.",
+            "inputSchema": approve_input_schema,
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": true,
+                "openWorldHint": false
+            }
+        }));
+    }
+
+    rpc_ok_response(id, json!({ "tools": tools }))
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +590,9 @@ async fn tools_call(
             .await;
         }
         "overslash_auth" => dispatch_auth(state, bearer, &params.arguments).await,
+        "overslash_approve" | "overslash_approve_self" => {
+            dispatch_approve(state, bearer, &params.arguments).await
+        }
         other => {
             return rpc_error_response(req.id, METHOD_NOT_FOUND, format!("unknown tool `{other}`"));
         }
@@ -1134,6 +1208,56 @@ async fn dispatch_auth(
         }
     };
     forward(state, bearer, method, &path, body).await
+}
+
+/// Shared dispatcher for `overslash_approve` and
+/// `overslash_approve_self`. Both forward to the same resolve endpoint —
+/// the tool name is for client-side permission scoping (Claude Code rules),
+/// not authorization. The server-side classifier in `resolve_approval`
+/// decides whether the caller↔requester relationship matches the tool.
+async fn dispatch_approve(
+    state: &AppState,
+    bearer: &str,
+    args: &Value,
+) -> Result<ForwardOutcome, String> {
+    let approval_id = args
+        .get("approval_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "approval_id required".to_string())?;
+    if Uuid::parse_str(approval_id).is_err() {
+        return Err(format!("invalid approval_id `{approval_id}`"));
+    }
+    let resolution = args
+        .get("resolution")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "resolution required".to_string())?;
+    if !matches!(resolution, "allow" | "deny" | "allow_remember") {
+        return Err(format!(
+            "invalid resolution `{resolution}` — expected one of allow / deny / allow_remember"
+        ));
+    }
+
+    // Build the ResolveRequest body — pass through `remember_keys` and `ttl`
+    // when the caller supplied them so an `allow_remember` round-trips
+    // straight through to the existing rule-minting path.
+    let mut body = serde_json::Map::new();
+    body.insert("resolution".into(), Value::String(resolution.to_string()));
+    if let Some(keys) = args.get("remember_keys").cloned() {
+        body.insert("remember_keys".into(), keys);
+    }
+    if let Some(ttl) = args.get("ttl").cloned() {
+        body.insert("ttl".into(), ttl);
+    }
+
+    let path = format!("/v1/approvals/{}/resolve", urlencoding::encode(approval_id));
+    forward(
+        state,
+        bearer,
+        Method::POST,
+        &path,
+        Some(Value::Object(body)),
+    )
+    .await
 }
 
 /// Result of a `forward()` call. The split lets the MCP layer distinguish

@@ -429,6 +429,13 @@ enum CallResponse {
         approval_url: String,
         action_description: String,
         expires_at: String,
+        /// Caller↔requester relationship as classified server-side. The agent
+        /// uses this to pick `overslash_approve_self` vs
+        /// `overslash_approve` on the first try instead of
+        /// trial-and-error against the typed-error envelope. Always `"self"`
+        /// when this payload comes from the same agent that triggered the
+        /// action; `"downstream"` when listed by an ancestor.
+        relationship: String,
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
@@ -833,6 +840,11 @@ async fn call_action_impl(
                         approval_url,
                         action_description: summary,
                         expires_at: fmt_time(expires_at),
+                        // Caller of `overslash_call` is the requester of the
+                        // approval just created — by definition `self`. The
+                        // field earns its keep when this payload is rendered
+                        // for an ancestor in `list_pending` (`downstream`).
+                        relationship: "self".into(),
                     }),
                 )
                     .into_response());
