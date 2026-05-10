@@ -556,7 +556,7 @@ export type CallResponse =
        * the field is present so the same envelope shape works when an
        * ancestor inspects the row via `list_pending` and sees
        * `"downstream"`. MCP clients use it to pick
-       * `overslash_approve_self` vs `overslash_approve_downstream`.
+       * `overslash_approve_self` vs `overslash_approve`.
        */
       relationship: 'self' | 'downstream' | 'not_in_your_chain';
     }

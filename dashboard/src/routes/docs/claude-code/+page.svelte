@@ -9,7 +9,7 @@
       "mcp__overslash__overslash_search",
       "mcp__overslash__overslash_auth(action:whoami)",
       "mcp__overslash__overslash_auth(action:service_status)",
-      "mcp__overslash__overslash_approve_downstream"
+      "mcp__overslash__overslash_approve"
     ],
     "ask": [
       "mcp__overslash__overslash_call(service:overslash)",
@@ -64,7 +64,7 @@
 			<dd>Read-only discovery. Surfaces what's configured, nothing else. Auto-allow.</dd>
 			<dt><code>overslash_auth(action:whoami) / (action:service_status)</code></dt>
 			<dd>Identity introspection. Never mutates state. Auto-allow.</dd>
-			<dt><code>overslash_approve_downstream</code></dt>
+			<dt><code>overslash_approve</code></dt>
 			<dd>
 				Resolves an approval whose requester is a <em>proper descendant</em> of the
 				caller — the delegation model working. The server-side classifier rejects
@@ -99,7 +99,7 @@
 			</thead>
 			<tbody>
 				<tr><td><code>"self"</code></td><td><code>overslash_approve_self</code></td></tr>
-				<tr><td><code>"downstream"</code></td><td><code>overslash_approve_downstream</code></td></tr>
+				<tr><td><code>"downstream"</code></td><td><code>overslash_approve</code></td></tr>
 				<tr>
 					<td><code>"not_in_your_chain"</code></td>
 					<td>Don't try — bubble up; the server will reject either tool.</td>

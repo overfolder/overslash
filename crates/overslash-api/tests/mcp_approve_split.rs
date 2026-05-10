@@ -1,11 +1,11 @@
-//! End-to-end coverage for the `overslash_approve_downstream` /
+//! End-to-end coverage for the `overslash_approve` /
 //! `overslash_approve_self` MCP tool split + the server-side classifier
 //! that gates them.
 //!
 //! What this file verifies, all on a real Postgres-backed API stack:
 //!
 //!   * `tools/list` hides `overslash_approve_self` until the binding's
-//!     `self_approve_enabled` flag is on. `overslash_approve_downstream`
+//!     `self_approve_enabled` flag is on. `overslash_approve`
 //!     is always listed.
 //!   * Caller↔requester relationship classification at the resolve
 //!     endpoint:
@@ -414,7 +414,7 @@ async fn sibling_agent_gets_not_in_your_chain_from_either_tool() {
     let fx = bootstrap().await;
     let approval_id = seed_approval(&fx, fx.agent_id, fx.user_id).await;
 
-    for tool in ["overslash_approve_downstream", "overslash_approve_self"] {
+    for tool in ["overslash_approve", "overslash_approve_self"] {
         // Make sure self-approve tool is even visible to the sibling so
         // `tools/call` doesn't trip the visibility check before the
         // classifier runs. Visibility is per-binding.
@@ -455,7 +455,7 @@ async fn sibling_agent_gets_not_in_your_chain_from_either_tool() {
 
 /// (e) Visibility filter on `tools/list`: `overslash_approve_self` is
 /// hidden by default and surfaces once the binding flag flips on.
-/// `overslash_approve_downstream` is always present — both regardless of
+/// `overslash_approve` is always present — both regardless of
 /// the flag.
 #[tokio::test]
 async fn tools_list_filters_self_approve_by_binding_flag() {
@@ -489,8 +489,8 @@ async fn tools_list_filters_self_approve_by_binding_flag() {
     // Default: flag is false (migration default).
     let names = list().await;
     assert!(
-        names.contains(&"overslash_approve_downstream".to_string()),
-        "approve_downstream should always be listed: {names:?}"
+        names.contains(&"overslash_approve".to_string()),
+        "approve should always be listed: {names:?}"
     );
     assert!(
         !names.contains(&"overslash_approve_self".to_string()),
@@ -500,7 +500,7 @@ async fn tools_list_filters_self_approve_by_binding_flag() {
     // Flip the binding flag on — now the self tool surfaces.
     flip_self_approve(&fx, fx.agent_id, true).await;
     let names = list().await;
-    assert!(names.contains(&"overslash_approve_downstream".to_string()));
+    assert!(names.contains(&"overslash_approve".to_string()));
     assert!(
         names.contains(&"overslash_approve_self".to_string()),
         "approve_self should appear after flag flips on: {names:?}"

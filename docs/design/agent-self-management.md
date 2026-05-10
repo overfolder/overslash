@@ -57,14 +57,14 @@ Approvals today have one `overslash_approve` MCP tool and one `POST /v1/approval
 
 **MCP tools** (tool-name granularity lets Claude Code permission-rule each separately):
 
-- `overslash_approve_downstream` — resolves an approval whose requester is a *proper descendant* of the caller's identity. Safe to allow in auto mode. Ancestor approving descendant is the delegation model working.
+- `overslash_approve` — resolves an approval whose requester is a *proper descendant* of the caller's identity. Safe to allow in auto mode. Ancestor approving descendant is the delegation model working.
 - `overslash_approve_self` — resolves an approval whose requester is the caller itself. Always ask in Claude Code. May also be outright denied by an admin setting.
 
 **Server classifier** (enforcement — tool dispatch is UX, the security must be server-side):
 
 - Compare `caller.identity_id` with `approval.requester_identity_id`.
 - Caller == requester → **self** — accept only through `overslash_approve_self`; even then, caller must hold an explicit `self_approve` permission (dashboard-granted, rare).
-- Caller is ancestor of requester → **downstream** — accept through `overslash_approve_downstream`.
+- Caller is ancestor of requester → **downstream** — accept through `overslash_approve`.
 - Caller is sibling / unrelated → **not_in_your_chain** — reject with structured error.
 
 **Tool-selection ergonomics**: the `PendingApproval` response from `overslash_call` already carries `approval_id`. Extend it to also carry `relationship: "self" | "downstream"` (from the classifier above, evaluated at creation time) so the agent knows which tool to call without trial-and-error. This avoids fatigue approvals where the human is prompted once per mis-chosen tool.
@@ -110,7 +110,7 @@ Claude Code's permission engine matches on tool name and argument patterns, not 
       "mcp__overslash__overslash_search",
       "mcp__overslash__overslash_auth(action:whoami)",
       "mcp__overslash__overslash_auth(action:service_status)",
-      "mcp__overslash__overslash_approve_downstream"
+      "mcp__overslash__overslash_approve"
     ],
     "ask": [
       "mcp__overslash__overslash_call(service:overslash)",

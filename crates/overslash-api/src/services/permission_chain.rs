@@ -507,7 +507,7 @@ pub async fn is_self_or_ancestor(
 }
 
 /// Caller↔requester relationship for an approval. The split between
-/// `overslash_approve_self` and `overslash_approve_downstream` is UX (it
+/// `overslash_approve_self` and `overslash_approve` is UX (it
 /// lets Claude Code permission-rule each tool separately); this classifier
 /// is the actual security boundary, evaluated server-side at every resolve.
 /// See docs/design/agent-self-management.md §2.

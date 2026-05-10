@@ -259,7 +259,7 @@ export interface ApprovalResponse {
 	 *  perspective. Populated on identity-bound reads (API key tied to an
 	 *  identity); omitted on dashboard-session reads where the relationship
 	 *  has no defined viewer. MCP clients use this to pick
-	 *  `overslash_approve_self` vs `overslash_approve_downstream`. */
+	 *  `overslash_approve_self` vs `overslash_approve`. */
 	relationship?: 'self' | 'downstream' | 'not_in_your_chain';
 }
 

@@ -24,7 +24,7 @@ settings if you want it across every project):
       "mcp__overslash__overslash_search",
       "mcp__overslash__overslash_auth(action:whoami)",
       "mcp__overslash__overslash_auth(action:service_status)",
-      "mcp__overslash__overslash_approve_downstream"
+      "mcp__overslash__overslash_approve"
     ],
     "ask": [
       "mcp__overslash__overslash_call(service:overslash)",
@@ -40,7 +40,7 @@ settings if you want it across every project):
   configured, nothing else. Auto-allow is safe.
 - **`overslash_auth(action:whoami)` / `(action:service_status)`** are
   identity introspection. They never mutate state; auto-allow is safe.
-- **`overslash_approve_downstream`** resolves an approval whose requester
+- **`overslash_approve`** resolves an approval whose requester
   is a *proper descendant* of the caller. This is the delegation model
   working as designed: a user approves their agent, an agent approves its
   sub-agent. The server-side classifier rejects this tool whenever the
@@ -64,7 +64,7 @@ first try:
 | `relationship`       | Tool to call                      |
 | -------------------- | --------------------------------- |
 | `"self"`             | `overslash_approve_self`          |
-| `"downstream"`       | `overslash_approve_downstream`    |
+| `"downstream"`       | `overslash_approve`    |
 | `"not_in_your_chain"`| Don't try — the server will reject either tool. Bubble up. |
 
 The tool name is for Claude Code's permission rules; the actual

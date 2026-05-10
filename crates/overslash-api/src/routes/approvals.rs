@@ -213,7 +213,7 @@ struct ApprovalResponse {
     /// Populated only when the request carried an identity-bound auth
     /// (`auth.identity_id = Some`); omitted on dashboard-session reads where
     /// the relationship lookup has no defined viewer. MCP clients use this
-    /// to pre-pick `overslash_approve_self` vs `overslash_approve_downstream`.
+    /// to pre-pick `overslash_approve_self` vs `overslash_approve`.
     #[serde(skip_serializing_if = "Option::is_none")]
     relationship: Option<String>,
 }
@@ -553,7 +553,7 @@ async fn resolve_approval(
         .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
 
     // ── Authorize the caller via the caller↔requester classifier. The split
-    // between `overslash_approve_self` and `overslash_approve_downstream` MCP
+    // between `overslash_approve_self` and `overslash_approve` MCP
     // tools is purely UX (per-tool Claude Code permission rules); the actual
     // security boundary is here. See docs/design/agent-self-management.md §2.
     use crate::services::permission_chain::{ApprovalRelationship, classify_approval_relationship};

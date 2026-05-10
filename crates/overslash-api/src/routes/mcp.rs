@@ -370,7 +370,8 @@ async fn initialize_response(
 async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) -> Response {
     // The two `overslash_approve_*` tools both forward to the same resolve
     // endpoint; the split exists so Claude Code permission rules can
-    // separately allowlist `overslash_approve_downstream` (delegation) and
+    // separately allowlist `overslash_approve` (the always-on downstream-only
+    // tool, delegation) and
     // ask for `overslash_approve_self` (the agent rubber-stamping its own
     // request). The self variant is hidden from `tools/list` by default —
     // only surfaces when the operator flips `self_approve_enabled` on the
@@ -510,7 +511,7 @@ async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) ->
             }
         }),
         json!({
-            "name": "overslash_approve_downstream",
+            "name": "overslash_approve",
             "title": "Approve a downstream agent's pending action",
             "description": "Resolve a pending approval that was requested by a *descendant* of the caller (delegation). Forwards to POST /v1/approvals/{approval_id}/resolve. The server classifies caller↔requester relationship and rejects if the caller is not an ancestor of the requester — the tool name is for permission scoping in clients like Claude Code, not the security boundary. Use the `approval_id` from the `pending_approval` envelope returned by an earlier `overslash_call`; the envelope's `relationship` field tells you whether to use this tool (`\"downstream\"`) or `overslash_approve_self` (`\"self\"`).",
             "inputSchema": approve_input_schema,
@@ -589,7 +590,7 @@ async fn tools_call(
             .await;
         }
         "overslash_auth" => dispatch_auth(state, bearer, &params.arguments).await,
-        "overslash_approve_downstream" | "overslash_approve_self" => {
+        "overslash_approve" | "overslash_approve_self" => {
             dispatch_approve(state, bearer, &params.arguments).await
         }
         other => {
@@ -1209,7 +1210,7 @@ async fn dispatch_auth(
     forward(state, bearer, method, &path, body).await
 }
 
-/// Shared dispatcher for `overslash_approve_downstream` and
+/// Shared dispatcher for `overslash_approve` and
 /// `overslash_approve_self`. Both forward to the same resolve endpoint —
 /// the tool name is for client-side permission scoping (Claude Code rules),
 /// not authorization. The server-side classifier in `resolve_approval`

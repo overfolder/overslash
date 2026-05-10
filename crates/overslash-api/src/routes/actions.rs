@@ -431,7 +431,7 @@ enum CallResponse {
         expires_at: String,
         /// Caller↔requester relationship as classified server-side. The agent
         /// uses this to pick `overslash_approve_self` vs
-        /// `overslash_approve_downstream` on the first try instead of
+        /// `overslash_approve` on the first try instead of
         /// trial-and-error against the typed-error envelope. Always `"self"`
         /// when this payload comes from the same agent that triggered the
         /// action; `"downstream"` when listed by an ancestor.
