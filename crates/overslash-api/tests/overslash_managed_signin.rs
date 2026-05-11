@@ -460,6 +460,184 @@ async fn invite_gate_applies_to_dedicated_idp_when_flag_on() {
 }
 
 #[tokio::test]
+async fn re_signin_does_not_consume_pending_invite() {
+    // A user with existing membership signs in. If we naively mark the
+    // pending invite accepted on every callback, a second IdP login by an
+    // existing member would silently consume the invite — the audit trail
+    // would claim the invite admitted someone when it didn't. Guard:
+    // `mark_accepted` only fires when membership creation produced a new
+    // row (unique-violation path is no-op for both membership AND invite).
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query(
+        "UPDATE oauth_providers SET authorization_endpoint = $1, token_endpoint = $2, userinfo_endpoint = $3 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/authorize"))
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (base, client) = common::start_api_with_auth_providers(
+        pool.clone(),
+        Some(("env_id".into(), "env_secret".into())),
+        None,
+        "http://localhost:3000",
+    )
+    .await;
+    let (org_id, _, _, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/org-invites"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "email": "testuser@example.com", "role": "member" }))
+        .send()
+        .await
+        .unwrap();
+
+    // First sign-in: consumes the invite.
+    let nonce = "consume-nonce-1";
+    let state_param = format!("login:google:{nonce}");
+    client
+        .get(format!(
+            "{base}/auth/callback/google?code=c1&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Mint a second pending invite for the same email — this models the
+    // "admin tried to re-invite a current member" case. A second sign-in
+    // must NOT consume the new invite because the user is already a
+    // member.
+    let resp = client
+        .post(format!("{base}/v1/org-invites"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "email": "testuser@example.com", "role": "admin" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let nonce = "consume-nonce-2";
+    let state_param = format!("login:google:{nonce}");
+    client
+        .get(format!(
+            "{base}/auth/callback/google?code=c2&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM org_invites WHERE org_id = $1 AND email = 'testuser@example.com' AND accepted_at IS NULL",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pending, 1,
+        "re-sign-in by existing member must not consume the pending invite"
+    );
+}
+
+#[tokio::test]
+async fn single_org_mode_bypasses_invite_gate() {
+    // CRITICAL: self-hosted SINGLE_ORG_MODE deployments pin every request
+    // to one org slug. New orgs default `allow_overslash_managed_signin =
+    // true`, which gates on invites — but in single-org mode the operator
+    // IS the org admin and there's nobody to mint an invite for them.
+    // The bypass must skip the invite gate (and the legacy domain gate)
+    // when the configured slug matches.
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query(
+        "UPDATE oauth_providers SET authorization_endpoint = $1, token_endpoint = $2, userinfo_endpoint = $3 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/authorize"))
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Bootstrap a corp org first (managed-signin defaults on) so we know
+    // the slug to pin SINGLE_ORG_MODE to.
+    let (boot_addr, boot_client) = common::start_api(pool.clone()).await;
+    let boot_base = format!("http://{boot_addr}");
+    let (org_id, _, _, _) = common::bootstrap_org_identity(&boot_base, &boot_client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Re-boot with SINGLE_ORG_MODE pinned and env creds set. No invite
+    // exists for testuser@example.com — without the bypass this would
+    // 403 not_invited.
+    let (addr, _) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.single_org_mode = Some(org_slug.clone());
+        cfg.google_auth_client_id = Some("env_id".into());
+        cfg.google_auth_client_secret = Some("env_secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+    // Inspect the 303 directly instead of following it to a dead end.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    // Repoint Google's endpoints at the mock for the token / userinfo
+    // exchange so the callback can complete end-to-end.
+    sqlx::query(
+        "UPDATE oauth_providers SET token_endpoint = $1, userinfo_endpoint = $2 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let nonce = "som-nonce-1";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=som1&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        303,
+        "SINGLE_ORG_MODE must bypass the invite gate; got {}",
+        resp.status(),
+    );
+}
+
+#[tokio::test]
 async fn callback_rejects_uninvited_email_on_managed_signin_org() {
     let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;

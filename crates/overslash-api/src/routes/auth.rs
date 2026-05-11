@@ -1939,14 +1939,24 @@ async fn provision_org_subdomain(
     //    absence means this org hasn't enabled this provider, so we reject
     //    with `not_permitted_by_org_idp`.
     //
-    // SINGLE_ORG_MODE exception (legacy path only): self-hosted operators
-    // typically use the env-var Overslash-level IdPs (`GOOGLE_AUTH_CLIENT_ID`,
-    // etc.), which have no `org_idp_configs` row. In that mode the operator
-    // IS the org admin — the env creds they provisioned ARE the trust
-    // boundary, so the per-org gate doesn't apply. The new managed-signin
-    // path has its own explicit gate (`org_invites`), so SINGLE_ORG_MODE
-    // doesn't need a bypass there.
-    let membership_role = if target_org.allow_overslash_managed_signin {
+    // SINGLE_ORG_MODE exception (applies to BOTH paths): self-hosted
+    // operators typically use the env-var Overslash-level IdPs
+    // (`GOOGLE_AUTH_CLIENT_ID`, etc.). In that mode the operator IS the org
+    // admin — the env creds they provisioned ARE the trust boundary, so
+    // every per-org gate is bypassed. Without this branch on the
+    // invite-gated path, a fresh self-hosted deployment defaults the org's
+    // `allow_overslash_managed_signin` flag to `true`, leaving the operator
+    // locked out (no invite exists yet and they can't sign in to create
+    // one).
+    let single_org_bypass = state
+        .config
+        .single_org_mode
+        .as_deref()
+        .map(|pinned| pinned == slug)
+        .unwrap_or(false);
+    let membership_role = if single_org_bypass {
+        None
+    } else if target_org.allow_overslash_managed_signin {
         let pending = overslash_db::repos::org_invite::find_pending(
             &state.db,
             target_org.id,
@@ -1959,34 +1969,26 @@ async fn provision_org_subdomain(
         // want a consumed invite stranded with no member.
         Some(pending)
     } else {
-        let single_org_bypass = state
-            .config
-            .single_org_mode
-            .as_deref()
-            .map(|pinned| pinned == slug)
-            .unwrap_or(false);
-        if !single_org_bypass {
-            let email_domain = userinfo
-                .email
-                .rsplit('@')
-                .next()
-                .unwrap_or("")
-                .to_lowercase();
-            let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
-                &state.db,
-                target_org.id,
-                &userinfo.provider_key,
-            )
-            .await?
-            .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
-            if !idp_config.allowed_email_domains.is_empty()
-                && !idp_config
-                    .allowed_email_domains
-                    .iter()
-                    .any(|d| d.eq_ignore_ascii_case(&email_domain))
-            {
-                return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
-            }
+        let email_domain = userinfo
+            .email
+            .rsplit('@')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
+            &state.db,
+            target_org.id,
+            &userinfo.provider_key,
+        )
+        .await?
+        .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
+        if !idp_config.allowed_email_domains.is_empty()
+            && !idp_config
+                .allowed_email_domains
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&email_domain))
+        {
+            return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
         }
         None
     };
@@ -2059,20 +2061,23 @@ async fn provision_org_subdomain(
     // (user_id, org_id) — but in the SINGLE_ORG_MODE reuse-user path, an
     // earlier sign-in could have left the same `(user_id, org_id)` row
     // already in place (e.g., bootstrap admin from POST /v1/orgs). Swallow
-    // the unique-violation so a repeat login doesn't fail.
-    match membership::create(&state.db, user_id, target_org.id, role).await {
-        Ok(_) => {}
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
+    // the unique-violation so a repeat login doesn't fail. Track whether
+    // a brand-new membership row was created so we only consume an invite
+    // when admission actually happened — a second-IdP sign-in by an
+    // already-member must not eat the pending invite (audit-trail bug).
+    let membership_created = match membership::create(&state.db, user_id, target_org.id, role).await
+    {
+        Ok(_) => true,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => false,
         Err(e) => return Err(e.into()),
-    }
+    };
 
-    // Best-effort: consume the invite. `mark_accepted` is idempotent
-    // (guards on `accepted_at IS NULL`), so a concurrent login that
-    // already marked it returns `Ok(false)` and we don't propagate that
-    // as an error. If the UPDATE fails for an unrelated DB reason the
-    // membership row is already in place, so admission succeeded — log
-    // and continue rather than tearing things down.
-    if let Some(invite) = membership_role.as_ref() {
+    // Best-effort: consume the invite, but ONLY when this sign-in actually
+    // produced a new membership. Otherwise the invite is preserved for the
+    // genuine first-time admission. `mark_accepted` is idempotent (guards
+    // on `accepted_at IS NULL`), so a concurrent login that already marked
+    // it returns `Ok(false)` and we don't propagate that as an error.
+    if membership_created && let Some(invite) = membership_role.as_ref() {
         if let Err(e) =
             overslash_db::repos::org_invite::mark_accepted(&state.db, invite.id, user_id).await
         {
