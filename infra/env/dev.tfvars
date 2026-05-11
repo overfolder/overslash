@@ -15,7 +15,10 @@ session_cookie_domain = ".app.dev.overslash.com"
 # `extra_api_domain_mappings` below, which keeps cost at zero and avoids
 # provisioning a global LB just to host a couple of dogfood orgs.
 enable_api_lb             = false
-extra_api_domain_mappings = []
+extra_api_domain_mappings = [
+  "overfolder.api.dev.overslash.com",
+  "overfolder-dev.api.dev.overslash.com",
+]
 
 # Lets a locally-run MCP Inspector (default port 6274) complete the OAuth
 # handshake against the dev API. Scoped to /mcp + /.well-known/oauth-* +
