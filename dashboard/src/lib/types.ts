@@ -11,6 +11,33 @@ export interface OrgInfo {
   /** Populated on post-multi-org backends; undefined on older APIs. Personal
    *  orgs hide the IdP + OAuth credential surfaces entirely. */
   is_personal?: boolean;
+  /** When true, this org accepts Overslash-managed sign-in (env-var OAuth
+   *  apps). Admission is gated by `org_invites` — see migration 066 and
+   *  `docs/design/multi_org_auth.md`. Undefined on older APIs. */
+  allow_overslash_managed_signin?: boolean;
+}
+
+/**
+ * Shape of GET/PATCH /v1/orgs/{id}/managed-signin.
+ */
+export interface ManagedSigninSettings {
+  allow_overslash_managed_signin: boolean;
+}
+
+/**
+ * One `org_invites` row. Pending invites are the membership gate for orgs
+ * with `allow_overslash_managed_signin = true`.
+ */
+export interface OrgInvite {
+  id: string;
+  org_id: string;
+  email: string;
+  role: 'admin' | 'member';
+  invited_by: string | null;
+  created_at: string;
+  accepted_at: string | null;
+  accepted_by_user_id: string | null;
+  status: 'pending' | 'accepted';
 }
 
 /**
@@ -39,6 +66,10 @@ export interface IdpConfig {
   provider_key: string;
   display_name: string;
   source: 'env' | 'db';
+  /** True when this entry is the Overslash-managed env-var IdP surfaced
+   * because the org has `allow_overslash_managed_signin = true`. Sign-in
+   * is allowed but admission requires a pending `org_invites` row. */
+  managed?: boolean;
   enabled?: boolean;
   allowed_email_domains?: string[];
   uses_org_credentials?: boolean;

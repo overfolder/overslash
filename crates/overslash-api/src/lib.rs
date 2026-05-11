@@ -314,6 +314,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::preferences::router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())
+        .merge(routes::org_invites::router())
         .merge(routes::org_oauth_credentials::router())
         .merge(routes::org_service_keys::router())
         .merge(routes::groups::router())

@@ -3,9 +3,11 @@ import { ApiError, session, type MeIdentity } from '$lib/session';
 import type {
 	ExecutionSettings,
 	IdpConfig,
+	ManagedSigninSettings,
 	McpClient,
 	OAuthCredential,
 	OrgInfo,
+	OrgInvite,
 	SecretRequestSettings,
 	ServiceKeySummary,
 	Webhook
@@ -41,6 +43,8 @@ export interface OrgPageData {
 	webhooks: Webhook[];
 	secretRequestSettings: SecretRequestSettings | null;
 	executionSettings: ExecutionSettings | null;
+	managedSigninSettings: ManagedSigninSettings | null;
+	invites: OrgInvite[];
 	subscription: OrgSubscription | null;
 	error: { status: number; message: string } | null;
 }
@@ -66,6 +70,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				webhooks: [],
 				secretRequestSettings: null,
 				executionSettings: null,
+				managedSigninSettings: null,
+				invites: [],
 				subscription: null,
 				error: { status: 403, message: 'Admin access required to view org settings.' }
 			};
@@ -79,7 +85,9 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			serviceKeys,
 			webhooks,
 			secretRequestSettings,
-			executionSettings
+			executionSettings,
+			managedSigninSettings,
+			invites
 		] = await Promise.all([
 			orgId
 				? session.get<OrgInfo>(`/v1/orgs/${orgId}`)
@@ -94,7 +102,11 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				: Promise.resolve(null),
 			orgId
 				? session.get<ExecutionSettings>(`/v1/orgs/${orgId}/execution-settings`)
-				: Promise.resolve(null)
+				: Promise.resolve(null),
+			orgId
+				? session.get<ManagedSigninSettings>(`/v1/orgs/${orgId}/managed-signin`)
+				: Promise.resolve(null),
+			session.get<OrgInvite[]>('/v1/org-invites')
 		]);
 
 		// Load subscription for non-personal Team orgs (404 = no subscription, silently null).
@@ -117,6 +129,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			webhooks,
 			secretRequestSettings,
 			executionSettings,
+			managedSigninSettings,
+			invites,
 			subscription,
 			error: null
 		};
@@ -134,6 +148,8 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			webhooks: [],
 			secretRequestSettings: null,
 			executionSettings: null,
+			managedSigninSettings: null,
+			invites: [],
 			subscription: null,
 			error: { status, message }
 		};

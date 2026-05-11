@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at\n         FROM orgs WHERE slug = $1",
   "describe": {
     "columns": [
       {
@@ -45,19 +45,22 @@
       },
       {
         "ordinal": 8,
+        "name": "allow_overslash_managed_signin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
         "Text"
       ]
     },
@@ -71,8 +74,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "ea6005753d73cfa61a2ba3b69932dc8fd5726ffcd157ac39ecc5fe63c74f918f"
+  "hash": "247b603b36ad6c82520553f33225327d777470af8efc0620ee6eb76751443d32"
 }

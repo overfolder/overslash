@@ -132,6 +132,36 @@ pub async fn create_org_only(
     .await
 }
 
+/// Find a user already-a-member of `org_id` whose email matches `email`
+/// (case-insensitive). Returns the user_id of the most-recently-created
+/// match, or None. Used by the Overslash-managed sign-in path to detect
+/// an existing member trying a second IdP — those should be admitted to
+/// their existing membership without needing a fresh invite.
+///
+/// Email is informational on `users` and NOT unique, so multiple rows can
+/// match (e.g. SINGLE_ORG_MODE creating an Overslash-backed user and a
+/// later org-only user). We pick the newest to give the cleanest
+/// "this is the active human" answer.
+pub async fn find_member_by_email_in_org(
+    pool: &PgPool,
+    org_id: Uuid,
+    email: &str,
+) -> Result<Option<UserRow>, sqlx::Error> {
+    sqlx::query_as!(
+        UserRow,
+        "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.overslash_idp_subject, u.personal_org_id, u.is_instance_admin, u.created_at, u.updated_at
+         FROM users u
+         JOIN user_org_memberships m ON m.user_id = u.id
+         WHERE m.org_id = $1 AND lower(u.email) = lower($2)
+         ORDER BY u.created_at DESC
+         LIMIT 1",
+        org_id,
+        email,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Refresh the email/display_name the IdP returned on latest login. No-op if
 /// the values are unchanged. Returns the updated row.
 pub async fn refresh_profile(

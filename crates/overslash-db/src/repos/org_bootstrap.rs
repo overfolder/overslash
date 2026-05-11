@@ -223,6 +223,28 @@ pub async fn bootstrap_user_in_org(
     Ok(())
 }
 
+/// Add an identity to the org's Admins group. Idempotent. Used when an
+/// already-admin user signs in via a second IdP — the new identity row
+/// must inherit the admin's group membership, otherwise the session JWT
+/// (keyed on the new identity) would silently lose admin powers.
+pub async fn add_identity_to_admins(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "INSERT INTO identity_groups (identity_id, group_id)
+         SELECT $1, g.id FROM groups g
+         WHERE g.org_id = $2 AND g.system_kind = 'admins'
+         ON CONFLICT DO NOTHING",
+        identity_id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Look up the identity's `email`/`name` to label the Myself group, then
 /// delegate to `repos::group::ensure_self_group`.
 async fn ensure_myself_group_for_identity(

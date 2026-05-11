@@ -3,9 +3,11 @@
 	import type {
 		ExecutionSettings,
 		IdpConfig,
+		ManagedSigninSettings,
 		McpClient,
 		OAuthCredential,
 		OrgInfo,
+		OrgInvite,
 		SecretRequestSettings,
 		ServiceKeyCreated,
 		ServiceKeySummary,
@@ -35,6 +37,15 @@
 	let executionSettings = $state<ExecutionSettings | null>(null);
 	let executionSaving = $state(false);
 	let executionError = $state<string | null>(null);
+	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
+	let managedSigninSaving = $state(false);
+	let managedSigninError = $state<string | null>(null);
+	let invites = $state<OrgInvite[]>([]);
+	let showInviteForm = $state(false);
+	let inviteEmail = $state('');
+	let inviteRole = $state<'member' | 'admin'>('member');
+	let inviteError = $state<string | null>(null);
+	let inviteSubmitting = $state(false);
 	let subscription = $state<OrgSubscription | null>(null);
 	$effect(() => {
 		org = data.org;
@@ -45,6 +56,8 @@
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
 		executionSettings = data.executionSettings;
+		managedSigninSettings = data.managedSigninSettings;
+		invites = data.invites;
 		subscription = data.subscription;
 	});
 
@@ -483,6 +496,67 @@
 		}
 	}
 
+	async function refetchInvites() {
+		invites = await session.get<OrgInvite[]>('/v1/org-invites');
+	}
+
+	async function toggleManagedSignin(nextValue?: boolean) {
+		if (!org || !managedSigninSettings) return;
+		const next = nextValue ?? !managedSigninSettings.allow_overslash_managed_signin;
+		managedSigninSaving = true;
+		managedSigninError = null;
+		try {
+			const updated = await session.patch<ManagedSigninSettings>(
+				`/v1/orgs/${org.id}/managed-signin`,
+				{ allow_overslash_managed_signin: next }
+			);
+			managedSigninSettings = updated;
+			// Managed-provider rows in /v1/org-idp-configs are gated on the
+			// flag — refetch so they appear/disappear immediately.
+			await refetchIdp();
+		} catch (err) {
+			managedSigninError = asMessage(err);
+		} finally {
+			managedSigninSaving = false;
+		}
+	}
+
+	async function submitInvite(e: Event) {
+		e.preventDefault();
+		inviteError = null;
+		inviteSubmitting = true;
+		try {
+			await session.post<OrgInvite>('/v1/org-invites', {
+				email: inviteEmail.trim(),
+				role: inviteRole
+			});
+			showInviteForm = false;
+			inviteEmail = '';
+			inviteRole = 'member';
+			await refetchInvites();
+		} catch (err) {
+			inviteError = asMessage(err);
+		} finally {
+			inviteSubmitting = false;
+		}
+	}
+
+	function revokeInvite(invite: OrgInvite) {
+		openConfirm(
+			`Revoke invite for ${invite.email}?`,
+			'They will no longer be able to sign in to this org. Accepted invites are kept for the audit trail.',
+			'Revoke',
+			async () => {
+				try {
+					await session.delete(`/v1/org-invites/${invite.id}`);
+					await refetchInvites();
+				} catch (err) {
+					alert(asMessage(err));
+				}
+			}
+		);
+	}
+
 	function deleteIdp(cfg: IdpConfig) {
 		if (!cfg.id) return;
 		openConfirm(
@@ -676,13 +750,143 @@
 			{/if}
 		</section>
 
-		{#if !isPersonalOrg && !hasEnabledIdp}
+		{#if !isPersonalOrg && !hasEnabledIdp && managedSigninSettings?.allow_overslash_managed_signin !== true}
 			<div class="idp-warning-banner">
 				<strong>No sign-in configured.</strong> Right now only you — the org's admin —
 				can reach this org, via your Overslash-level login. Add an Identity Provider
-				below so your team can sign in on
-				<code>{org?.slug}</code>'s subdomain. You'll keep your own access either way.
+				below, or enable Overslash-managed sign-in and invite your team by email.
+				You'll keep your own access either way.
 			</div>
+		{/if}
+
+		{#if !isPersonalOrg && managedSigninSettings}
+		<!-- Sign-in & members (Overslash-managed sign-in toggle + invites) -->
+		<section class="card">
+			<h2>Sign-in &amp; members</h2>
+			<p class="section-desc">
+				Decouple authentication from membership. When this is on, every
+				new sign-in to this org — through Overslash's managed OAuth apps
+				(Google, GitHub) <em>or</em> through an Identity Provider you
+				configured below — only admits the user if their verified email
+				is on the invite list. Authentication is separated from
+				membership: the IdP proves who you are, the invite list proves
+				you belong.
+			</p>
+
+			<div class="toggle-row">
+				<div class="toggle-body">
+					<div class="toggle-label">Invite-only admission</div>
+					<div class="toggle-help">
+						When on, every new member must have a pending invite below
+						before they can sign in — regardless of which IdP they
+						authenticate with. When off, the per-IdP
+						<code>allowed_email_domains</code> whitelist is the only
+						gate.
+					</div>
+				</div>
+				<ToggleSwitch
+					checked={managedSigninSettings.allow_overslash_managed_signin}
+					onchange={toggleManagedSignin}
+					disabled={managedSigninSaving}
+					label="Allow Overslash-managed sign-in"
+				/>
+			</div>
+			{#if managedSigninError}
+				<div class="form-error">{managedSigninError}</div>
+			{/if}
+
+			{#if managedSigninSettings.allow_overslash_managed_signin}
+				<div class="card-head invites-head">
+					<h3>Invites</h3>
+					<button
+						type="button"
+						class="btn btn-primary"
+						onclick={() => {
+							showInviteForm = !showInviteForm;
+							if (!showInviteForm) {
+								inviteEmail = '';
+								inviteRole = 'member';
+								inviteError = null;
+							}
+						}}
+					>
+						{showInviteForm ? 'Cancel' : 'Invite member'}
+					</button>
+				</div>
+
+				{#if showInviteForm}
+					<form class="inline-form" onsubmit={submitInvite}>
+						<label>
+							Email
+							<input
+								type="email"
+								bind:value={inviteEmail}
+								placeholder="alice@example.com"
+								required
+							/>
+						</label>
+						<label>
+							Role
+							<select bind:value={inviteRole}>
+								<option value="member">Member</option>
+								<option value="admin">Admin</option>
+							</select>
+						</label>
+						{#if inviteError}
+							<div class="form-error">{inviteError}</div>
+						{/if}
+						<button type="submit" class="btn btn-primary" disabled={inviteSubmitting}>
+							{inviteSubmitting ? 'Sending…' : 'Send invite'}
+						</button>
+					</form>
+				{/if}
+
+				{#if invites.length === 0}
+					<p class="muted">No invites yet. Add one above to let your team in.</p>
+				{:else}
+					<table>
+						<thead>
+							<tr>
+								<th>Email</th>
+								<th>Role</th>
+								<th>Status</th>
+								<th>Created</th>
+								<th class="actions-col">Actions</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each invites as invite (invite.id)}
+								<tr>
+									<td class="mono">{invite.email}</td>
+									<td>{invite.role}</td>
+									<td>
+										{#if invite.status === 'accepted'}
+											<span class="badge badge-on">accepted</span>
+										{:else}
+											<span class="badge badge-off">pending</span>
+										{/if}
+									</td>
+									<td>{absoluteTime(invite.created_at)}</td>
+									<td class="actions-col">
+										{#if invite.status === 'pending'}
+											<button
+												type="button"
+												class="btn-link danger"
+												onclick={() => revokeInvite(invite)}
+											>
+												Revoke
+											</button>
+										{:else}
+											<span class="muted small">—</span>
+										{/if}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+			{/if}
+		</section>
 		{/if}
 
 		{#if !isPersonalOrg}
@@ -1396,6 +1600,14 @@
 	}
 	.card-head h2 {
 		margin-bottom: 0;
+	}
+	.card-head h3 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+	}
+	.invites-head {
+		margin-top: 1.5rem;
 	}
 	.field-list {
 		display: flex;

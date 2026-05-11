@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 3zDjXsS5RzWy2XvuhoQe1q8Wmg74ATRFM98XfjAuLXHjFfjuCuain2Jd6OFNW3B
+\restrict Y9zA2MH7c01lbYIVZ7bHHPbL7dMMYkfNUhcvqZszD5BU465r4HxESzr3itIrpOl
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -23,6 +23,13 @@ SET row_security = off;
 --
 
 CREATE SCHEMA public;
+
+
+--
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 SET default_tablespace = '';
@@ -450,6 +457,24 @@ CREATE TABLE public.org_idp_configs (
 
 
 --
+-- Name: org_invites; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_invites (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    email text NOT NULL,
+    role text NOT NULL,
+    invited_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    accepted_at timestamp with time zone,
+    accepted_by_user_id uuid,
+    CONSTRAINT org_invites_email_lower CHECK ((email = lower(email))),
+    CONSTRAINT org_invites_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
+);
+
+
+--
 -- Name: org_subscriptions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -488,6 +513,7 @@ CREATE TABLE public.orgs (
     is_personal boolean DEFAULT false NOT NULL,
     plan text DEFAULT 'standard'::text NOT NULL,
     default_deferred_execution boolean DEFAULT false NOT NULL,
+    allow_overslash_managed_signin boolean DEFAULT false NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
@@ -984,6 +1010,14 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: org_invites org_invites_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_pkey PRIMARY KEY (id);
 
 
 --
@@ -1665,6 +1699,20 @@ CREATE UNIQUE INDEX org_idp_configs_one_default_per_org ON public.org_idp_config
 
 
 --
+-- Name: org_invites_by_org_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX org_invites_by_org_email ON public.org_invites USING btree (org_id, email);
+
+
+--
+-- Name: org_invites_one_pending_per_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_invites_one_pending_per_email ON public.org_invites USING btree (org_id, email) WHERE (accepted_at IS NULL);
+
+
+--
 -- Name: service_action_embeddings_global_unique; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2083,6 +2131,30 @@ ALTER TABLE ONLY public.org_idp_configs
 
 
 --
+-- Name: org_invites org_invites_accepted_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_accepted_by_user_id_fkey FOREIGN KEY (accepted_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_invites org_invites_invited_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_invited_by_fkey FOREIGN KEY (invited_by) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_invites org_invites_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_subscriptions org_subscriptions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2326,5 +2398,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 3zDjXsS5RzWy2XvuhoQe1q8Wmg74ATRFM98XfjAuLXHjFfjuCuain2Jd6OFNW3B
+\unrestrict Y9zA2MH7c01lbYIVZ7bHHPbL7dMMYkfNUhcvqZszD5BU465r4HxESzr3itIrpOl
 

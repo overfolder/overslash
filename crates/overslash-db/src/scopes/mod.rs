@@ -54,6 +54,7 @@ mod org_executions;
 mod org_groups;
 mod org_identities;
 mod org_idp_config;
+mod org_invite;
 mod org_permission_rules;
 mod org_rate_limits;
 mod org_secrets;

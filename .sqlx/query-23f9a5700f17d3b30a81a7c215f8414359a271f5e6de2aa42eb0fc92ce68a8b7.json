@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE orgs\n         SET subagent_idle_timeout_secs = $2,\n             subagent_archive_retention_days = $3,\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at",
+  "query": "UPDATE orgs\n         SET subagent_idle_timeout_secs = $2,\n             subagent_archive_retention_days = $3,\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -45,11 +45,16 @@
       },
       {
         "ordinal": 8,
+        "name": "allow_overslash_managed_signin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -71,8 +76,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "99160f9fb41116360736fa8db97a94f9719d0444d3d9b504b9ba7a3f738c79e4"
+  "hash": "23f9a5700f17d3b30a81a7c215f8414359a271f5e6de2aa42eb0fc92ce68a8b7"
 }
