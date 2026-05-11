@@ -265,11 +265,10 @@ variable "alert_email" {
   default     = ""
 }
 
-variable "pagerduty_integration_key" {
-  description = "PagerDuty service integration key. When set, P0 alerts also page; empty = email-only."
-  type        = string
-  default     = ""
-  sensitive   = true
+variable "pagerduty_enabled" {
+  description = "Enable PagerDuty paging for P0 alerts. Requires the `<base_prefix>-pagerduty-integration-key` secret (e.g. overslash-prod-pagerduty-integration-key) to be populated in Secret Manager."
+  type        = bool
+  default     = false
 }
 
 variable "monthly_budget_usd" {
