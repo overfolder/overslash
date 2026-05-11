@@ -46,3 +46,14 @@ pagerduty_enabled      = false
 monthly_budget_usd     = 200
 billing_account_id     = "" # optional; required for the billing-budget alert
 enable_metrics_sidecar = true
+
+# Transactional email (optional). Leave commented to keep the NoopMailer
+# fallback; uncomment all three together to enable Resend. The Resend API
+# key itself is NOT a tfvar — it lives in Secret Manager and is populated
+# post-apply with:
+#   echo -n "re_…" | gcloud secrets versions add <base_prefix>-email-api-key --data-file=-
+# Setting email_provider without populating the secret value (still
+# REPLACE_ME) will fail validate_env at Cloud Run boot.
+# email_provider = "resend"
+# email_from     = "no-reply@overslash.com"
+# email_reply_to = "support@overslash.com"

@@ -63,3 +63,12 @@ shortener_root_redirect_url = "https://www.overslash.com"
 cloud_billing = true
 # stripe_eur_lookup_key = "overslash_seat_eur"
 # stripe_usd_lookup_key = "overslash_seat_usd"
+
+# Transactional email. Disabled until the infra module wiring lands.
+# Uncomment in lockstep with the Secret Manager + Cloud Run variables for
+# email_provider / email_from / email_reply_to / email_api_key_secret_id.
+# The Resend API key (re_live_…) is populated post-apply via:
+#   gcloud secrets versions add overslash-prod-email-api-key --data-file=-
+# email_provider = "resend"
+# email_from     = "no-reply@overslash.com"
+# email_reply_to = "support@overslash.com"
