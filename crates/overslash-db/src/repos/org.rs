@@ -12,6 +12,12 @@ pub struct OrgRow {
     pub is_personal: bool,
     pub plan: String,
     pub default_deferred_execution: bool,
+    /// When `true`, this org accepts authentication via any Overslash-managed
+    /// env-var OAuth app (`GOOGLE_AUTH_*`, `GITHUB_AUTH_*`, …). Admission is
+    /// gated by `org_invites` — the IdP authenticates but cannot admit absent
+    /// an invite row. Default `false` for existing orgs; new corp orgs are
+    /// flipped to `true` at create time so login works out-of-the-box.
+    pub allow_overslash_managed_signin: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -29,7 +35,7 @@ pub async fn create(
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at",
         name,
         slug,
         plan,
@@ -41,7 +47,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -236,12 +242,44 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
     .fetch_optional(pool)
     .await
+}
+
+/// Read the `allow_overslash_managed_signin` flag for an org.
+pub async fn get_allow_overslash_managed_signin(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT allow_overslash_managed_signin FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.allow_overslash_managed_signin))
+}
+
+/// Flip the `allow_overslash_managed_signin` flag for an org. When `true`
+/// the org accepts authentication via Overslash-managed env-var OAuth apps,
+/// with admission gated by `org_invites`.
+pub async fn set_allow_overslash_managed_signin(
+    pool: &PgPool,
+    id: Uuid,
+    value: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET allow_overslash_managed_signin = $2, updated_at = now() WHERE id = $1",
+        id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Update an org's sub-agent cleanup configuration. Bounds validated by caller.
@@ -258,7 +296,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

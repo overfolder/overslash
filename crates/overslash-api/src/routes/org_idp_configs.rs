@@ -190,12 +190,11 @@ async fn create_idp_config(
         ));
     };
 
-    // Check env var precedence — warn if env vars already configure this provider
-    if state.config.env_auth_credentials(&provider_key).is_some() {
-        return Err(AppError::Conflict(format!(
-            "provider '{provider_key}' is configured via environment variables and cannot be overridden"
-        )));
-    }
+    // A dedicated per-org IdP config may coexist with the server-side
+    // env-var creds (Overslash-managed sign-in, gated separately by
+    // `orgs.allow_overslash_managed_signin` + `org_invites`). Login
+    // resolution prefers the dedicated config — see
+    // `resolve_auth_credentials`.
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
 
@@ -306,15 +305,27 @@ async fn list_idp_configs(
 ) -> Result<Json<Vec<serde_json::Value>>> {
     let mut results: Vec<serde_json::Value> = Vec::new();
 
-    // Env-var-configured providers (read-only, shown with source: "env")
-    for (key, display) in [("google", "Google"), ("github", "GitHub")] {
-        if state.config.env_auth_credentials(key).is_some() {
-            results.push(json!({
-                "provider_key": key,
-                "display_name": display,
-                "source": "env",
-                "enabled": true,
-            }));
+    // Overslash-managed env-var providers. Surfaced only when the org has
+    // opted in via `allow_overslash_managed_signin` — pre-migration-066 we
+    // showed them regardless, but they were unusable on corp subdomains
+    // (D12 blocked env-var fallthrough), so the list entries were
+    // misleading. Now they're real: a user matching a pending invite can
+    // sign in through them.
+    let managed_signin_on =
+        overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, scope.org_id())
+            .await?
+            .unwrap_or(false);
+    if managed_signin_on {
+        for (key, display) in [("google", "Google"), ("github", "GitHub")] {
+            if state.config.env_auth_credentials(key).is_some() {
+                results.push(json!({
+                    "provider_key": key,
+                    "display_name": display,
+                    "source": "env",
+                    "managed": true,
+                    "enabled": true,
+                }));
+            }
         }
     }
 
@@ -339,6 +350,7 @@ async fn list_idp_configs(
             "provider_key": config.provider_key,
             "display_name": display_name,
             "source": "db",
+            "managed": false,
             "enabled": config.enabled,
             "allowed_email_domains": config.allowed_email_domains,
             "uses_org_credentials": config.encrypted_client_id.is_none(),
@@ -364,17 +376,6 @@ async fn update_idp_config(
         .get_org_idp_config(id)
         .await?
         .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
-
-    // Cannot update env-var-configured providers
-    if state
-        .config
-        .env_auth_credentials(&existing.provider_key)
-        .is_some()
-    {
-        return Err(AppError::Conflict(
-            "cannot update env-var-configured provider".into(),
-        ));
-    }
 
     let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
 

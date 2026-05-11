@@ -135,12 +135,22 @@ async fn create_invite(
     Ok(Json(row.into()))
 }
 
-async fn list_invites(scope: OrgScope) -> Result<Json<Vec<InviteResponse>>> {
+// Invite rows expose PII (invitee emails), the inviter's identity, and the
+// org's pending role grants — admin-only on read for the same reason
+// create/delete are.
+async fn list_invites(
+    AdminAcl(_acl): AdminAcl,
+    scope: OrgScope,
+) -> Result<Json<Vec<InviteResponse>>> {
     let rows = scope.list_org_invites().await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
-async fn get_invite(scope: OrgScope, Path(id): Path<Uuid>) -> Result<Json<InviteResponse>> {
+async fn get_invite(
+    AdminAcl(_acl): AdminAcl,
+    scope: OrgScope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<InviteResponse>> {
     let row = scope
         .get_org_invite(id)
         .await?

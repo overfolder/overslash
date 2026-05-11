@@ -141,6 +141,60 @@ async fn invite_create_list_revoke_round_trip() {
 }
 
 #[tokio::test]
+async fn invite_endpoints_reject_non_admin() {
+    // PII guard — pending invites carry invitee emails + roles + inviter
+    // identity. Every endpoint (list, get, create, delete) is `AdminAcl`,
+    // so a non-admin org member must get 403 across the board.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let (_, _, agent_key, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let created: Value = client
+        .post(format!("{base}/v1/org-invites"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "email": "secret@example.com", "role": "member" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let invite_id = created["id"].as_str().unwrap().to_string();
+
+    for path in ["/v1/org-invites", &format!("/v1/org-invites/{invite_id}")] {
+        let resp = client
+            .get(format!("{base}{path}"))
+            .header("authorization", format!("Bearer {agent_key}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            403,
+            "non-admin must not read invite data at {path}"
+        );
+    }
+
+    let resp = client
+        .post(format!("{base}/v1/org-invites"))
+        .header("authorization", format!("Bearer {agent_key}"))
+        .json(&json!({ "email": "x@example.com", "role": "member" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    let resp = client
+        .delete(format!("{base}/v1/org-invites/{invite_id}"))
+        .header("authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
 async fn invite_create_rejects_invalid_role() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;

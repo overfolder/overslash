@@ -1231,6 +1231,12 @@ async fn dev_token(
         },
     };
     overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, admin_org_id, None).await?;
+    // Match the public `POST /v1/orgs` corp-org default — dev orgs ship
+    // with the Overslash-managed sign-in flag on so e2e flows and dashboard
+    // screenshots exercise the same shape as production cloud orgs.
+    let _ =
+        overslash_db::repos::org::set_allow_overslash_managed_signin(&state.db, admin_org_id, true)
+            .await;
 
     // Step 2: resolve (or lazily create) the requested profile's identity
     // inside Dev Org. Every profile gets the same provisioning the
@@ -1378,6 +1384,13 @@ async fn dev_token(
 /// env-var creds are root-apex-only. When no org is in scope, env vars are
 /// the only path (root sign-up / personal-org creation).
 ///
+/// Exception (migration 066): when `orgs.allow_overslash_managed_signin`
+/// is true AND the org has no dedicated `org_idp_configs` row for the
+/// provider, fall through to the server's env-var creds. A dedicated
+/// config always wins — it's an explicit admin setup. Admission is
+/// gated separately in `provision_org_subdomain` via `org_invites`, so
+/// the IdP's email claim alone cannot admit a stranger.
+///
 /// When the IdP config has NULL `encrypted_client_*` fields, it defers to
 /// the org's OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
 async fn resolve_auth_credentials(
@@ -1406,14 +1419,27 @@ async fn resolve_auth_credentials(
 
         // Login bootstrap: org resolved from a public slug, no scope yet.
         let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
-        let config = bootstrap_scope
+        let config_opt = bootstrap_scope
             .get_org_idp_config_by_provider(provider_key)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "provider {provider_key} not configured for org {slug}"
-                ))
-            })?;
+            .await?;
+
+        // Opt-in env-var path. Only used when the org has no dedicated IdP
+        // row for this provider — a dedicated config is an explicit admin
+        // choice and must win over the operator-shared env creds. When the
+        // flag is on but env creds aren't configured server-side, fall
+        // through to the dedicated-IdP path (returns the same helpful 404
+        // as before if absent).
+        if org_row.allow_overslash_managed_signin && config_opt.is_none() {
+            if let Some(creds) = state.config.env_auth_credentials(provider_key) {
+                return Ok(creds);
+            }
+        }
+
+        let config = config_opt.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "provider {provider_key} not configured for org {slug}"
+            ))
+        })?;
 
         if !config.enabled {
             return Err(AppError::NotFound(format!(
@@ -1586,11 +1612,17 @@ async fn fetch_oidc_userinfo(
 ///   missing, provision an Overslash-backed `users` row + personal org +
 ///   admin membership + identity.
 /// - `org_slug = Some(slug)` — **org-subdomain login**: the caller hit
-///   `<slug>.app.overslash.com` and signed in via that org's own IdP. Lookup
-///   keys `(identities.org_id, external_id)`. If missing, gate on the org's
-///   `allowed_email_domains`; on match, provision an org-only `users` row +
-///   identity + member-role membership. On miss, reject with
-///   `not_permitted_by_org_idp`.
+///   `<slug>.app.overslash.com` and signed in via that org's IdP (or, if
+///   the org has opted into `allow_overslash_managed_signin`, via the
+///   Overslash-managed env-var OAuth app). Lookup keys
+///   `(identities.org_id, external_id)`. If missing, admission is gated by
+///   the org-level flag — independent of which IdP authenticated:
+///   * `allow_overslash_managed_signin = true`: a pending `org_invites(email)`
+///     row is required regardless of IdP; the invite's role is honored.
+///     Reject with `not_invited` on miss.
+///   * Flag off (legacy): gate on the per-org
+///     `org_idp_configs.allowed_email_domains`. Reject with
+///     `not_permitted_by_org_idp` on miss.
 ///
 /// In either case we return `(org_id, identity_id, user_id, email)`, which
 /// callers shape into session claims.
@@ -1865,51 +1897,72 @@ async fn provision_org_subdomain(
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
     }
 
-    // First-time sign-in for this (org, IdP-subject). Gate on the org's
-    // `allowed_email_domains` — the org admin controls who's auto-provisioned.
+    // First-time sign-in for this (org, IdP-subject). Two admission paths:
     //
-    // Semantic: an empty list means "trust the IdP entirely" (the admin
-    // already constrained who can authenticate by provisioning the IdP's
-    // client_id / tenant). A non-empty list is a whitelist — only those
-    // exact domains may provision. The IdP config itself must exist —
-    // absence means this org hasn't enabled this provider, so we reject
-    // with the same `not_permitted_by_org_idp` error as a domain mismatch.
+    // 1. Overslash-managed sign-in (migration 066): when the org has opted
+    //    in via `allow_overslash_managed_signin`, the IdP authenticates but
+    //    cannot admit by itself — membership requires a pending
+    //    `org_invites(email)` row. The invite's `role` is honored when
+    //    creating the membership.
     //
-    // SINGLE_ORG_MODE exception: self-hosted operators typically use the
-    // env-var Overslash-level IdPs (`GOOGLE_AUTH_CLIENT_ID`, etc.), which
-    // have no `org_idp_configs` row. In that mode the operator IS the org
-    // admin — the env creds they provisioned ARE the trust boundary, so
-    // the per-org gate doesn't apply. Without this branch, every new
-    // social-auth login under SINGLE_ORG_MODE fails with 403.
-    let single_org_bypass = state
-        .config
-        .single_org_mode
-        .as_deref()
-        .map(|pinned| pinned == slug)
-        .unwrap_or(false);
-    if !single_org_bypass {
-        let email_domain = userinfo
-            .email
-            .rsplit('@')
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
-        let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
+    // 2. Legacy path: gate on the per-org `org_idp_configs.allowed_email_domains`.
+    //    Empty list = "trust the IdP entirely" (the admin already constrained
+    //    who can authenticate by provisioning the IdP's client_id / tenant).
+    //    A non-empty list is a whitelist. The IdP config itself must exist —
+    //    absence means this org hasn't enabled this provider, so we reject
+    //    with `not_permitted_by_org_idp`.
+    //
+    // SINGLE_ORG_MODE exception (legacy path only): self-hosted operators
+    // typically use the env-var Overslash-level IdPs (`GOOGLE_AUTH_CLIENT_ID`,
+    // etc.), which have no `org_idp_configs` row. In that mode the operator
+    // IS the org admin — the env creds they provisioned ARE the trust
+    // boundary, so the per-org gate doesn't apply. The new managed-signin
+    // path has its own explicit gate (`org_invites`), so SINGLE_ORG_MODE
+    // doesn't need a bypass there.
+    let membership_role = if target_org.allow_overslash_managed_signin {
+        let pending = overslash_db::repos::org_invite::find_pending(
             &state.db,
             target_org.id,
-            &userinfo.provider_key,
+            &userinfo.email,
         )
         .await?
-        .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
-        if !idp_config.allowed_email_domains.is_empty()
-            && !idp_config
-                .allowed_email_domains
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(&email_domain))
-        {
-            return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
+        .ok_or_else(|| AppError::Forbidden("not_invited".into()))?;
+        // Defer the `mark_accepted` write until after the membership row
+        // exists — if membership creation fails for any reason we don't
+        // want a consumed invite stranded with no member.
+        Some(pending)
+    } else {
+        let single_org_bypass = state
+            .config
+            .single_org_mode
+            .as_deref()
+            .map(|pinned| pinned == slug)
+            .unwrap_or(false);
+        if !single_org_bypass {
+            let email_domain = userinfo
+                .email
+                .rsplit('@')
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
+                &state.db,
+                target_org.id,
+                &userinfo.provider_key,
+            )
+            .await?
+            .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
+            if !idp_config.allowed_email_domains.is_empty()
+                && !idp_config
+                    .allowed_email_domains
+                    .iter()
+                    .any(|d| d.eq_ignore_ascii_case(&email_domain))
+            {
+                return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
+            }
         }
-    }
+        None
+    };
 
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
     let metadata = userinfo_metadata(userinfo);
@@ -1968,15 +2021,41 @@ async fn provision_org_subdomain(
         identity_row.id,
     )
     .await?;
+    // The invite's role wins when present — admins explicitly invite people
+    // as `admin` or `member` and that choice should propagate. Without an
+    // invite (legacy path), default to member.
+    let role = membership_role
+        .as_ref()
+        .map(|inv| inv.role.as_str())
+        .unwrap_or(membership::ROLE_MEMBER);
     // `membership::create` is idempotent-friendly-enough via the PK on
     // (user_id, org_id) — but in the SINGLE_ORG_MODE reuse-user path, an
     // earlier sign-in could have left the same `(user_id, org_id)` row
     // already in place (e.g., bootstrap admin from POST /v1/orgs). Swallow
     // the unique-violation so a repeat login doesn't fail.
-    match membership::create(&state.db, user_id, target_org.id, membership::ROLE_MEMBER).await {
+    match membership::create(&state.db, user_id, target_org.id, role).await {
         Ok(_) => {}
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
         Err(e) => return Err(e.into()),
+    }
+
+    // Best-effort: consume the invite. `mark_accepted` is idempotent
+    // (guards on `accepted_at IS NULL`), so a concurrent login that
+    // already marked it returns `Ok(false)` and we don't propagate that
+    // as an error. If the UPDATE fails for an unrelated DB reason the
+    // membership row is already in place, so admission succeeded — log
+    // and continue rather than tearing things down.
+    if let Some(invite) = membership_role.as_ref() {
+        if let Err(e) =
+            overslash_db::repos::org_invite::mark_accepted(&state.db, invite.id, user_id).await
+        {
+            tracing::warn!(
+                org_id = %target_org.id,
+                invite_id = %invite.id,
+                error = %e,
+                "failed to mark org_invite accepted after successful membership creation"
+            );
+        }
     }
 
     Ok((

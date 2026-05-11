@@ -42,6 +42,10 @@ pub fn router() -> Router<AppState> {
             "/v1/orgs/{id}/execution-settings",
             get(get_execution_settings).patch(patch_execution_settings),
         )
+        .route(
+            "/v1/orgs/{id}/managed-signin",
+            get(get_managed_signin).patch(patch_managed_signin),
+        )
 }
 
 // Bounds for sub-agent idle cleanup config (per replan).
@@ -138,6 +142,10 @@ struct OrgResponse {
     subagent_idle_timeout_secs: i32,
     subagent_archive_retention_days: i32,
     is_personal: bool,
+    /// When `true`, this org accepts Overslash-managed sign-in (migration
+    /// 066). Surfaced here so the dashboard can render the toggle's
+    /// current state without a follow-up call.
+    allow_overslash_managed_signin: bool,
     /// Absolute URL the dashboard should hard-reload to after creation —
     /// points at the new org's subdomain so the creator lands inside their
     /// bootstrap-admin session rather than bouncing through the switcher.
@@ -154,6 +162,7 @@ impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
             subagent_idle_timeout_secs: o.subagent_idle_timeout_secs,
             subagent_archive_retention_days: o.subagent_archive_retention_days,
             is_personal: o.is_personal,
+            allow_overslash_managed_signin: o.allow_overslash_managed_signin,
             redirect_to: None,
         }
     }
@@ -211,6 +220,12 @@ async fn create_org(
         }
         Err(e) => return Err(e.into()),
     };
+
+    // New corp orgs opt in to Overslash-managed sign-in by default
+    // (migration 066). Existing orgs stay opted out — the migration left
+    // the column at `false` for them so live tenants don't see behavior
+    // changes. Login still requires an `org_invites` row, so this is safe.
+    let org = flip_managed_signin_on_new_org(&state, org).await?;
 
     // Optional session: if the caller presents a valid `oss_session` with a
     // multi-org `user_id` claim, attach the bootstrap admin. Otherwise the
@@ -349,6 +364,8 @@ async fn create_free_unlimited_org(
         Err(e) => return Err(e.into()),
     };
 
+    let org = flip_managed_signin_on_new_org(&state, org).await?;
+
     let audit_detail = serde_json::json!({
         "name": &org.name,
         "slug": &org.slug,
@@ -357,6 +374,22 @@ async fn create_free_unlimited_org(
     });
 
     finalize_new_org(&state, org, Some(admin.user_id), audit_detail, ip).await
+}
+
+/// Flip `allow_overslash_managed_signin` to `true` for a freshly-created
+/// corp org. Personal orgs (single-user, no IdP login) skip this — they
+/// stay at the migration default (`false`). Returns the row with the new
+/// flag value so callers don't have to re-read.
+async fn flip_managed_signin_on_new_org(
+    state: &AppState,
+    mut org: overslash_db::repos::org::OrgRow,
+) -> Result<overslash_db::repos::org::OrgRow> {
+    if org.is_personal {
+        return Ok(org);
+    }
+    overslash_db::repos::org::set_allow_overslash_managed_signin(&state.db, org.id, true).await?;
+    org.allow_overslash_managed_signin = true;
+    Ok(org)
 }
 
 #[derive(Deserialize)]
@@ -777,5 +810,80 @@ async fn patch_execution_settings(
 
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: req.default_deferred_execution,
+    }))
+}
+
+// ─── Managed sign-in (Overslash-managed env-var IdPs, invite-gated) ───
+
+#[derive(Serialize)]
+struct ManagedSigninResponse {
+    /// When `true`, members can authenticate via Overslash's managed env-var
+    /// OAuth apps (`GOOGLE_AUTH_*`, etc.). Admission is gated by pending
+    /// `org_invites` rows — see migration 066 and
+    /// `crates/overslash-api/src/routes/auth.rs::provision_org_subdomain`.
+    allow_overslash_managed_signin: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchManagedSigninRequest {
+    allow_overslash_managed_signin: bool,
+}
+
+async fn get_managed_signin(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ManagedSigninResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let value = overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(ManagedSigninResponse {
+        allow_overslash_managed_signin: value,
+    }))
+}
+
+async fn patch_managed_signin(
+    State(state): State<AppState>,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchManagedSigninRequest>,
+) -> Result<Json<ManagedSigninResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let updated = overslash_db::repos::org::set_allow_overslash_managed_signin(
+        &state.db,
+        id,
+        req.allow_overslash_managed_signin,
+    )
+    .await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.managed_signin.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "allow_overslash_managed_signin": req.allow_overslash_managed_signin,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(ManagedSigninResponse {
+        allow_overslash_managed_signin: req.allow_overslash_managed_signin,
     }))
 }

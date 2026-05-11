@@ -39,6 +39,7 @@ pub mod oauth_provider;
 pub mod org;
 pub mod org_bootstrap;
 pub mod org_idp_config;
+pub mod org_invite;
 pub mod permission_rule;
 pub mod rate_limit;
 pub mod secret;

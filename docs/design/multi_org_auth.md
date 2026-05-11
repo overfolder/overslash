@@ -17,7 +17,7 @@ Cloud root domain is `app.overslash.com`. Corp orgs live at `<slug>.app.overslas
 - **Overslash IDP ↔ org membership.** A user signed in via Overslash-level IDP can access any org they are a member of. Membership is the permission, regardless of how they proved identity.
 - **Two user classes.** A `users` row is either **Overslash-backed** (`overslash_idp_provider + overslash_idp_subject` set, has a `personal_org_id`, can log into root) or **org-only** (both IDP columns NULL, `personal_org_id` NULL, can only log into the subdomain of orgs they are a member of).
 - **Users are keyed by IDP subject, never by email.** The primary lookup at auth time is `(provider, subject)` — Overslash-level for root logins (on `users.overslash_idp_*`), and `(org_id, external_id)` for org-subdomain logins (on `identities`). `users.email` is informational (last value the IDP returned) and is NOT unique. Two different Google accounts that both claim the same email create two different `users` rows.
-- **Email alone never grants membership or merges users.** This is the threat-model load-bearing rule. Google (or any Overslash-level IDP) saying "the email is `amartcan@acme.org`" does not grant membership to Acme and does not attach to an existing Acme-provisioned `users` row, because Google is not Acme's IDP. Membership into a corp org is granted *only* by signing in via that org's own IDP — covered by `org_idp_configs.allowed_email_domains`. There are no invites and no cross-IDP account linking.
+- **Email alone never grants membership or merges users.** This is the threat-model load-bearing rule. Google (or any Overslash-level IDP) saying "the email is `amartcan@acme.org`" does not grant membership to Acme and does not attach to an existing Acme-provisioned `users` row, because Google is not Acme's IDP. Membership into a corp org is granted by one of two admin-controlled paths: (a) the org's own IDP via `org_idp_configs.allowed_email_domains` (the original D12 path), or (b) — when the admin opts in via `orgs.allow_overslash_managed_signin` — a pending `org_invites` row matching the IDP-verified email (introduced 2026-05, migration 066). There is no cross-IDP account linking.
 - **Corp orgs require an IDP to have members.** Before any IDP is enabled on a corp org, only the bootstrap creator can access it (see "Corp Org Creation Bootstrap"). Once an IDP is configured and enabled, membership is gated entirely by that IDP.
 - **Email claim still required from IDPs.** Without an email we have no display/invite matching. Missing email → `idp_missing_email` and the login is rejected.
 - **Cookies never leave the hierarchy.** Session cookies are scoped to `.app.overslash.com` so the same `oss_session` is sent to all subdomains, but the JWT's `org` claim and subdomain resolution must agree — mismatch triggers re-mint.
@@ -166,6 +166,22 @@ Self-hosted deployments bypass this middleware when `SINGLE_ORG_MODE=<slug>` is 
      - **If not found** → first-time sign-in for this IDP subject. Create a fresh `users` row (org-only: `overslash_idp_*` NULL, `personal_org_id` NULL). Create the `identities` row in this org with `external_id=<subject>`, `email=<IDP email>`, `user_id=<new users row>`. Never match against existing `users` rows by email.
   3. Ensure `user_org_memberships(user_id, org_id, role)` exists. Role comes from the org's `allowed_email_domains` auto-provision rules (default `'member'`). If the IDP email does not match any allowed domain, reject with `not_permitted_by_org_idp` — the org admin controls who gets in through their allowed-domains list. Empty `allowed_email_domains` = trust the IdP (any email admitted by it provisions); non-empty = strict whitelist.
   4. Mint JWT `{ user_id, org_id }`, redirect into the org.
+
+### Flow 2b — Invite-gated admission (Overslash-managed sign-in, opt-in)
+
+Added 2026-05, migration 066. Default `true` for new corp orgs, `false` for existing ones.
+
+- The org has `allow_overslash_managed_signin = true`.
+- `resolve_auth_credentials` first looks for a dedicated `org_idp_configs` row for the provider. If present, dedicated creds win (the admin's explicit setup is authoritative). If absent and the server has env-var creds (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`, …), it returns those — the Overslash-managed OAuth app authenticates the user.
+- The callback path swaps the `allowed_email_domains` gate for an invite check:
+  1. Exchange code → `{ subject, email, name }`. If email missing → reject (`idp_missing_email`).
+  2. If the `identities(org_id, external_id)` row already exists, refresh + return (existing member).
+  3. Otherwise look up `org_invites WHERE org_id = $org AND email = lower($email) AND accepted_at IS NULL`. No match → reject with `not_invited`.
+  4. Provision the `users` row using the standard `(provider, subject)` keying — reuses an existing Overslash-backed user if `(provider, subject)` already exists, otherwise creates an org-only user.
+  5. Create the `identities` row + `user_org_memberships(role=$invite.role)` + mark the invite `accepted_at = now()`. Membership role comes from the invite, not from `allowed_email_domains`.
+- The gate applies to **every** sign-in into this org while the flag is on — including authentications via a dedicated `org_idp_configs`. Admins who want the legacy domain-whitelist semantics keep the flag off.
+
+Threat model: D12's invite concern was "email-spoofing into a per-org IdP-backed membership." That doesn't apply here — there's no Okta on the corp side to vouch for an attacker's email; the admin's `org_invites` list is the only path in, and the admin themselves issued each invite for a specific email under their control. The IdP's role is reduced to "authenticate the holder of this email," and the org admin chooses which emails matter.
 
 ### Flow 3 — Org switch in-app
 

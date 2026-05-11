@@ -72,9 +72,16 @@ Settled architectural decisions. Don't re-litigate without new information.
 
 ## D12: Multi-org trust model — each IdP is its own trust domain
 
-**Date**: 2026-04
-**Decision**: Overslash treats each IdP as its own trust domain. An IdP can only admit members into resources it controls: Overslash-level IdPs admit into personal orgs and into corp orgs the user themselves created (the creator becomes a regular admin of the new org); per-org IdPs admit into that org only. Users are keyed at auth time by `(provider, subject)`, never by email. There are no invites and no cross-IdP account linking. A human who uses Google for their personal Overslash account and Okta for Acme simply has two distinct `users` rows.
-**Rationale**: If email alone could attach a login to an existing membership, a user who registers a Google account claiming `amartcan@acme.org` would inherit whatever Acme provisioned for its real employee via Okta. By restricting each IdP to its own trust domain, an external IdP (Google) cannot vouch its way into resources controlled by an internal one (Acme's Okta). Invites fail the same threat model unless accompanied by explicit admin-scoped verification beyond email delivery — we drop them entirely rather than half-build them. Full design at `docs/design/multi_org_auth.md`.
+**Date**: 2026-04 (amended 2026-05)
+**Decision**: Overslash treats each IdP as its own trust domain. An IdP can only admit members into resources it controls: Overslash-level IdPs admit into personal orgs and into corp orgs the user themselves created (the creator becomes a regular admin of the new org); per-org IdPs admit into that org only. Users are keyed at auth time by `(provider, subject)`, never by email. There is no cross-IdP account linking — a human who uses Google for their personal Overslash account and Okta for Acme simply has two distinct `users` rows.
+**Rationale**: If email alone could attach a login to an existing membership, a user who registers a Google account claiming `amartcan@acme.org` would inherit whatever Acme provisioned for its real employee via Okta. By restricting each IdP to its own trust domain, an external IdP (Google) cannot vouch its way into resources controlled by an internal one (Acme's Okta).
+
+**2026-05 amendment — opt-in invite-gated admission**: a corp org may opt in (via `orgs.allow_overslash_managed_signin`, default `true` for new orgs) to invite-gated membership. Two things change when the flag is on:
+
+1. Authentication via Overslash's shared OAuth apps (`GOOGLE_AUTH_*`, `GITHUB_AUTH_*`, future env-var providers) becomes available — until now D12 forbade env-var creds on corp subdomains.
+2. **Every** sign-in into the org — including authentications through a dedicated `org_idp_configs` row — must match a pending `org_invites(email, role)` allowlist entry. The `allowed_email_domains` whitelist is bypassed when the flag is on.
+
+The trust boundary moves from "the IdP's domain claim" to "the admin's curated invite list." The email-spoofing concern the original D12 raised against invites does not apply: there is no second-source IdP to phish (no Okta-backed phantom employee to inherit from); the admin's invite list is the only path in, and each invite is for a specific email the admin chose. Existing orgs stay opted out until an admin flips the toggle. Full design at `docs/design/multi_org_auth.md`.
 
 ## D13: Auto-call-on-approve is a per-Identity setting (default on)
 
