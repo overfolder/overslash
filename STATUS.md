@@ -1,6 +1,6 @@
 # Overslash — Status
 
-**Current state**: Phases 1–4 backend complete. Stripe billing live, monitoring stack deployed, dashboard mature (audit log, members, approval queue, billing flows all shipped). Mode A/B collapsed into a single Service + HTTP verb surface (SPEC §8). Public launch is gated on transactional email, human-facing docs, slug-squatting mitigation, GDPR endpoints, and the legal/compliance surface — see [TODO.md](TODO.md).
+**Current state**: Phases 1–4 backend complete. Stripe billing live, monitoring stack deployed, dashboard mature (audit log, members, approval queue, billing flows all shipped). Mode A/B collapsed into a single Service + HTTP verb surface (SPEC §8). Public launch is gated on transactional email, human-facing docs, and the legal/compliance surface — see [TODO.md](TODO.md).
 
 ---
 
@@ -204,7 +204,7 @@
 - Human-facing documentation site (concepts + REST reference + per-template quickstarts).
 - Status page wired to the existing P0 alerts.
 - DPA, security.txt, vulnerability disclosure policy, subprocessor list.
-- GDPR data export + erasure endpoints.
+- Documented manual GDPR request process (export + hard-delete handled by hand at launch; automation deferred).
 - Master-key rotation runbook + tested rotation; Postgres PITR restore drill.
 - PagerDuty (or Slack) integration key bound to `infra/modules/monitoring/`.
 

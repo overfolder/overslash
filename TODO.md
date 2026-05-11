@@ -61,16 +61,13 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - [ ] `security.txt` at `https://www.overslash.com/.well-known/security.txt` + vuln disclosure policy page.
 - [ ] DPA template + signing flow (DocuSign / PandaDoc / countersigned PDF). Procurement asks for this on every B2B deal.
 - [ ] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs).
-- [ ] **GDPR data export** — org-scoped dump endpoint (`POST /v1/orgs/{id}/data-export` → presigned URL with identities, secrets metadata only, audit log, approvals, services). Audit-logged.
-- [ ] **GDPR hard-delete** — full erasure pipeline for an org or a user (cascades through identities, secrets, audit). Soft-delete with a 30-day grace, then hard purge.
+- [ ] **GDPR request handling** — document the manual process for data-export and hard-delete requests (intake → DPO ack → manual SQL → audit row). Automated endpoints are a post-launch backlog item; volume expected to be near zero at GA.
 
 ### 1.6 Critical dashboard fixes
 
-A short list — most dashboard work is in §2 polish. These three are visibly broken today.
+Most dashboard work is in §2 polish. This one item is visibly broken today.
 
 - [ ] Inline "Allow Once" on `/agents` (review card `20ae2`) — current flow forces a round-trip to `/approvals/{id}`.
-- [ ] Canonical `OVERSLASH_DASHBOARD_URL` env threaded through approval URLs (currently emits `overslash.example` in webhooks).
-- [ ] Fix "Requested Invalid Date" rendering on Pending Approvals (review card `2e268`).
 
 ---
 
