@@ -632,10 +632,77 @@ async fn patch_grant_allows_auto_approve_reads_on_system_groups() {
     assert_eq!(patched["access_level"], "read");
 }
 
-/// `access_level` on Everyone/Admins stays immutable: changing it would shift
-/// the org-wide ACL surface, which the system-group guard exists to protect.
+/// `access_level` on Admins stays immutable — admins must always retain
+/// their admin-grade `overslash` / `http` recovery surface, so the guard
+/// rejects a downgrade-by-PATCH outright. (Removal is also rejected by
+/// `remove_grant`; see `remove_grant_still_rejects_admins`.) Everyone is
+/// free to be edited by an org admin — covered by
+/// `patch_grant_allows_access_level_on_everyone`.
 #[tokio::test]
-async fn patch_grant_rejects_access_level_on_system_groups() {
+async fn patch_grant_rejects_access_level_on_admins() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-admins-lvl").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{admins_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Combined patch with both fields is also rejected — the guard rejects
+    // access_level outright rather than silently dropping it.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{admins_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin", "auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// Companion to `patch_grant_rejects_access_level_on_admins`: an org admin
+/// can downgrade or upgrade `access_level` on a grant attached to Everyone.
+/// This is the whole point of letting orgs trim the bootstrapped
+/// `overslash:write` and `http:admin` defaults.
+#[tokio::test]
+async fn patch_grant_allows_access_level_on_everyone() {
     let (base, org_key, _, _) = bootstrap().await;
     let client = reqwest::Client::new();
 
@@ -662,7 +729,7 @@ async fn patch_grant_rejects_access_level_on_system_groups() {
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({
             "service_instance_id": svc_id.to_string(),
-            "access_level": "read",
+            "access_level": "write",
         }))
         .send()
         .await
@@ -672,17 +739,19 @@ async fn patch_grant_rejects_access_level_on_system_groups() {
         .unwrap();
     let grant_id = grant["id"].as_str().unwrap();
 
+    // Downgrade write → read.
     let resp = client
         .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
         .header("Authorization", format!("Bearer {org_key}"))
-        .json(&json!({"access_level": "admin"}))
+        .json(&json!({"access_level": "read"}))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "read");
 
-    // Combined patch with both fields is also rejected — the guard rejects
-    // access_level outright rather than silently dropping it.
+    // Combined patch (both fields) also accepted.
     let resp = client
         .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
         .header("Authorization", format!("Bearer {org_key}"))
@@ -690,7 +759,10 @@ async fn patch_grant_rejects_access_level_on_system_groups() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "admin");
+    assert_eq!(patched["auto_approve_reads"], true);
 }
 
 /// Non-admins still can't toggle `auto_approve_reads` on system groups even
@@ -1289,5 +1361,243 @@ async fn admin_without_flag_keeps_group_gated_view() {
     assert!(
         !names.contains(&"admin-user-svc"),
         "admin without the flag must keep the group-gated view (got: {names:?})"
+    );
+}
+
+/// An org admin can remove the bootstrapped `overslash` grant from the
+/// Everyone group. This is the mechanism that lets an org disallow agent
+/// access to the metaservice for the org's general population — covered in
+/// `crates/overslash-api/src/routes/groups.rs`'s `remove_grant` after the
+/// system-group guard was narrowed to Admins-only.
+#[tokio::test]
+async fn remove_grant_allows_everyone() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The Everyone group ships with a bootstrapped `overslash:write` grant
+    // (migration 023). Find it by service name.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .expect("Everyone should have a bootstrapped overslash grant")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // First DELETE removes the grant.
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{everyone_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["deleted"], true);
+
+    // Second DELETE is a no-op — the row is gone but the system-group guard
+    // does not stand in the way.
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{everyone_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["deleted"], false);
+
+    // Confirm the grant no longer surfaces on the group.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should be absent after delete"
+    );
+}
+
+/// Admins keeps the locked behavior: the admin-grade `overslash` grant is
+/// the recovery surface for the group, and `remove_grant` must refuse to
+/// strip it. Without this rail, an admin can disarm themselves.
+#[tokio::test]
+async fn remove_grant_still_rejects_admins() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .expect("Admins should have a bootstrapped overslash grant")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{admins_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["error"].as_str().unwrap_or("");
+    assert!(
+        msg.to_lowercase().contains("admins"),
+        "error should reference the Admins group, got: {msg}"
+    );
+
+    // And the grant is still there.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should still be present on Admins"
+    );
+}
+
+/// A non-admin caller targeting the Admins group hits the authorization
+/// check first (403), not the system-lock (400). Mirrors `add_grant` and
+/// `update_grant` so the error code doesn't leak which groups are locked
+/// to callers who weren't allowed to touch them in the first place.
+#[tokio::test]
+async fn remove_grant_returns_403_for_non_admin_on_admins() {
+    let (base, org_key, _, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{admins_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Sanity: grant untouched.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should still be present on Admins"
     );
 }

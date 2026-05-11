@@ -43,12 +43,22 @@
 	let pickerOpen = $state(false);
 	let deleteOpen = $state(false);
 	let deleteBusy = $state(false);
+	// Grant-removal confirmation. Used only when an org admin removes the
+	// bootstrapped overslash/http defaults from Everyone — the consequence
+	// (no metaservice writes / no raw HTTP for the org's general
+	// population) is non-obvious enough to warrant an explicit prompt.
+	// Other removals fall through to the inline link-danger button.
+	let pendingRemoval = $state<GroupGrant | null>(null);
+	let removalBusy = $state(false);
+	let removalError = $state<string | null>(null);
 
 	const orgServices = $derived(services.filter((s) => !s.owner_identity_id));
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 	const isSelfGroup = $derived(group?.system_kind === 'self');
+	const isAdminsGroup = $derived(group?.system_kind === 'admins');
+	const isEveryoneGroup = $derived(group?.system_kind === 'everyone');
 	// Only the Myself owner can manage their own grants — backend cross-owner
 	// guard (groups.rs add_grant + remove_grant) rejects everyone else, including
 	// org admins. Hide the management UI when an admin opens someone else's
@@ -56,6 +66,35 @@
 	const isSelfOwner = $derived(
 		isSelfGroup && !!currentUserId && group?.owner_identity_id === currentUserId
 	);
+	// Admins keeps its grants locked at the backend: an admin who downgraded
+	// or removed the bootstrapped overslash/http admin grants would lose
+	// recovery surface. Mirror that lock in the UI so the controls don't
+	// look interactive when the API will reject them.
+	const grantsLocked = $derived(isAdminsGroup);
+	const canManageGrantRow = $derived((!isSelfGroup || isSelfOwner) && !grantsLocked);
+
+	const removalNeedsConfirm = (g: GroupGrant): boolean =>
+		isEveryoneGroup && (g.service_name === 'overslash' || g.service_name === 'http');
+
+	const removalMessage = $derived.by(() => {
+		if (!pendingRemoval) return '';
+		if (pendingRemoval.service_name === 'overslash') {
+			return (
+				'Members in this org will no longer be able to create services, ' +
+				'templates, connections, or request secrets through their agents. ' +
+				'Read-class metaservice actions and the approval flow still work. ' +
+				'Add the grant back at any time to restore the default.'
+			);
+		}
+		if (pendingRemoval.service_name === 'http') {
+			return (
+				'Members in this org will no longer be able to make raw HTTP calls ' +
+				'through their agents. Service-routed calls (Google, Slack, etc.) ' +
+				'still work. Add the grant back at any time to restore the default.'
+			);
+		}
+		return `Remove the "${pendingRemoval.service_name}" grant from Everyone?`;
+	});
 	// Backend cross-owner guard restricts a Myself group's grants to services
 	// owned by its owner. Mirror that in the picker so we never offer choices
 	// the API will reject. Only used when the caller is the Myself owner —
@@ -158,12 +197,36 @@
 		}
 	}
 
+	function requestRemoveGrant(g: GroupGrant) {
+		if (removalNeedsConfirm(g)) {
+			pendingRemoval = g;
+			removalError = null;
+			return;
+		}
+		void removeGrant(g.id);
+	}
+
 	async function removeGrant(grantId: string) {
 		try {
 			await groupsApi.removeGrant(groupId, grantId);
 			grants = grants.filter((g) => g.id !== grantId);
 		} catch (e) {
 			grantError = apiErrText(e);
+		}
+	}
+
+	async function confirmPendingRemoval() {
+		if (!pendingRemoval) return;
+		removalBusy = true;
+		removalError = null;
+		try {
+			await groupsApi.removeGrant(groupId, pendingRemoval.id);
+			grants = grants.filter((g) => g.id !== pendingRemoval!.id);
+			pendingRemoval = null;
+		} catch (e) {
+			removalError = apiErrText(e);
+		} finally {
+			removalBusy = false;
 		}
 	}
 
@@ -290,7 +353,7 @@
 							<th>Service</th>
 							<th>Access level</th>
 							<th>Auto-approve reads</th>
-							{#if !isSelfGroup || isSelfOwner}<th></th>{/if}
+							{#if canManageGrantRow}<th></th>{/if}
 						</tr>
 					</thead>
 					<tbody>
@@ -300,7 +363,7 @@
 									<code>{g.service_name}</code>
 								</td>
 								<td>
-									{#if !isSelfGroup || isSelfOwner}
+									{#if canManageGrantRow}
 										<select
 											class="access-select"
 											value={g.access_level}
@@ -327,9 +390,9 @@
 										{g.auto_approve_reads ? 'Yes' : 'No'}
 									{/if}
 								</td>
-								{#if !isSelfGroup || isSelfOwner}
+								{#if canManageGrantRow}
 									<td class="row-actions">
-										<button class="link-danger" onclick={() => removeGrant(g.id)}>Remove</button>
+										<button class="link-danger" onclick={() => requestRemoveGrant(g)}>Remove</button>
 									</td>
 								{/if}
 							</tr>
@@ -421,6 +484,23 @@
 	busy={deleteBusy}
 	onConfirm={deleteGroup}
 	onCancel={() => (deleteOpen = false)}
+/>
+
+<ConfirmModal
+	open={pendingRemoval !== null}
+	title={pendingRemoval
+		? `Remove "${pendingRemoval.service_name}" from Everyone?`
+		: 'Remove grant'}
+	message={removalMessage}
+	confirmLabel="Remove grant"
+	destructive
+	busy={removalBusy}
+	error={removalError}
+	onConfirm={confirmPendingRemoval}
+	onCancel={() => {
+		pendingRemoval = null;
+		removalError = null;
+	}}
 />
 
 <style>
