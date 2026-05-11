@@ -2073,6 +2073,39 @@ async fn provision_org_subdomain(
         identity_row.id,
     )
     .await?;
+
+    // Admin-propagation for existing-member second-IdP logins. The new
+    // identity row defaults to `is_org_admin = false` and is not in
+    // Admins, so the session JWT (keyed on the new identity) would
+    // silently downgrade an admin to a member until they re-signed-in
+    // with their original IdP. Look up the existing user-kind identity
+    // for this `(org, user)` and mirror its admin state onto the new row.
+    if let Some(ref existing) = existing_member {
+        if let Some(prior) = overslash_db::repos::identity::find_by_org_and_user(
+            &state.db,
+            target_org.id,
+            existing.id,
+        )
+        .await?
+        {
+            if prior.id != identity_row.id && prior.is_org_admin {
+                overslash_db::repos::identity::set_is_org_admin(
+                    &state.db,
+                    target_org.id,
+                    identity_row.id,
+                    true,
+                )
+                .await?;
+                overslash_db::repos::org_bootstrap::add_identity_to_admins(
+                    &state.db,
+                    target_org.id,
+                    identity_row.id,
+                )
+                .await?;
+            }
+        }
+    }
+
     // The invite's role wins when present — admins explicitly invite people
     // as `admin` or `member` and that choice should propagate. Without an
     // invite (legacy path), default to member.

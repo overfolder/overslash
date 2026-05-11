@@ -555,6 +555,125 @@ async fn existing_member_admitted_when_new_idp_subject_misses_invite() {
 }
 
 #[tokio::test]
+async fn existing_admin_keeps_admin_via_second_idp() {
+    // Regression test for Seer 1268697 HIGH: an existing admin signing
+    // in via a second IdP must NOT be silently downgraded to a member.
+    // Pre-fix the new identity defaulted to `is_org_admin = false` and
+    // was not in Admins group; the session JWT (keyed on the new
+    // identity) lost admin powers. Fix mirrors the prior user-kind
+    // identity's admin state onto the freshly-created one.
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query(
+        "UPDATE oauth_providers SET authorization_endpoint = $1, token_endpoint = $2, userinfo_endpoint = $3 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/authorize"))
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (base, client) = common::start_api_with_auth_providers(
+        pool.clone(),
+        Some(("env_id".into(), "env_secret".into())),
+        None,
+        "http://localhost:3000",
+    )
+    .await;
+    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Pre-seed an admin user with an existing user-kind identity in this
+    // org. Different external_id than the mock will return — that's the
+    // whole point: the new IdP subject doesn't match, the
+    // (org, external_id) lookup misses, we fall through to the existing-
+    // member short-circuit, and the new identity must inherit admin.
+    let existing_user_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
+            .bind("testuser@example.com")
+            .bind("Existing Admin")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO user_org_memberships (user_id, org_id, role) VALUES ($1, $2, 'admin')",
+    )
+    .bind(existing_user_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let prior_identity_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO identities (org_id, name, kind, external_id, email, user_id, is_org_admin, metadata)
+         VALUES ($1, 'Existing Admin', 'user', 'prior-subject', 'testuser@example.com', $2, true, '{}'::jsonb)
+         RETURNING id",
+    )
+    .bind(org_id)
+    .bind(existing_user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let nonce = "admin-second-idp-1";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=adm1&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 303, "second IdP login must admit");
+
+    // The new identity (created for the Google callback's external_id)
+    // must inherit `is_org_admin = true`.
+    let new_identity_is_admin: bool = sqlx::query_scalar(
+        "SELECT is_org_admin FROM identities
+         WHERE org_id = $1 AND user_id = $2 AND id <> $3",
+    )
+    .bind(org_id)
+    .bind(existing_user_id)
+    .bind(prior_identity_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        new_identity_is_admin,
+        "second-IdP identity must inherit is_org_admin from the prior identity"
+    );
+
+    // And must be a member of the Admins group, so ACL extractors see
+    // admin powers on the new session.
+    let in_admins_group: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM identity_groups ig
+         JOIN groups g ON g.id = ig.group_id
+         JOIN identities i ON i.id = ig.identity_id
+         WHERE i.org_id = $1 AND i.user_id = $2 AND i.id <> $3
+           AND g.system_kind = 'admins'",
+    )
+    .bind(org_id)
+    .bind(existing_user_id)
+    .bind(prior_identity_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        in_admins_group, 1,
+        "second-IdP identity must be added to the Admins group"
+    );
+}
+
+#[tokio::test]
 async fn re_signin_does_not_consume_pending_invite() {
     // A user with existing membership signs in. If we naively mark the
     // pending invite accepted on every callback, a second IdP login by an
