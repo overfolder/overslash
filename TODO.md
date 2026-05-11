@@ -1,179 +1,138 @@
 # Overslash — TODO
 
-Phased roadmap. Each phase is usable independently.
+Roadmap to public launch. Phases 1–4 are shipped (see [STATUS.md](STATUS.md)); what remains is the commercial + trust surface around the product engine, plus the dashboard residuals that still ship visibly broken or missing.
+
+Three blocks, in priority order:
+
+1. **Launch Blockers** — must ship before opening the public signup funnel.
+2. **Launch +1** — polish within the first weeks of GA.
+3. **Backlog** — post-launch, not gating.
+
+A PR can ladder up to a block by tagging its first line `[launch]`, `[launch+1]`, or `[backlog]`. When everything in §1 is checked, we cut GA.
 
 ---
 
-## Spec–Code Misalignments
+## 1. Launch Blockers
 
-All resolved via PRs #29–#40 — see Done section for detail.
+### 1.1 Transactional email
 
-### Dashboard (dashboard/ vs UI_SPEC.md)
+No mailer exists today. Approvals fan out only via webhook + dashboard; secret-request links must be hand-copied; billing has no receipts. This is the single biggest non-technical-buyer gap.
 
-Existing dashboard code predates the unified permission model and template/service split.
+- [ ] Pick a provider and wire it (likely Resend — we already template a service for it). Config: `EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_REPLY_TO`; secret via the existing vault.
+- [ ] Templated emails — store templates in `crates/overslash-core/templates/email/` with `{var}` interpolation matching the audit-description style.
+- [ ] **Approval.created** → email the current resolver with the approval card + `oversla.sh` link. Re-fire on bubble.
+- [ ] **Approval.resolved** → email the original requester's owner-user with outcome + auto-call result.
+- [ ] **Secret request minted** → email the target (when known) with the signed-URL link.
+- [ ] **Billing**: receipt on `invoice.payment_succeeded`; dunning on `invoice.payment_failed`; subscription canceled / trial ending.
+- [ ] **Welcome / first login** for both root signups and corp-org JIT provisioning.
+- [ ] **Webhook DLQ digest** → daily digest to org admins listing webhook endpoints with terminal failures.
+- [ ] Audit row per send (`email.sent` / `email.failed`) so deliverability is debuggable.
+- [ ] Per-user unsubscribe state for non-transactional (welcome) emails only — transactional emails are exempt by policy.
 
-**High priority:**
-- [ ] Types: remove Mode A/B/C execution variants, unify into single `CallRequest` with service + action
-- [x] Types: `risk` is now a `Risk` enum (`read|write|delete`) — aligned with spec
-- [ ] Types: add template/service instance split (`ServiceTemplate` + `ServiceInstance`)
-- [ ] Types: add permission key types (`{service}:{action}:{arg}`)
-- [ ] Types: remove `approval_url` from `CallResponse` (no self-auth approval URLs)
-- [ ] Login: extract from profile page to standalone `/login` page with logo, multi-IdP buttons (uses `GET /auth/providers`), redirect-back-after-auth
-- [ ] IdP config: **edit** UI for existing configs — create/delete/toggle shipped; dashboard lacks a form to update client_id/secret or flip `use_org_credentials` (backend `PUT /v1/org-idp-configs/{id}` already supports it — see TECH_DEBT.md §3)
-- [ ] Stores: remove `executionMode` (A/B/C), `connections` store; update to unified model
+### 1.2 Onboarding & trust domains
 
-**Medium priority:**
-- [ ] Layout: add nav items (Agents, Services, Secrets, Audit Log; ADMIN: Users, Groups)
-- [ ] Layout: collapsible sidebar (labels+icons expanded, icons-only collapsed)
-- [ ] Layout: notification bell in top bar with badge count
-- [ ] Layout: profile avatar at bottom of sidebar (not a nav item)
-- [ ] Logo: change from `//` to `Overs/ash` per spec
-- [ ] API client: split `GET /v1/services` into templates + instances endpoints
-- [ ] API client: remove `GET /v1/connections` (connections absorbed into services)
+D12 keeps trust domains clean. Corp-org admins still need a way to onboard the *first* teammate before that teammate has logged in via the org's IdP, and the org-creation endpoint is still trivially squat-able.
 
-**Low priority:**
-- [ ] Profile: expand with API keys, secrets, remembered approvals, settings sections
-- [ ] CSS: add light mode + theme toggle (currently dark-only)
+- [ ] **Corp-org invite path** — email-gated against the org's `org_idp_configs.allowed_email_domains`. Invite resolves on first IdP login (binds the new identity to the invite's role). Does **not** bypass the IdP; only pre-authorizes the email.
+- [ ] **Slug squatting mitigation** on `POST /v1/orgs` — domain verification (DNS TXT) for corp slugs, or admin approval queue. Personal orgs unaffected.
+- [ ] Audit events on creator-admin add (`POST /v1/orgs`) and removal (`DELETE /v1/account/memberships/{org_id}` when the leaver is the original creator).
+- [ ] Login page on a corp subdomain renders a clear empty state when no IdP is configured + a "you've been invited, please log in via X" state when the visitor's email matches a pending invite.
 
-### Review Corrections (2026-04-10)
+### 1.3 Human-facing documentation site
 
-- [ ] Rename: "Dashboard" nav item and view to "Agents" — make it the default landing view
-- [ ] Rename: all UI references from "Identities" to "Agents"
-- [ ] Agents view: User node is tree root, immutable (no delete/rename/move). No adding User identities.
-- [ ] Create agent: remove Kind dropdown. Only agent creation allowed; parent determines hierarchy position.
-- [ ] Dark mode: increase contrast for accent hover states and badge/pill backgrounds (e.g., "inherit" pill). Target WCAG AA (4.5:1) for all badge text in dark mode.
-- [ ] Delete confirmation: replace all `window.confirm()` / browser-native dialogs with styled modal component per UI_SPEC.
-- [ ] Org Settings: fix "Cannot load org settings. Admin access required" for Dev Users. Dev Login users must have org-admin access in development mode.
-- [x] Docker: cache Rust toolchain layer in dev Dockerfile to avoid re-downloading rustup components on every `make dev` run. (PRs #97, #98)
-- [ ] (Backlog) Template Editor: build and make accessible from Services view
-- [ ] (Backlog) API Explorer: ensure accessible and functional for testing the overslash meta-service
+`SKILL.md` covers agents. Humans (the people swiping the credit card) have nothing past `www.overslash.com`. The single biggest sales blocker after email.
 
-### Review Corrections (2026-04-20)
+- [ ] Docs site at `docs.overslash.com` (or `/docs` on the marketing site). MDX or VitePress; ship as static.
+- [ ] Concepts: identity hierarchy, permissions/approvals, secrets, services, groups, rate limits.
+- [ ] Quickstart: 10-minute "first authed call" against Resend or GitHub.
+- [ ] Per-template setup guides for the 9 shipped services (Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X).
+- [ ] REST API reference auto-generated from the routes (consider serving `/openapi.json` from the API and rendering with Scalar/Redoc).
+- [ ] MCP setup guide (Claude Desktop, Cursor, Claude Code) — fold in `dashboard/src/routes/docs/claude-code/` content.
+- [ ] Self-hosting guide (`overslash web`, OpenTofu module, single-org mode).
 
-Consolidated backlog cards from [docs/review/2026-04-20.md](docs/review/2026-04-20.md). Each card groups related review items and has a corresponding entry on the Kanban board.
+### 1.4 Operational readiness
 
-- [ ] **Approval System UX Overhaul** (card `20ae2`) — canonical `OVERSLASH_DASHBOARD_URL` envvar threaded through approval URLs (currently points at `overslash.example`), inline "Allow Once" on /agents, modal/dropdown resolver with expiry and granularity pickers, hide "Bubble Up" when the current user is already the resolver
-- [ ] **Missing Dashboard Views: Audit Log + API Explorer + Notification Dropdown** (card `504a7`) — Audit Log view, API Explorer accessibility from main nav, Notification bell dropdown of notifications
-- [ ] **Services View & Data Display Fixes** (card `73d90`) — show username/email not UUID for service owners, fix `/users/{name}` 404, correct the `overslash` meta-service "Needs Setup" copy, group pills as a column on service list, add `category` field to all templates, services connectable to groups from the detail view
-- [ ] **OAuth Connections & Provider UX Fixes** (card `c2575`) — stop creating phantom Identity Provider + UUID connection when admin adds a Google OAuth Client ID, reuse connections across services sharing the same provider, show provider email / identity instead of UUIDs, support incremental scopes auth
-- [ ] **MCP Login Flow Fixes** (card `877cb`) — assignment/consent page served from dashboard (not api), default `inherit_permissions = true` for new MCP agents, reuse the existing agent on reauthentication, hide revoked MCP clients from the UI after 3s
-- [~] **UI Component Polish: Toggle Switches + Date Formatting** (card `2e268`, in progress) — design-system Toggle Switch component adopted everywhere (starting with "Inherits Permissions"), fix "Requested Invalid Date" rendering on Pending Approvals
-- [x] Multi-org login design for Cloud Overslash — design doc landed at `docs/design/multi_org_auth.md`; implementation tracked below
-- [ ] **Multi-org implementation** — PRs 1–5 per `docs/design/multi_org_auth.md`: data model + backfill, JWT + `/auth/switch-org` + account routes, subdomain middleware + self-hosted flags (`ALLOW_ORG_CREATION`, `SINGLE_ORG_MODE`), login-flow rewiring with creator-as-admin on `POST /v1/orgs`, dashboard org switcher + `/account` page
-- [ ] Corp-org slug squatting mitigation — domain verification or admin approval on `POST /v1/orgs` (follow-up to multi-org rollout)
-- [ ] Audit events for creator-admin add/remove — emit on `POST /v1/orgs` and on `DELETE /v1/account/memberships/{org_id}` when the user dropping is the org's original creator
-- [ ] `/account` profile editing — name + avatar editable once the `users` table exists (follow-up to multi-org PR 1)
+Monitoring is deployed; paging and recovery procedures are not yet exercised.
+
+- [ ] Bind `pagerduty_integration_key` in `infra/env/prod.tfvars` (or a Slack channel via a custom notification channel) so P0 alerts actually page someone.
+- [ ] Public status page (Better Stack / Statuspage / Instatus) wired to the existing P0 uptime check + a manual override.
+- [ ] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
+- [ ] **Postgres PITR restore drill** — document and execute a full restore-to-new-instance against the dev DB; record RTO/RPO observed.
+- [ ] On-call runbook: how to roll back a Cloud Run revision, how to disable a webhook target, how to revoke a leaked API key, how to suspend an org.
+
+### 1.5 Legal / compliance
+
+- [ ] `security.txt` at `https://www.overslash.com/.well-known/security.txt` + vuln disclosure policy page.
+- [ ] DPA template + signing flow (DocuSign / PandaDoc / countersigned PDF). Procurement asks for this on every B2B deal.
+- [ ] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs).
+- [ ] **GDPR data export** — org-scoped dump endpoint (`POST /v1/orgs/{id}/data-export` → presigned URL with identities, secrets metadata only, audit log, approvals, services). Audit-logged.
+- [ ] **GDPR hard-delete** — full erasure pipeline for an org or a user (cascades through identities, secrets, audit). Soft-delete with a 30-day grace, then hard purge.
+
+### 1.6 Critical dashboard fixes
+
+A short list — most dashboard work is in §2 polish. These three are visibly broken today.
+
+- [ ] Inline "Allow Once" on `/agents` (review card `20ae2`) — current flow forces a round-trip to `/approvals/{id}`.
+- [ ] Canonical `OVERSLASH_DASHBOARD_URL` env threaded through approval URLs (currently emits `overslash.example` in webhooks).
+- [ ] Fix "Requested Invalid Date" rendering on Pending Approvals (review card `2e268`).
 
 ---
 
-## Phase 1: Core Service (MVP) ✅
+## 2. Launch +1 (first weeks after GA)
 
-- [x] Project scaffold (Rust/Axum, Cargo workspace, Docker)
-- [x] PostgreSQL schema + migrations (sqlx)
-- [x] Orgs CRUD
-- [x] Identities CRUD (users + agents, flat — no hierarchy yet)
-- [x] API key issuance + authentication middleware
-- [x] Secret vault with versioning (PUT, GET metadata, restore, soft-delete)
-- [x] `POST /v1/actions/call` — raw HTTP with secret injection (`http` pseudo-service)
-- [x] Permission rules (flat per-identity, no chain yet)
-- [x] Approval workflow — create, resolve (allow/deny/allow_remember), expire
-- [x] Secret request page (standalone signed-URL web page — safe because providing a secret doesn't grant agent authority). Follow-ups: backend `deny` endpoint + audit event; wire `overslash_auth.request_secret` and `create_service_from_template` to mint requests.
-- [x] Audit trail (log every action, approval, secret access)
-- [x] Agents view: minimal — superseded by Phase 2.5 Agents redesign per Figma (PR #105)
-- [x] Webhook delivery (approval.created, approval.resolved)
+### 2.1 Dashboard residuals
 
-## Phase 2: OAuth + Service Registry (in progress)
+- [ ] **IdP config edit UI** on `/org` — backend `PUT /v1/org-idp-configs/{id}` already supports it (TECH_DEBT.md §3).
+- [ ] **Notification bell** dropdown in the top bar (review card `504a7`).
+- [ ] **Archived sub-agents** — list + restore button on `/agents`, plus per-org cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`).
+- [ ] **Per-agent permission management** — rules, scopes, "Allow & Remember" review/edit on the agent detail page.
+- [ ] **`/account` profile editing** — name + avatar editable.
+- [ ] **Org webhook management UI** — list, create, rotate signing secret, disable.
+- [ ] **Toggle Switch** component (`ToggleSwitch.svelte`) adopted everywhere replacing checkboxes (review card `2e268`).
+- [ ] **OAuth Connections UX** (review card `c2575`): stop creating phantom Identity Provider + UUID connection when an admin adds a Google OAuth Client ID; reuse connections across services sharing the same provider; show provider email instead of UUIDs; support incremental scopes auth.
+- [ ] **Services view fixes** (review card `73d90`): show username/email for service owners, fix `/users/{name}` 404, correct the `overslash` meta-service "Needs Setup" copy, group pills as a column, services connectable to groups from the detail view.
 
-- [x] OAuth engine (authorization URL, code exchange, token storage, auto-refresh)
-- [x] BYOC credential support (identity, org, system fallback chain)
-- [x] Connections API (initiate, list, revoke) — to be refactored into service instances
-- [x] `on_behalf_of` for agent-initiated service creation at user level (PR #90)
-- [x] Global service template registry — OpenAPI 3.1 loader for shipped definitions
-- [ ] Ship top 20 service templates — 9 shipped: Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X (plus the `overslash` platform namespace)
-- [x] Template/service split — templates (OpenAPI blueprints) + services (named instances with credentials) (PR #31)
-- [x] Three-tier template registry — global (OpenAPI, read-only) + org (DB, CRUD) + user (DB, CRUD, gated by org setting) (PR #100)
-- [x] Service instances — create from template, bind credentials, assign to groups (PR #31)
-- [x] Template validation endpoint (`POST /v1/templates/validate`) — OpenAPI 3.1 parse + alias normalization + struct-level lint in `overslash-core::template_validation`. WASM feature gate in place for client-side reuse.
-- [x] OpenAPI-native template format — OpenAPI 3.1 with `x-overslash-*` vendor extensions (risk, scope_param, resolve, provider, default_secret_name, category, key, platform_actions) and unprefixed aliases that canonicalize on save.
-- [ ] Bulk OpenAPI import UX — upload/paste a vendor's public spec and auto-generate a template with sensible `x-overslash-*` overlay defaults.
-- [ ] User-to-org template sharing (propose, approve/deny)
-- [x] Service + action execution (registry-resolved, auth auto-resolve)
-- [x] Human-readable action descriptions from registry metadata (description interpolation, PR #35)
+### 2.2 Templates & coverage
 
-## Phase 2.5: Dashboard
+- [ ] Ship 11 more service templates to hit top 20 (priority order: Notion, Linear, Jira, Asana, HubSpot, Salesforce, Airtable, Discord, PagerDuty, Zendesk, Intercom).
+- [ ] Complete the OpenAPI **bulk import** UX at `/services/templates/import` — currently scaffolded; needs overlay-default suggestions and a diff preview before save.
+- [ ] **User-to-org template sharing** — propose / approve / deny flow (review card `7e5ee`).
 
-### Dashboard (SvelteKit + TypeScript)
+### 2.3 API surface gaps
 
-- [x] Scaffold SvelteKit project with TypeScript, auth, API client, and user profile view
-- [ ] Agents view (default landing) — tree visualization with inline identity management
-- [ ] Services view — template catalog, service instances, create/manage/connect
-- [x] Developer connection tool — interactive API explorer (call via Mode A/B/C, like Swagger UI for Overslash)
-- [ ] Audit log view — searchable, filterable log with identity/service/time/event filters
+- [ ] **Approval visibility scoping** — `GET /v1/approvals?scope=actionable` vs `?scope=mine` (Phase 3 carry-over).
+- [ ] **Webhook payload**: include `gap_identity` and `can_be_handled_by` on approval events (Phase 3 carry-over).
+- [ ] **MCP Login Flow Fixes** (review card `877cb`) — assignment/consent page served from dashboard, default `inherit_permissions=true` for new MCP agents, reuse the existing agent on reauth, hide revoked MCP clients from the UI after 3s.
 
-### Agent Enrollment
+---
 
-- [x] MCP OAuth 2.1 enrollment — `/oauth/authorize`, `/oauth/consent`, DCR, PKCE, `overslash mcp login` CLI (PRs #121, #123, #142)
-- [x] `SKILL.md` at repo root, served at `/SKILL.md` — v1 enrollment instructions for agents
+## 3. Backlog (post-launch)
 
-## Phase 3: Identity Hierarchy + Permissions
-
-- [x] Parent/child identity relationships (depth tracking, owner_id)
-- [x] `inherit_permissions` — dynamic resolution (live pointer, not copy)
-- [x] Sub-identity CRUD for agents (via `POST /v1/identities` with `kind: sub_agent` and `parent_id`)
-- [x] Sub-agent idle cleanup with two-phase archive (backend) — idle archive, retention purge, restore endpoint, per-org config
-- [ ] Agents view: archived sub-agent list with restore button, org sub-agent cleanup config form (`subagent_idle_timeout_secs`, `subagent_archive_retention_days`), `archived_at`/`last_active_at` columns in identity tree
-- [x] Permission chain walk (ancestor chain, gap detection)
-- [x] Approval bubbling (current_resolver tracking, explicit bubble_up, auto-bubble timer, rule placement on closest non-inherit ancestor)
-- [ ] Approval visibility scoping (`?scope=actionable` vs `?scope=mine`)
-- [ ] Webhook: include `gap_identity` and `can_be_handled_by` in approval events
-- [x] Org-level ACL — role-based access control via group membership on the `overslash` meta service, plus an `is_org_admin` fast-path on User identities. Naked org-level identities/API keys removed (migration 028).
-- [x] Agents view: identity hierarchy tree view (PR #105)
-- [ ] Agents view: per-agent permission management UI (rules, scopes, "Allow & Remember" review/edit)
-
-## Phase 4: Polish + Meta Tools
-
-- [ ] Meta tool definitions (overslash_search, overslash_call, overslash_auth)
-- [x] Semantic search for service/action discovery — `GET /v1/search` with keyword + fuzzy + local pgvector embeddings (PR pending)
-- [x] Rate limiting per identity — two-tier model (User bucket + identity caps), Redis/Valkey or in-memory
-- [ ] Org billing / usage metering
-- [x] Human-readable audit descriptions — interpolated descriptions for Mode C, method+URL for Mode A, identity name resolution in audit responses
-- [ ] Org settings view: org settings, webhook management, bulk permission operations
-- [ ] Global service registry contribution workflow (community PRs)
-- [ ] Documentation site
-
-## Ongoing: Testing Coverage
-
-- [ ] Increase integration test coverage across all API routes
-- [ ] Add unit tests for core permission resolution logic
-- [ ] Add tests for edge cases in OAuth token refresh and BYOC fallback
-- [ ] Dashboard component tests
-- [ ] E2E tests for MCP OAuth enrollment (full `/oauth/authorize` → `/oauth/consent` → `/oauth/token` flow driven by an MCP client)
-- [ ] MCP approval-bubbling and elicitation full-chain specs — the puppet (`crates/overslash-mcp-puppet`) and the two scaffold specs (`mcp-approval-bubbling.spec.ts`, `mcp-elicitation.spec.ts`) are in. Extend each to drive the real gap → resolve → replay path once a deterministic gap-trigger via `overslash_call({ service, action })` is wired (probably via a seeded service template + a no-permissions SubAgent).
+- Global service registry community contribution workflow (PR-based, with the validator endpoint as CI).
+- Multi-region / data residency (EU instance separate from US).
+- SOC 2 prep — separate workstream; controls audit, evidence collection, vendor (Vanta / Drata).
+- Bulk permission operations on the Org Settings view.
+- Light mode + theme toggle on the dashboard.
+- More e2e: MCP approval-bubbling and elicitation full-chain (puppet + scaffold specs in; deterministic gap-trigger pending — likely via a seeded service template + a no-permissions sub-agent).
+- Increase integration coverage across all API routes; unit tests for permission resolution; OAuth refresh + BYOC fallback edge cases.
 
 ---
 
 ## Done
 
-- Phase 1 core backend (all API routes, permissions, approvals, audit, webhooks, expiry loop)
-- Phase 2 OAuth engine with BYOC credential resolution (identity → org → system fallback)
-- Service+action execution (registry-resolved with automatic auth)
-- Service registry: 9 OpenAPI 3.1 templates shipped — Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X — plus the `overslash` platform namespace. Original YAML format migrated to OpenAPI 3.1 with `x-overslash-*` vendor extensions (PR #128) and refactored with parse-don't-validate (PR #118).
-- E2E integration tests: Eventbrite, GitHub (PR #113), Google Calendar (PRs #111, #98), Google Drive (PR #107), Gmail (PR #115), Resend, X.com (OAuth+PKCE, PR #114)
-- CI pipeline with coverage reporting, sharded tests (PRs #116, #119), skip-coverage on draft PRs
-- All spec–code misalignments resolved (PRs #29–#40): risk enum, identity hierarchy, template/instance split, approval resolve fields, scope_param, description interpolation, suggested tiers, category removed from spec
-- sqlx compile-time query checking enforced across all repos (PR #39)
-- Multi-provider OIDC authentication: generic provider routes, OIDC Discovery, GitHub social login, per-org IdP config, env var precedence, email domain matching, profile sync
-- `on_behalf_of` for agent-initiated operations (PR #90) — agents create secrets/connections at owner-user level so siblings share them
-- Three-tier OAuth credential cascade (SPEC §7): user BYOC + org-level OAuth App Credentials + system env (PRs #117, #122, #124, #131), with shared resolution for IdP configs
-- Per-service OAuth scopes declared end-to-end (PR #127)
-- User-level services visible to owner and their agents (PR #130)
-- Three-tier template registry — global / org / user with `allow_user_templates` gate (PR #100)
-- Template validation endpoint `POST /v1/templates/validate` (PR #108)
-- Sub-agent idle cleanup with two-phase archive + restore endpoint + per-org config
-- Phase 3: Groups (Layer 1 ceiling, `auto_approve_reads`, `allow_raw_http`), org-level ACL via groups on the `overslash` meta-service + `is_org_admin` fast-path
-- Phase 4: Two-tier rate limiting (User bucket + identity caps), Redis/Valkey or in-memory, standard headers + 429
-- CLI + MCP surface restructure: single `overslash` binary with `serve` / `web` / `mcp` / `mcp login` subcommands (PR #121); MCP over Streamable HTTP + OAuth 2.1 AS endpoints (PR #123); user-BYOC in Create Service + Template Editor provider dropdown (PR #124)
-- Standalone Provide Secret page (PR #89) + User Signed Mode (PR #109, migration 031)
-- Templates dashboard UI (PR #112), Agents view redesign per Figma (PR #105), self-hosted Inter/Roboto Mono (PR #129), zero-warning vite builds enforced (PR #125)
-- 2026-04-10 review corrections applied (doc: PR #96, dashboard: PR #99, Docker Rust toolchain cache: PRs #97, #98)
-- Code quality: CTE cycle protection (PR #38), identity_response From impl (PR #37), org ownership check helper
+Through 2026-05. Highlights below; full detail in [STATUS.md](STATUS.md).
+
+- **Phases 1–4 backend**: orgs, identities, secrets (versioned + encrypted), permission rules, approvals (with bubbling), webhooks, audit, API keys.
+- **OAuth + Service Registry**: native OAuth engine with three-tier BYOC, 9 OpenAPI 3.1 templates, three-tier template registry, template validation endpoint, per-service scopes, `on_behalf_of`.
+- **Mode A/B collapse** (SPEC §8): single Service + HTTP verb execution surface; typed `reauth_required` envelopes; dry-run `/v1/actions/validate`; stable webhook envelope.
+- **Identity hierarchy**: parent/child + `inherit_permissions` live pointer; approval bubbling; sub-agent idle archive + retention (backend).
+- **Groups (Layer 1 ceiling)**: read/write/admin grants, `auto_approve_reads`, raw HTTP as the `http` singleton.
+- **Rate limiting**: two-tier (User bucket + identity caps), Redis/Valkey or in-memory, standard headers + 429.
+- **Multi-provider OIDC** + per-org IdP configs + GitHub social login + email-domain provisioning.
+- **Multi-org auth**: subdomain routing on `*.app|api.overslash.com`, switch-org, account memberships, corp-org creation with creator-admin.
+- **MCP**: Streamable HTTP + OAuth 2.1 AS endpoints, `overslash mcp login` CLI, annotated tools split into `overslash_search` / `_read` / `_call` / `_auth`, metaservice bridge for self-management actions, typed error envelopes.
+- **Stripe billing**: checkout-creates-org, customer portal, geo-priced EUR/USD, automatic tax, `free_unlimited` tier, full Stripe fake + Playwright Checkout e2e.
+- **Monitoring**: 5 GCP dashboards (overview / api-use / actions-and-oauth / cloudsql-use / business) + P0/P1/P2 alerts + uptime + OTel sidecar + JSON logs.
+- **Dashboard**: Agents tree, Services + templates, Secrets list + detail with reveal/restore, Audit Log with CSV export, Approval queue redesign, Members, Account, Billing flows, OAuth consent, API Explorer with Try-it, per-agent MCP Connection card, responsive shell.
+- **Real-stack e2e**: scenarios library, MCP puppet client (Rust + REST + TS), OAuth fake AS, Auth0/Okta IdP fakes, Mode-C e2e against connected GitHub.
+- **CLI**: single `overslash` binary with `serve` / `web` / `mcp` / `mcp login` subcommands.

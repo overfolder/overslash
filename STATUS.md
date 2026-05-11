@@ -1,6 +1,6 @@
 # Overslash — Status
 
-**Current state**: Phase 2 in progress. Core backend fully functional with OAuth, service registry, and unified action execution.
+**Current state**: Phases 1–4 backend complete. Stripe billing live, monitoring stack deployed, dashboard mature (audit log, members, approval queue, billing flows all shipped). Mode A/B collapsed into a single Service + HTTP verb surface (SPEC §8). Public launch is gated on transactional email, human-facing docs, slug-squatting mitigation, GDPR endpoints, and the legal/compliance surface — see [TODO.md](TODO.md).
 
 ---
 
@@ -74,6 +74,15 @@
 - 2026-04-10 review corrections applied — doc-level (PR #96) and dashboard-level (PR #99)
 - Build/quality — zero-warning vite builds enforced (PR #125); Inter + Roboto Mono self-hosted via `@fontsource-variable` (PR #129)
 - **Secrets dashboard view** — `/secrets` list (filtered by subtree per SPEC §6 — non-admins see only their own subtree, admins see the whole org) and `/secrets/{name}` detail (versions table, used-by, reveal modal, update-value, restore-version). Backend: `GET /v1/secrets` + `GET /v1/secrets/{name}` extended with `owner_identity_id` (now stored as an explicit column on `secrets`, set on first insert, preserved across versions via COALESCE), `created_at`/`updated_at`, `versions[]`, `used_by[]`. New endpoints `POST /v1/secrets/{name}/versions/{v}/reveal` (audit-logged as `secret.revealed`) and `.../restore` (audit-logged as `secret.restored`). Reveal / restore / detail stay session-only. `GET /v1/secrets` (list) accepts bearer auth and returns a narrow `{name, version_count, last_rotated_at}` shape to agent/sub-agent callers — values never leave the vault.
+- **Audit Log dashboard view** (`/audit`, PR #238) — full-text + filter search over the audit trail with identity path, ref + UUID search, deep-linkable rows, and CSV export.
+- **Approval queue redesign** — distilled approval card + queue UI (PR #250), auto-call-on-approve made universal with result piped to the webhook (PRs #239, #257), select-requesting-agent on deep-link with auto-call feedback (PR #245), shortened approval URLs via `oversla.sh` (PR #249).
+- **Members page** (`/members`) — org membership listing + admin actions for the multi-org world.
+- **API Explorer** — component library + interactive page; surfaced from service-instance views via a "Try it" button (PR #247).
+- **Per-agent MCP Connection card** (PR #204, fixed in #211) — DCR / OAuth consent / disable / revoke surfaced inline on `/agents/{id}`; URL-driven `/agents/<id>` rationalization (PR #214).
+- **Org service keys** mintable from Org Settings (PR #221).
+- **Template catalog UX pass** (PR #237) + secret-name autocomplete with vault picker (PR #236) + `/services/templates/import` route scaffolded for OpenAPI bulk import.
+- **Responsive shell** for tablet + mobile (PR #240); favicon (PR #241); `/docs/claude-code/` quickstart route.
+- **Preview-deployment OAuth handoff** (PRs #242, #248) — server-side auth-state instead of cookies so Vercel preview URLs can complete OAuth.
 
 ### Phase 3 — Identity Hierarchy + Hierarchical Permissions
 
@@ -156,21 +165,69 @@
 - **Dashboard** — `OrgSwitcher` in the sidebar footer (grouped Personal / Orgs, no per-row badges), `/account` page with leave-membership action, login page renders a corp-org empty state when no IdP is configured, `/org` hides IdP + OAuth-credential cards on personal orgs and shows a "configure an IdP" warning banner on corp orgs without one enabled.
 - Migration 041 drops the pre-040 `identities.email` global UNIQUE, keeping a plain lookup index. Multi-org requires the same human's email to appear on multiple identity rows; the `(org_id, user_id)` partial UNIQUE from 040 continues to prevent double-admission per human per org.
 
+### Billing (Stripe)
+
+- Cloud billing surface — `/v1/billing/{config,geo,checkout,portal}`, `/v1/orgs/{id}/subscription`, signed `POST /v1/webhooks/stripe`. Checkout creates the Stripe customer + subscription, provisions the org on `checkout.session.completed`, then routes the session to the new org via `redirect_for_org` (PRs #213, #197).
+- Geo-aware pricing — `/v1/billing/geo` reads `CF-IPCountry` (falls back to `X-Country-Code` / USD) and returns EUR for EU member states.
+- Stripe customer portal — `POST /v1/billing/portal` returns a hosted self-service link; surfaced from `/billing/portal`.
+- Automatic tax wired (`customer_update=auto`) for cross-border compliance.
+- `free_unlimited` org tier + instance-admin self-service create (PR #217) for design partners + self-hosted accounts.
+- E2E coverage — `crates/overslash-fakes/src/stripe.rs` ships a full Stripe fake driven by a Playwright Checkout flow (PR #231); `tests/billing.rs` + `tests/free_unlimited.rs` exercise the REST surface.
+- Dashboard — `/billing/new-team` (Checkout entry), `/billing/portal`, `/billing/success`, `CreateOrgModal` deferring to checkout when `cloud_billing=true`.
+
+### Monitoring & Observability
+
+- OpenTofu module `infra/modules/monitoring/` (PRs #200, #205, #207, #272) deploys 5 GCP dashboards — `overview`, `api-use`, `actions-and-oauth`, `cloudsql-use`, `business` — plus P0/P1/P2 alert policies: API down, API 5xx > 1%, API P99 > 5s, Cloud SQL CPU/disk, background-task staleness, OAuth refresh failure ratio, webhook terminal failure ratio, plus uptime checks.
+- OTel sidecar exports metrics into GMP (instance-label collision fixed in #272).
+- Notification channels: email channel auto-provisioned when `alert_email` is set (`infra/env/dev.tfvars` already wired); PagerDuty channel auto-provisioned when `pagerduty_integration_key` is set. **Slack / PagerDuty integration keys are not yet bound** (see Launch Blockers in TODO.md).
+- JSON-format logs with `message`/`span`/`textPayload` surfaced through `make logs` (PR #198).
+
+### Actions surface — unified
+
+- Mode A (raw HTTP under a synthetic instance) collapsed into the `http` service singleton (PR #265, DECISIONS D15).
+- Mode B (`connection: <uuid>` calls) killed; replaced by SPEC §8 Service + HTTP verb (PR #261, DECISIONS D14). Single `CallRequest` shape across all execution paths.
+- Typed `reauth_required` + `needs_authentication` error envelopes (PR #259); structured 400 + dry-run `POST /v1/actions/validate` (PR #256); MCP tools/call surfaces the same typed envelopes (PR #263).
+- Stable webhook envelope with routing headers (PR #258); connection lifecycle events emit webhooks (PR #260).
+
+### MCP — additional surface (beyond the OAuth transport already documented)
+
+- Tools annotated for client UX and `overslash_call` split into `overslash_read` (read-class fast-path, prompt-skip) + `overslash_call` (general) (PR #235).
+- Metaservice bridge: service-instance kernels (PR #244), template-authoring (PR #246), `create_connection` (PR #253), `request_secret` kernel with signed-provide handshake (PR #252), capability-gated connection settings on OAuth consent (PR #215).
+- Fan-out search per instance, actionable template-vs-instance errors (PR #243); nested OAuth for upstream MCP servers (PR #220); MCP Inspector CORS (PR #232).
+
 ### Not Yet Built
 
-- Dashboard gaps (tracked in TODO.md §Review Corrections 2026-04-20):
-  - Audit Log view (backend audit trail is complete; UI missing — card `504a7`)
-  - IdP config **edit** UI (create/delete/toggle ship; backend `PUT /v1/org-idp-configs/{id}` already supports full updates — see TECH_DEBT.md §3)
-  - API Explorer accessibility from main nav (card `504a7`)
-  - Notification bell dropdown (card `504a7`)
-  - Approval resolver as modal/dropdown instead of standalone page (card `20ae2`, design pending)
-  - Toggle Switch design-system component adopted everywhere (card `2e268`, in progress)
-  - Inline "Allow Once" on /agents and canonical `OVERSLASH_DASHBOARD_URL` in approval URLs (card `20ae2`)
-- OpenAPI bulk import UX (endpoint in Review, card `7187f`)
-- User-to-org template sharing (propose / approve / deny; in Review, card `7e5ee`)
-- Phase 3: approval visibility scoping (`?scope=actionable` vs `?scope=mine`), webhook `gap_identity` + `can_be_handled_by`
-- Phase 3: archived sub-agent list + restore button + cleanup config form in the Agents view (backend shipped)
-- Phase 4: Meta tools (`overslash_search`/`_call`/`_auth` in Review, card `30b36`), org billing / usage metering, documentation site
+**Launch blockers** — tracked in [TODO.md](TODO.md):
+
+- Transactional email subsystem (approval / secret-request / billing receipt / welcome).
+- Corp-org invite flow (D12-compatible) or explicit JIT-only docs + empty-state.
+- Slug squatting mitigation on `POST /v1/orgs` (domain verification or admin approval).
+- Human-facing documentation site (concepts + REST reference + per-template quickstarts).
+- Status page wired to the existing P0 alerts.
+- DPA, security.txt, vulnerability disclosure policy, subprocessor list.
+- GDPR data export + erasure endpoints.
+- Master-key rotation runbook + tested rotation; Postgres PITR restore drill.
+- PagerDuty (or Slack) integration key bound to `infra/modules/monitoring/`.
+
+**Dashboard residuals** (carry-overs from review cards `504a7` / `20ae2` / `2e268`):
+
+- IdP config **edit** UI (backend `PUT /v1/org-idp-configs/{id}` already supports it — see TECH_DEBT.md §3).
+- Notification bell dropdown in the top bar.
+- Archived sub-agent list + restore button + per-org cleanup config form (backend shipped).
+- Per-agent permission management UI (rules, scopes, "Allow & Remember" review/edit).
+- Inline "Allow Once" on `/agents`; canonical `OVERSLASH_DASHBOARD_URL` env wired into approval URLs.
+- Toggle Switch design-system component (`ToggleSwitch.svelte` lives but not adopted everywhere).
+- `/account` profile editing (name + avatar).
+- Org webhook management UI.
+
+**Backend / API**:
+
+- Approval visibility scoping (`?scope=actionable` vs `?scope=mine`).
+- Webhook payload: include `gap_identity` and `can_be_handled_by` on approval events.
+- User-to-org template sharing (propose / approve / deny; card `7e5ee`).
+- OpenAPI bulk import UX completion (`/services/templates/import` route scaffolded; polish + overlay defaults pending).
+- Ship 11 more service templates to hit the top-20 target (currently 9 + `overslash` namespace).
+- Audit events on creator-admin add/remove on `POST /v1/orgs` and `DELETE /v1/account/memberships/{org_id}`.
 
 ### CLI + MCP — Surface Restructure (OAuth transport)
 
@@ -194,7 +251,9 @@
 
 ## What's Deployed
 
-Nothing yet. Running locally via Docker Compose (Postgres on port 55432).
+- **Marketing site**: `www.overslash.com` — landing page with Terms and Privacy Policy.
+- **Cloud infra**: dev environment provisioned via `infra/env/dev.tfvars` (Cloud Run + Cloud SQL + GCLB wildcard cert on `*.api.overslash.com` + monitoring module + Stripe webhook endpoint). Prod tfvars exists; GA cutover gated on Launch Blockers.
+- **Local dev**: Docker Compose (Postgres on port 55432); worktree isolation via `make local`.
 
 ## Infrastructure
 
