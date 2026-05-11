@@ -3,7 +3,7 @@ output "email_channel_id" {
 }
 
 output "pagerduty_channel_id" {
-  value = local.alerts_enabled && var.pagerduty_integration_key != "" ? google_monitoring_notification_channel.pagerduty[0].id : ""
+  value = local.alerts_enabled && var.pagerduty_enabled ? google_monitoring_notification_channel.pagerduty[0].id : ""
 }
 
 output "uptime_check_id" {

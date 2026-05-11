@@ -38,8 +38,11 @@ valkey_memory_size_gb = 1
 
 # Monitoring — set alert_email to enable the monitoring module (dashboards,
 # alerts, uptime checks, OTel sidecar). Leave empty to disable everything.
-alert_email               = ""
-pagerduty_integration_key = "" # optional; when set, P0 alerts also page
-monthly_budget_usd        = 200
-billing_account_id        = "" # optional; required for the billing-budget alert
-enable_metrics_sidecar    = true
+alert_email = ""
+# Set true to page PagerDuty (EU) on P0 alerts. Populate the integration key in
+# Secret Manager first:
+#   gcloud secrets versions add <base_prefix>-pagerduty-integration-key --data-file=-
+pagerduty_enabled      = false
+monthly_budget_usd     = 200
+billing_account_id     = "" # optional; required for the billing-budget alert
+enable_metrics_sidecar = true

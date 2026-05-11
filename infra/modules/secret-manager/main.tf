@@ -204,6 +204,28 @@ resource "google_secret_manager_secret_version" "stripe_webhook_secret" {
   }
 }
 
+# --- PagerDuty integration key (only used when `pagerduty_enabled=true` on the
+#     monitoring module). Populated manually via:
+#       gcloud secrets versions add overslash-prod-pagerduty-integration-key \
+#         --data-file=- < /path/to/integration-key
+
+resource "google_secret_manager_secret" "pagerduty_integration_key" {
+  secret_id = "${var.base_prefix}-pagerduty-integration-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "pagerduty_integration_key" {
+  secret      = google_secret_manager_secret.pagerduty_integration_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 output "stripe_secret_key_secret_id" {
   value = google_secret_manager_secret.stripe_secret_key.secret_id
 }
@@ -247,4 +269,8 @@ output "google_services_client_id_secret_id" {
 
 output "google_services_client_secret_secret_id" {
   value = google_secret_manager_secret.google_services_client_secret.secret_id
+}
+
+output "pagerduty_integration_key_secret_id" {
+  value = google_secret_manager_secret.pagerduty_integration_key.secret_id
 }

@@ -13,11 +13,16 @@ variable "alert_email" {
   description = "Email address that receives every alert. Required."
 }
 
-variable "pagerduty_integration_key" {
+variable "pagerduty_enabled" {
+  type        = bool
+  default     = false
+  description = "When true, P0 alerts page PagerDuty via the EU GCM integration. Requires the secret named in `pagerduty_secret_id` to be populated."
+}
+
+variable "pagerduty_secret_id" {
   type        = string
   default     = ""
-  sensitive   = true
-  description = "PagerDuty integration key. When set, P0 alerts also page. Empty = email-only."
+  description = "Secret Manager secret ID holding the PagerDuty (EU) integration key. Ignored unless `pagerduty_enabled = true`."
 }
 
 variable "api_domain" {

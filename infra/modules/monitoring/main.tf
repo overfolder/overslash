@@ -25,9 +25,9 @@ locals {
 
   email_channel_ids = local.alerts_enabled ? [google_monitoring_notification_channel.email[0].id] : []
 
-  # P0 channels: PagerDuty (if configured) + email fallback.
+  # P0 channels: PagerDuty (if enabled) + email fallback.
   p0_channels = concat(
-    local.alerts_enabled && var.pagerduty_integration_key != "" ? [google_monitoring_notification_channel.pagerduty[0].id] : [],
+    local.alerts_enabled && var.pagerduty_enabled ? [google_monitoring_notification_channel.pagerduty[0].id] : [],
     local.email_channel_ids,
   )
 
