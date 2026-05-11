@@ -199,9 +199,8 @@
 
 **Launch blockers** — tracked in [TODO.md](TODO.md):
 
-- Transactional email subsystem (approval / secret-request / billing receipt / welcome).
-- Corp-org invite flow (D12-compatible) or explicit JIT-only docs + empty-state.
-- Slug squatting mitigation on `POST /v1/orgs` (domain verification or admin approval).
+- Transactional email subsystem (billing receipts + welcome + webhook DLQ digest; approvals and secret-requests stay in dashboard/webhook only).
+- Corp-org invite flow (D12-compatible) and corp-subdomain login empty-state.
 - Human-facing documentation site (concepts + REST reference + per-template quickstarts).
 - Status page wired to the existing P0 alerts.
 - DPA, security.txt, vulnerability disclosure policy, subprocessor list.

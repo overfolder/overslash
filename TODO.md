@@ -16,25 +16,21 @@ A PR can ladder up to a block by tagging its first line `[launch]`, `[launch+1]`
 
 ### 1.1 Transactional email
 
-No mailer exists today. Approvals fan out only via webhook + dashboard; secret-request links must be hand-copied; billing has no receipts. This is the single biggest non-technical-buyer gap.
+No mailer exists today. Billing has no receipts and new accounts get no welcome / verification touch. Approvals and secret-requests are explicitly **not** email-driven — email is the wrong channel for real-time decisions (latency, deliverability, off-device), and the dashboard + webhook + `oversla.sh` link is the path of record.
 
 - [ ] Pick a provider and wire it (likely Resend — we already template a service for it). Config: `EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_REPLY_TO`; secret via the existing vault.
 - [ ] Templated emails — store templates in `crates/overslash-core/templates/email/` with `{var}` interpolation matching the audit-description style.
-- [ ] **Approval.created** → email the current resolver with the approval card + `oversla.sh` link. Re-fire on bubble.
-- [ ] **Approval.resolved** → email the original requester's owner-user with outcome + auto-call result.
-- [ ] **Secret request minted** → email the target (when known) with the signed-URL link.
 - [ ] **Billing**: receipt on `invoice.payment_succeeded`; dunning on `invoice.payment_failed`; subscription canceled / trial ending.
 - [ ] **Welcome / first login** for both root signups and corp-org JIT provisioning.
 - [ ] **Webhook DLQ digest** → daily digest to org admins listing webhook endpoints with terminal failures.
-- [ ] Audit row per send (`email.sent` / `email.failed`) so deliverability is debuggable.
-- [ ] Per-user unsubscribe state for non-transactional (welcome) emails only — transactional emails are exempt by policy.
+- [ ] Per-user unsubscribe state for non-transactional (welcome) emails only — billing emails are exempt by policy.
+- [ ] (Optional, post-MVP) User-level opt-in email for newly remembered permissions — informational only, not a control surface.
 
 ### 1.2 Onboarding & trust domains
 
-D12 keeps trust domains clean. Corp-org admins still need a way to onboard the *first* teammate before that teammate has logged in via the org's IdP, and the org-creation endpoint is still trivially squat-able.
+D12 keeps trust domains clean. Corp-org admins still need a way to onboard the *first* teammate before that teammate has logged in via the org's IdP. Slug squatting is intentionally **not** mitigated pre-launch — paid org creation is the natural gate; we'll deal with squatters reactively if any appear.
 
 - [ ] **Corp-org invite path** — email-gated against the org's `org_idp_configs.allowed_email_domains`. Invite resolves on first IdP login (binds the new identity to the invite's role). Does **not** bypass the IdP; only pre-authorizes the email.
-- [ ] **Slug squatting mitigation** on `POST /v1/orgs` — domain verification (DNS TXT) for corp slugs, or admin approval queue. Personal orgs unaffected.
 - [ ] Audit events on creator-admin add (`POST /v1/orgs`) and removal (`DELETE /v1/account/memberships/{org_id}` when the leaver is the original creator).
 - [ ] Login page on a corp subdomain renders a clear empty state when no IdP is configured + a "you've been invited, please log in via X" state when the visitor's email matches a pending invite.
 
