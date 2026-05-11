@@ -2,6 +2,7 @@ pub mod action_caller;
 pub mod billing_tier;
 pub mod client_credentials;
 pub mod disclosure;
+pub mod email;
 pub mod embedding_backfill;
 pub mod group_ceiling;
 pub mod http_caller;

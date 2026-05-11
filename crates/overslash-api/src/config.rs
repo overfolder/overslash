@@ -97,6 +97,21 @@ pub struct Config {
     /// the proxied URL. When unset, only the proxied URL is returned.
     pub oversla_sh_base_url: Option<String>,
     pub oversla_sh_api_key: Option<String>,
+    /// Transactional-email provider key. `Some("resend")` selects the Resend
+    /// implementation; any other value (or `None`) falls back to the no-op
+    /// mailer so local/dev/test boots don't require credentials.
+    pub email_provider: Option<String>,
+    /// `From` address used for all outbound transactional mail
+    /// (e.g. `no-reply@overslash.com`). Must be a domain Resend is
+    /// authorised to send for. Required when `email_provider` is set.
+    pub email_from: Option<String>,
+    /// Optional `Reply-To` address. When `None`, the provider applies its
+    /// default (usually `From`).
+    pub email_reply_to: Option<String>,
+    /// Raw provider API key (Resend `re_…` token). Stored as an env var
+    /// alongside `stripe_secret_key` and `oversla_sh_api_key` — Cloud Run
+    /// surfaces Secret Manager values this way.
+    pub email_api_key: Option<String>,
     /// Vercel preview-deployment OAuth handoff allowlist. When set on a
     /// `OVERSLASH_ENV=dev` deployment, the API will accept a `preview_origin`
     /// query param on `/auth/login/<provider>`, embed an opaque preview-id
@@ -314,6 +329,10 @@ impl Config {
             oversla_sh_api_key: env::var("OVERSLA_SH_API_KEY")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            email_provider: env::var("EMAIL_PROVIDER").ok().filter(|s| !s.is_empty()),
+            email_from: env::var("EMAIL_FROM").ok().filter(|s| !s.is_empty()),
+            email_reply_to: env::var("EMAIL_REPLY_TO").ok().filter(|s| !s.is_empty()),
+            email_api_key: env::var("EMAIL_API_KEY").ok().filter(|s| !s.is_empty()),
             preview_origin_allowlist: parse_preview_origin_allowlist(
                 env::var("PREVIEW_ORIGIN_ALLOWLIST").ok().as_deref(),
             ),
@@ -334,9 +353,21 @@ impl Config {
         } else {
             &[]
         };
+        // EMAIL_API_KEY and EMAIL_FROM are required iff EMAIL_PROVIDER is
+        // set. Mirrors the cloud_billing pattern above: a misconfigured
+        // sender would otherwise silently drop receipts / welcome mail.
+        let email_enabled = env::var("EMAIL_PROVIDER")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let email_required: &[&str] = if email_enabled {
+            &["EMAIL_API_KEY", "EMAIL_FROM"]
+        } else {
+            &[]
+        };
         always_required
             .iter()
             .chain(billing_required.iter())
+            .chain(email_required.iter())
             .filter(|k| env::var(k).map(|v| v.is_empty()).unwrap_or(true))
             .copied()
             .collect()
@@ -756,6 +787,10 @@ mod tests {
             service_base_overrides: HashMap::new(),
             oversla_sh_base_url: None,
             oversla_sh_api_key: None,
+            email_provider: None,
+            email_from: None,
+            email_reply_to: None,
+            email_api_key: None,
             preview_origin_allowlist: None,
             overslash_env: None,
         }

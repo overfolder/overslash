@@ -46,6 +46,16 @@ pub fn interpolate_description_with_resolved(
     substitute_placeholders_display(&after_optionals, &display_params)
 }
 
+/// Interpolate a template intended for non-display surfaces (email bodies,
+/// notification text, etc.) using the same `{var}` + `[optional]` grammar as
+/// [`interpolate_description`] but **without** the [`DISPLAY_MAX_CHARS`] cap
+/// that would silently truncate long values. URLs, addresses and free-form
+/// user content all survive intact.
+pub fn interpolate_template(template: &str, params: &HashMap<String, serde_json::Value>) -> String {
+    let after_optionals = resolve_optional_segments(template, params);
+    substitute_placeholders(&after_optionals, params)
+}
+
 /// Resolve `[...]` optional segments. Flat only — no nesting.
 fn resolve_optional_segments(
     template: &str,
@@ -418,6 +428,26 @@ mod tests {
         let out = interpolate_description("{text}", &p);
         assert_eq!(out.chars().count(), 60);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn interpolate_template_does_not_clamp_long_values() {
+        // Email bodies and similar non-display surfaces must preserve full
+        // values — a billing receipt URL is the canonical reason.
+        let body = "a".repeat(200);
+        let p = params(&[("url", json!(body))]);
+        let out = interpolate_template("Click {url} to confirm", &p);
+        assert_eq!(out, format!("Click {body} to confirm"));
+        assert!(!out.contains('…'));
+    }
+
+    #[test]
+    fn interpolate_template_supports_optional_segments() {
+        let p = params(&[("name", json!("Alice"))]);
+        assert_eq!(
+            interpolate_template("Hello {name}[, your code is {code}].", &p),
+            "Hello Alice."
+        );
     }
 
     #[test]
