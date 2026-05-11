@@ -1,5 +1,7 @@
 // Mirrors backend Rust types from overslash-core and overslash-api
 
+import type { SuggestedTier } from './session';
+
 export interface OrgInfo {
   id: string;
   name: string;
@@ -559,6 +561,11 @@ export type CallResponse =
        * `overslash_approve_self` vs `overslash_approve`.
        */
       relationship: 'self' | 'downstream' | 'not_in_your_chain';
+      /** Same broadening ladder GET /v1/approvals/{id} returns — exposed
+       *  here so callers can render "remember at a broader scope" prompts
+       *  without a second round-trip. Mirrors
+       *  ApprovalResponse.suggested_tiers. */
+      suggested_tiers: SuggestedTier[];
     }
   | { status: 'denied'; reason: string };
 

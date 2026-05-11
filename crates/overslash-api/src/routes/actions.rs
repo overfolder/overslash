@@ -52,7 +52,7 @@ use crate::{
 };
 use overslash_core::{
     crypto, disclosure as core_disclosure,
-    permissions::{AccessLevel, GroupCeilingResult, PermissionKey},
+    permissions::{AccessLevel, GroupCeilingResult, PermissionKey, SuggestedTier, suggest_tiers},
     secret_injection::inject_secrets,
     types::{
         ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpAuth, Runtime,
@@ -436,6 +436,11 @@ enum CallResponse {
         /// when this payload comes from the same agent that triggered the
         /// action; `"downstream"` when listed by an ancestor.
         relationship: String,
+        /// Same broadening ladder GET /v1/approvals/{id} returns — included
+        /// here so callers can offer "remember at a broader scope" prompts
+        /// without a second round-trip. Deterministic on the approval's
+        /// `permission_keys`.
+        suggested_tiers: Vec<SuggestedTier>,
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
@@ -845,6 +850,7 @@ async fn call_action_impl(
                         // field earns its keep when this payload is rendered
                         // for an ancestor in `list_pending` (`downstream`).
                         relationship: "self".into(),
+                        suggested_tiers: suggest_tiers(&keys),
                     }),
                 )
                     .into_response());
