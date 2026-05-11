@@ -1530,3 +1530,74 @@ async fn remove_grant_still_rejects_admins() {
         "overslash grant should still be present on Admins"
     );
 }
+
+/// A non-admin caller targeting the Admins group hits the authorization
+/// check first (403), not the system-lock (400). Mirrors `add_grant` and
+/// `update_grant` so the error code doesn't leak which groups are locked
+/// to callers who weren't allowed to touch them in the first place.
+#[tokio::test]
+async fn remove_grant_returns_403_for_non_admin_on_admins() {
+    let (base, org_key, _, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{admins_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Sanity: grant untouched.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should still be present on Admins"
+    );
+}

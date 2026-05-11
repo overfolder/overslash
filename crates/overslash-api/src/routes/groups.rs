@@ -463,11 +463,20 @@ async fn remove_grant(
     // down the bootstrapped `overslash` / `http` defaults). Admins stays
     // locked: an admin who removed `overslash:admin` from Admins would
     // lose the recovery surface that lets them re-grant it.
+    //
+    // Auth runs before the Admins-lock so a non-admin caller sees a 403
+    // (consistent with `add_grant` / `update_grant`) instead of leaking
+    // the system-lock as a 400 — the response shouldn't tell unauthorized
+    // callers anything about which groups are locked.
     let owner_managing_self =
         grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
+    let is_admins = grp.system_kind.as_deref() == Some("admins");
     if owner_managing_self {
         // Owner-managed Myself group: allow.
-    } else if grp.system_kind.as_deref() == Some("admins") {
+    } else if is_admins {
+        if caller_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
         return Err(AppError::BadRequest(
             "cannot remove grants from the Admins group".into(),
         ));
