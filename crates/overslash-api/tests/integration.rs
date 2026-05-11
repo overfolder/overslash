@@ -495,6 +495,21 @@ async fn test_approval_flow() {
         panic!("pending_approval.expires_at {pending_expires:?} not RFC 3339: {e}")
     });
 
+    // `suggested_tiers` is inlined on the 202 so callers can offer
+    // "remember at a broader scope" without a follow-up GET. Matches the
+    // same shape as GET /v1/approvals/{id} (see
+    // test_approval_response_includes_derived_keys_and_tiers).
+    let pending_tiers = body["suggested_tiers"].as_array().unwrap();
+    assert!(
+        pending_tiers.len() >= 2 && pending_tiers.len() <= 4,
+        "pending_approval.suggested_tiers length {} out of 2..=4",
+        pending_tiers.len()
+    );
+    for tier in pending_tiers {
+        assert!(!tier["keys"].as_array().unwrap().is_empty());
+        assert!(!tier["description"].as_str().unwrap().is_empty());
+    }
+
     // Resolve with allow (admin key, not the agent's own)
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
@@ -2555,6 +2570,14 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
 
     // permission_keys should still be present for backward compat
     assert!(approval["permission_keys"].is_array());
+
+    // 202 and GET return byte-identical tiers — that's the consistency
+    // guarantee from computing `suggest_tiers` from the same
+    // `permission_keys` at both sites.
+    assert_eq!(
+        &exec_body["suggested_tiers"], &approval["suggested_tiers"],
+        "POST /v1/actions/call 202 suggested_tiers must equal GET /v1/approvals/{{id}} suggested_tiers"
+    );
 }
 
 #[tokio::test]
