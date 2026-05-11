@@ -14,7 +14,7 @@ session_cookie_domain = ".app.dev.overslash.com"
 # instead created as 1-1 Cloud Run domain mappings via
 # `extra_api_domain_mappings` below, which keeps cost at zero and avoids
 # provisioning a global LB just to host a couple of dogfood orgs.
-enable_api_lb             = false
+enable_api_lb = false
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",
@@ -72,3 +72,12 @@ cloud_billing = true
 # stripe_usd_lookup_key = "overslash_seat_usd"
 
 alert_email = "alert@overspiral.com"
+
+# Transactional email. Disabled until the infra module wiring lands.
+# Uncomment in lockstep with the Secret Manager + Cloud Run variables for
+# email_provider / email_from / email_reply_to / email_api_key_secret_id.
+# The Resend API key is populated post-apply via:
+#   echo -n "re_…" | gcloud secrets versions add overslash-dev-email-api-key --data-file=-
+# email_provider = "resend"
+# email_from     = "no-reply@dev.overslash.com"
+# email_reply_to = "support@overslash.com"
