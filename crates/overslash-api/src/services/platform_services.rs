@@ -754,8 +754,12 @@ pub fn derive_credentials_status(
         if has_oauth {
             return Some(CredentialsStatus::NeedsAuthentication);
         }
-        if (has_api_key || mcp_bearer) && no_secret {
-            return Some(CredentialsStatus::NeedsAuthentication);
+        if has_api_key || mcp_bearer {
+            return Some(if no_secret {
+                CredentialsStatus::NeedsAuthentication
+            } else {
+                CredentialsStatus::Ok
+            });
         }
     }
 
@@ -797,8 +801,50 @@ pub fn derive_credentials_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use overslash_core::types::{Risk, ServiceAction, TokenInjection};
+    use overslash_core::types::{McpSpec, Risk, ServiceAction, TokenInjection};
     use std::collections::HashMap;
+
+    fn mcp_bearer_template(default_secret: Option<&str>) -> ServiceDefinition {
+        ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            auth: vec![],
+            actions: HashMap::new(),
+            runtime: Runtime::Mcp,
+            mcp: Some(McpSpec {
+                url: Some("https://example.com".into()),
+                auth: McpAuth::Bearer {
+                    secret_name: default_secret.map(|s| s.to_string()),
+                },
+                autodiscover: false,
+            }),
+        }
+    }
+
+    fn api_key_template() -> ServiceDefinition {
+        ServiceDefinition {
+            key: "t".into(),
+            display_name: "T".into(),
+            description: None,
+            hosts: vec![],
+            category: None,
+            auth: vec![ServiceAuth::ApiKey {
+                default_secret_name: "default".into(),
+                injection: TokenInjection {
+                    inject_as: "header".into(),
+                    header_name: Some("Authorization".into()),
+                    query_param: None,
+                    prefix: Some("Bearer ".into()),
+                },
+            }],
+            actions: HashMap::new(),
+            runtime: Runtime::Http,
+            mcp: None,
+        }
+    }
 
     fn oauth_template(actions: Vec<(&str, Vec<&str>)>) -> ServiceDefinition {
         let mut map = HashMap::new();
@@ -911,6 +957,37 @@ mod tests {
         assert_eq!(
             derive_credentials_status(&tpl, Some(&granted), None),
             Some(CredentialsStatus::NeedsReconnect)
+        );
+    }
+
+    #[test]
+    fn ok_when_mcp_bearer_has_secret_and_no_connection() {
+        let tpl = mcp_bearer_template(None);
+        assert_eq!(
+            derive_credentials_status(&tpl, None, Some("whatsapp_mcp_token")),
+            Some(CredentialsStatus::Ok)
+        );
+    }
+
+    #[test]
+    fn needs_authentication_when_mcp_bearer_has_no_secret_and_no_connection() {
+        let tpl = mcp_bearer_template(None);
+        assert_eq!(
+            derive_credentials_status(&tpl, None, None),
+            Some(CredentialsStatus::NeedsAuthentication)
+        );
+        assert_eq!(
+            derive_credentials_status(&tpl, None, Some("")),
+            Some(CredentialsStatus::NeedsAuthentication)
+        );
+    }
+
+    #[test]
+    fn ok_when_api_key_template_has_secret_and_no_connection() {
+        let tpl = api_key_template();
+        assert_eq!(
+            derive_credentials_status(&tpl, None, Some("my_api_key")),
+            Some(CredentialsStatus::Ok)
         );
     }
 }
