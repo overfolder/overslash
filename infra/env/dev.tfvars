@@ -14,7 +14,7 @@ session_cookie_domain = ".app.dev.overslash.com"
 # instead created as 1-1 Cloud Run domain mappings via
 # `extra_api_domain_mappings` below, which keeps cost at zero and avoids
 # provisioning a global LB just to host a couple of dogfood orgs.
-enable_api_lb             = false
+enable_api_lb = false
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",
