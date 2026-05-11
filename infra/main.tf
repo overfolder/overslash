@@ -132,6 +132,12 @@ module "cloud_run" {
   stripe_secret_key_secret_id     = module.secret_manager.stripe_secret_key_secret_id
   stripe_webhook_secret_secret_id = module.secret_manager.stripe_webhook_secret_secret_id
 
+  # Transactional email
+  email_provider          = var.email_provider
+  email_from              = var.email_from
+  email_reply_to          = var.email_reply_to
+  email_api_key_secret_id = module.secret_manager.email_api_key_secret_id
+
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 

@@ -226,6 +226,27 @@ resource "google_secret_manager_secret_version" "pagerduty_integration_key" {
   }
 }
 
+# --- Transactional-email provider API key (only consumed when
+#     email_provider != "" on the cloud-run module). Populated manually via:
+#       echo -n "re_…" | gcloud secrets versions add <base_prefix>-email-api-key --data-file=-
+
+resource "google_secret_manager_secret" "email_api_key" {
+  secret_id = "${var.base_prefix}-email-api-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "email_api_key" {
+  secret      = google_secret_manager_secret.email_api_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 output "stripe_secret_key_secret_id" {
   value = google_secret_manager_secret.stripe_secret_key.secret_id
 }
@@ -273,4 +294,8 @@ output "google_services_client_secret_secret_id" {
 
 output "pagerduty_integration_key_secret_id" {
   value = google_secret_manager_secret.pagerduty_integration_key.secret_id
+}
+
+output "email_api_key_secret_id" {
+  value = google_secret_manager_secret.email_api_key.secret_id
 }

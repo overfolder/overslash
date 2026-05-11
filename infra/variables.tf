@@ -257,6 +257,26 @@ variable "stripe_usd_lookup_key" {
   default     = "overslash_seat_usd"
 }
 
+# --- Transactional email ---
+
+variable "email_provider" {
+  description = "Transactional-email provider. `resend` is the only recognised value today; empty (default) keeps the API on the NoopMailer fallback. Setting this without populating the `<base_prefix>-email-api-key` secret will fail validate_env at Cloud Run boot."
+  type        = string
+  default     = ""
+}
+
+variable "email_from" {
+  description = "From address used on all outbound transactional email (e.g. no-reply@mail.overslash.com). Required when email_provider != \"\"."
+  type        = string
+  default     = ""
+}
+
+variable "email_reply_to" {
+  description = "Optional Reply-To address. Empty leaves the provider's default."
+  type        = string
+  default     = ""
+}
+
 # --- Monitoring ---
 
 variable "alert_email" {

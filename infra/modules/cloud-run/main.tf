@@ -192,6 +192,30 @@ variable "stripe_webhook_secret_secret_id" {
   description = "GSM secret ID for the Stripe webhook signing secret. Only used when cloud_billing=true."
 }
 
+variable "email_provider" {
+  type        = string
+  default     = ""
+  description = "Transactional-email provider key. Currently only `resend` is recognised; empty (the default) keeps the API on the NoopMailer fallback. Setting this requires email_from + the email_api_key secret to be populated, otherwise the API refuses to boot."
+}
+
+variable "email_from" {
+  type        = string
+  default     = ""
+  description = "From address used on every outbound transactional email (e.g. `no-reply@mail.overslash.com`). Must be a domain the configured provider is authorised to send for. Required when email_provider != \"\"."
+}
+
+variable "email_reply_to" {
+  type        = string
+  default     = ""
+  description = "Optional Reply-To address. Empty leaves the provider's default (usually From)."
+}
+
+variable "email_api_key_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the provider API key (Resend `re_…`). Only consumed when email_provider != \"\"."
+}
+
 variable "enable_metrics_sidecar" {
   type        = bool
   default     = true
@@ -240,6 +264,13 @@ locals {
       STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
       STRIPE_USD_LOOKUP_KEY = var.stripe_usd_lookup_key
     } : {},
+    var.email_provider != "" ? merge(
+      {
+        EMAIL_PROVIDER = var.email_provider
+        EMAIL_FROM     = var.email_from
+      },
+      var.email_reply_to != "" ? { EMAIL_REPLY_TO = var.email_reply_to } : {},
+    ) : {},
     var.app_host_suffix != "" ? { APP_HOST_SUFFIX = var.app_host_suffix } : {},
     var.api_host_suffix != "" ? { API_HOST_SUFFIX = var.api_host_suffix } : {},
     var.session_cookie_domain != "" ? { SESSION_COOKIE_DOMAIN = var.session_cookie_domain } : {},
@@ -260,6 +291,9 @@ locals {
     var.cloud_billing && var.stripe_secret_key_secret_id != "" ? {
       STRIPE_SECRET_KEY     = var.stripe_secret_key_secret_id
       STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret_secret_id
+    } : {},
+    var.email_provider != "" && var.email_api_key_secret_id != "" ? {
+      EMAIL_API_KEY = var.email_api_key_secret_id
     } : {},
   )
 }
