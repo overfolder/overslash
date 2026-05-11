@@ -17,6 +17,7 @@ resource "google_project_service" "apis" {
       "vpcaccess.googleapis.com",
     ] : [],
     var.enable_dns ? ["dns.googleapis.com"] : [],
+    var.enable_api_lb ? ["certificatemanager.googleapis.com"] : [],
     var.enable_valkey ? ["redis.googleapis.com"] : [],
   ))
 
@@ -181,13 +182,19 @@ module "monitoring" {
   ]
 }
 
-# --- API Load Balancer (global HTTPS LB with wildcard managed cert) ---
+# --- API Load Balancer (global HTTPS LB with wildcard Certificate Manager cert) ---
 #
 # Required for `*.api.<apex>` routing at scale — Cloud Run's native domain
 # mapping is single-domain and DNS-TXT-validated, which doesn't grow with
 # tens of orgs. When `enable_api_lb=true` this module fronts Cloud Run with
-# a global HTTPS LB + wildcard managed cert (and the operator should leave
-# `domain=""` on the cloud-run module).
+# a global HTTPS LB + Certificate Manager wildcard cert (and the operator
+# should leave `domain=""` on the cloud-run module).
+#
+# Wildcard issuance needs DNS-01, so a CNAME challenge has to live in the
+# zone covering `api_apex`. When `enable_dns` is also on, we hand the api-lb
+# module the zone name and the record is published automatically; otherwise
+# the module exposes the record values via outputs and the operator wires
+# them up in their external DNS provider.
 #
 # When `enable_api_lb=false` (dev), the cloud-run module instead provisions
 # 1-1 `google_cloud_run_domain_mapping` resources for each entry in
@@ -203,6 +210,7 @@ module "api_lb" {
 
   cloud_run_service = module.cloud_run.service_name
   api_apex          = var.api_host_suffix
+  dns_zone_name     = var.enable_dns ? module.dns[0].zone_name : ""
 
   depends_on = [
     google_project_service.apis,
