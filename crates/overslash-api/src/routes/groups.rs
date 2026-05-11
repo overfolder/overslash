@@ -459,17 +459,17 @@ async fn remove_grant(
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
     // Authority gate: owner can manage their own Myself; org admins can
-    // manage any non-self group. Everyone/Admins remain locked because removing
-    // their grants would break org ACL enforcement.
+    // manage any non-self group, including Everyone (so an org can lock
+    // down the bootstrapped `overslash` / `http` defaults). Admins stays
+    // locked: an admin who removed `overslash:admin` from Admins would
+    // lose the recovery surface that lets them re-grant it.
     let owner_managing_self =
         grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
     if owner_managing_self {
         // Owner-managed Myself group: allow.
-    } else if grp.system_kind.as_deref() == Some("everyone")
-        || grp.system_kind.as_deref() == Some("admins")
-    {
+    } else if grp.system_kind.as_deref() == Some("admins") {
         return Err(AppError::BadRequest(
-            "cannot remove grants from system groups".into(),
+            "cannot remove grants from the Admins group".into(),
         ));
     } else if caller_level < AccessLevel::Admin {
         return Err(AppError::Forbidden("admin access required".into()));
@@ -515,10 +515,11 @@ async fn update_grant(
     }
 
     // Verify group belongs to org and apply the same auth gate as add_grant /
-    // remove_grant, with one carve-out for system Everyone/Admins: org admins
-    // can toggle `auto_approve_reads` on those groups (a UX affordance that
-    // doesn't shift the permission surface), but `access_level` stays
-    // immutable to preserve the org-ACL invariant remove_grant already guards.
+    // remove_grant. Admins keeps `access_level` immutable so the recovery
+    // surface (admin-grade `overslash` / `http` grants) can't be downgraded
+    // out from under the admins themselves. Everyone is fully editable by
+    // an org admin — removing or downgrading the bootstrapped defaults is
+    // the whole point of letting orgs lock the metaservice down.
     //
     // Auth runs before any field-shape validation so unauthorized callers
     // can't probe what `access_level` values are syntactically valid by
@@ -530,19 +531,16 @@ async fn update_grant(
 
     let owner_managing_self =
         grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
-    let is_locked_system = matches!(
-        grp.system_kind.as_deref(),
-        Some("everyone") | Some("admins")
-    );
+    let is_admins = grp.system_kind.as_deref() == Some("admins");
     if owner_managing_self {
         // Owner-managed Myself group: allow.
-    } else if is_locked_system {
+    } else if is_admins {
         if caller_level < AccessLevel::Admin {
             return Err(AppError::Forbidden("admin access required".into()));
         }
         if req.access_level.is_some() {
             return Err(AppError::BadRequest(
-                "cannot change access_level on system groups".into(),
+                "cannot change access_level on the Admins group".into(),
             ));
         }
     } else if caller_level < AccessLevel::Admin {
