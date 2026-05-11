@@ -460,6 +460,101 @@ async fn invite_gate_applies_to_dedicated_idp_when_flag_on() {
 }
 
 #[tokio::test]
+async fn existing_member_admitted_when_new_idp_subject_misses_invite() {
+    // Regression test for Seer 1268323: after alice@acme.com accepts an
+    // invite, signing in with a different IdP (or any flow that produces
+    // a fresh external_id for the same email) must NOT 403 with
+    // `not_invited`. Models that case directly by pre-seeding an
+    // existing membership for `testuser@example.com` under a synthetic
+    // external_id, then letting the Google mock callback flow run — the
+    // (org, external_id) lookup misses, no pending invite exists, and
+    // the only path to admission is the existing-member short-circuit.
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query(
+        "UPDATE oauth_providers SET authorization_endpoint = $1, token_endpoint = $2, userinfo_endpoint = $3 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/authorize"))
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (base, client) = common::start_api_with_auth_providers(
+        pool.clone(),
+        Some(("env_id".into(), "env_secret".into())),
+        None,
+        "http://localhost:3000",
+    )
+    .await;
+    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Seed an existing user + membership matching the mock's email but
+    // bound to a different external_id than the mock will return. The
+    // `(org_id, external_id)` lookup in `provision_org_subdomain` will
+    // therefore miss and we fall through to the invite gate.
+    let existing_user_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO users (email, display_name) VALUES ($1, $2) RETURNING id")
+            .bind("testuser@example.com")
+            .bind("Original")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO user_org_memberships (user_id, org_id, role) VALUES ($1, $2, 'member')",
+    )
+    .bind(existing_user_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Crucially: no `org_invites` row. Without the existing-member
+    // short-circuit the callback would 403 not_invited.
+
+    let nonce = "second-idp-1";
+    let state_param = format!("login:google:{nonce}");
+    let resp = client
+        .get(format!(
+            "{base}/auth/callback/google?code=g1&state={state_param}"
+        ))
+        .header(
+            "cookie",
+            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        303,
+        "existing member must be admitted when (org, external_id) misses but email already has a membership"
+    );
+
+    // Still exactly one membership row — the new identity attached to
+    // the existing user, no duplicate (user_id, org_id) row was created.
+    let member_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM user_org_memberships m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.org_id = $1 AND lower(u.email) = 'testuser@example.com'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        member_count, 1,
+        "no duplicate membership for the same email"
+    );
+}
+
+#[tokio::test]
 async fn re_signin_does_not_consume_pending_invite() {
     // A user with existing membership signs in. If we naively mark the
     // pending invite accepted on every callback, a second IdP login by an

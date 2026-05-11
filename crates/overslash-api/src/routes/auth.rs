@@ -1954,7 +1954,23 @@ async fn provision_org_subdomain(
         .as_deref()
         .map(|pinned| pinned == slug)
         .unwrap_or(false);
-    let membership_role = if single_org_bypass {
+    // Existing-member short-circuit (only on the invite-gated path): when
+    // alice@acme.com already has a membership in this org and tries a
+    // different Overslash-managed IdP (Google→GitHub), the
+    // `(org_id, external_id)` lookup above misses (new IdP subject) and
+    // we fall through here. Her original invite is already accepted, so
+    // `find_pending` returns None and the gate would lock her out
+    // (`not_invited`). Recognise her via email-on-existing-membership and
+    // let the new identity attach to her existing user row — no fresh
+    // invite required. Safe because the trust-domain for managed-signin
+    // is the operator's env-creds and the same email already passed the
+    // admin's invite check at first sign-in.
+    let existing_member = if target_org.allow_overslash_managed_signin && !single_org_bypass {
+        user_repo::find_member_by_email_in_org(&state.db, target_org.id, &userinfo.email).await?
+    } else {
+        None
+    };
+    let membership_role = if single_org_bypass || existing_member.is_some() {
         None
     } else if target_org.allow_overslash_managed_signin {
         let pending = overslash_db::repos::org_invite::find_pending(
@@ -1996,35 +2012,42 @@ async fn provision_org_subdomain(
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
     let metadata = userinfo_metadata(userinfo);
 
-    // Before creating a brand-new `users` row, check whether this
-    // `(provider, subject)` already corresponds to an Overslash-backed
-    // user (this is the SINGLE_ORG_MODE case: env-var IdP is both the
-    // Overslash IdP and the org IdP, so the same pair shows up on both
-    // paths). Attach the new identity to the existing row instead of
-    // creating a duplicate. In cloud multi-tenant mode the org IdP
-    // uses its own client_id, so subjects don't collide with env ones
-    // and this lookup returns None — same flow as before.
-    let user_id = match user_repo::find_by_overslash_idp(
-        &state.db,
-        &userinfo.provider_key,
-        &userinfo.external_id,
-    )
-    .await?
-    {
-        Some(u) => {
-            let _ = user_repo::refresh_profile(
-                &state.db,
-                u.id,
-                Some(&userinfo.email),
-                Some(display_name),
-            )
-            .await;
-            u.id
-        }
-        None => {
-            user_repo::create_org_only(&state.db, Some(&userinfo.email), Some(display_name))
-                .await?
-                .id
+    // Decide which `users` row this new identity attaches to:
+    //   1. Existing-member short-circuit hit → attach to that user (a
+    //      second IdP for the same email in the same org).
+    //   2. The `(provider, subject)` already matches an Overslash-backed
+    //      user (SINGLE_ORG_MODE: env-var IdP is both the Overslash IdP
+    //      and the org IdP, so the same pair shows up on both paths) →
+    //      reuse that user.
+    //   3. Otherwise → first-time admission, fresh org-only user row.
+    let user_id = if let Some(ref u) = existing_member {
+        let _ =
+            user_repo::refresh_profile(&state.db, u.id, Some(&userinfo.email), Some(display_name))
+                .await;
+        u.id
+    } else {
+        match user_repo::find_by_overslash_idp(
+            &state.db,
+            &userinfo.provider_key,
+            &userinfo.external_id,
+        )
+        .await?
+        {
+            Some(u) => {
+                let _ = user_repo::refresh_profile(
+                    &state.db,
+                    u.id,
+                    Some(&userinfo.email),
+                    Some(display_name),
+                )
+                .await;
+                u.id
+            }
+            None => {
+                user_repo::create_org_only(&state.db, Some(&userinfo.email), Some(display_name))
+                    .await?
+                    .id
+            }
         }
     };
 
