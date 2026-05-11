@@ -24,6 +24,12 @@ data "google_secret_manager_secret_version" "pagerduty_integration_key" {
   secret  = var.pagerduty_secret_id
 }
 
+locals {
+  # `gcloud secrets versions add --data-file=-` piped from `echo` appends a
+  # trailing newline; chomp() defends against that breaking the URL.
+  pagerduty_integration_key = local.alerts_enabled && var.pagerduty_enabled ? chomp(data.google_secret_manager_secret_version.pagerduty_integration_key[0].secret_data) : ""
+}
+
 resource "google_monitoring_notification_channel" "pagerduty" {
   count = local.alerts_enabled && var.pagerduty_enabled ? 1 : 0
 
@@ -32,12 +38,12 @@ resource "google_monitoring_notification_channel" "pagerduty" {
   type         = "webhook_tokenauth"
 
   labels = {
-    url = "https://events.eu.pagerduty.com/integration/${data.google_secret_manager_secret_version.pagerduty_integration_key[0].secret_data}/enqueue"
+    url = "https://events.eu.pagerduty.com/integration/${local.pagerduty_integration_key}/enqueue"
   }
 
   sensitive_labels {
     # PD GCM integration authenticates via the key in the URL; the bearer
     # header is ignored. webhook_tokenauth requires a non-empty token.
-    auth_token = data.google_secret_manager_secret_version.pagerduty_integration_key[0].secret_data
+    auth_token = local.pagerduty_integration_key
   }
 }
