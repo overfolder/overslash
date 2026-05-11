@@ -28,6 +28,7 @@ time = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 rand = { workspace = true }

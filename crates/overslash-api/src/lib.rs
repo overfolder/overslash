@@ -18,6 +18,7 @@ use tower_http::{
 };
 
 use crate::config::Config;
+use overslash_core::email::Mailer;
 use overslash_core::embeddings::{DisabledEmbedder, Embedder};
 use overslash_core::registry::ServiceRegistry;
 
@@ -53,6 +54,10 @@ pub struct AppState {
     /// fuzzy scores.
     pub embeddings_available: bool,
     pub platform_registry: std::sync::Arc<services::platform_caller::PlatformRegistry>,
+    /// Transactional-email sender. `NoopMailer` until `EMAIL_PROVIDER` is set;
+    /// callers (billing, onboarding, DLQ digest) just `state.mailer.send(...)`
+    /// and stay oblivious to provider wiring.
+    pub mailer: Arc<dyn Mailer>,
 }
 
 /// Create the application router with all routes and middleware.
@@ -133,10 +138,13 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
+    let http_client = reqwest::Client::new();
+    let mailer = services::email::build_mailer(&config, http_client.clone());
+
     let state = AppState {
         db,
         config,
-        http_client: reqwest::Client::new(),
+        http_client,
         registry: Arc::new(registry),
         rate_limiter,
         rate_limit_cache,
@@ -146,6 +154,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         embedder,
         embeddings_available,
         platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
+        mailer,
     };
 
     // Spawn background tasks

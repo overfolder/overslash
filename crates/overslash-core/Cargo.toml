@@ -27,6 +27,7 @@ aes-gcm = "0.10"
 glob-match = "0.2"
 serde_yaml = { version = "0.9", optional = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
 strsim = "0.11"
 fastembed = { version = "5", optional = true }
 

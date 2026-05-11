@@ -609,6 +609,10 @@ where
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
     };
@@ -640,6 +644,7 @@ where
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -741,6 +746,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
     };
@@ -770,6 +779,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -859,6 +869,10 @@ pub async fn start_api_with_auth_providers(
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
     };
@@ -891,6 +905,7 @@ pub async fn start_api_with_auth_providers(
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1252,6 +1267,10 @@ pub async fn start_api_with_registry(
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
     };
@@ -1281,6 +1300,7 @@ pub async fn start_api_with_registry(
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1376,6 +1396,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
     };
@@ -1405,6 +1429,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1473,6 +1498,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         service_base_overrides: std::collections::HashMap::new(),
         oversla_sh_base_url: None,
         oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
     };
@@ -1502,6 +1531,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
