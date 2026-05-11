@@ -195,6 +195,75 @@ async fn invite_endpoints_reject_non_admin() {
 }
 
 #[tokio::test]
+async fn auth_providers_lists_managed_when_flag_on() {
+    // The login page hits `GET /auth/providers?org=<slug>`. When the org
+    // opts in to managed-signin, env-var providers (Google/GitHub) must
+    // appear in the response so users have a button to click. Without
+    // this, a new corp org with no dedicated IdP would render an empty
+    // login page even though the backend is wired to admit them.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_auth_providers(
+        pool.clone(),
+        Some(("env_id".into(), "env_secret".into())),
+        Some(("gh_id".into(), "gh_secret".into())),
+        "http://localhost:3000",
+    )
+    .await;
+    let (org_id, _, _, _) = common::bootstrap_org_identity(&base, &client).await;
+    let org_slug = sqlx::query_scalar::<_, String>("SELECT slug FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let resp: Value = client
+        .get(format!("{base}/auth/providers?org={org_slug}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let keys: Vec<&str> = resp["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["key"].as_str())
+        .collect();
+    assert!(
+        keys.contains(&"google"),
+        "google must be listed when managed-signin is on; got {keys:?}"
+    );
+    assert!(
+        keys.contains(&"github"),
+        "github must be listed when managed-signin is on; got {keys:?}"
+    );
+
+    // With the flag flipped off, env providers disappear (D12 default).
+    overslash_db::repos::org::set_allow_overslash_managed_signin(&pool, org_id, false)
+        .await
+        .unwrap();
+    let resp: Value = client
+        .get(format!("{base}/auth/providers?org={org_slug}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let keys: Vec<&str> = resp["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["key"].as_str())
+        .collect();
+    assert!(
+        !keys.contains(&"google") && !keys.contains(&"github"),
+        "env providers must not leak when flag is off; got {keys:?}"
+    );
+}
+
+#[tokio::test]
 async fn invite_create_rejects_invalid_role() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;

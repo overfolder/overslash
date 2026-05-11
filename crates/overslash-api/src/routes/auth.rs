@@ -723,6 +723,8 @@ async fn list_auth_providers(
     if let Some(org_id) = resolved_org_id {
         let bootstrap_scope = overslash_db::OrgScope::new(org_id, state.db.clone());
         let configs = bootstrap_scope.list_enabled_org_idp_configs().await?;
+        let dedicated_keys: std::collections::HashSet<String> =
+            configs.iter().map(|c| c.provider_key.clone()).collect();
         for config in configs {
             let display_name = oauth_provider::get_by_key(&state.db, &config.provider_key)
                 .await?
@@ -735,9 +737,34 @@ async fn list_auth_providers(
                 "is_default": config.is_default,
             }));
         }
-        // Intentional: no env-level providers here. The org IdP is the only
-        // admission path to a corp org. See DECISIONS.md D12.
-        //
+
+        // Overslash-managed sign-in (migration 066): when the org has opted
+        // in via `allow_overslash_managed_signin`, surface env-var providers
+        // alongside any dedicated configs. Admission is still gated by
+        // `org_invites` in `provision_org_subdomain`, so listing them here
+        // doesn't weaken D12 — without an invite, the IdP authenticates but
+        // membership creation fails with `not_invited`. Dedup against
+        // dedicated configs since those win at credential resolution.
+        let managed_on =
+            overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, org_id)
+                .await?
+                .unwrap_or(false);
+        if managed_on {
+            for (key, display) in [("google", "Google"), ("github", "GitHub")] {
+                if dedicated_keys.contains(key) {
+                    continue;
+                }
+                if state.config.env_auth_credentials(key).is_some() {
+                    providers.push(json!({
+                        "key": key,
+                        "display_name": display,
+                        "source": "env",
+                        "managed": true,
+                    }));
+                }
+            }
+        }
+
         // `scope = "org"` tells the dashboard to render the corp-org empty
         // state ("contact the org creator") when the org hasn't configured
         // an IdP yet. Root-level empty states read differently.

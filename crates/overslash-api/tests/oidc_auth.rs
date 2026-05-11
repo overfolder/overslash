@@ -1222,17 +1222,30 @@ async fn list_providers_includes_db_configured_for_org() {
         .iter()
         .map(|p| p["key"].as_str().unwrap())
         .collect();
-    // Multi-org trust-domain rule (DECISIONS.md D12): when the caller is
-    // pointed at a corp org (via `?org=<slug>` here, or a subdomain at
-    // runtime), `/auth/providers` lists ONLY that org's IdPs. Overslash-
-    // level env providers (Google here) and the dev-login shortcut are
-    // reachable only from the root apex.
+    // Multi-org trust-domain rule (DECISIONS.md D12, 2026-05 amendment):
+    // when the caller is pointed at a corp org, `/auth/providers` lists
+    // that org's dedicated IdPs PLUS — when `allow_overslash_managed_signin`
+    // is on — any Overslash-managed env providers. `bootstrap_org_identity`
+    // creates the org via `POST /v1/orgs`, which defaults the flag to true,
+    // so Google appears alongside the dedicated Slack config. Admission is
+    // still invite-only on the env path (see `provision_org_subdomain`).
     assert_eq!(resp["scope"], "org", "scope: {}", resp["scope"]);
-    assert_eq!(keys, vec!["slack"], "org scope should list only org IdPs");
+    assert!(
+        keys.contains(&"slack"),
+        "dedicated slack IdP must be listed; got {keys:?}"
+    );
+    assert!(
+        keys.contains(&"google"),
+        "managed-signin env provider must be listed when flag is on; got {keys:?}"
+    );
 
-    // Slack should be source: "db"
+    // Slack is the dedicated config (source: "db"), Google is the
+    // env-var managed-signin entry (source: "env", managed: true).
     let slack = providers.iter().find(|p| p["key"] == "slack").unwrap();
     assert_eq!(slack["source"], "db");
+    let google = providers.iter().find(|p| p["key"] == "google").unwrap();
+    assert_eq!(google["source"], "env");
+    assert_eq!(google["managed"], true);
 }
 
 // ---------------------------------------------------------------------------
