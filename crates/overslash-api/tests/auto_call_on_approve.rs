@@ -407,6 +407,72 @@ async fn org_default_deferred_execution_seeds_new_agents_off() {
     );
 }
 
+/// `pending_approval` responses from `/v1/actions/call` must mirror the
+/// requesting agent's current `auto_call_on_approve`, so MCP clients can
+/// decide whether to wait for an auto-replay or to issue an explicit
+/// follow-up POST `/v1/approvals/{id}/call` themselves.
+#[tokio::test]
+async fn pending_approval_response_carries_auto_call_on_approve_flag() {
+    let pool = common::test_pool().await;
+    let (mock_addr, _sink, base, _org_id, agent_id, agent_key, admin_key) =
+        bootstrap_with_auto_call_on(pool).await;
+
+    // Default state (auto-call ON) — flag should be `true`.
+    let resp = Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202, "expected pending_approval");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "pending_approval");
+    assert_eq!(
+        body["auto_call_on_approve"],
+        json!(true),
+        "pending_approval envelope should advertise auto_call_on_approve=true for the default-on agent: {body}"
+    );
+
+    // Flip the agent's auto-call OFF — the next pending_approval must
+    // reflect the new value.
+    Client::new()
+        .patch(format!(
+            "{base}/v1/identities/{agent_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = Client::new()
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202, "expected pending_approval");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "pending_approval");
+    assert_eq!(
+        body["auto_call_on_approve"],
+        json!(false),
+        "pending_approval envelope should advertise auto_call_on_approve=false after the agent toggle is flipped: {body}"
+    );
+}
+
 #[tokio::test]
 async fn webhook_payload_carries_result_only_for_auto_calls() {
     let pool = common::test_pool().await;
