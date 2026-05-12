@@ -441,6 +441,16 @@ enum CallResponse {
         /// without a second round-trip. Deterministic on the approval's
         /// `permission_keys`.
         suggested_tiers: Vec<SuggestedTier>,
+        /// Mirrors the *requesting* agent's `identities.auto_call_on_approve`.
+        /// When `true` (default), an `allow` / `allow_remember` resolution
+        /// auto-replays the call in the background and the execution result
+        /// lands via webhook/audit — the MCP client does **not** need to
+        /// follow up with `POST /v1/approvals/{id}/call`. When `false`, the
+        /// agent is in deferred-execution mode and the caller must replay
+        /// explicitly (e.g. `overslash_call` with `approval_id`) after the
+        /// approval is granted. Surfaced so MCP clients can choose whether
+        /// to wait or to issue an explicit follow-up.
+        auto_call_on_approve: bool,
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
@@ -851,6 +861,7 @@ async fn call_action_impl(
                         // for an ancestor in `list_pending` (`downstream`).
                         relationship: "self".into(),
                         suggested_tiers: suggest_tiers(&keys),
+                        auto_call_on_approve: identity.auto_call_on_approve,
                     }),
                 )
                     .into_response());
