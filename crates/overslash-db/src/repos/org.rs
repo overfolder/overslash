@@ -18,6 +18,12 @@ pub struct OrgRow {
     /// an invite row. Default `false` for existing orgs; new corp orgs are
     /// flipped to `true` at create time so login works out-of-the-box.
     pub allow_overslash_managed_signin: bool,
+    /// User who created this org via `POST /v1/orgs` (or the free-unlimited
+    /// admin path). `None` for anonymous creator paths and for orgs created
+    /// before migration 067 whose `org.created` audit row had no resolvable
+    /// `user_id`. Used by the `membership.removed` audit event to flag
+    /// departures by the founder.
+    pub creator_user_id: Option<Uuid>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -35,7 +41,7 @@ pub async fn create(
     sqlx::query_as!(
         OrgRow,
         "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
         name,
         slug,
         plan,
@@ -47,7 +53,7 @@ pub async fn create(
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at
          FROM orgs WHERE id = $1",
         id,
     )
@@ -242,7 +248,7 @@ pub async fn update_template_settings(
 pub async fn get_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgRow,
-        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at
+        "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at
          FROM orgs WHERE slug = $1",
         slug,
     )
@@ -262,6 +268,26 @@ pub async fn get_allow_overslash_managed_signin(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|r| r.allow_overslash_managed_signin))
+}
+
+/// Record the user who created an org. Idempotent: only sets the field
+/// when it's currently NULL, so a re-run during retry/cleanup paths can't
+/// silently rewrite history. Callers can ignore the bool return; nothing
+/// in the create flow today branches on it.
+pub async fn set_creator_user_id(
+    pool: &PgPool,
+    id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET creator_user_id = $2, updated_at = now()
+         WHERE id = $1 AND creator_user_id IS NULL",
+        id,
+        user_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Flip the `allow_overslash_managed_signin` flag for an org. When `true`
@@ -296,7 +322,7 @@ pub async fn update_subagent_cleanup_config(
              subagent_archive_retention_days = $3,
              updated_at = now()
          WHERE id = $1
-         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at",
+         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
         id,
         idle_timeout_secs,
         archive_retention_days,

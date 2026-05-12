@@ -714,3 +714,309 @@ async fn concurrent_drops_do_not_deadlock_and_preserve_last_admin() {
     .unwrap();
     assert_eq!(remaining, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Creator-admin lifecycle audit events (migration 067)
+// ---------------------------------------------------------------------------
+//
+// Three facts the audit page now surfaces:
+//   * `org.creator_admin_added` — fires on POST /v1/orgs WITH a session;
+//     skipped when the org is created anonymously (no admin to record).
+//   * `membership.removed` — fires on every DELETE /v1/account/memberships/{id},
+//     carrying `was_original_creator: bool` derived from `orgs.creator_user_id`.
+//   * `orgs.creator_user_id` is populated idempotently — retry paths can't
+//     silently rewrite history.
+
+async fn fetch_audit_actions(pool: &PgPool, org_id: Uuid) -> Vec<String> {
+    sqlx::query_scalar("SELECT action FROM audit_log WHERE org_id = $1 ORDER BY created_at, id")
+        .bind(org_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+async fn fetch_audit_detail(
+    pool: &PgPool,
+    org_id: Uuid,
+    action: &str,
+) -> Option<serde_json::Value> {
+    sqlx::query_scalar(
+        "SELECT detail FROM audit_log WHERE org_id = $1 AND action = $2 ORDER BY created_at LIMIT 1",
+    )
+    .bind(org_id)
+    .bind(action)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn post_v1_orgs_with_session_records_creator_and_emits_audit() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_, identity_id, user_id) = seed_user_with_single_org(&pool).await;
+    let primary_org: Uuid = sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
+        .bind(identity_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let cookie = mint_session_cookie_with_user(primary_org, identity_id, Some(user_id));
+    let slug = format!("creator-audit-{}", Uuid::new_v4().simple());
+    let resp = client
+        .post(format!("{base}/v1/orgs"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .json(&json!({ "name": "CreatorAudit", "slug": slug }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let new_org_id: Uuid = serde_json::from_value(body["id"].clone()).unwrap();
+
+    // `creator_user_id` is recorded on the org row.
+    let creator_user_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT creator_user_id FROM orgs WHERE id = $1")
+            .bind(new_org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(creator_user_id, Some(user_id));
+
+    // Both `org.created` and `org.creator_admin_added` are in the audit log.
+    let actions = fetch_audit_actions(&pool, new_org_id).await;
+    assert!(
+        actions.contains(&"org.created".to_string()),
+        "expected org.created in {actions:?}"
+    );
+    assert!(
+        actions.contains(&"org.creator_admin_added".to_string()),
+        "expected org.creator_admin_added in {actions:?}"
+    );
+
+    // Detail carries the user_id and role so the audit page can render WHO
+    // got admin without joining further tables.
+    let detail = fetch_audit_detail(&pool, new_org_id, "org.creator_admin_added")
+        .await
+        .expect("audit detail");
+    assert_eq!(
+        detail["user_id"].as_str(),
+        Some(user_id.to_string().as_str())
+    );
+    assert_eq!(detail["role"], Value::String("admin".into()));
+}
+
+#[tokio::test]
+async fn post_v1_orgs_anonymous_skips_creator_admin_audit() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    let slug = format!("orphan-audit-{}", Uuid::new_v4().simple());
+    let resp = client
+        .post(format!("{base}/v1/orgs"))
+        .json(&json!({ "name": "OrphanAudit", "slug": slug }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    let new_org_id: Uuid = serde_json::from_value(body["id"].clone()).unwrap();
+
+    let creator_user_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT creator_user_id FROM orgs WHERE id = $1")
+            .bind(new_org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        creator_user_id.is_none(),
+        "anonymous create must leave creator_user_id NULL"
+    );
+
+    let actions = fetch_audit_actions(&pool, new_org_id).await;
+    assert!(
+        actions.contains(&"org.created".to_string()),
+        "org.created always fires"
+    );
+    assert!(
+        !actions.contains(&"org.creator_admin_added".to_string()),
+        "creator_admin_added must NOT fire when there's no admin to record: {actions:?}"
+    );
+}
+
+#[tokio::test]
+async fn drop_membership_emits_audit_with_creator_flag_true() {
+    // Founder leaves their own org (after promoting a second admin so the
+    // last-admin guard doesn't fire). `membership.removed` audit row must
+    // carry `was_original_creator: true`.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_, identity_id, user_id) = seed_user_with_single_org(&pool).await;
+
+    // Create a fresh org via the HTTP surface so `creator_user_id` is set
+    // by the production code path (not by the seed helper).
+    let cookie = mint_session_cookie_with_user(
+        sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
+            .bind(identity_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        identity_id,
+        Some(user_id),
+    );
+    let slug = format!("founder-leave-{}", Uuid::new_v4().simple());
+    let create = client
+        .post(format!("{base}/v1/orgs"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .json(&json!({ "name": "FounderLeave", "slug": slug }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let create_body: Value = create.json().await.unwrap();
+    let new_org_id: Uuid = serde_json::from_value(create_body["id"].clone()).unwrap();
+
+    // Promote a second admin so the founder can actually drop their seat
+    // (last-admin guard would otherwise block the DELETE). POST /v1/orgs
+    // already created the founder's membership in the new org.
+    let other = user_repo::create_org_only(&pool, Some("other@founder.test"), Some("Other"))
+        .await
+        .unwrap();
+    membership::create(&pool, other.id, new_org_id, membership::ROLE_ADMIN)
+        .await
+        .unwrap();
+
+    // Mint a session for the founder in the new org. We need the bootstrap
+    // identity in this org (different from the seed's identity_id).
+    let bootstrap_ident: Uuid =
+        sqlx::query_scalar("SELECT id FROM identities WHERE org_id = $1 AND kind = 'user'")
+            .bind(new_org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let cookie_in_new = mint_session_cookie_with_user(new_org_id, bootstrap_ident, Some(user_id));
+    let drop = client
+        .delete(format!("{base}/v1/account/memberships/{new_org_id}"))
+        .header("cookie", format!("oss_session={cookie_in_new}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        drop.status(),
+        StatusCode::OK,
+        "drop: {:?}",
+        drop.text().await
+    );
+
+    let detail = fetch_audit_detail(&pool, new_org_id, "membership.removed")
+        .await
+        .expect("membership.removed must be logged");
+    assert_eq!(detail["was_original_creator"], Value::Bool(true));
+    assert_eq!(detail["was_admin"], Value::Bool(true));
+    assert_eq!(
+        detail["user_id"].as_str(),
+        Some(user_id.to_string().as_str())
+    );
+}
+
+#[tokio::test]
+async fn drop_membership_emits_audit_with_creator_flag_false_for_non_creator() {
+    // A regular member (not the founder) leaves. `was_original_creator` must
+    // be false; `was_admin` reflects whether they held the admin role.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (_, identity_id, user_id) = seed_user_with_single_org(&pool).await;
+
+    // Seed-helper creates org_id with creator_user_id=NULL (it bypasses the
+    // route layer). Set it explicitly to a non-`user_id` so the leaver is
+    // clearly NOT the founder.
+    let org_id: Uuid = sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
+        .bind(identity_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let founder = user_repo::create_org_only(&pool, Some("founder@x.test"), Some("Founder"))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE orgs SET creator_user_id = $2 WHERE id = $1")
+        .bind(org_id)
+        .bind(founder.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    membership::create(&pool, founder.id, org_id, membership::ROLE_ADMIN)
+        .await
+        .unwrap();
+
+    // The seed user is already an admin; downgrade to plain member so
+    // `was_admin: false` is also exercised on the same path.
+    sqlx::query(
+        "UPDATE user_org_memberships SET role = 'member' WHERE user_id = $1 AND org_id = $2",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let cookie = mint_session_cookie_with_user(org_id, identity_id, Some(user_id));
+    let drop = client
+        .delete(format!("{base}/v1/account/memberships/{org_id}"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(drop.status(), StatusCode::OK);
+
+    let detail = fetch_audit_detail(&pool, org_id, "membership.removed")
+        .await
+        .expect("membership.removed must be logged");
+    assert_eq!(detail["was_original_creator"], Value::Bool(false));
+    assert_eq!(detail["was_admin"], Value::Bool(false));
+    assert_eq!(
+        detail["user_id"].as_str(),
+        Some(user_id.to_string().as_str())
+    );
+}
+
+#[tokio::test]
+async fn set_creator_user_id_is_idempotent() {
+    // `org::set_creator_user_id` MUST only set when NULL — a retry path
+    // (e.g. POST /v1/orgs called twice on the same org_id) must not silently
+    // rewrite the founder.
+    let pool = common::test_pool().await;
+    let org_id: Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ('Idem', $1) RETURNING id")
+            .bind(format!("idem-{}", Uuid::new_v4().simple()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let first = user_repo::create_org_only(&pool, Some("first@idem.test"), Some("First"))
+        .await
+        .unwrap();
+    let second = user_repo::create_org_only(&pool, Some("second@idem.test"), Some("Second"))
+        .await
+        .unwrap();
+
+    let set1 = overslash_db::repos::org::set_creator_user_id(&pool, org_id, first.id)
+        .await
+        .unwrap();
+    assert!(set1, "first call sets the field");
+
+    let set2 = overslash_db::repos::org::set_creator_user_id(&pool, org_id, second.id)
+        .await
+        .unwrap();
+    assert!(!set2, "second call must NOT overwrite an existing creator");
+
+    let actual: Option<Uuid> = sqlx::query_scalar("SELECT creator_user_id FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(actual, Some(first.id));
+}

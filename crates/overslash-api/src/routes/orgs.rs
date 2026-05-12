@@ -295,6 +295,28 @@ async fn finalize_new_org(
         })
         .await;
 
+    // Separate event for the admin grant — distinct from `org.created` so
+    // the audit log shows *who* got admin (not just that the org exists).
+    // Skipped when there's no signed-in creator (legacy/test-harness path
+    // where the org comes up without a bootstrap admin).
+    if let (Some(identity_id), Some(user_id)) = (bootstrap_identity_id, bootstrap_user_id) {
+        let _ = bootstrap_scope
+            .log_audit(AuditEntry {
+                org_id: org.id,
+                identity_id: Some(identity_id),
+                action: "org.creator_admin_added",
+                resource_type: Some("org"),
+                resource_id: Some(org.id),
+                detail: serde_json::json!({
+                    "user_id": user_id,
+                    "role": membership::ROLE_ADMIN,
+                }),
+                description: Some("Creator granted admin role on new org"),
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+    }
+
     let redirect_to = redirect_for_org(state, &org);
     let mut resp: OrgResponse = org.into();
     resp.redirect_to = Some(redirect_to);
@@ -488,6 +510,13 @@ pub(crate) async fn provision_new_org_contents(
             )
             .await?;
             membership::create(&state.db, user_id, org_id, membership::ROLE_ADMIN).await?;
+
+            // Durable record of the founder. Read by `drop_account_membership`
+            // to flag the `was_original_creator` bit on `membership.removed`
+            // audit events. Idempotent (only sets when NULL) so retry paths
+            // can't rewrite history.
+            overslash_db::repos::org::set_creator_user_id(&state.db, org_id, user_id).await?;
+
             Ok(Some(creator_identity.id))
         }
         None => {

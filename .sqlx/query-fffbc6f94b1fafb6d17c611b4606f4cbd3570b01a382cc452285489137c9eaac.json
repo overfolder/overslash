@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at\n         FROM orgs WHERE slug = $1",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at\n         FROM orgs WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -50,18 +50,23 @@
       },
       {
         "ordinal": 9,
+        "name": "creator_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -74,9 +79,10 @@
       false,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "247b603b36ad6c82520553f33225327d777470af8efc0620ee6eb76751443d32"
+  "hash": "fffbc6f94b1fafb6d17c611b4606f4cbd3570b01a382cc452285489137c9eaac"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO orgs (name, slug, plan) VALUES ($1, $2, $3)\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, created_at, updated_at",
+  "query": "UPDATE orgs\n         SET subagent_idle_timeout_secs = $2,\n             subagent_archive_retention_days = $3,\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -50,20 +50,25 @@
       },
       {
         "ordinal": 9,
+        "name": "creator_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Text"
+        "Uuid",
+        "Int4",
+        "Int4"
       ]
     },
     "nullable": [
@@ -76,9 +81,10 @@
       false,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "4663a977bac7f8bfe2f559f9fa83224770ea253e810fb285e5f8b1ffaa0d842d"
+  "hash": "c5dd002f301af1ec4bcf47f35c66a8c41065e9556a0907643ad356c6cdbb15b7"
 }
