@@ -9,9 +9,13 @@
 //!   returns `204 No Content`.
 //!
 //! Both are idempotent: a second click leaves the user in the same final
-//! state (unsubscribed). Unknown / malformed tokens return `404` on GET and
-//! `204` on POST — RFC 8058 §3.1 recommends POST stay opaque so an attacker
-//! probing tokens can't distinguish hit from miss.
+//! state. Only the *first* redemption flips `welcome_emails_unsubscribed_at`
+//! and writes an audit row; replays (email scanners, re-clicks) are no-ops
+//! on user state so an old token can't silently re-unsubscribe a user who
+//! has since re-subscribed via `/account`. Unknown / malformed tokens
+//! return `404` on GET and `204` on POST — RFC 8058 §3.1 recommends POST
+//! stay opaque so an attacker probing tokens can't distinguish hit from
+//! miss.
 
 use axum::{
     Router,
@@ -122,16 +126,23 @@ async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<bool, ()> {
             return Err(());
         }
     };
-    if let Err(e) =
-        user_repo::set_welcome_unsubscribed(&state.db, row.user_id, Some(OffsetDateTime::now_utc()))
-            .await
-    {
-        tracing::error!(user_id = %row.user_id, %token, error = %e, "unsubscribe: set_welcome_unsubscribed failed");
-        return Err(());
-    }
-    // Audit only the first redemption — replays from email scanners /
-    // re-clicks would otherwise spam the log without new signal.
+    // Only flip the user pref + audit on the *first* redemption. Replayed
+    // clicks (email scanners, re-clicks from inbox, prefetchers) leave the
+    // user's state untouched: critically, this prevents an old token from
+    // silently re-unsubscribing a user who has since re-subscribed via the
+    // `/account` toggle. Subsequent calls still return Ok(true) so the
+    // POST stays 204 / GET still renders the confirmation page.
     if was_first_redeem {
+        if let Err(e) = user_repo::set_welcome_unsubscribed(
+            &state.db,
+            row.user_id,
+            Some(OffsetDateTime::now_utc()),
+        )
+        .await
+        {
+            tracing::error!(user_id = %row.user_id, %token, error = %e, "unsubscribe: set_welcome_unsubscribed failed");
+            return Err(());
+        }
         let scope = OrgScope::new(row.org_id, state.db.clone());
         if let Err(e) = scope
             .log_audit(AuditEntry {

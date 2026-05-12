@@ -232,6 +232,93 @@ async fn unsubscribe_post_one_click_is_idempotent_and_opaque() {
 }
 
 #[tokio::test]
+async fn already_redeemed_token_does_not_override_resubscribe() {
+    // Regression: a user clicks unsubscribe, later re-subscribes via
+    // `/account`, then an email scanner / cached link prefetches the
+    // original one-click POST. The redeemed token must NOT silently
+    // re-unsubscribe them — only the first redemption flips user state.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
+
+    let token_resp: Value = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
+    let me: Value = client
+        .get(format!("{base}/auth/me/identity"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id: Uuid = me["user_id"].as_str().unwrap().parse().unwrap();
+
+    let row = email_unsubscribe_token::create(&pool, user_id, org_id, "welcome")
+        .await
+        .unwrap();
+
+    // First click → user is unsubscribed.
+    let resp = client
+        .post(format!("{base}/v1/unsubscribe?token={}", row.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let before_resub = user_repo::get_by_id(&pool, user_id).await.unwrap().unwrap();
+    assert!(before_resub.welcome_emails_unsubscribed_at.is_some());
+
+    // User re-subscribes via `/account`.
+    let _: Value = client
+        .put(format!("{base}/v1/account/email-preferences"))
+        .header("cookie", &cookie)
+        .json(&serde_json::json!({ "welcome_emails": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let after_resub = user_repo::get_by_id(&pool, user_id).await.unwrap().unwrap();
+    assert!(
+        after_resub.welcome_emails_unsubscribed_at.is_none(),
+        "re-subscribe clears the unsubscribe stamp"
+    );
+
+    // Email scanner / cached prefetch re-POSTs the original (already-redeemed)
+    // token. Must NOT flip the user back to unsubscribed.
+    let resp = client
+        .post(format!("{base}/v1/unsubscribe?token={}", row.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let after_replay = user_repo::get_by_id(&pool, user_id).await.unwrap().unwrap();
+    assert!(
+        after_replay.welcome_emails_unsubscribed_at.is_none(),
+        "replayed redeemed token must not re-unsubscribe a user who re-subscribed"
+    );
+
+    // And no second audit row should have been written for the replay.
+    let unsub_audits: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE org_id = $1 AND action = 'email.unsubscribed'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(unsub_audits, 1, "replay must not add another audit row");
+}
+
+#[tokio::test]
 async fn unsubscribe_get_renders_html_on_hit_and_404s_on_miss() {
     let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;

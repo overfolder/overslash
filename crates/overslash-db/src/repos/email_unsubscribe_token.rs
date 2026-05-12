@@ -1,10 +1,11 @@
 //! `email_unsubscribe_tokens` — one row per outgoing non-transactional email
 //! (today: welcome only). The `token` is the unguessable UUID embedded in
 //! the email's `List-Unsubscribe` header and visible footer link. Redemption
-//! is idempotent: the first click stamps `redeemed_at`; subsequent clicks
-//! find the row already redeemed and are accepted as a no-op while the
-//! caller still re-asserts the user's unsubscribe state, so the final
-//! observable result is the same. See migration 067.
+//! is idempotent at the row level: the first click stamps `redeemed_at`;
+//! subsequent clicks find the row already redeemed. The caller gates the
+//! user-state flip on first redemption only — a replayed click does not
+//! re-unsubscribe a user who has since re-subscribed elsewhere. See
+//! migration 067.
 
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -62,9 +63,10 @@ pub async fn find(
 }
 
 /// Stamp `redeemed_at = now()`. Idempotent: re-redeeming is allowed so a
-/// second click from the same email link leaves the user in the same final
-/// state. Returns `true` on first redemption, `false` if already redeemed
-/// (caller still flips the user pref to keep behavior idempotent).
+/// second click from the same email link returns success but doesn't
+/// re-trigger user-state changes. Returns `true` on first redemption,
+/// `false` if already redeemed — callers use this to gate the user-pref
+/// flip + audit write to the first redemption only.
 pub async fn mark_redeemed(pool: &PgPool, token: Uuid) -> Result<bool, sqlx::Error> {
     let res = sqlx::query!(
         "UPDATE email_unsubscribe_tokens
