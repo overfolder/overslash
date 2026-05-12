@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Y9zA2MH7c01lbYIVZ7bHHPbL7dMMYkfNUhcvqZszD5BU465r4HxESzr3itIrpOl
+\restrict dZBTCbkE3txfOUaDNpRiVqaUwn1fDP0wnfODmcEN5z18RY9R84Ylzv6QHUOj7FP
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -514,6 +514,7 @@ CREATE TABLE public.orgs (
     plan text DEFAULT 'standard'::text NOT NULL,
     default_deferred_execution boolean DEFAULT false NOT NULL,
     allow_overslash_managed_signin boolean DEFAULT false NOT NULL,
+    creator_user_id uuid,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
@@ -2163,6 +2164,14 @@ ALTER TABLE ONLY public.org_subscriptions
 
 
 --
+-- Name: orgs orgs_creator_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orgs
+    ADD CONSTRAINT orgs_creator_user_id_fkey FOREIGN KEY (creator_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: pending_checkouts pending_checkouts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2398,5 +2407,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Y9zA2MH7c01lbYIVZ7bHHPbL7dMMYkfNUhcvqZszD5BU465r4HxESzr3itIrpOl
+\unrestrict dZBTCbkE3txfOUaDNpRiVqaUwn1fDP0wnfODmcEN5z18RY9R84Ylzv6QHUOj7FP
 

@@ -15,6 +15,7 @@ use crate::{
     services::{jwt, oauth},
 };
 use overslash_core::crypto;
+use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::{membership, oauth_provider, org, user as user_repo};
 use overslash_db::{OrgScope, SystemScope};
 
@@ -1054,6 +1055,7 @@ async fn list_account_memberships(
 async fn drop_account_membership(
     State(state): State<AppState>,
     session: crate::extractors::SessionAuth,
+    ip: crate::extractors::ClientIp,
     Path(org_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let user_id = resolve_session_user_id(&state, &session).await?;
@@ -1118,6 +1120,35 @@ async fn drop_account_membership(
         .await?;
 
     tx.commit().await?;
+
+    // Audit the departure after the commit — the membership drop is the
+    // authoritative side-effect, and a failing audit insert shouldn't
+    // resurrect it. `was_original_creator` flags founder departures (a
+    // notable state change worth pulling out of the broader membership
+    // event stream).
+    let was_original_creator = org_row.creator_user_id == Some(user_id);
+    let scope = OrgScope::new(org_id, state.db.clone());
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(session.identity_id),
+            action: "membership.removed",
+            resource_type: Some("membership"),
+            resource_id: Some(org_id),
+            detail: json!({
+                "user_id": user_id,
+                "was_original_creator": was_original_creator,
+                "was_admin": caller_is_admin,
+            }),
+            description: Some(if was_original_creator {
+                "Original creator left the org"
+            } else {
+                "Member left the org"
+            }),
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
     Ok(axum::Json(json!({ "status": "dropped", "org_id": org_id })))
 }
 

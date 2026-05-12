@@ -18,7 +18,9 @@ const EVENT_VALUES = [
 	'connection.changed',
 	'identity.created',
 	'identity.deleted',
-	'permission.changed'
+	'permission.changed',
+	'org.creator_admin_added',
+	'membership.removed'
 ];
 
 export interface IdentitySummary {

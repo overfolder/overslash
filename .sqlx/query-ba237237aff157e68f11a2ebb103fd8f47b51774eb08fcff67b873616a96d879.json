@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orgs SET creator_user_id = $2, updated_at = now()\n         WHERE id = $1 AND creator_user_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba237237aff157e68f11a2ebb103fd8f47b51774eb08fcff67b873616a96d879"
+}
