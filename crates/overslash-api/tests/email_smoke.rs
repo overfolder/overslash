@@ -84,6 +84,7 @@ async fn resend_mailer_sends_rendered_template() {
         subject: TEST_TEMPLATE_SUBJECT.to_string(),
         html: rendered_html.clone(),
         reply_to: None,
+        headers: HashMap::new(),
     };
 
     mailer.send(msg).await.expect("send succeeded");
@@ -152,6 +153,7 @@ async fn resend_mailer_surfaces_upstream_errors() {
             subject: "x".into(),
             html: "<p>x</p>".into(),
             reply_to: None,
+            headers: HashMap::new(),
         })
         .await
         .expect_err("upstream 422 should surface as MailerError::Upstream");

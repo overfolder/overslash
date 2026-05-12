@@ -390,6 +390,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::skill_md::router())
         .merge(routes::oauth_upstream::router())
         .merge(routes::oauth::consent_router())
+        // Public one-click unsubscribe — must stay outside auth + rate-limit
+        // layers because email clients and recipients clicking from inboxes
+        // have no session cookie. The token in the URL is the sole authority.
+        .merge(routes::unsubscribe::router())
         .merge(stripe_webhook_routes)
         .merge(validate_routes)
         .merge(rate_limited_routes)

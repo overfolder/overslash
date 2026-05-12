@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 
 use super::errors::MailerError;
@@ -6,13 +8,19 @@ use super::errors::MailerError;
 /// provider-agnostic surface — `from`, `to`, `subject`, an HTML body, and an
 /// optional `Reply-To`. Plaintext-alternative bodies are deferred until a
 /// caller needs them (no current call site does).
-#[derive(Debug, Clone)]
+///
+/// `headers` is forwarded verbatim to the provider's `headers` field. The
+/// welcome-email caller uses it to attach RFC 8058 `List-Unsubscribe` /
+/// `List-Unsubscribe-Post` headers so Gmail's native unsubscribe button
+/// works. Defaults to an empty map; providers skip serialization when empty.
+#[derive(Debug, Clone, Default)]
 pub struct EmailMessage {
     pub from: String,
     pub to: String,
     pub subject: String,
     pub html: String,
     pub reply_to: Option<String>,
+    pub headers: HashMap<String, String>,
 }
 
 /// Outbound transactional-email sender. Implementations are kept thin: pick

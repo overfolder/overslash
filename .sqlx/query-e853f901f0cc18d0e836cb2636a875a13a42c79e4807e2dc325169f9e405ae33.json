@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at\n         FROM users\n         WHERE overslash_idp_provider = $1 AND overslash_idp_subject = $2",
+  "query": "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at\n         FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -40,19 +40,28 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
+        "name": "welcome_email_sent_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 8,
+        "name": "welcome_emails_unsubscribed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -63,9 +72,11 @@
       true,
       true,
       false,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "1ea7f9d0a184e23413068ca7d7fba078d61f162949f21e105c40b309c034df62"
+  "hash": "e853f901f0cc18d0e836cb2636a875a13a42c79e4807e2dc325169f9e405ae33"
 }

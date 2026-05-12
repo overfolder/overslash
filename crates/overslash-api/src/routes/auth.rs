@@ -55,6 +55,10 @@ pub fn router() -> Router<AppState> {
             "/v1/account/memberships/{org_id}",
             axum::routing::delete(drop_account_membership),
         )
+        .route(
+            "/v1/account/email-preferences",
+            get(get_email_preferences).put(put_email_preferences),
+        )
 }
 
 async fn logout(State(state): State<AppState>) -> impl IntoResponse {
@@ -1152,6 +1156,97 @@ async fn drop_account_membership(
     Ok(axum::Json(json!({ "status": "dropped", "org_id": org_id })))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EmailPreferences {
+    /// `true` = subscribed to non-transactional email (default for new users);
+    /// `false` = unsubscribed via /account toggle or one-click link. Billing
+    /// receipts and other transactional email ignore this flag by policy.
+    welcome_emails: bool,
+}
+
+/// GET /v1/account/email-preferences — return the caller's non-transactional
+/// email preference. Per-user (not per-identity), so the same value is
+/// returned regardless of which org subdomain the session is currently in.
+async fn get_email_preferences(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+) -> Result<axum::Json<EmailPreferences>, AppError> {
+    let user_id = resolve_session_user_id(&state, &session).await?;
+    let user = overslash_db::repos::user::get_by_id(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+    Ok(axum::Json(EmailPreferences {
+        welcome_emails: user.welcome_emails_unsubscribed_at.is_none(),
+    }))
+}
+
+/// PUT /v1/account/email-preferences — update the caller's non-transactional
+/// email preference. Idempotent; audited in the caller's current org so
+/// changes are visible to admins on the org's audit log.
+async fn put_email_preferences(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+    axum::Json(prefs): axum::Json<EmailPreferences>,
+) -> Result<axum::Json<EmailPreferences>, AppError> {
+    let user_id = resolve_session_user_id(&state, &session).await?;
+    let existing = overslash_db::repos::user::get_by_id(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    let was_subscribed = existing.welcome_emails_unsubscribed_at.is_none();
+    if was_subscribed == prefs.welcome_emails {
+        // No state change — return current value without writing an audit
+        // row. Idempotent toggle PUTs (or UIs that re-submit on every toggle
+        // flip-flop) would otherwise spam the org audit log with non-events.
+        return Ok(axum::Json(EmailPreferences {
+            welcome_emails: was_subscribed,
+        }));
+    }
+
+    let unsubscribed_at = if prefs.welcome_emails {
+        None
+    } else {
+        Some(time::OffsetDateTime::now_utc())
+    };
+    let updated =
+        overslash_db::repos::user::set_welcome_unsubscribed(&state.db, user_id, unsubscribed_at)
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    let scope = OrgScope::new(session.org_id, state.db.clone());
+    let action = if prefs.welcome_emails {
+        "email.resubscribed"
+    } else {
+        "email.unsubscribed"
+    };
+    if let Err(e) = scope
+        .log_audit(overslash_db::repos::audit::AuditEntry {
+            org_id: session.org_id,
+            identity_id: Some(session.identity_id),
+            action,
+            resource_type: Some("user"),
+            resource_id: Some(user_id),
+            detail: json!({ "purpose": "welcome", "via": "account_toggle" }),
+            description: Some(if prefs.welcome_emails {
+                "Welcome / product emails re-enabled from /account"
+            } else {
+                "Welcome / product emails unsubscribed from /account"
+            }),
+            ip_address: None,
+        })
+        .await
+    {
+        // Audit failure is best-effort — the user-visible state is already
+        // updated. Log and move on so a hiccup writing the audit row doesn't
+        // leave the toggle stuck in the UI.
+        tracing::warn!(%user_id, error = %e, "email-preferences audit log failed");
+    }
+
+    Ok(axum::Json(EmailPreferences {
+        welcome_emails: updated.welcome_emails_unsubscribed_at.is_none(),
+    }))
+}
+
 /// Resolve the human behind a `SessionAuth`. Prefers the JWT's `user_id`
 /// claim (hot path); falls back to the identity's FK for legacy tokens.
 async fn resolve_session_user_id(
@@ -1175,7 +1270,10 @@ async fn resolve_session_user_id(
 /// successful switch. Personal orgs live at the apex; corp orgs live at
 /// `<slug>.<apex>`. When no apex is configured (self-hosted single-host),
 /// fall back to `dashboard_url` so the caller stays on the current origin.
-fn build_org_redirect(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {
+pub(crate) fn build_org_redirect(
+    state: &AppState,
+    org: &overslash_db::repos::org::OrgRow,
+) -> String {
     let scheme = if state.config.public_url.starts_with("https://") {
         "https"
     } else {
@@ -1909,6 +2007,11 @@ async fn provision_root_contents(
 
     membership::create(&state.db, new_user.id, org.id, membership::ROLE_ADMIN).await?;
 
+    // Best-effort welcome email. Failures are logged and swallowed inside
+    // the service — a transient mailer hiccup must never block first-login.
+    let dashboard_url = build_org_redirect(state, org);
+    crate::services::welcome_email::send_if_due(state, new_user.id, org.id, dashboard_url).await;
+
     Ok((org.id, identity_row.id, new_user.id, userinfo.email.clone()))
 }
 
@@ -2176,6 +2279,13 @@ async fn provision_org_subdomain(
             );
         }
     }
+
+    // Best-effort welcome email for JIT-provisioned corp-org users. Service
+    // gates on `welcome_email_sent_at IS NULL`, so returning users (existing
+    // member adding a second IdP, SINGLE_ORG_MODE Overslash-backed reuse)
+    // are naturally no-ops without us having to thread a "was-created" bool.
+    let dashboard_url = build_org_redirect(state, &target_org);
+    crate::services::welcome_email::send_if_due(state, user_id, target_org.id, dashboard_url).await;
 
     Ok((
         target_org.id,

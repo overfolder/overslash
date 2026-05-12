@@ -30,3 +30,4 @@ pub mod session;
 pub mod short_url;
 pub mod ssrf_guard;
 pub mod webhook_dispatcher;
+pub mod welcome_email;
