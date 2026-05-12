@@ -356,7 +356,27 @@ async fn unsubscribe_get_renders_html_on_hit_and_404s_on_miss() {
     let body = resp.text().await.unwrap();
     assert!(
         body.contains("You've been unsubscribed."),
-        "GET should render the confirmation HTML: {body}"
+        "first redemption GET should render the applied page: {body}"
+    );
+
+    // Re-GET with the same (now redeemed) token: still 200, but copy must
+    // NOT claim "You've been unsubscribed" — the user's state may have
+    // diverged since first click (e.g. they re-subscribed via /account),
+    // and asserting an unsubscribed state would be a lie.
+    let resp = client
+        .get(format!("{base}/v1/unsubscribe?token={}", row.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("You've been unsubscribed."),
+        "replay GET must NOT claim the user was just unsubscribed: {body}"
+    );
+    assert!(
+        body.contains("This link has already been used."),
+        "replay GET should render the already-used page: {body}"
     );
 
     // GET on an unknown token can surface 404 (browser users get a clear
