@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict dZBTCbkE3txfOUaDNpRiVqaUwn1fDP0wnfODmcEN5z18RY9R84Ylzv6QHUOj7FP
+\restrict 6FwkMjm8thFkB35eBFVbgyKXfFYdlOhyyDN0ohpvvGsWupUjAhR0Ucq00i9eKNG
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -135,6 +135,21 @@ CREATE TABLE public.connections (
     is_default boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: email_unsubscribe_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_unsubscribe_tokens (
+    token uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    purpose text DEFAULT 'welcome'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    redeemed_at timestamp with time zone,
+    CONSTRAINT email_unsubscribe_tokens_purpose_check CHECK ((purpose = 'welcome'::text))
 );
 
 
@@ -728,6 +743,8 @@ CREATE TABLE public.users (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     stripe_customer_id text,
     is_instance_admin boolean DEFAULT false NOT NULL,
+    welcome_email_sent_at timestamp with time zone,
+    welcome_emails_unsubscribed_at timestamp with time zone,
     CONSTRAINT users_instance_admin_requires_overslash_idp CHECK (((NOT is_instance_admin) OR (overslash_idp_provider IS NOT NULL)))
 );
 
@@ -819,6 +836,14 @@ ALTER TABLE ONLY public.byoc_credentials
 
 ALTER TABLE ONLY public.connections
     ADD CONSTRAINT connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_unsubscribe_tokens email_unsubscribe_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_unsubscribe_tokens
+    ADD CONSTRAINT email_unsubscribe_tokens_pkey PRIMARY KEY (token);
 
 
 --
@@ -1179,6 +1204,13 @@ ALTER TABLE ONLY public.webhook_deliveries
 
 ALTER TABLE ONLY public.webhook_subscriptions
     ADD CONSTRAINT webhook_subscriptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_unsubscribe_tokens_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
 
 
 --
@@ -1876,6 +1908,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: email_unsubscribe_tokens email_unsubscribe_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_unsubscribe_tokens
+    ADD CONSTRAINT email_unsubscribe_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: email_unsubscribe_tokens email_unsubscribe_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_unsubscribe_tokens
+    ADD CONSTRAINT email_unsubscribe_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: enabled_global_templates enabled_global_templates_enabled_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2407,5 +2455,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict dZBTCbkE3txfOUaDNpRiVqaUwn1fDP0wnfODmcEN5z18RY9R84Ylzv6QHUOj7FP
+\unrestrict 6FwkMjm8thFkB35eBFVbgyKXfFYdlOhyyDN0ohpvvGsWupUjAhR0Ucq00i9eKNG
 

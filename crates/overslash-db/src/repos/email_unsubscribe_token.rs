@@ -5,7 +5,7 @@
 //! subsequent clicks find the row already redeemed. The caller gates the
 //! user-state flip on first redemption only — a replayed click does not
 //! re-unsubscribe a user who has since re-subscribed elsewhere. See
-//! migration 067.
+//! migration 068.
 
 use sqlx::PgPool;
 use time::OffsetDateTime;
