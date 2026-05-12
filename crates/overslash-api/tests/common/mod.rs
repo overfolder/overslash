@@ -678,7 +678,8 @@ where
         .merge(overslash_api::routes::oauth::router())
         .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
-        .merge(overslash_api::routes::oauth_mcp_clients::router());
+        .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::unsubscribe::router());
 
     // Billing routes are gated on cloud_billing — test fixtures that flip the
     // flag get the routes; default-config tests don't see them.
@@ -816,6 +817,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::oauth_upstream::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::unsubscribe::router())
         .with_state(state);
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

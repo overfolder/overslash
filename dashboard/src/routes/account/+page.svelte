@@ -1,23 +1,68 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { session, type MembershipSummary, type MeIdentity } from '$lib/session';
+	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+
+	interface EmailPreferences {
+		welcome_emails: boolean;
+	}
 
 	let me: MeIdentity | null = $state(null);
 	let memberships: MembershipSummary[] = $state([]);
 	let loading = $state(true);
 	let error: string | null = $state(null);
 	let dropping: string | null = $state(null);
+	let welcomeEmails = $state(true);
+	let emailPrefsLoaded = $state(false);
+	let emailPrefsSaving = $state(false);
+	let emailPrefsError: string | null = $state(null);
 
 	onMount(async () => {
 		try {
-			me = await session.get<MeIdentity>('/auth/me/identity');
-			memberships = me?.memberships ?? [];
+			// Both fetches are independent; run them in parallel so the page
+			// renders as soon as the slower one returns.
+			const [identity, prefs] = await Promise.all([
+				session.get<MeIdentity>('/auth/me/identity'),
+				session
+					.get<EmailPreferences>('/v1/account/email-preferences')
+					.catch((e) => {
+						// Don't fail the whole page if just prefs load fails —
+						// surface a small error under the card instead.
+						emailPrefsError = e instanceof Error ? e.message : 'Failed to load email preferences';
+						return null;
+					})
+			]);
+			me = identity;
+			memberships = identity?.memberships ?? [];
+			if (prefs) {
+				welcomeEmails = prefs.welcome_emails;
+				emailPrefsLoaded = true;
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load account';
 		} finally {
 			loading = false;
 		}
 	});
+
+	async function toggleWelcomeEmails(next: boolean) {
+		if (emailPrefsSaving) return;
+		const previous = welcomeEmails;
+		welcomeEmails = next; // optimistic
+		emailPrefsSaving = true;
+		emailPrefsError = null;
+		try {
+			const updated = await session.put<EmailPreferences>('/v1/account/email-preferences', {
+				welcome_emails: next
+			});
+			welcomeEmails = updated.welcome_emails;
+		} catch (e) {
+			welcomeEmails = previous; // revert
+			emailPrefsError = e instanceof Error ? e.message : 'Failed to update email preferences';
+		} finally {
+			emailPrefsSaving = false;
+		}
+	}
 
 	async function dropMembership(orgId: string, label: string) {
 		if (!confirm(`Drop your membership in ${label}? You'll need to sign in via that org's IdP to come back.`))
@@ -73,6 +118,27 @@
 					<dd><code>{me.user_id}</code></dd>
 				{/if}
 			</dl>
+		</div>
+
+		<div class="card">
+			<h2>Email preferences</h2>
+			<div class="pref-row">
+				<ToggleSwitch
+					checked={welcomeEmails}
+					onchange={toggleWelcomeEmails}
+					disabled={!emailPrefsLoaded || emailPrefsSaving}
+					labelledby="welcome-emails-label"
+				/>
+				<div class="pref-text">
+					<span id="welcome-emails-label" class="pref-label">Send me product and welcome emails</span>
+					<span class="muted">
+						Billing receipts and other transactional emails are always sent.
+					</span>
+				</div>
+			</div>
+			{#if emailPrefsError}
+				<p class="error">{emailPrefsError}</p>
+			{/if}
 		</div>
 
 		<div class="card">
@@ -219,5 +285,21 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	.pref-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.75rem;
+	}
+	.pref-text {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+	.pref-label {
+		font-size: 0.95rem;
+	}
+	.pref-text .muted {
+		font-size: 0.8rem;
 	}
 </style>

@@ -8,6 +8,7 @@
 //! `build_mailer` is the canonical constructor: it inspects [`Config`] and
 //! returns either a real provider or the [`NoopMailer`] fallback.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -75,6 +76,12 @@ struct ResendRequest<'a> {
     html: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_to: Option<&'a str>,
+    /// Forwarded verbatim to Resend's `headers` field. Empty maps are skipped
+    /// so existing call sites (no custom headers) produce identical wire
+    /// payloads. Used today for RFC 8058 `List-Unsubscribe` /
+    /// `List-Unsubscribe-Post` on the welcome email.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    headers: &'a HashMap<String, String>,
 }
 
 #[async_trait]
@@ -96,6 +103,7 @@ impl Mailer for ResendMailer {
             subject: &msg.subject,
             html: &msg.html,
             reply_to,
+            headers: &msg.headers,
         };
 
         let url = format!("{}/emails", self.base_url.trim_end_matches('/'));

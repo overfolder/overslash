@@ -21,6 +21,7 @@ pub mod audit;
 pub mod billing;
 pub mod byoc_credential;
 pub mod connection;
+pub mod email_unsubscribe_token;
 pub mod enabled_global_template;
 pub mod execution;
 pub mod group;

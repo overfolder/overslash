@@ -29,6 +29,12 @@ pub use noop::NoopMailer;
 pub const TEST_TEMPLATE_SUBJECT: &str = "Overslash email pipeline test";
 pub const TEST_TEMPLATE_HTML: &str = include_str!("../../templates/email/test.html");
 
+/// Welcome / first-login email. Sent on root signup and corp-org JIT
+/// provisioning. Placeholders: `{display_name}`, `{dashboard_url}`,
+/// `{unsubscribe_url}`.
+pub const WELCOME_TEMPLATE_SUBJECT: &str = "Welcome to Overslash";
+pub const WELCOME_TEMPLATE_HTML: &str = include_str!("../../templates/email/welcome.html");
+
 /// Interpolate a template with the same grammar action descriptions use,
 /// without the display-character cap that would truncate URLs / long values.
 pub fn render(template: &str, params: &HashMap<String, serde_json::Value>) -> String {

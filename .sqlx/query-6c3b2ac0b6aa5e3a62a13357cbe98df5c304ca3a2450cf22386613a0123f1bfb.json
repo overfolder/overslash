@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.overslash_idp_subject, u.personal_org_id, u.is_instance_admin, u.created_at, u.updated_at\n         FROM users u\n         JOIN user_org_memberships m ON m.user_id = u.id\n         WHERE m.org_id = $1 AND lower(u.email) = lower($2)\n         ORDER BY u.created_at DESC\n         LIMIT 1",
+  "query": "INSERT INTO users (email, display_name)\n         VALUES ($1, $2)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -40,18 +40,28 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
+        "name": "welcome_email_sent_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 8,
+        "name": "welcome_emails_unsubscribed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
+        "Text",
         "Text"
       ]
     },
@@ -63,9 +73,11 @@
       true,
       true,
       false,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "959356514147c323faff46487f62e33646406090236ceb57728e8633e9bf3f0a"
+  "hash": "6c3b2ac0b6aa5e3a62a13357cbe98df5c304ca3a2450cf22386613a0123f1bfb"
 }

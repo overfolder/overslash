@@ -26,6 +26,14 @@ pub struct UserRow {
     /// via `POST /v1/orgs/free-unlimited`. A CHECK constraint requires
     /// `overslash_idp_provider IS NOT NULL` whenever this is true.
     pub is_instance_admin: bool,
+    /// Stamped after the welcome / first-login email is successfully sent.
+    /// Send sites gate on `IS NULL` so re-entered provisioning paths
+    /// (corp-org returning member, second-IdP add) never double-send.
+    pub welcome_email_sent_at: Option<OffsetDateTime>,
+    /// `NULL` = subscribed to non-transactional email; non-null = unsubscribed.
+    /// Set by the one-click unsubscribe link or the `/account` toggle. Billing
+    /// (transactional) email ignores this column by policy.
+    pub welcome_emails_unsubscribed_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -33,7 +41,7 @@ pub struct UserRow {
 pub async fn get_by_id(pool: &PgPool, id: Uuid) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as!(
         UserRow,
-        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at
+        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at
          FROM users WHERE id = $1",
         id,
     )
@@ -80,7 +88,7 @@ pub async fn find_by_overslash_idp(
 ) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as!(
         UserRow,
-        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at
+        "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at
          FROM users
          WHERE overslash_idp_provider = $1 AND overslash_idp_subject = $2",
         provider,
@@ -103,7 +111,7 @@ pub async fn create_overslash_backed(
         UserRow,
         "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
         email,
         display_name,
         provider,
@@ -124,7 +132,7 @@ pub async fn create_org_only(
         UserRow,
         "INSERT INTO users (email, display_name)
          VALUES ($1, $2)
-         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
         email,
         display_name,
     )
@@ -149,7 +157,7 @@ pub async fn find_member_by_email_in_org(
 ) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as!(
         UserRow,
-        "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.overslash_idp_subject, u.personal_org_id, u.is_instance_admin, u.created_at, u.updated_at
+        "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.overslash_idp_subject, u.personal_org_id, u.is_instance_admin, u.welcome_email_sent_at, u.welcome_emails_unsubscribed_at, u.created_at, u.updated_at
          FROM users u
          JOIN user_org_memberships m ON m.user_id = u.id
          WHERE m.org_id = $1 AND lower(u.email) = lower($2)
@@ -177,7 +185,7 @@ pub async fn refresh_profile(
              display_name = COALESCE($3, display_name),
              updated_at = now()
          WHERE id = $1
-         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
         id,
         email,
         display_name,
@@ -201,4 +209,40 @@ pub async fn set_personal_org(
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Stamp `welcome_email_sent_at = now()` once after the welcome send
+/// succeeds. The send service checks `IS NULL` before dispatching, so this
+/// is the gate that makes welcome sends naturally idempotent.
+pub async fn mark_welcome_sent(pool: &PgPool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let res = sqlx::query!(
+        "UPDATE users
+         SET welcome_email_sent_at = now(), updated_at = now()
+         WHERE id = $1 AND welcome_email_sent_at IS NULL",
+        id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Set or clear the per-user welcome / non-transactional unsubscribe state.
+/// Pass `Some(now())` to unsubscribe, `None` to re-subscribe. Returns the
+/// updated row (or `None` if `id` doesn't exist).
+pub async fn set_welcome_unsubscribed(
+    pool: &PgPool,
+    id: Uuid,
+    unsubscribed_at: Option<OffsetDateTime>,
+) -> Result<Option<UserRow>, sqlx::Error> {
+    sqlx::query_as!(
+        UserRow,
+        "UPDATE users
+         SET welcome_emails_unsubscribed_at = $2, updated_at = now()
+         WHERE id = $1
+         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
+        id,
+        unsubscribed_at,
+    )
+    .fetch_optional(pool)
+    .await
 }

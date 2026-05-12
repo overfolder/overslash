@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE users\n         SET email = COALESCE($2, email),\n             display_name = COALESCE($3, display_name),\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, created_at, updated_at",
+  "query": "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)\n         VALUES ($1, $2, $3, $4)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -40,18 +40,29 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
+        "name": "welcome_email_sent_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 8,
+        "name": "welcome_emails_unsubscribed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
+        "Text",
+        "Text",
         "Text",
         "Text"
       ]
@@ -64,9 +75,11 @@
       true,
       true,
       false,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "5cdfaff9c53f486e3856b6630c0dd92ae26efbbebee7fe258e571a7b2293038f"
+  "hash": "44c594661ce2809d8ae24bf3515e6487491b3d8f89272d5f5540e4ccb0d2735a"
 }
