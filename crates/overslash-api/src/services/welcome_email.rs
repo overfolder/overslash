@@ -129,7 +129,14 @@ pub async fn send_if_due(
 
     if let Err(e) = state.mailer.send(msg).await {
         tracing::warn!(%user_id, token = %token_row.token, error = %e, "welcome email send failed");
-        // Intentionally swallowed — best-effort.
+        // The token row we just minted is now orphaned: `welcome_email_sent_at`
+        // is still NULL so the next provisioning retry would mint a fresh
+        // token, leaving this one as accumulated garbage with a still-valid
+        // unsubscribe blast radius. Drop it. Failure of the cleanup is
+        // itself best-effort (logged) — we already swallowed the send error.
+        if let Err(del_err) = email_unsubscribe_token::delete(&state.db, token_row.token).await {
+            tracing::warn!(%user_id, token = %token_row.token, error = %del_err, "welcome email: cleanup of orphan token failed");
+        }
         return;
     }
 

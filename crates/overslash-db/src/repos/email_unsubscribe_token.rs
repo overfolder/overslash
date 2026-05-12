@@ -76,3 +76,20 @@ pub async fn mark_redeemed(pool: &PgPool, token: Uuid) -> Result<bool, sqlx::Err
     .await?;
     Ok(res.rows_affected() > 0)
 }
+
+/// Drop a freshly-minted token when the mailer send that was supposed to
+/// deliver it fails. Without this, a transient mailer error leaves an
+/// orphaned-but-valid unsubscribe row behind, and the next welcome retry
+/// (the call site does not mark `welcome_email_sent_at` on send failure)
+/// would mint yet another. Treat as best-effort: callers swallow the
+/// error since the orphan is harmless (worst case: someone unsubscribes
+/// from a never-delivered email).
+pub async fn delete(pool: &PgPool, token: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "DELETE FROM email_unsubscribe_tokens WHERE token = $1",
+        token
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}

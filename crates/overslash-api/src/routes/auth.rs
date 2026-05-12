@@ -1189,6 +1189,20 @@ async fn put_email_preferences(
     axum::Json(prefs): axum::Json<EmailPreferences>,
 ) -> Result<axum::Json<EmailPreferences>, AppError> {
     let user_id = resolve_session_user_id(&state, &session).await?;
+    let existing = overslash_db::repos::user::get_by_id(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    let was_subscribed = existing.welcome_emails_unsubscribed_at.is_none();
+    if was_subscribed == prefs.welcome_emails {
+        // No state change — return current value without writing an audit
+        // row. Idempotent toggle PUTs (or UIs that re-submit on every toggle
+        // flip-flop) would otherwise spam the org audit log with non-events.
+        return Ok(axum::Json(EmailPreferences {
+            welcome_emails: was_subscribed,
+        }));
+    }
+
     let unsubscribed_at = if prefs.welcome_emails {
         None
     } else {

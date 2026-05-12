@@ -102,6 +102,28 @@ async fn email_prefs_default_subscribed_then_toggle_roundtrip() {
         vec!["email.unsubscribed", "email.resubscribed"],
         "toggle writes one audit row per transition"
     );
+
+    // Re-PUTing the same value the user is already in must NOT write a new
+    // audit row — those events would be noise, not state transitions.
+    let _: Value = client
+        .put(format!("{base}/v1/account/email-preferences"))
+        .header("cookie", &cookie)
+        .json(&serde_json::json!({ "welcome_emails": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let after_noop: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE org_id = $1 AND action IN ('email.unsubscribed','email.resubscribed')",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_noop, 2, "no-op PUT must not add an audit row");
 }
 
 #[tokio::test]
@@ -258,6 +280,56 @@ async fn unsubscribe_get_renders_html_on_hit_and_404s_on_miss() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn orphan_unsubscribe_token_can_be_deleted_on_send_failure() {
+    // When `welcome_email::send_if_due` mints a token then the mailer call
+    // fails, the call site invokes `email_unsubscribe_token::delete` to
+    // prevent orphan rows accumulating across retries (the user's
+    // `welcome_email_sent_at` is still NULL so the next provisioning entry
+    // would mint a fresh token). Smoke-test the underlying repo function.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
+    let token_resp: Value = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
+    let me: Value = client
+        .get(format!("{base}/auth/me/identity"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id: Uuid = me["user_id"].as_str().unwrap().parse().unwrap();
+
+    let row = email_unsubscribe_token::create(&pool, user_id, org_id, "welcome")
+        .await
+        .unwrap();
+    email_unsubscribe_token::delete(&pool, row.token)
+        .await
+        .unwrap();
+
+    let after = email_unsubscribe_token::find(&pool, row.token)
+        .await
+        .unwrap();
+    assert!(after.is_none(), "delete must drop the row entirely");
+
+    // Deleting an unknown token is a no-op (Postgres DELETE with no match
+    // succeeds with 0 rows affected). Stays Ok so the cleanup is safe to
+    // call from the swallow-the-error mailer failure path.
+    email_unsubscribe_token::delete(&pool, Uuid::new_v4())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
