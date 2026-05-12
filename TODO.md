@@ -63,12 +63,6 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - [ ] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs).
 - [ ] **GDPR request handling** — document the manual process for data-export and hard-delete requests (intake → DPO ack → manual SQL → audit row). Automated endpoints are a post-launch backlog item; volume expected to be near zero at GA.
 
-### 1.6 Critical dashboard fixes
-
-Most dashboard work is in §2 polish. This one item is visibly broken today.
-
-- [ ] Inline "Allow Once" on `/agents` (review card `20ae2`) — current flow forces a round-trip to `/approvals/{id}`.
-
 ---
 
 ## 2. Launch +1 (first weeks after GA)

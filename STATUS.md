@@ -214,7 +214,7 @@
 - Notification bell dropdown in the top bar.
 - Archived sub-agent list + restore button + per-org cleanup config form (backend shipped).
 - Per-agent permission management UI (rules, scopes, "Allow & Remember" review/edit).
-- Inline "Allow Once" on `/agents`; canonical `OVERSLASH_DASHBOARD_URL` env wired into approval URLs.
+- Canonical `OVERSLASH_DASHBOARD_URL` env wired into approval URLs.
 - Toggle Switch design-system component (`ToggleSwitch.svelte` lives but not adopted everywhere).
 - `/account` profile editing (name + avatar).
 - Org webhook management UI.
