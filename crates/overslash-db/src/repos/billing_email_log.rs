@@ -5,7 +5,7 @@
 //! (UNIQUE conflict) and returns `Ok(None)` so the second attempt is silently
 //! a no-op. [`mark_sent`] stamps `sent_at` only after the mailer call returns
 //! Ok — rows with `sent_at IS NULL` are claimed-but-not-yet-delivered and
-//! provide the manual-replay signal during incidents. See migration 069.
+//! provide the manual-replay signal during incidents. See migration 070.
 //!
 //! Billing emails are exempt from `welcome_emails_unsubscribed_at` by policy
 //! (TODO.md §1.1) — this table never consults the unsubscribe state.
