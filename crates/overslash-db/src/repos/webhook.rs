@@ -264,39 +264,39 @@ pub(crate) async fn summarize_terminal_failures_for_org(
 ) -> Result<Vec<DigestEndpointSummary>, sqlx::Error> {
     sqlx::query_as!(
         DigestEndpointSummary,
+        // Status code and error excerpt come from a single LATERAL join
+        // so they're structurally guaranteed to be from the same row. The
+        // previous shape used two independent correlated subqueries each
+        // doing `ORDER BY created_at DESC LIMIT 1`, which could pick
+        // different rows when two deliveries share the same `created_at`
+        // (batch insert / high-load tie) and produce a mismatched pair.
+        // `id DESC` is the additional tie-breaker inside the LATERAL so
+        // the row picked is deterministic.
         r#"SELECT
              s.id AS "subscription_id!",
              s.url AS "url!",
              COUNT(*) AS "attempt_count!",
              MIN(d.created_at) AS "first_failure_at!",
-             (
-                 SELECT d2.status_code
-                 FROM webhook_deliveries d2
-                 WHERE d2.subscription_id = s.id
-                   AND d2.delivered_at IS NULL
-                   AND d2.attempts >= 5
-                   AND d2.created_at > $2
-                 ORDER BY d2.created_at DESC
-                 LIMIT 1
-             ) AS "last_status_code?",
-             (
-                 SELECT LEFT(d2.response_body, 200)
-                 FROM webhook_deliveries d2
-                 WHERE d2.subscription_id = s.id
-                   AND d2.delivered_at IS NULL
-                   AND d2.attempts >= 5
-                   AND d2.created_at > $2
-                 ORDER BY d2.created_at DESC
-                 LIMIT 1
-             ) AS "last_error_excerpt?"
+             latest.status_code AS "last_status_code?",
+             latest.last_error_excerpt AS "last_error_excerpt?"
            FROM webhook_deliveries d
            JOIN webhook_subscriptions s ON d.subscription_id = s.id
+           LEFT JOIN LATERAL (
+               SELECT d2.status_code, LEFT(d2.response_body, 200) AS last_error_excerpt
+               FROM webhook_deliveries d2
+               WHERE d2.subscription_id = s.id
+                 AND d2.delivered_at IS NULL
+                 AND d2.attempts >= 5
+                 AND d2.created_at > $2
+               ORDER BY d2.created_at DESC, d2.id DESC
+               LIMIT 1
+           ) latest ON true
            WHERE s.org_id = $1
              AND s.active = true
              AND d.delivered_at IS NULL
              AND d.attempts >= 5
              AND d.created_at > $2
-           GROUP BY s.id, s.url
+           GROUP BY s.id, s.url, latest.status_code, latest.last_error_excerpt
            ORDER BY MIN(d.created_at)"#,
         org_id,
         since,

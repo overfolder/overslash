@@ -298,6 +298,49 @@ async fn unsubscribe_redemption_flips_only_digest_column() {
     );
 }
 
+#[tokio::test]
+async fn same_timestamp_failures_produce_matched_status_and_body() {
+    // Two terminal-failure rows sharing the exact same `created_at` on a
+    // single subscription. The summary picks "the most recent failure" for
+    // `last_status_code` + `last_error_excerpt`, so without a deterministic
+    // tie-breaker the two values could come from different rows. Assert
+    // they came from the *same* row (the summary's reported status+body
+    // pair matches one of the two inserted rows verbatim).
+    let pool = test_pool().await;
+    let org = make_org(&pool, "TimestampTie").await;
+    let _admin = make_member(&pool, org, "tie@example.com", "admin").await;
+    let sub = make_subscription(&pool, org, "https://hook.example.com/tie", true).await;
+
+    let same_ts = OffsetDateTime::now_utc() - time::Duration::hours(1);
+    sqlx::query(
+        "INSERT INTO webhook_deliveries
+           (subscription_id, event, payload, status_code, response_body, attempts, delivered_at, next_retry_at, created_at)
+         VALUES ($1, 'action.completed', '{}'::jsonb, 502, 'bad gateway A', 5, NULL, $2 + interval '4 hours', $2),
+                ($1, 'action.completed', '{}'::jsonb, 503, 'unavailable B',  5, NULL, $2 + interval '4 hours', $2)",
+    )
+    .bind(sub)
+    .bind(same_ts)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mailer = Capturing::new();
+    let today = OffsetDateTime::now_utc().date();
+    webhook_digest::run_once(&pool, &mailer, "http://api.test", today)
+        .await
+        .unwrap();
+
+    let sent = mailer.drain();
+    assert_eq!(sent.len(), 1);
+    let html = &sent[0].html;
+    let has_a = html.contains("502") && html.contains("bad gateway A");
+    let has_b = html.contains("503") && html.contains("unavailable B");
+    assert!(
+        has_a ^ has_b,
+        "summary must pick one row's status+body pair (xor) \u{2014} html was:\n{html}"
+    );
+}
+
 /// Sanity guard: `try_claim` is exposed for the test to verify race semantics
 /// directly, independent of the run_once orchestration.
 #[tokio::test]
