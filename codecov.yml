@@ -35,6 +35,20 @@ comment:
 # Playwright stack (`make e2e-up` + `npx playwright test`), so unit-test
 # coverage is structurally 0%; we measure correctness via the e2e specs
 # that drive these handlers.
+#
+# `services/key_rotation.rs` + `cli/src/reencrypt.rs`: the re-encrypt
+# loop's runtime body (paged SELECT, CAS UPDATE, dispatch over the
+# encrypted-column target table) only runs against a live Postgres with
+# real seeded rows — covered end-to-end by
+# `crates/overslash-api/tests/key_rotation.rs`, but llvm-cov never sees
+# those line hits attributed to the lib's `src/` because nextest shards
+# the integration binaries separately. The pure decision helpers
+# (`classify_row`, `Stats::add`, `Options::default`) and the unit-
+# testable parts of `Keyring` stay covered in `crypto.rs`; what's
+# excluded is the per-row SQL machinery, which is structurally
+# unreachable from a non-DB test.
 ignore:
   - "crates/overslash-metrics-exporter/src/queries.rs"
   - "crates/overslash-fakes/**"
+  - "crates/overslash-api/src/services/key_rotation.rs"
+  - "crates/overslash-cli/src/reencrypt.rs"
