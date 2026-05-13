@@ -18,12 +18,15 @@ pub struct Config {
     /// at rest.
     pub secrets_encryption_key_previous: Option<String>,
     /// Key id (1..=255) tagged onto every blob written with
-    /// `secrets_encryption_key`. Default 1. Bump on each rotation so old
-    /// blobs (still tagged with the previous id) decrypt via the
-    /// `_previous` slot.
+    /// `secrets_encryption_key`. Default 1. **Must be bumped on every
+    /// rotation** so old blobs (still tagged with the previous id)
+    /// decrypt via the `_previous` slot and so the re-encrypt loop's
+    /// fast-path skip stays sound.
     pub secrets_encryption_key_active_id: u8,
-    /// Key id (1..=255) of the previous master key. Must differ from
-    /// `secrets_encryption_key_active_id`. Default 2. Ignored unless
+    /// Key id (1..=255) of the previous master key. Must be **strictly
+    /// less than** `secrets_encryption_key_active_id`. Defaults to
+    /// `active_id - 1` so the typical `(active=2, previous=1)` rotation
+    /// shape works without setting it explicitly. Ignored unless
     /// `secrets_encryption_key_previous` is set.
     pub secrets_encryption_key_previous_id: u8,
     pub signing_key: String,
@@ -234,6 +237,20 @@ fn ssrf_allowed_for(base_url: &str) -> bool {
 /// `2001:db8::1`) are wrapped in brackets per RFC 3986 so the resulting
 /// URL parses cleanly. Set `PUBLIC_URL` explicitly for production
 /// deployments behind a reverse proxy.
+fn secrets_encryption_key_active_id_from_env() -> u8 {
+    env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .unwrap_or(1)
+}
+
+fn secrets_encryption_key_previous_id_from_env(active_id: u8) -> u8 {
+    env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .unwrap_or_else(|| active_id.saturating_sub(1))
+}
+
 pub fn default_public_url(host: &str, port: u16) -> String {
     let display: std::borrow::Cow<'_, str> = match host {
         "0.0.0.0" | "::" | "[::]" => "localhost".into(),
@@ -283,14 +300,17 @@ impl Config {
             secrets_encryption_key_previous: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            secrets_encryption_key_active_id: env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID")
-                .ok()
-                .and_then(|s| s.parse::<u8>().ok())
-                .unwrap_or(1),
-            secrets_encryption_key_previous_id: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID")
-                .ok()
-                .and_then(|s| s.parse::<u8>().ok())
-                .unwrap_or(2),
+            // `_ACTIVE_ID` must be bumped on every rotation — it's the
+            // version byte stamped onto new ciphertext. `_PREVIOUS_ID`
+            // defaults to `_ACTIVE_ID - 1` so the common "set _PREVIOUS
+            // and _ACTIVE_ID=2, forget _PREVIOUS_ID" case lands on the
+            // legal (2, 1) shape. `Keyring::dual` enforces
+            // `active_id > previous_id` so any misconfiguration is
+            // rejected at startup (not silently in the rotation loop).
+            secrets_encryption_key_active_id: secrets_encryption_key_active_id_from_env(),
+            secrets_encryption_key_previous_id: secrets_encryption_key_previous_id_from_env(
+                secrets_encryption_key_active_id_from_env(),
+            ),
             signing_key: env::var("SIGNING_KEY").expect("SIGNING_KEY is required"),
             approval_expiry_secs: env::var("APPROVAL_EXPIRY_SECS")
                 .ok()

@@ -60,15 +60,24 @@ impl Keyring {
         })
     }
 
-    /// Build a dual-key keyring. `previous_id` must differ from `active_id`
-    /// and both must be non-zero.
+    /// Build a dual-key keyring. Both ids must be non-zero, and
+    /// `active_id` must be **strictly greater** than `previous_id`.
+    ///
+    /// The strict-monotone invariant is what makes the re-encrypt loop's
+    /// fast path safe to take: a blob tagged with `active_id` was, by
+    /// construction, written *after* the deploy that bumped `_ACTIVE_ID`
+    /// to that value — i.e. under the current active key bytes. Without
+    /// this rule, an operator who forgot to bump `_ACTIVE_ID` during a
+    /// rotation would have the loop classify every legacy blob as
+    /// "already active" and skip it, silently no-op'ing the rotation.
+    /// (Seer flagged this gap on PR #287.)
     pub fn dual(
         active_id: u8,
         active_key: [u8; 32],
         previous_id: u8,
         previous_key: [u8; 32],
     ) -> Result<Self, CryptoError> {
-        if active_id == 0 || previous_id == 0 || active_id == previous_id {
+        if active_id == 0 || previous_id == 0 || active_id <= previous_id {
             return Err(CryptoError::InvalidKeyId);
         }
         Ok(Self {
@@ -103,14 +112,25 @@ impl Keyring {
     /// - `SECRETS_ENCRYPTION_KEY` (required, 64 hex chars): the active key.
     /// - `SECRETS_ENCRYPTION_KEY_PREVIOUS` (optional): the prior key,
     ///   decrypt-only. Set during rotation.
-    /// - `SECRETS_ENCRYPTION_KEY_ACTIVE_ID` / `_PREVIOUS_ID` (optional,
-    ///   `u8`): override the default ids. Default to `1` for active and
-    ///   `2` for previous.
+    /// - `SECRETS_ENCRYPTION_KEY_ACTIVE_ID` (optional, `u8`, default `1`):
+    ///   id of the active key. **Must be bumped on every rotation** —
+    ///   ids are the version byte stamped onto every new ciphertext, and
+    ///   `Keyring::dual` rejects `active_id <= previous_id`.
+    /// - `SECRETS_ENCRYPTION_KEY_PREVIOUS_ID` (optional, `u8`, defaults to
+    ///   `active_id - 1`): id of the previous key. The default tracks
+    ///   the only sane rotation shape (id strictly increases by one), so
+    ///   operators rarely need to set it explicitly.
     pub fn from_env() -> Result<Self, CryptoError> {
         let active_hex = std::env::var("SECRETS_ENCRYPTION_KEY")
             .map_err(|_| CryptoError::MissingEnv("SECRETS_ENCRYPTION_KEY"))?;
         let active_id = parse_id_env("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", 1)?;
-        let previous_id = parse_id_env("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", 2)?;
+        // Default previous_id = active_id - 1 so the "operator set _PREVIOUS
+        // and _ACTIVE_ID=2 but forgot _PREVIOUS_ID" path lands on (2, 1),
+        // which is the only legal rotation shape. With a fixed default of 2,
+        // (active=1, previous=2) would fail the `active > previous` check at
+        // boot — surfacing the misconfig, but only after the deploy.
+        let previous_id_default = active_id.saturating_sub(1);
+        let previous_id = parse_id_env("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", previous_id_default)?;
         let previous_hex = std::env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS").ok();
         Self::from_hex(&active_hex, active_id, previous_hex.as_deref(), previous_id)
     }
@@ -217,7 +237,10 @@ pub enum CryptoError {
     InvalidData,
     #[error("invalid key length (expected 64 hex chars)")]
     InvalidKeyLength,
-    #[error("invalid key id (must be 1..=255, active and previous must differ)")]
+    #[error(
+        "invalid key id (must be 1..=255; in dual-key mode active id must be strictly greater \
+         than previous id so the re-encrypt fast path stays sound — bump _ACTIVE_ID on rotation)"
+    )]
     InvalidKeyId,
     #[error("blob tagged with unknown key version {0}; rotate previous key in")]
     UnknownKeyVersion(u8),
@@ -322,13 +345,26 @@ mod tests {
             Err(CryptoError::InvalidKeyId)
         ));
         assert!(matches!(
-            Keyring::dual(1, key_a(), 0, key_b()),
+            Keyring::dual(2, key_a(), 0, key_b()),
             Err(CryptoError::InvalidKeyId)
         ));
+    }
+
+    #[test]
+    fn keyring_dual_requires_active_id_greater_than_previous() {
+        // Same id on both slots — operator forgot to bump _ACTIVE_ID.
         assert!(matches!(
             Keyring::dual(1, key_a(), 1, key_b()),
             Err(CryptoError::InvalidKeyId)
         ));
+        // active_id < previous_id — inverted rotation. The fast path would
+        // misclassify legacy id=1 blobs as already-active.
+        assert!(matches!(
+            Keyring::dual(1, key_a(), 2, key_b()),
+            Err(CryptoError::InvalidKeyId)
+        ));
+        // active_id > previous_id — the only legal rotation shape.
+        assert!(Keyring::dual(2, key_a(), 1, key_b()).is_ok());
     }
 
     #[test]
