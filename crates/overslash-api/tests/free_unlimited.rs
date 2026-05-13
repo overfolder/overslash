@@ -27,7 +27,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         secrets_encryption_key: "ab".repeat(32),
         secrets_encryption_key_previous: None,
         secrets_encryption_key_active_id: 1,
-        secrets_encryption_key_previous_id: 2,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
