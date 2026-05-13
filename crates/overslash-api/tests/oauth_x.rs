@@ -162,7 +162,11 @@ async fn test_oauth_x_token_refresh() {
         .unwrap();
 
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
     // Create org + identity directly
     let org = overslash_db::repos::org::create(&pool, "XRefreshOrg", "x-refresh-test", "standard")
@@ -344,7 +348,7 @@ async fn test_x_real_e2e() {
     }
 
     // Insert connection in DB
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::test();
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
     let encrypted_refresh =

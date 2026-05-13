@@ -33,7 +33,7 @@ async fn seed_connection(
 ) -> Uuid {
     // Tests use the same deterministic enc key `common::start_api` injects
     // (config.rs uses `"ab".repeat(32)`).
-    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = crypto::Keyring::test();
     let access = crypto::encrypt(&enc_key, b"mock_access_token").unwrap();
     let scope_vec: Vec<String> = scopes.iter().map(|s| (*s).to_string()).collect();
 

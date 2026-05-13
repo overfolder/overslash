@@ -175,7 +175,7 @@ pub async fn refresh_token(
 pub async fn resolve_access_token(
     scope: &OrgScope,
     http_client: &reqwest::Client,
-    enc_key: &[u8; 32],
+    enc_key: &crypto::Keyring,
     conn: &connection::ConnectionRow,
     client_id: &str,
     client_secret: &str,

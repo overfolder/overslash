@@ -80,7 +80,9 @@ async fn seed_e2e_idps(
         return Err(AppError::NotFound("not found".into()));
     }
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+    let enc_key = state
+        .config
+        .keyring()
         .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
 
     // 1. Register / refresh providers. `create_custom` is upsert via

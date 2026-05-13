@@ -42,7 +42,7 @@ async fn test_github_e2e() {
 
     // Encrypt PAT and insert connection directly into DB
     // (GitHub PATs don't expire and don't have refresh tokens — no BYOC needed)
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::test();
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
 

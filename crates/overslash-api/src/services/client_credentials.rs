@@ -35,7 +35,7 @@ pub struct ClientCredentials {
 /// 5. Error
 pub async fn resolve(
     pool: &PgPool,
-    enc_key: &[u8; 32],
+    enc_key: &crypto::Keyring,
     org_id: Uuid,
     identity_id: Option<Uuid>,
     provider_key: &str,
@@ -119,7 +119,7 @@ pub async fn resolve(
 /// to the next tier. Returns an error only on decryption failure.
 pub(crate) async fn resolve_org_oauth_secrets(
     scope: &OrgScope,
-    enc_key: &[u8; 32],
+    enc_key: &crypto::Keyring,
     provider_key: &str,
 ) -> Result<Option<ClientCredentials>, AppError> {
     let (id_name, secret_name) = oauth_secret_names(provider_key);
@@ -147,7 +147,7 @@ pub(crate) async fn resolve_org_oauth_secrets(
 
 fn decrypt_byoc(
     row: &byoc_credential::ByocCredentialRow,
-    enc_key: &[u8; 32],
+    enc_key: &crypto::Keyring,
 ) -> Result<ClientCredentials, AppError> {
     let client_id = String::from_utf8(crypto::decrypt(enc_key, &row.encrypted_client_id)?)
         .map_err(|e| AppError::Internal(format!("BYOC client_id is not valid UTF-8: {e}")))?;

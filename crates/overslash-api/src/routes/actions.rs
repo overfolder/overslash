@@ -1022,7 +1022,7 @@ async fn call_action_impl(
     }
 
     // Resolve secrets and inject
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let mut secret_values = HashMap::new();
     for secret_ref in &action_req.secrets {
         let version = scope
@@ -2561,7 +2561,9 @@ async fn resolve_service_auth(
     // The encryption key is process-global, so a parse error here can't be
     // recovered by trying the next provider — propagate Internal once,
     // outside the loop.
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+    let enc_key = state
+        .config
+        .keyring()
         .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
 
     // Track the first transient upstream error we hit while iterating
@@ -2826,7 +2828,9 @@ async fn resolve_instance_auth(
             }
         };
         if let Some(conn) = conn {
-            let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+            let enc_key = state
+                .config
+                .keyring()
                 .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
             let creds = crate::services::client_credentials::resolve(
                 &state.db,

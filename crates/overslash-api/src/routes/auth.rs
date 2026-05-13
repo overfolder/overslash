@@ -1603,7 +1603,9 @@ async fn resolve_auth_credentials(
             )));
         }
 
-        let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+        let enc_key = state
+            .config
+            .keyring()
             .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
 
         // IdP uses its own dedicated credentials — decrypt them directly.

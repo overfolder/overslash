@@ -93,7 +93,7 @@ async fn test_gmail_e2e() {
     let expires_in = token_resp["expires_in"].as_i64().unwrap_or(3600);
 
     // Encrypt tokens and insert connection in DB
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::test();
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
     let encrypted_refresh =

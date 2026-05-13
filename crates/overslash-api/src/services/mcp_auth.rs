@@ -49,7 +49,7 @@ async fn fetch_secret(state: &AppState, scope: &OrgScope, name: &str) -> Result<
         .get_current_secret_value(name)
         .await?
         .ok_or_else(|| AppError::BadRequest(format!("secret `{name}` not found")))?;
-    let key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let key = state.config.keyring()?;
     let decrypted = crypto::decrypt(&key, &version.encrypted_value)?;
     String::from_utf8(decrypted)
         .map_err(|_| AppError::Internal("mcp secret is not valid utf-8".into()))

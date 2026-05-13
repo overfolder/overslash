@@ -37,7 +37,6 @@ use serde::{Deserialize, Serialize};
 use time::{Duration as TimeDuration, OffsetDateTime};
 use uuid::Uuid;
 
-use overslash_core::crypto;
 use overslash_db::repos::connection::ConnectionRow;
 use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
 use overslash_db::scopes::OrgScope;
@@ -128,7 +127,7 @@ pub async fn kernel_create_connection(
         caller_identity_id
     };
 
-    let enc_key = crypto::parse_hex_key(&ctx.config.secrets_encryption_key)?;
+    let enc_key = ctx.config.keyring()?;
     let creds = crate::services::client_credentials::resolve(
         &ctx.db,
         &enc_key,

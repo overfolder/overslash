@@ -6,7 +6,26 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
+    /// 64-char hex master key used to encrypt every secret value, OAuth
+    /// token, BYOC client_id/secret, and IdP credential. Wrapped at runtime
+    /// in a [`overslash_core::crypto::Keyring`] together with
+    /// `secrets_encryption_key_previous` so the operator can rotate the
+    /// master key with zero downtime — see `docs/runbooks/` (forthcoming).
     pub secrets_encryption_key: String,
+    /// Optional second master key, decrypt-only. Set during a rotation to
+    /// the *prior* key so existing blobs stay readable while the
+    /// re-encrypt loop rewrites every row under the new active key. Unset
+    /// at rest.
+    pub secrets_encryption_key_previous: Option<String>,
+    /// Key id (1..=255) tagged onto every blob written with
+    /// `secrets_encryption_key`. Default 1. Bump on each rotation so old
+    /// blobs (still tagged with the previous id) decrypt via the
+    /// `_previous` slot.
+    pub secrets_encryption_key_active_id: u8,
+    /// Key id (1..=255) of the previous master key. Must differ from
+    /// `secrets_encryption_key_active_id`. Default 2. Ignored unless
+    /// `secrets_encryption_key_previous` is set.
+    pub secrets_encryption_key_previous_id: u8,
     pub signing_key: String,
     pub approval_expiry_secs: u64,
     /// Seconds a pending execution row (`executions.status='pending'`) lives
@@ -228,6 +247,25 @@ pub fn default_public_url(host: &str, port: u16) -> String {
 }
 
 impl Config {
+    /// Build the [`Keyring`](overslash_core::crypto::Keyring) used by every
+    /// encrypt/decrypt call. Returns a single-key keyring at rest and a
+    /// dual-key (active + previous) one during a rotation.
+    ///
+    /// Cheap enough to call per-request: `parse_hex_key` runs over a fixed
+    /// 64-char hex string, matching the per-call cost of the
+    /// `parse_hex_key(&state.config.secrets_encryption_key)` pattern that
+    /// every encrypt/decrypt site used before the keyring was wired up.
+    pub fn keyring(
+        &self,
+    ) -> Result<overslash_core::crypto::Keyring, overslash_core::crypto::CryptoError> {
+        overslash_core::crypto::Keyring::from_hex(
+            &self.secrets_encryption_key,
+            self.secrets_encryption_key_active_id,
+            self.secrets_encryption_key_previous.as_deref(),
+            self.secrets_encryption_key_previous_id,
+        )
+    }
+
     /// Load config from environment variables.
     pub fn from_env() -> Self {
         let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
@@ -242,6 +280,17 @@ impl Config {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL is required"),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
+            secrets_encryption_key_previous: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            secrets_encryption_key_active_id: env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID")
+                .ok()
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(1),
+            secrets_encryption_key_previous_id: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID")
+                .ok()
+                .and_then(|s| s.parse::<u8>().ok())
+                .unwrap_or(2),
             signing_key: env::var("SIGNING_KEY").expect("SIGNING_KEY is required"),
             approval_expiry_secs: env::var("APPROVAL_EXPIRY_SECS")
                 .ok()
@@ -752,6 +801,9 @@ mod tests {
             port: 0,
             database_url: String::new(),
             secrets_encryption_key: "ab".repeat(32),
+            secrets_encryption_key_previous: None,
+            secrets_encryption_key_active_id: 1,
+            secrets_encryption_key_previous_id: 2,
             signing_key: "cd".repeat(32),
             approval_expiry_secs: 1800,
             execution_pending_ttl_secs: 900,
