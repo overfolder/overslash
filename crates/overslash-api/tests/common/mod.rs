@@ -545,9 +545,10 @@ where
     start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), customize).await
 }
 
-/// Like [`start_api_with`] but with an injected `Mailer`. Used by billing-
-/// email tests that need to capture rendered email bodies via an in-process
-/// mock-Resend server.
+/// Like [`start_api_with`] but with an injected `Mailer`. Used by tests that
+/// need to capture outbound transactional email (billing receipt/dunning,
+/// org-invite notification, future welcome-email integration tests) without
+/// spinning up a real provider.
 pub async fn start_api_with_mailer<F>(
     pool: PgPool,
     mailer: Arc<dyn overslash_core::email::Mailer>,

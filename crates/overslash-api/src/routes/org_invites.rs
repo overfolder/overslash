@@ -6,7 +6,7 @@
 
 use axum::{
     Json, Router,
-    extract::Path,
+    extract::{Path, State},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
-use overslash_db::repos::membership;
+use overslash_db::repos::{identity, membership, org, user};
 
 use crate::{
     AppState,
@@ -90,6 +90,7 @@ fn validate_email(raw: &str) -> Result<String> {
 }
 
 async fn create_invite(
+    State(state): State<AppState>,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -132,7 +133,60 @@ async fn create_invite(
         })
         .await;
 
+    // Best-effort notification email. All failures (org lookup, inviter
+    // lookup, mailer send) are logged and swallowed — the invite row is
+    // the source of truth, and the admin can revoke + re-invite if
+    // delivery hiccups.
+    match org::get_by_id(&state.db, scope.org_id()).await {
+        Ok(Some(org_row)) => {
+            let inviter_name = match acl.identity_id {
+                Some(id) => resolve_inviter_display_name(&state, scope.org_id(), id).await,
+                None => None,
+            };
+            crate::services::invite_email::send(&state, &row, &org_row, inviter_name.as_deref())
+                .await;
+        }
+        Ok(None) => {
+            // Can't actually happen: the org row backs the OrgScope that just
+            // accepted this request. Log if we somehow see it so the gap is
+            // visible without taking down the invite create flow.
+            tracing::warn!(
+                org_id = %scope.org_id(),
+                "org-invite email skipped: org row not found",
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                org_id = %scope.org_id(),
+                error = %e,
+                "org-invite email skipped: org lookup failed",
+            );
+        }
+    }
+
     Ok(Json(row.into()))
+}
+
+/// Best-effort lookup of the inviter's display name for the email body.
+/// Resolves identity → user → display_name. Returns `None` (caller falls
+/// back to a generic label) for API-key identities with no linked user,
+/// or on any database error — the audit row already records the precise
+/// identity, so the email body is a soft surface.
+async fn resolve_inviter_display_name(
+    state: &AppState,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Option<String> {
+    let identity_row = identity::get_by_id(&state.db, org_id, identity_id)
+        .await
+        .ok()
+        .flatten()?;
+    let user_id = identity_row.user_id?;
+    let user_row = user::get_by_id(&state.db, user_id).await.ok().flatten()?;
+    user_row
+        .display_name
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| user_row.email.filter(|s| !s.trim().is_empty()))
 }
 
 // Invite rows expose PII (invitee emails), the inviter's identity, and the

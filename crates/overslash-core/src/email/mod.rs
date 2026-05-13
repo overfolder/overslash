@@ -35,6 +35,13 @@ pub const TEST_TEMPLATE_HTML: &str = include_str!("../../templates/email/test.ht
 pub const WELCOME_TEMPLATE_SUBJECT: &str = "Welcome to Overslash";
 pub const WELCOME_TEMPLATE_HTML: &str = include_str!("../../templates/email/welcome.html");
 
+/// Org-invite notification. Transactional (admin-initiated, one-to-one) —
+/// not gated by `welcome_emails_unsubscribed_at` and ships without an
+/// unsubscribe link or `List-Unsubscribe` header. Placeholders:
+/// `{org_name}`, `{inviter_name}`, `{role}`, `{accept_url}`.
+pub const ORG_INVITE_TEMPLATE_SUBJECT: &str = "You've been invited to {org_name} on Overslash";
+pub const ORG_INVITE_TEMPLATE_HTML: &str = include_str!("../../templates/email/org_invite.html");
+
 /// Billing receipt. Sent on Stripe `invoice.payment_succeeded`. Transactional —
 /// exempt from `welcome_emails_unsubscribed_at` by policy (TODO.md §1.1).
 /// Placeholders: `{org_name}`, `{amount_display}`, `{currency_upper}`,
