@@ -62,6 +62,19 @@ pub struct AppState {
 
 /// Create the application router with all routes and middleware.
 pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
+    // Validate the master-key keyring eagerly — `Config::keyring()` is the
+    // only place that enforces the `active_id > previous_id` invariant
+    // (and the hex-parse of `SECRETS_ENCRYPTION_KEY[_PREVIOUS]`). Without
+    // this check the misconfigured deploy would boot fine and 500 on the
+    // first encrypt/decrypt request, which is exactly what Seer flagged on
+    // PR #287. Same fail-fast posture as the Stripe price-id resolution
+    // below.
+    config.keyring().map_err(|e| {
+        anyhow::anyhow!(
+            "invalid SECRETS_ENCRYPTION_KEY configuration: {e} — fix the env vars and redeploy"
+        )
+    })?;
+
     let metrics_handle = overslash_metrics::setup();
     overslash_metrics::webhooks::init();
 
