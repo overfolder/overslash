@@ -116,6 +116,14 @@ pub fn router(state: SharedState, self_url: String) -> Router {
             "/__simulate/dispute/{session_id}",
             post(simulate_dispute_created),
         )
+        .route(
+            "/__simulate/invoice-paid/{session_id}",
+            post(simulate_invoice_paid),
+        )
+        .route(
+            "/__simulate/invoice-failed/{session_id}",
+            post(simulate_invoice_payment_failed),
+        )
         // Runtime config — set after the API URL is known.
         .route("/__admin/webhook-target", post(set_webhook_target))
         .route("/__admin/state", get(dump_state))
@@ -416,6 +424,71 @@ async fn simulate_dispute_created(
     deliver_webhook(&ctx.state, &event).await;
     Ok(Json(
         json!({ "delivered": "charge.dispute.created", "dispute_id": dispute_id }),
+    ))
+}
+
+/// `POST /__simulate/invoice-paid/{session_id}` — emit `invoice.payment_succeeded`.
+async fn simulate_invoice_paid(
+    State(ctx): State<AppCtx>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let (customer, subscription) = lookup_session(&ctx.state, &session_id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let invoice_id = format!("in_{}", Uuid::new_v4().simple());
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let period_end = now + 30 * 24 * 60 * 60;
+    let event = build_event(
+        "invoice.payment_succeeded",
+        json!({
+            "id": invoice_id,
+            "object": "invoice",
+            "customer": customer,
+            "subscription": subscription,
+            "number": "TEST-0001",
+            "amount_paid": 4000,
+            "amount_due": 4000,
+            "currency": "usd",
+            "period_start": now,
+            "period_end": period_end,
+            "hosted_invoice_url": format!("{}/__simulate/invoice/{invoice_id}", ctx.self_url),
+            "invoice_pdf": format!("{}/__simulate/invoice/{invoice_id}.pdf", ctx.self_url),
+        }),
+    );
+    deliver_webhook(&ctx.state, &event).await;
+    Ok(Json(
+        json!({ "delivered": "invoice.payment_succeeded", "invoice_id": invoice_id }),
+    ))
+}
+
+/// `POST /__simulate/invoice-failed/{session_id}` — emit `invoice.payment_failed`.
+async fn simulate_invoice_payment_failed(
+    State(ctx): State<AppCtx>,
+    Path(session_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let (customer, subscription) = lookup_session(&ctx.state, &session_id)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let invoice_id = format!("in_{}", Uuid::new_v4().simple());
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let next_attempt = now + 3 * 24 * 60 * 60;
+    let event = build_event(
+        "invoice.payment_failed",
+        json!({
+            "id": invoice_id,
+            "object": "invoice",
+            "customer": customer,
+            "subscription": subscription,
+            "amount_paid": 0,
+            "amount_due": 4000,
+            "currency": "usd",
+            "attempt_count": 1,
+            "next_payment_attempt": next_attempt,
+        }),
+    );
+    deliver_webhook(&ctx.state, &event).await;
+    Ok(Json(
+        json!({ "delivered": "invoice.payment_failed", "invoice_id": invoice_id }),
     ))
 }
 

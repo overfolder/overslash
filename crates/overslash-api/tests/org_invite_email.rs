@@ -36,7 +36,7 @@ impl Mailer for CapturedMailer {
 async fn create_invite_sends_notification_email() {
     let pool = common::test_pool().await;
     let mailer = Arc::new(CapturedMailer::default());
-    let (addr, client) = common::start_api_with_mailer(pool, mailer.clone()).await;
+    let (addr, client) = common::start_api_with_mailer(pool, mailer.clone(), |_| {}).await;
     let base = format!("http://{addr}");
     let (_, _, _, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
 
@@ -98,7 +98,7 @@ async fn duplicate_invite_does_not_send_second_email() {
     // not still fire a second email for the duplicate attempt.
     let pool = common::test_pool().await;
     let mailer = Arc::new(CapturedMailer::default());
-    let (addr, client) = common::start_api_with_mailer(pool, mailer.clone()).await;
+    let (addr, client) = common::start_api_with_mailer(pool, mailer.clone(), |_| {}).await;
     let base = format!("http://{addr}");
     let (_, _, _, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
 

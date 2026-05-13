@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO billing_email_log (stripe_event_id, kind, user_id)\n         VALUES ($1, $2, $3)\n         ON CONFLICT (stripe_event_id, kind) DO NOTHING\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f18b2034162175a0556739199258d1afc7305e42d33d7b0dcfa112cd7001cf92"
+}

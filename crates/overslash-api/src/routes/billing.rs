@@ -494,6 +494,16 @@ pub async fn stripe_webhook(
 
     let event_type = event["type"].as_str().unwrap_or("");
     let data = &event["data"]["object"];
+    let event_id = event["id"].as_str().unwrap_or("");
+
+    // Reject signed-but-malformed events without an `id` up front. Stripe
+    // always sets `evt_...`; falling through with the empty string would
+    // funnel every such event to the same `(stripe_event_id, kind) = ("", …)`
+    // idempotency key and silently drop the second one on the UNIQUE.
+    if event_id.is_empty() {
+        tracing::warn!(event_type, "stripe webhook missing event id");
+        return Err(AppError::BadRequest("missing event id".into()));
+    }
 
     match event_type {
         "checkout.session.completed" => {
@@ -504,6 +514,33 @@ pub async fn stripe_webhook(
         }
         "customer.subscription.deleted" => {
             handle_subscription_deleted(&state, data).await?;
+            crate::services::billing_email::send_subscription_canceled(&state, event_id, data)
+                .await;
+        }
+        "invoice.payment_succeeded" => {
+            if matches!(
+                crate::services::billing_email::send_invoice_paid(&state, event_id, data).await,
+                crate::services::billing_email::SendOutcome::Retryable,
+            ) {
+                // Webhook ordering race: known customer, but
+                // checkout.session.completed hasn't yet provisioned the
+                // org_subscriptions row. Stripe re-delivers on 5xx; the
+                // claim row was released so the next retry can proceed.
+                return Err(AppError::Internal(
+                    "subscription not yet provisioned for known customer; awaiting checkout.session.completed".into(),
+                ));
+            }
+        }
+        "invoice.payment_failed" => {
+            if matches!(
+                crate::services::billing_email::send_invoice_payment_failed(&state, event_id, data)
+                    .await,
+                crate::services::billing_email::SendOutcome::Retryable,
+            ) {
+                return Err(AppError::Internal(
+                    "subscription not yet provisioned for known customer; awaiting checkout.session.completed".into(),
+                ));
+            }
         }
         _ => {}
     }

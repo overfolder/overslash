@@ -807,6 +807,7 @@ async fn test_webhook_checkout_completed_provisions_org() {
 
     // Build the webhook payload.
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": {
             "object": {
@@ -890,6 +891,7 @@ async fn test_webhook_checkout_completed_idempotent() {
     .unwrap();
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": { "object": {
             "id": session_id, "object": "checkout.session", "status": "complete",
@@ -1008,6 +1010,7 @@ async fn test_webhook_slug_collision_does_not_provision_attacker() {
     .unwrap();
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": { "object": {
             "id": session_b, "object": "checkout.session", "status": "complete",
@@ -1157,6 +1160,7 @@ async fn test_webhook_idempotent_after_partial_provisioning() {
 
     // Stripe retries the webhook.
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": { "object": {
             "id": session_id, "object": "checkout.session", "status": "complete",
@@ -1247,6 +1251,7 @@ async fn test_webhook_subscription_updated() {
     let billing_base = format!("http://{billing_addr}");
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "customer.subscription.updated",
         "data": { "object": {
             "id": sub_id,
@@ -1312,6 +1317,7 @@ async fn test_webhook_subscription_deleted() {
     let billing_base = format!("http://{billing_addr}");
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "customer.subscription.deleted",
         "data": { "object": {
             "id": sub_id,
@@ -1344,6 +1350,575 @@ async fn test_webhook_subscription_deleted() {
         .unwrap()
         .unwrap();
     assert_eq!(sub.status, "canceled");
+}
+
+// ---------------------------------------------------------------------------
+// Tests: billing transactional emails (TODO §1.1)
+//
+// Cover the three Stripe-driven billing emails wired via the webhook
+// dispatch in `routes/billing.rs`: receipt on `invoice.payment_succeeded`,
+// dunning on `invoice.payment_failed`, cancellation notice on
+// `customer.subscription.deleted`. Each test seeds a user with
+// `stripe_customer_id` and an `org_subscriptions` row, then drives an
+// HMAC-signed webhook payload through the real handler and asserts:
+//   1. the webhook still returns 200;
+//   2. exactly one POST to the mock Resend with the recipient + rendered HTML;
+//   3. `billing_email_log` has one row with `sent_at IS NOT NULL`.
+// Plus dedicated tests for the idempotency contract (Stripe retry → no
+// resend) and the failure-mode contract (mailer 500 → webhook still 200,
+// log row's `sent_at` left NULL).
+// ---------------------------------------------------------------------------
+
+/// In-process Resend mock that captures each `POST /emails` body. Returns
+/// the base URL the API mailer should be pointed at and a handle to the
+/// captured request bodies.
+async fn start_mock_resend() -> (String, std::sync::Arc<Mutex<Vec<Value>>>) {
+    use axum::extract::State;
+    let captured: std::sync::Arc<Mutex<Vec<Value>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+
+    async fn handler(
+        State(captured): State<std::sync::Arc<Mutex<Vec<Value>>>>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        captured.lock().await.push(body);
+        Json(json!({ "id": "em_test" }))
+    }
+
+    let app = Router::new()
+        .route("/emails", post(handler))
+        .with_state(captured.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), captured)
+}
+
+/// Resend mock that always 500s. Lets us prove that a transient mailer
+/// failure doesn't propagate into a 5xx on the Stripe webhook (which would
+/// cause Stripe to re-deliver and re-run non-idempotent side effects).
+async fn start_failing_mock_resend() -> String {
+    let app = Router::new().route(
+        "/emails",
+        post(|| async {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "boom" })),
+            )
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// Variant of `start_billing_api` that wires a real `ResendMailer` pointed at
+/// the supplied in-process mock Resend base URL.
+async fn start_billing_api_with_mailer(
+    pool: PgPool,
+    stripe_addr: std::net::SocketAddr,
+    resend_base_url: String,
+) -> (std::net::SocketAddr, reqwest::Client) {
+    let stripe_base = format!("http://{stripe_addr}");
+    let mailer: std::sync::Arc<dyn overslash_core::email::Mailer> =
+        std::sync::Arc::new(overslash_api::services::email::ResendMailer::with_base_url(
+            reqwest::Client::new(),
+            "re_test_key".into(),
+            "billing@overslash.test".into(),
+            None,
+            resend_base_url,
+        ));
+    common::start_api_with_mailer(pool, mailer, move |c| {
+        c.cloud_billing = true;
+        c.stripe_secret_key = Some("sk_test_secret".into());
+        c.stripe_webhook_secret = Some("whsec_test".into());
+        c.stripe_eur_lookup_key = "overslash_seat_eur".into();
+        c.stripe_usd_lookup_key = "overslash_seat_usd".into();
+        c.stripe_eur_price_id = Some("price_eur".into());
+        c.stripe_usd_price_id = Some("price_usd".into());
+        c.stripe_api_base = stripe_base.clone();
+        c.dashboard_url = "https://dash.test".into();
+    })
+    .await
+}
+
+/// Seed a user + an org_subscriptions row both keyed off the same Stripe
+/// customer id. Returns `(user_id, org_id, customer_id, sub_id)`.
+async fn seed_billing_user(pool: &PgPool, period_end_unix: i64) -> (Uuid, Uuid, String, String) {
+    let user_id = create_test_user(pool).await;
+    let org_id = create_test_org(pool).await;
+    let customer_id = format!("cus_{}", Uuid::new_v4().simple());
+    let sub_id = format!("sub_{}", Uuid::new_v4().simple());
+
+    overslash_db::repos::billing::set_stripe_customer(pool, user_id, &customer_id)
+        .await
+        .unwrap();
+
+    let period_end = OffsetDateTime::from_unix_timestamp(period_end_unix).ok();
+
+    overslash_db::repos::billing::upsert_org_subscription(
+        pool,
+        org_id,
+        overslash_db::repos::billing::UpsertSubscription {
+            stripe_subscription_id: &sub_id,
+            stripe_customer_id: &customer_id,
+            seats: 2,
+            status: "active",
+            currency: "usd",
+            current_period_start: None,
+            current_period_end: period_end,
+            cancel_at_period_end: false,
+        },
+    )
+    .await
+    .unwrap();
+
+    (user_id, org_id, customer_id, sub_id)
+}
+
+async fn count_billing_email_log(pool: &PgPool, event_id: &str, kind: &str) -> (i64, i64) {
+    let row = sqlx::query!(
+        "SELECT COUNT(*) AS \"total!\",
+                COUNT(*) FILTER (WHERE sent_at IS NOT NULL) AS \"sent!\"
+         FROM billing_email_log
+         WHERE stripe_event_id = $1 AND kind = $2",
+        event_id,
+        kind,
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (row.total, row.sent)
+}
+
+#[tokio::test]
+async fn test_webhook_invoice_paid_sends_receipt() {
+    let pool = common::test_pool().await;
+    let (_user_id, _org_id, customer_id, sub_id) = seed_billing_user(
+        &pool,
+        OffsetDateTime::now_utc().unix_timestamp() + 30 * 86_400,
+    )
+    .await;
+
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_test_paid",
+            "object": "invoice",
+            "customer": customer_id,
+            "subscription": sub_id,
+            "number": "OV-0001",
+            "amount_paid": 4000,
+            "currency": "usd",
+            "period_end": 1_800_000_000_i64,
+            "hosted_invoice_url": "https://example.com/inv/test",
+        }}
+    }))
+    .unwrap();
+
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 1, "exactly one email should be sent");
+    let body = &captured[0];
+    assert_eq!(
+        body["subject"],
+        json!("Receipt for your Overslash subscription")
+    );
+    assert!(
+        body["to"]
+            .as_str()
+            .expect("to is a string")
+            .starts_with("billing-test-"),
+        "recipient should be the seeded user's email: {}",
+        body["to"]
+    );
+    let html = body["html"].as_str().expect("html field");
+    assert!(html.contains("$40.00"), "amount formatted: {html}");
+    assert!(html.contains("Test Org"), "org name in body: {html}");
+    assert!(html.contains("OV-0001"), "invoice number in body: {html}");
+    assert!(
+        !html.contains("{org_name}"),
+        "no unresolved placeholders: {html}"
+    );
+    drop(captured);
+
+    let (total, sent) = count_billing_email_log(&pool, &event_id, "invoice_paid").await;
+    assert_eq!(total, 1, "one log row");
+    assert_eq!(sent, 1, "sent_at stamped");
+}
+
+#[tokio::test]
+async fn test_webhook_invoice_payment_failed_sends_dunning() {
+    let pool = common::test_pool().await;
+    let (_user_id, _org_id, customer_id, sub_id) =
+        seed_billing_user(&pool, OffsetDateTime::now_utc().unix_timestamp()).await;
+
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_failed",
+        "data": { "object": {
+            "id": "in_test_failed",
+            "object": "invoice",
+            "customer": customer_id,
+            "subscription": sub_id,
+            "amount_due": 4000,
+            "currency": "usd",
+            "attempt_count": 2,
+            "next_payment_attempt": 1_800_000_000_i64,
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 1);
+    let body = &captured[0];
+    assert_eq!(
+        body["subject"],
+        json!("Your Overslash payment didn't go through")
+    );
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("$40.00"));
+    assert!(html.contains("attempt 2"));
+    drop(captured);
+
+    let (_total, sent) = count_billing_email_log(&pool, &event_id, "invoice_payment_failed").await;
+    assert_eq!(sent, 1);
+}
+
+#[tokio::test]
+async fn test_webhook_subscription_deleted_sends_cancellation_email() {
+    let pool = common::test_pool().await;
+    let (_user_id, _org_id, customer_id, sub_id) = seed_billing_user(
+        &pool,
+        OffsetDateTime::now_utc().unix_timestamp() + 30 * 86_400,
+    )
+    .await;
+
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "customer.subscription.deleted",
+        "data": { "object": {
+            "id": sub_id,
+            "object": "subscription",
+            "status": "canceled",
+            "items": { "data": [{ "quantity": 2 }] },
+            "current_period_end": OffsetDateTime::now_utc().unix_timestamp() + 30 * 86_400,
+            "cancel_at_period_end": false,
+            "customer": customer_id,
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0]["subject"],
+        json!("Your Overslash subscription has been canceled")
+    );
+}
+
+#[tokio::test]
+async fn test_webhook_invoice_paid_idempotent_on_retry() {
+    let pool = common::test_pool().await;
+    let (_user_id, _org_id, customer_id, sub_id) =
+        seed_billing_user(&pool, OffsetDateTime::now_utc().unix_timestamp()).await;
+
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_idem",
+            "object": "invoice",
+            "customer": customer_id,
+            "subscription": sub_id,
+            "amount_paid": 4000,
+            "currency": "usd",
+            "hosted_invoice_url": "https://example.com/x",
+        }}
+    }))
+    .unwrap();
+
+    // Deliver twice — Stripe retry pattern. Same event id; the
+    // billing_email_log UNIQUE constraint catches the duplicate.
+    for _ in 0..2 {
+        let ts = OffsetDateTime::now_utc().unix_timestamp();
+        let sig = stripe_sig("whsec_test", ts, &payload);
+        let resp = billing_client
+            .post(format!("{billing_base}/v1/webhooks/stripe"))
+            .header("Stripe-Signature", sig)
+            .header("Content-Type", "application/json")
+            .body(payload.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 1, "second delivery must not resend");
+    drop(captured);
+
+    let (total, _sent) = count_billing_email_log(&pool, &event_id, "invoice_paid").await;
+    assert_eq!(total, 1, "exactly one log row across retries");
+}
+
+#[tokio::test]
+async fn test_webhook_invoice_paid_unknown_customer_no_send() {
+    let pool = common::test_pool().await;
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_unknown",
+            "object": "invoice",
+            "customer": "cus_unknown",
+            "amount_paid": 1000,
+            "currency": "usd",
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "webhook still 200 for unknown customer");
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 0, "no email sent");
+    drop(captured);
+
+    let (total, _) = count_billing_email_log(&pool, &event_id, "invoice_paid").await;
+    assert_eq!(total, 0, "no log row for unmatched customer");
+}
+
+#[tokio::test]
+async fn test_webhook_invoice_paid_mailer_failure_does_not_block_webhook() {
+    let pool = common::test_pool().await;
+    let (_user_id, _org_id, customer_id, sub_id) =
+        seed_billing_user(&pool, OffsetDateTime::now_utc().unix_timestamp()).await;
+
+    let resend_base = start_failing_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_fail",
+            "object": "invoice",
+            "customer": customer_id,
+            "subscription": sub_id,
+            "amount_paid": 4000,
+            "currency": "usd",
+            "hosted_invoice_url": "https://example.com/x",
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    // Critical: mailer 500 must not propagate. Stripe re-delivering this
+    // event would re-run any non-idempotent side effects in the dispatch.
+    assert_eq!(resp.status(), 200);
+
+    let (total, sent) = count_billing_email_log(&pool, &event_id, "invoice_paid").await;
+    assert_eq!(total, 1, "row claimed before send");
+    assert_eq!(sent, 0, "sent_at remains NULL after mailer failure");
+}
+
+/// Webhook ordering race: `invoice.payment_succeeded` arrives before
+/// `checkout.session.completed` has provisioned the `org_subscriptions` row.
+/// The user already exists (Stripe customer id is mapped) but the
+/// subscription row is missing — the sender must release its claim and
+/// return 5xx so Stripe redelivers the same event id; once checkout lands,
+/// the retry can re-claim and send the receipt.
+#[tokio::test]
+async fn test_webhook_invoice_paid_returns_5xx_when_subscription_not_yet_provisioned() {
+    let pool = common::test_pool().await;
+
+    // User + stripe_customer_id only — deliberately skip upsert_org_subscription.
+    let user_id = create_test_user(&pool).await;
+    let customer_id = format!("cus_{}", Uuid::new_v4().simple());
+    overslash_db::repos::billing::set_stripe_customer(&pool, user_id, &customer_id)
+        .await
+        .unwrap();
+
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_race",
+            "object": "invoice",
+            "customer": customer_id,
+            "amount_paid": 4000,
+            "currency": "usd",
+            "hosted_invoice_url": "https://example.com/x",
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        500,
+        "5xx asks Stripe to redeliver the same event id once the sub row exists"
+    );
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 0, "no email sent on race");
+    drop(captured);
+
+    let (total, _) = count_billing_email_log(&pool, &event_id, "invoice_paid").await;
+    assert_eq!(
+        total, 0,
+        "claim row must be released so the redelivered event can re-claim"
+    );
+}
+
+/// Signed-but-malformed Stripe webhooks without a top-level `id` get
+/// rejected with 400 rather than funneled to a `("", kind)` idempotency key
+/// that would silently drop the second such event on the UNIQUE.
+#[tokio::test]
+async fn test_webhook_missing_event_id_rejected() {
+    let pool = common::test_pool().await;
+    let (resend_base, _resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    // No "id" field at the top level.
+    let payload = serde_json::to_vec(&json!({
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_no_event_id",
+            "object": "invoice",
+            "customer": "cus_anything",
+            "amount_paid": 1000,
+            "currency": "usd",
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "missing event id rejected up front");
 }
 
 // ---------------------------------------------------------------------------
