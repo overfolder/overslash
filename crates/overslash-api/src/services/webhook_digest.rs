@@ -191,8 +191,12 @@ async fn send_for_org(
     if summaries.is_empty() {
         // Lost the race to clear the failures? Release so the slot can be
         // re-attempted (the next pass will simply skip the org as a
-        // non-candidate, which is correct).
-        let _ = webhook_digest_run::release(pool, org_id, today).await;
+        // non-candidate, which is correct). Match the logging discipline of
+        // the other release sites so a transient DB hiccup here is visible
+        // rather than silently leaving the claim in place.
+        if let Err(e) = webhook_digest_run::release(pool, org_id, today).await {
+            tracing::warn!(%org_id, error = %e, "webhook digest: release after no-failures failed");
+        }
         return Ok(SendOutcome::NoFailures);
     }
 
