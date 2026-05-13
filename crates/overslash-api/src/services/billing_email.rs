@@ -85,7 +85,13 @@ pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value
             release_claim(state, log_id, KIND_INVOICE_PAID, event_id).await;
             return SendOutcome::Retryable;
         }
-        ResolveOrg::Skip => return SendOutcome::Done,
+        ResolveOrg::Skip => {
+            // Transient sub/org lookup error or missing org row — release
+            // the claim so a manual replay (after the operator resolves the
+            // underlying inconsistency) can re-claim and succeed.
+            release_claim(state, log_id, KIND_INVOICE_PAID, event_id).await;
+            return SendOutcome::Done;
+        }
     };
 
     let amount_minor = invoice["amount_paid"].as_i64().unwrap_or(0);
@@ -169,7 +175,13 @@ pub async fn send_invoice_payment_failed(
             release_claim(state, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
             return SendOutcome::Retryable;
         }
-        ResolveOrg::Skip => return SendOutcome::Done,
+        ResolveOrg::Skip => {
+            // Transient sub/org lookup error or missing org row — release
+            // the claim so a manual replay (after the operator resolves the
+            // underlying inconsistency) can re-claim and succeed.
+            release_claim(state, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
+            return SendOutcome::Done;
+        }
     };
 
     let amount_minor = invoice["amount_due"].as_i64().unwrap_or(0);
