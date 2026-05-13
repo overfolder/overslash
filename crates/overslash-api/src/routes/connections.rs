@@ -133,20 +133,13 @@ async fn initiate_connection(
     )
     .await?;
 
-    // Re-read the persisted flow row when `include_raw` is set: the row is
-    // the source of truth for the raw upstream URL, and the kernel
-    // intentionally keeps it inside the `oauth_connection_flows` table so
-    // the MCP path cannot accidentally surface it. White-label REST
-    // callers opting into `include_raw` are agreeing to render their own
-    // consent screen and have already cleared the Obsidian threat model
-    // server-side (PKCE + state binding still hold either way).
-    let raw = if req.include_raw {
-        oauth_connection_flow::get_by_id(&state.db, &kernel_response.flow_id)
-            .await?
-            .map(|row| row.upstream_authorize_url)
-    } else {
-        None
-    };
+    // White-label REST callers opting into `include_raw` are agreeing to
+    // render their own consent screen and have already cleared the
+    // Obsidian threat model server-side (PKCE + state binding still hold
+    // either way). The kernel response carries `raw` in a `#[serde(skip)]`
+    // field, so MCP `dispatch_create_connection` can never accidentally
+    // surface it — only this explicit opt-in does.
+    let raw = req.include_raw.then(|| kernel_response.raw.clone());
 
     Ok(Json(InitiateConnectionResponse {
         auth_url: kernel_response.auth_url,

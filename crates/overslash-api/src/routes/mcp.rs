@@ -1293,6 +1293,37 @@ impl ForwardOutcome {
     }
 }
 
+/// Strip the `raw` upstream-provider authorize URL from a typed OAuth
+/// error envelope (`needs_authentication`, `reauth_required`,
+/// `missing_scopes`) so it cannot reach an MCP/chat-delivered consumer.
+///
+/// The REST envelope carries `raw` for white-label integrators that wrap
+/// consent in their own UI — see the Obsidian threat model notes in
+/// `services/platform_connections.rs` §9–32 ("the user sees
+/// `https://github.com/...` and has no Overslash-branded checkpoint").
+/// Centralised here so any code path that relays a REST error body to an
+/// MCP/SSE/elicitation consumer routes through one call: the `forward()`
+/// loopback below *and* `services/mcp_session.rs::complete_from_elicitation`
+/// where approval replays surface the same envelopes via SSE.
+///
+/// No-op when `body` isn't a JSON object whose `error` field matches one
+/// of the three OAuth codes — keeps non-OAuth typed errors and arbitrary
+/// success bodies unchanged.
+pub(crate) fn strip_oauth_raw_for_chat_delivery(body: &mut Value) {
+    const OAUTH_ERROR_CODES: &[&str] =
+        &["needs_authentication", "reauth_required", "missing_scopes"];
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    let is_oauth_typed = obj
+        .get("error")
+        .and_then(Value::as_str)
+        .is_some_and(|code| OAUTH_ERROR_CODES.contains(&code));
+    if is_oauth_typed {
+        obj.remove("raw");
+    }
+}
+
 async fn forward(
     state: &AppState,
     bearer: &str,
@@ -1328,9 +1359,15 @@ async fn forward(
             "credential_missing",
             "not_in_your_chain",
         ];
-        if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+        // The three OAuth-shaped typed envelopes carry a `raw` upstream
+        // URL intended for white-label REST integrators; the chat-delivery
+        // strip lives in `strip_oauth_raw_for_chat_delivery` so other
+        // relays (e.g. `services/mcp_session.rs::complete_from_elicitation`)
+        // can reuse the same single source of truth.
+        if let Ok(mut parsed) = serde_json::from_str::<Value>(&text) {
             if let Some(code) = parsed.get("error").and_then(Value::as_str) {
                 if TYPED_ERROR_CODES.contains(&code) {
+                    strip_oauth_raw_for_chat_delivery(&mut parsed);
                     return Ok(ForwardOutcome::TypedError(parsed));
                 }
             }
@@ -1422,5 +1459,72 @@ mod tests {
         let mut args = Value::Null;
         normalize_stringified_params(&mut args);
         assert_eq!(args, Value::Null);
+    }
+
+    #[test]
+    fn strip_oauth_raw_removes_raw_from_reauth_required() {
+        let mut body = json!({
+            "error": "reauth_required",
+            "connection_id": "11111111-1111-1111-1111-111111111111",
+            "auth_url": "https://app/connect-authorize?id=abc",
+            "raw": "https://accounts.google.com/o/oauth2/v2/auth?...",
+            "reason": "no_refresh_token",
+        });
+        strip_oauth_raw_for_chat_delivery(&mut body);
+        assert!(
+            body.get("raw").is_none(),
+            "`raw` must be stripped from reauth_required envelopes: {body}"
+        );
+        assert_eq!(body["auth_url"], "https://app/connect-authorize?id=abc");
+    }
+
+    #[test]
+    fn strip_oauth_raw_removes_raw_from_needs_authentication_and_missing_scopes() {
+        for code in ["needs_authentication", "missing_scopes"] {
+            let mut body = json!({
+                "error": code,
+                "auth_url": "https://app/connect-authorize?id=abc",
+                "raw": "https://accounts.google.com/o/oauth2/v2/auth?...",
+            });
+            strip_oauth_raw_for_chat_delivery(&mut body);
+            assert!(
+                body.get("raw").is_none(),
+                "`raw` must be stripped from `{code}` envelopes: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_oauth_raw_leaves_non_oauth_typed_errors_alone() {
+        // Non-OAuth typed errors don't carry a `raw` field today, but
+        // even if a future variant grew one for an unrelated purpose,
+        // we shouldn't blanket-strip — only the three OAuth codes are
+        // gated by the Obsidian threat model.
+        let mut body = json!({
+            "error": "credential_missing",
+            "secret_name": "X",
+            "raw": "this-would-not-be-an-oauth-url",
+        });
+        strip_oauth_raw_for_chat_delivery(&mut body);
+        assert_eq!(body["raw"], "this-would-not-be-an-oauth-url");
+    }
+
+    #[test]
+    fn strip_oauth_raw_is_noop_on_success_bodies() {
+        let original = json!({"ok": true, "rows": [1, 2]});
+        let mut body = original.clone();
+        strip_oauth_raw_for_chat_delivery(&mut body);
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn strip_oauth_raw_is_noop_on_non_object() {
+        let mut body = Value::Null;
+        strip_oauth_raw_for_chat_delivery(&mut body);
+        assert!(body.is_null());
+
+        let mut body = json!("not an object");
+        strip_oauth_raw_for_chat_delivery(&mut body);
+        assert_eq!(body, json!("not an object"));
     }
 }

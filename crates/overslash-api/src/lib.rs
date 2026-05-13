@@ -1,3 +1,12 @@
+// The OAuth-shaped typed-error variants on `AppError` (`NeedsAuthentication`,
+// `ReauthRequired`, `MissingScopes`) carry three URL flavors (gated /
+// shortened / raw upstream) plus contextual ids — see the doc-comment on
+// each variant for the wire contract. Boxing the variants to shrink
+// `Result<_, AppError>` to clippy's default 128-byte threshold would add an
+// allocation on every cold error path and complicate ~10 match sites for no
+// runtime benefit. Suppress the size lint instead.
+#![allow(clippy::result_large_err)]
+
 pub mod config;
 pub mod error;
 pub mod extractors;

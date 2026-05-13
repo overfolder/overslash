@@ -2429,9 +2429,11 @@ async fn reauth_required_envelope(
     match platform_connections::mint_upgrade_auth_url(state, org_id, caller_identity_id, conn, &[])
         .await
     {
-        Ok(auth_url) => AppError::ReauthRequired {
+        Ok(urls) => AppError::ReauthRequired {
             connection_id: conn.id,
-            auth_url,
+            auth_url: urls.auth_url,
+            short: urls.short,
+            raw: Some(urls.raw),
             reason: reason.to_string(),
         },
         Err(mint_err) => {
@@ -2501,7 +2503,7 @@ async fn needs_authentication_for_service(
     // would see a 404 on `/v1/actions/call` and think the *action* is
     // missing. Surface as Internal so operators can spot the misconfig,
     // and stop trying to mint a URL the user can't act on anyway.
-    let auth_url = match platform_connections::mint_initial_auth_url(
+    let urls = match platform_connections::mint_initial_auth_url(
         state,
         org_id,
         caller_identity_id,
@@ -2511,7 +2513,7 @@ async fn needs_authentication_for_service(
     )
     .await
     {
-        Ok(url) => url,
+        Ok(urls) => urls,
         Err(mint_err) => {
             tracing::error!(
                 "needs_authentication: failed to mint initial auth url for provider '{provider}': {mint_err}"
@@ -2526,7 +2528,9 @@ async fn needs_authentication_for_service(
         service: Some(service_key.to_string()),
         service_instance_id: instance.map(|i| i.id),
         connection_id: None,
-        auth_url,
+        auth_url: urls.auth_url,
+        short: urls.short,
+        raw: Some(urls.raw),
     }))
 }
 
@@ -2752,7 +2756,7 @@ async fn check_required_scopes(
     // `auth_url` from the body. The dashboard / REST clients will fall
     // back to `upgrade_url`, and the client still gets the correct 403
     // missing_scopes shape.
-    let auth_url = match platform_connections::mint_upgrade_auth_url(
+    let (auth_url, short, raw) = match platform_connections::mint_upgrade_auth_url(
         state,
         scope.org_id(),
         identity_id,
@@ -2761,13 +2765,13 @@ async fn check_required_scopes(
     )
     .await
     {
-        Ok(url) => Some(url),
+        Ok(urls) => (Some(urls.auth_url), urls.short, Some(urls.raw)),
         Err(e) => {
             tracing::error!(
                 "missing_scopes: failed to mint upgrade auth url for connection {}: {e}",
                 connection.id
             );
-            None
+            (None, None, None)
         }
     };
     let upgrade_url = format!(
@@ -2780,6 +2784,8 @@ async fn check_required_scopes(
         missing,
         upgrade_url,
         auth_url,
+        short,
+        raw,
     })
 }
 

@@ -30,6 +30,23 @@
 //! gated URL, which fail-fasts on missing/expired/consumed/session-
 //! mismatch before 302ing to the provider. White-label REST callers that
 //! still need the raw provider URL can opt in via `include_raw: true`.
+//!
+//! ## Three-URL bundle
+//!
+//! The kernel returns three flavors of the same authorize handle:
+//!
+//! - `auth_url`: the Overslash-gated URL — the default deliverable.
+//! - `short`: best-effort `oversla.sh/<slug>` redirect to `auth_url`,
+//!   present only when the shortener is configured. Friendlier for chat
+//!   delivery where long base62 ids get mangled by line-wrapping.
+//! - `raw`: the upstream provider authorize URL. White-label REST
+//!   integrators wrap this in their own consent UI. The MCP forwarder
+//!   strips this field before handing the envelope to the agent — see
+//!   `routes/mcp.rs::forward` and the Obsidian threat-model notes above.
+//!
+//! The same triplet flows through the action-handler error envelopes
+//! (`reauth_required`, `needs_authentication`, `missing_scopes`) via
+//! [`mint_initial_auth_url`] and [`mint_upgrade_auth_url`].
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -93,6 +110,15 @@ pub struct CreateConnectionResponse {
     /// Optional shortened form (only present if the shortener is configured).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short: Option<String>,
+    /// Raw upstream provider authorize URL (e.g. `https://accounts.google.com/...`).
+    /// Marked `#[serde(skip)]` so the platform-registry MCP path
+    /// (`dispatch_create_connection`) cannot accidentally surface it via a
+    /// blanket `serde_json::to_value(response)` call. The REST
+    /// `initiate_connection` wrapper still gates exposure on
+    /// `include_raw`; the action-handler error envelopes always expose it
+    /// on REST and the MCP forwarder strips it.
+    #[serde(skip)]
+    pub raw: String,
     /// OAuth state parameter. Already bound to org/identity/provider/PKCE
     /// server-side; surfaced here so REST callers can correlate the
     /// callback if they want to.
@@ -100,6 +126,18 @@ pub struct CreateConnectionResponse {
     pub provider: String,
     pub expires_at: OffsetDateTime,
     pub flow_id: String,
+}
+
+/// Bundle of authorize-URL flavors returned by the action-handler
+/// minters ([`mint_initial_auth_url`] and [`mint_upgrade_auth_url`]).
+/// Mirrors the same triplet on [`CreateConnectionResponse`] minus the
+/// kernel-only fields (state/flow_id/expires_at) the error envelopes
+/// don't need.
+#[derive(Debug)]
+pub struct AuthRecoveryUrls {
+    pub auth_url: String,
+    pub short: Option<String>,
+    pub raw: String,
 }
 
 pub async fn kernel_create_connection(
@@ -237,6 +275,7 @@ pub async fn kernel_create_connection(
     Ok(CreateConnectionResponse {
         auth_url,
         short,
+        raw: raw_authorize_url,
         state: oauth_state,
         provider: input.provider,
         expires_at,
@@ -321,7 +360,7 @@ pub async fn mint_initial_auth_url(
     provider: &str,
     scopes: &[String],
     on_behalf_of: Option<Uuid>,
-) -> Result<String, AppError> {
+) -> Result<AuthRecoveryUrls, AppError> {
     let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
     let response = kernel_create_connection(
         ctx,
@@ -335,7 +374,11 @@ pub async fn mint_initial_auth_url(
         RequestMeta::default(),
     )
     .await?;
-    Ok(response.auth_url)
+    Ok(AuthRecoveryUrls {
+        auth_url: response.auth_url,
+        short: response.short,
+        raw: response.raw,
+    })
 }
 
 /// Mint a gated `/connect-authorize` URL that, when consumed, refreshes
@@ -355,7 +398,7 @@ pub async fn mint_upgrade_auth_url(
     caller_identity_id: Uuid,
     conn: &ConnectionRow,
     extra_scopes: &[String],
-) -> Result<String, AppError> {
+) -> Result<AuthRecoveryUrls, AppError> {
     let scopes = merge_scopes(&conn.scopes, extra_scopes);
 
     // If the connection belongs to a different identity than the caller
@@ -377,7 +420,11 @@ pub async fn mint_upgrade_auth_url(
         RequestMeta::default(),
     )
     .await?;
-    Ok(response.auth_url)
+    Ok(AuthRecoveryUrls {
+        auth_url: response.auth_url,
+        short: response.short,
+        raw: response.raw,
+    })
 }
 
 #[cfg(test)]
