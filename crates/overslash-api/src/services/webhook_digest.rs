@@ -145,7 +145,14 @@ pub async fn run_once(
                 tracing::warn!(%org_id, "webhook digest: org has no admins; skipped");
             }
             Err(e) => {
-                tracing::error!(%org_id, error = %e, "webhook digest: send_for_org failed");
+                // Release the claim so a future tick (today or tomorrow's
+                // 13:00 anchor) can retry. Otherwise a transient DB error
+                // mid-send would lock this org out for the rest of the day
+                // even though no email actually went out.
+                if let Err(rel_err) = webhook_digest_run::release(pool, org_id, today).await {
+                    tracing::warn!(%org_id, error = %rel_err, "webhook digest: release after send_for_org err failed");
+                }
+                tracing::error!(%org_id, error = %e, "webhook digest: send_for_org failed; claim released");
             }
         }
     }
