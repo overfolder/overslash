@@ -6,15 +6,29 @@
 //! headers.
 //!
 //! Idempotency is enforced by `billing_email_log` keyed on
-//! `(stripe_event_id, kind)`: insert-first via [`billing_email_log::try_claim`],
-//! render + send, then stamp `sent_at`. A Stripe re-delivery hits the UNIQUE
-//! and silently no-ops. A transient mailer failure leaves `sent_at` NULL —
-//! the row is the audit signal for manual replay; we deliberately don't
-//! delete it on failure so the next webhook retry doesn't double-send.
+//! `(stripe_event_id, kind)`. The pipeline is:
 //!
-//! All public entry points return `()` so the webhook handler can't
-//! accidentally propagate failure into a 5xx (which would re-trigger the
-//! non-idempotent side effects in `handle_subscription_deleted` etc.).
+//!   1. Cheap user lookup from `stripe_customer_id` (one query). Unknown
+//!      customer → silent skip.
+//!   2. `try_claim` — Stripe re-delivery of the same `(event_id, kind)` hits
+//!      the UNIQUE and short-circuits before the heavier org/subscription
+//!      lookups. This is why the claim runs ahead of `resolve_org_context`,
+//!      not after it.
+//!   3. `resolve_org_context` for the rest of the payload (subscription +
+//!      org). A missing `org_subscriptions` row for a known customer is the
+//!      webhook-ordering race — `invoice.payment_*` arrived before
+//!      `checkout.session.completed` provisioned the row. In that case the
+//!      sender [`release`]s its claim and returns [`SendOutcome::Retryable`]
+//!      so the route handler returns 5xx and Stripe re-delivers the same
+//!      event id. Once checkout has landed, the next retry succeeds.
+//!   4. Render + send. A transient mailer failure leaves `sent_at` NULL —
+//!      the row is the audit signal for manual replay; we deliberately don't
+//!      delete it on failure so the next webhook retry doesn't double-send.
+//!
+//! [`send_subscription_canceled`] returns `()` rather than a `SendOutcome`
+//! because its caller in the webhook dispatch has already run the
+//! non-idempotent `handle_subscription_deleted`; propagating a 5xx after
+//! that would re-trigger the cleanup on the Stripe retry.
 
 use std::collections::HashMap;
 
@@ -35,33 +49,56 @@ const KIND_INVOICE_PAID: &str = "invoice_paid";
 const KIND_INVOICE_PAYMENT_FAILED: &str = "invoice_payment_failed";
 const KIND_SUBSCRIPTION_CANCELED: &str = "subscription_canceled";
 
-/// Send the receipt on `invoice.payment_succeeded`. Best-effort: any failure
-/// (no matching user, mailer down, etc.) is logged at `warn` and swallowed.
-pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value) {
+/// Pipeline result for invoice-class senders. `Retryable` signals the
+/// webhook route to return 5xx so Stripe re-delivers the same event id once
+/// `checkout.session.completed` has landed and populated `org_subscriptions`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// Either the email was sent, or the skip was deliberate (unknown
+    /// customer, duplicate event id, mailer failure already swallowed).
+    Done,
+    /// Known customer but `org_subscriptions` row is missing — the
+    /// `invoice.*` webhook beat the `checkout.session.completed` webhook.
+    /// The claim row has been released; the route handler should return 5xx
+    /// so Stripe retries the same event id.
+    Retryable,
+}
+
+/// Send the receipt on `invoice.payment_succeeded`.
+pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value) -> SendOutcome {
     let Some(customer_id) = invoice["customer"].as_str() else {
         tracing::warn!(event_id, "invoice_paid: missing customer id on payload");
-        return;
+        return SendOutcome::Done;
     };
 
-    let Some(ctx) = resolve_context(state, customer_id, KIND_INVOICE_PAID).await else {
-        return;
+    let Some((user_id, email)) = resolve_user(state, customer_id, KIND_INVOICE_PAID).await else {
+        return SendOutcome::Done;
     };
 
-    let Some(log_id) = claim(state, event_id, KIND_INVOICE_PAID, ctx.user_id).await else {
-        return;
+    let Some(log_id) = claim(state, event_id, KIND_INVOICE_PAID, user_id).await else {
+        return SendOutcome::Done;
+    };
+
+    let org_ctx = match resolve_org_context(state, customer_id, KIND_INVOICE_PAID).await {
+        ResolveOrg::Found(c) => c,
+        ResolveOrg::Retryable => {
+            release_claim(state, log_id, KIND_INVOICE_PAID, event_id).await;
+            return SendOutcome::Retryable;
+        }
+        ResolveOrg::Skip => return SendOutcome::Done,
     };
 
     let amount_minor = invoice["amount_paid"].as_i64().unwrap_or(0);
-    let currency = invoice["currency"].as_str().unwrap_or(&ctx.currency);
+    let currency = invoice["currency"].as_str().unwrap_or(&org_ctx.currency);
     let invoice_number = invoice["number"].as_str().unwrap_or("");
     let period_end_display = unix_to_date(invoice["period_end"].as_i64())
-        .or_else(|| ctx.current_period_end.and_then(format_date))
+        .or_else(|| org_ctx.current_period_end.and_then(format_date))
         .unwrap_or_else(|| "—".to_string());
     let hosted_invoice_url = invoice["hosted_invoice_url"].as_str().unwrap_or("");
     let billing_portal_url = state.config.dashboard_url_for("/org/billing");
 
     let mut params: HashMap<String, Value> = HashMap::new();
-    params.insert("org_name".into(), Value::String(ctx.org_name.clone()));
+    params.insert("org_name".into(), Value::String(org_ctx.org_name.clone()));
     params.insert(
         "amount_display".into(),
         Value::String(format_money(amount_minor, currency)),
@@ -94,40 +131,55 @@ pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value
         log_id,
         event_id,
         KIND_INVOICE_PAID,
-        ctx.email,
+        email,
         INVOICE_PAID_SUBJECT,
         render(INVOICE_PAID_HTML, &params),
     )
     .await;
+    SendOutcome::Done
 }
 
 /// Send the dunning email on `invoice.payment_failed`.
-pub async fn send_invoice_payment_failed(state: &AppState, event_id: &str, invoice: &Value) {
+pub async fn send_invoice_payment_failed(
+    state: &AppState,
+    event_id: &str,
+    invoice: &Value,
+) -> SendOutcome {
     let Some(customer_id) = invoice["customer"].as_str() else {
         tracing::warn!(
             event_id,
             "invoice_payment_failed: missing customer id on payload"
         );
-        return;
+        return SendOutcome::Done;
     };
 
-    let Some(ctx) = resolve_context(state, customer_id, KIND_INVOICE_PAYMENT_FAILED).await else {
-        return;
-    };
-
-    let Some(log_id) = claim(state, event_id, KIND_INVOICE_PAYMENT_FAILED, ctx.user_id).await
+    let Some((user_id, email)) =
+        resolve_user(state, customer_id, KIND_INVOICE_PAYMENT_FAILED).await
     else {
-        return;
+        return SendOutcome::Done;
+    };
+
+    let Some(log_id) = claim(state, event_id, KIND_INVOICE_PAYMENT_FAILED, user_id).await else {
+        return SendOutcome::Done;
+    };
+
+    let org_ctx = match resolve_org_context(state, customer_id, KIND_INVOICE_PAYMENT_FAILED).await {
+        ResolveOrg::Found(c) => c,
+        ResolveOrg::Retryable => {
+            release_claim(state, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
+            return SendOutcome::Retryable;
+        }
+        ResolveOrg::Skip => return SendOutcome::Done,
     };
 
     let amount_minor = invoice["amount_due"].as_i64().unwrap_or(0);
-    let currency = invoice["currency"].as_str().unwrap_or(&ctx.currency);
+    let currency = invoice["currency"].as_str().unwrap_or(&org_ctx.currency);
     let attempt_count = invoice["attempt_count"].as_i64().unwrap_or(1);
     let next_attempt_display = unix_to_date(invoice["next_payment_attempt"].as_i64());
     let billing_portal_url = state.config.dashboard_url_for("/org/billing");
 
     let mut params: HashMap<String, Value> = HashMap::new();
-    params.insert("org_name".into(), Value::String(ctx.org_name.clone()));
+    params.insert("org_name".into(), Value::String(org_ctx.org_name.clone()));
     params.insert(
         "amount_display".into(),
         Value::String(format_money(amount_minor, currency)),
@@ -153,15 +205,19 @@ pub async fn send_invoice_payment_failed(state: &AppState, event_id: &str, invoi
         log_id,
         event_id,
         KIND_INVOICE_PAYMENT_FAILED,
-        ctx.email,
+        email,
         INVOICE_PAYMENT_FAILED_SUBJECT,
         render(INVOICE_PAYMENT_FAILED_HTML, &params),
     )
     .await;
+    SendOutcome::Done
 }
 
 /// Send the cancellation notice on `customer.subscription.deleted`. Invoked
-/// AFTER the DB `cancel_subscription` so we read the final state.
+/// AFTER the DB `cancel_subscription` so we read the final state. Returns
+/// `()` rather than `SendOutcome` — the caller has already done a
+/// non-idempotent state mutation, so we can't ask Stripe to retry without
+/// re-running that.
 pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &Value) {
     let Some(customer_id) = sub["customer"].as_str() else {
         tracing::warn!(
@@ -171,25 +227,34 @@ pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &
         return;
     };
 
-    let Some(ctx) = resolve_context(state, customer_id, KIND_SUBSCRIPTION_CANCELED).await else {
+    let Some((user_id, email)) = resolve_user(state, customer_id, KIND_SUBSCRIPTION_CANCELED).await
+    else {
         return;
     };
 
-    let Some(log_id) = claim(state, event_id, KIND_SUBSCRIPTION_CANCELED, ctx.user_id).await else {
+    let Some(log_id) = claim(state, event_id, KIND_SUBSCRIPTION_CANCELED, user_id).await else {
         return;
+    };
+
+    // For cancellation we never return Retryable — see the function doc.
+    // `Retryable` and `Skip` both collapse to "silently drop"; the
+    // distinguishing behavior only matters for invoice events.
+    let org_ctx = match resolve_org_context(state, customer_id, KIND_SUBSCRIPTION_CANCELED).await {
+        ResolveOrg::Found(c) => c,
+        ResolveOrg::Retryable | ResolveOrg::Skip => return,
     };
 
     // current_period_end on the deleted subscription is the access cutoff. If
     // the row's `current_period_end` was never set (free trial canceled
     // immediately, exotic states), fall back to the event payload.
-    let access_until_display = ctx
+    let access_until_display = org_ctx
         .current_period_end
         .and_then(format_date)
         .or_else(|| unix_to_date(sub["current_period_end"].as_i64()));
     let billing_portal_url = state.config.dashboard_url_for("/org/billing");
 
     let mut params: HashMap<String, Value> = HashMap::new();
-    params.insert("org_name".into(), Value::String(ctx.org_name.clone()));
+    params.insert("org_name".into(), Value::String(org_ctx.org_name.clone()));
     if let Some(s) = access_until_display {
         params.insert("access_until_display".into(), Value::String(s));
     }
@@ -203,29 +268,37 @@ pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &
         log_id,
         event_id,
         KIND_SUBSCRIPTION_CANCELED,
-        ctx.email,
+        email,
         SUBSCRIPTION_CANCELED_SUBJECT,
         render(SUBSCRIPTION_CANCELED_HTML, &params),
     )
     .await;
 }
 
-struct BillingContext {
-    user_id: Uuid,
-    email: String,
+struct OrgContext {
     org_name: String,
     currency: String,
     current_period_end: Option<OffsetDateTime>,
 }
 
-/// Resolve recipient + org context from a Stripe customer id. Logs and
-/// returns `None` for the silent-skip cases: unknown customer, no email on
-/// the user row, missing org_subscription row, missing org row.
-async fn resolve_context(
+enum ResolveOrg {
+    Found(OrgContext),
+    /// Known customer, but `org_subscriptions` row hasn't been provisioned
+    /// yet — invoice webhook beat `checkout.session.completed`.
+    Retryable,
+    /// Recoverably wrong but not retryable: subscription lookup errored,
+    /// or org row missing despite a subscription row.
+    Skip,
+}
+
+/// Cheap one-query lookup: stripe_customer_id → (user_id, email). Used as
+/// the first step of every pipeline so a Stripe re-delivery never goes past
+/// `claim()` before bailing out.
+async fn resolve_user(
     state: &AppState,
     customer_id: &str,
     kind: &'static str,
-) -> Option<BillingContext> {
+) -> Option<(Uuid, String)> {
     let user = match billing_repo::get_user_by_stripe_customer(&state.db, customer_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
@@ -242,27 +315,33 @@ async fn resolve_context(
         }
     };
     let (user_id, email_opt, _display_name) = user;
-    let email = match email_opt.filter(|s| !s.is_empty()) {
-        Some(e) => e,
-        None => {
-            tracing::warn!(kind, %user_id, "billing email: user has no email on file");
-            return None;
-        }
-    };
+    let email = email_opt.filter(|s| !s.is_empty()).or_else(|| {
+        tracing::warn!(kind, %user_id, "billing email: user has no email on file");
+        None
+    })?;
+    Some((user_id, email))
+}
 
+/// Second-phase lookup: subscription + org. Run AFTER `claim` so a Stripe
+/// retry of the same event never re-queries these.
+async fn resolve_org_context(
+    state: &AppState,
+    customer_id: &str,
+    kind: &'static str,
+) -> ResolveOrg {
     let sub = match billing_repo::get_org_subscription_by_customer(&state.db, customer_id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             tracing::warn!(
                 kind,
                 customer_id,
-                "billing email: no org_subscription for customer"
+                "billing email: no org_subscription for customer — webhook ordering race, asking Stripe to retry"
             );
-            return None;
+            return ResolveOrg::Retryable;
         }
         Err(e) => {
             tracing::warn!(kind, customer_id, error = %e, "billing email: subscription lookup failed");
-            return None;
+            return ResolveOrg::Skip;
         }
     };
 
@@ -270,21 +349,31 @@ async fn resolve_context(
         Ok(Some(o)) => o,
         Ok(None) => {
             tracing::warn!(kind, org_id = %sub.org_id, "billing email: org row missing");
-            return None;
+            return ResolveOrg::Skip;
         }
         Err(e) => {
             tracing::warn!(kind, org_id = %sub.org_id, error = %e, "billing email: org lookup failed");
-            return None;
+            return ResolveOrg::Skip;
         }
     };
 
-    Some(BillingContext {
-        user_id,
-        email,
+    ResolveOrg::Found(OrgContext {
         org_name: org.name,
         currency: sub.currency,
         current_period_end: sub.current_period_end,
     })
+}
+
+async fn release_claim(state: &AppState, log_id: Uuid, kind: &'static str, event_id: &str) {
+    if let Err(e) = billing_email_log::release(&state.db, log_id).await {
+        tracing::warn!(
+            kind,
+            event_id,
+            %log_id,
+            error = %e,
+            "billing email: release_claim failed; future retry of this event_id will no-op via the existing claim"
+        );
+    }
 }
 
 async fn claim(

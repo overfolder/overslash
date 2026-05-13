@@ -51,3 +51,15 @@ pub async fn mark_sent(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     .await?;
     Ok(())
 }
+
+/// Release a claim row so a future Stripe retry of the same `(event_id, kind)`
+/// can re-claim and proceed. Only used on the webhook-ordering race —
+/// `invoice.payment_succeeded` arriving before `checkout.session.completed`
+/// has provisioned the `org_subscriptions` row — where the caller has decided
+/// to return 5xx and let Stripe redeliver.
+pub async fn release(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query!("DELETE FROM billing_email_log WHERE id = $1", id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

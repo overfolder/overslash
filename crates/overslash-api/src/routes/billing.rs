@@ -509,11 +509,29 @@ pub async fn stripe_webhook(
                 .await;
         }
         "invoice.payment_succeeded" => {
-            crate::services::billing_email::send_invoice_paid(&state, event_id, data).await;
+            if matches!(
+                crate::services::billing_email::send_invoice_paid(&state, event_id, data).await,
+                crate::services::billing_email::SendOutcome::Retryable,
+            ) {
+                // Webhook ordering race: known customer, but
+                // checkout.session.completed hasn't yet provisioned the
+                // org_subscriptions row. Stripe re-delivers on 5xx; the
+                // claim row was released so the next retry can proceed.
+                return Err(AppError::Internal(
+                    "subscription not yet provisioned for known customer; awaiting checkout.session.completed".into(),
+                ));
+            }
         }
         "invoice.payment_failed" => {
-            crate::services::billing_email::send_invoice_payment_failed(&state, event_id, data)
-                .await;
+            if matches!(
+                crate::services::billing_email::send_invoice_payment_failed(&state, event_id, data)
+                    .await,
+                crate::services::billing_email::SendOutcome::Retryable,
+            ) {
+                return Err(AppError::Internal(
+                    "subscription not yet provisioned for known customer; awaiting checkout.session.completed".into(),
+                ));
+            }
         }
         _ => {}
     }

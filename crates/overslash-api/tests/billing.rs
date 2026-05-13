@@ -1811,6 +1811,72 @@ async fn test_webhook_invoice_paid_mailer_failure_does_not_block_webhook() {
     assert_eq!(sent, 0, "sent_at remains NULL after mailer failure");
 }
 
+/// Webhook ordering race: `invoice.payment_succeeded` arrives before
+/// `checkout.session.completed` has provisioned the `org_subscriptions` row.
+/// The user already exists (Stripe customer id is mapped) but the
+/// subscription row is missing — the sender must release its claim and
+/// return 5xx so Stripe redelivers the same event id; once checkout lands,
+/// the retry can re-claim and send the receipt.
+#[tokio::test]
+async fn test_webhook_invoice_paid_returns_5xx_when_subscription_not_yet_provisioned() {
+    let pool = common::test_pool().await;
+
+    // User + stripe_customer_id only — deliberately skip upsert_org_subscription.
+    let user_id = create_test_user(&pool).await;
+    let customer_id = format!("cus_{}", Uuid::new_v4().simple());
+    overslash_db::repos::billing::set_stripe_customer(&pool, user_id, &customer_id)
+        .await
+        .unwrap();
+
+    let (resend_base, resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    let event_id = format!("evt_{}", Uuid::new_v4().simple());
+    let payload = serde_json::to_vec(&json!({
+        "id": event_id,
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_race",
+            "object": "invoice",
+            "customer": customer_id,
+            "amount_paid": 4000,
+            "currency": "usd",
+            "hosted_invoice_url": "https://example.com/x",
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        500,
+        "5xx asks Stripe to redeliver the same event id once the sub row exists"
+    );
+
+    let captured = resend_captured.lock().await;
+    assert_eq!(captured.len(), 0, "no email sent on race");
+    drop(captured);
+
+    let (total, _) = count_billing_email_log(&pool, &event_id, "invoice_paid").await;
+    assert_eq!(
+        total, 0,
+        "claim row must be released so the redelivered event can re-claim"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tests: GET /v1/billing/checkout/{session_id}/status
 // ---------------------------------------------------------------------------
