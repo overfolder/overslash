@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM webhook_digest_runs WHERE org_id = $1 AND run_date = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8505397516ea6d1abb37aa500a43c139cde4643950d662ab275543a740ec20f8"
+}

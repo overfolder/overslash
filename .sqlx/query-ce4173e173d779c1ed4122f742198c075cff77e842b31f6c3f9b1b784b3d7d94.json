@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at\n         FROM users\n         WHERE overslash_idp_provider = $1 AND overslash_idp_subject = $2",
+  "query": "INSERT INTO users (email, display_name)\n         VALUES ($1, $2)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, webhook_digest_unsubscribed_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -50,11 +50,16 @@
       },
       {
         "ordinal": 9,
-        "name": "created_at",
+        "name": "webhook_digest_unsubscribed_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -75,9 +80,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "577cbbe6e86bf6bec21a3eca3665074d71ef1bfa4e719003c7fca94b08966013"
+  "hash": "ce4173e173d779c1ed4122f742198c075cff77e842b31f6c3f9b1b784b3d7d94"
 }

@@ -3174,6 +3174,7 @@ dependencies = [
  "dotenvy",
  "mime_guess",
  "overslash-api",
+ "overslash-core",
  "overslash-mcp",
  "rand 0.10.1",
  "reqwest 0.13.3",

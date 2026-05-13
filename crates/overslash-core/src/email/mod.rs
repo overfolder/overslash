@@ -35,6 +35,14 @@ pub const TEST_TEMPLATE_HTML: &str = include_str!("../../templates/email/test.ht
 pub const WELCOME_TEMPLATE_SUBJECT: &str = "Welcome to Overslash";
 pub const WELCOME_TEMPLATE_HTML: &str = include_str!("../../templates/email/welcome.html");
 
+/// Daily webhook DLQ digest. One email per (org admin, day) when the org has
+/// terminal webhook failures in the last 24 hours. Placeholders:
+/// `{org_name}`, `{endpoint_count}`, `{rows_html}` (pre-rendered `<tr>` block
+/// — the interpolator doesn't loop), `{dashboard_url}`, `{unsubscribe_url}`.
+pub const WEBHOOK_DIGEST_TEMPLATE_SUBJECT: &str = "Webhook delivery failures in the last 24 hours";
+pub const WEBHOOK_DIGEST_TEMPLATE_HTML: &str =
+    include_str!("../../templates/email/webhook_digest.html");
+
 /// Org-invite notification. Transactional (admin-initiated, one-to-one) —
 /// not gated by `welcome_emails_unsubscribed_at` and ships without an
 /// unsubscribe link or `List-Unsubscribe` header. Placeholders:

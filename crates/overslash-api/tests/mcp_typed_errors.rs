@@ -64,7 +64,7 @@ async fn seed_connection_no_refresh_expired(
     identity_id: Uuid,
     provider_key: &str,
 ) -> Uuid {
-    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = crypto::Keyring::test();
     let access = crypto::encrypt(&enc_key, b"mock_expired_access_token").unwrap();
     let expired_at = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
     // No `encrypted_refresh_token` → resolver returns `OAuthError::NoRefreshToken`

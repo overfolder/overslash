@@ -6,7 +6,29 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub database_url: String,
+    /// 64-char hex master key used to encrypt every secret value, OAuth
+    /// token, BYOC client_id/secret, and IdP credential. Wrapped at runtime
+    /// in a [`overslash_core::crypto::Keyring`] together with
+    /// `secrets_encryption_key_previous` so the operator can rotate the
+    /// master key with zero downtime — see `docs/runbooks/` (forthcoming).
     pub secrets_encryption_key: String,
+    /// Optional second master key, decrypt-only. Set during a rotation to
+    /// the *prior* key so existing blobs stay readable while the
+    /// re-encrypt loop rewrites every row under the new active key. Unset
+    /// at rest.
+    pub secrets_encryption_key_previous: Option<String>,
+    /// Key id (1..=255) tagged onto every blob written with
+    /// `secrets_encryption_key`. Default 1. **Must be bumped on every
+    /// rotation** so old blobs (still tagged with the previous id)
+    /// decrypt via the `_previous` slot and so the re-encrypt loop's
+    /// fast-path skip stays sound.
+    pub secrets_encryption_key_active_id: u8,
+    /// Key id (1..=255) of the previous master key. Must be **strictly
+    /// less than** `secrets_encryption_key_active_id`. Defaults to
+    /// `active_id - 1` so the typical `(active=2, previous=1)` rotation
+    /// shape works without setting it explicitly. Ignored unless
+    /// `secrets_encryption_key_previous` is set.
+    pub secrets_encryption_key_previous_id: u8,
     pub signing_key: String,
     pub approval_expiry_secs: u64,
     /// Seconds a pending execution row (`executions.status='pending'`) lives
@@ -215,6 +237,37 @@ fn ssrf_allowed_for(base_url: &str) -> bool {
 /// `2001:db8::1`) are wrapped in brackets per RFC 3986 so the resulting
 /// URL parses cleanly. Set `PUBLIC_URL` explicitly for production
 /// deployments behind a reverse proxy.
+/// Parse `SECRETS_ENCRYPTION_KEY_ACTIVE_ID` from the env. Defaults to `1`
+/// when unset. **Panics** if set to a value that doesn't parse as a `u8`
+/// (e.g. `256`, `0x02`, `two`) — silently folding such typos back to the
+/// default `1` would re-tag fresh writes with the historical key id while
+/// the active slot holds new key bytes, so old blobs (tagged id=1, old
+/// key) would stop decrypting at runtime. Better to surface the typo at
+/// boot, in the same `from_env` panic-on-misconfig path the required env
+/// vars use.
+fn secrets_encryption_key_active_id_from_env() -> u8 {
+    match env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID") {
+        Err(_) => 1,
+        Ok(s) if s.is_empty() => 1,
+        Ok(s) => s.parse::<u8>().unwrap_or_else(|_| {
+            panic!("SECRETS_ENCRYPTION_KEY_ACTIVE_ID must be a u8 (1..=255), got {s:?}")
+        }),
+    }
+}
+
+/// Parse `SECRETS_ENCRYPTION_KEY_PREVIOUS_ID` from the env. Defaults to
+/// `active_id - 1` (the only legal rotation shape) when unset. Same
+/// fail-fast posture as the active-id helper.
+fn secrets_encryption_key_previous_id_from_env(active_id: u8) -> u8 {
+    match env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID") {
+        Err(_) => active_id.saturating_sub(1),
+        Ok(s) if s.is_empty() => active_id.saturating_sub(1),
+        Ok(s) => s.parse::<u8>().unwrap_or_else(|_| {
+            panic!("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID must be a u8 (1..=255), got {s:?}")
+        }),
+    }
+}
+
 pub fn default_public_url(host: &str, port: u16) -> String {
     let display: std::borrow::Cow<'_, str> = match host {
         "0.0.0.0" | "::" | "[::]" => "localhost".into(),
@@ -228,6 +281,25 @@ pub fn default_public_url(host: &str, port: u16) -> String {
 }
 
 impl Config {
+    /// Build the [`Keyring`](overslash_core::crypto::Keyring) used by every
+    /// encrypt/decrypt call. Returns a single-key keyring at rest and a
+    /// dual-key (active + previous) one during a rotation.
+    ///
+    /// Cheap enough to call per-request: `parse_hex_key` runs over a fixed
+    /// 64-char hex string, matching the per-call cost of the
+    /// `parse_hex_key(&state.config.secrets_encryption_key)` pattern that
+    /// every encrypt/decrypt site used before the keyring was wired up.
+    pub fn keyring(
+        &self,
+    ) -> Result<overslash_core::crypto::Keyring, overslash_core::crypto::CryptoError> {
+        overslash_core::crypto::Keyring::from_hex(
+            &self.secrets_encryption_key,
+            self.secrets_encryption_key_active_id,
+            self.secrets_encryption_key_previous.as_deref(),
+            self.secrets_encryption_key_previous_id,
+        )
+    }
+
     /// Load config from environment variables.
     pub fn from_env() -> Self {
         let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
@@ -242,6 +314,20 @@ impl Config {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL is required"),
             secrets_encryption_key: env::var("SECRETS_ENCRYPTION_KEY")
                 .expect("SECRETS_ENCRYPTION_KEY is required"),
+            secrets_encryption_key_previous: env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            // `_ACTIVE_ID` must be bumped on every rotation — it's the
+            // version byte stamped onto new ciphertext. `_PREVIOUS_ID`
+            // defaults to `_ACTIVE_ID - 1` so the common "set _PREVIOUS
+            // and _ACTIVE_ID=2, forget _PREVIOUS_ID" case lands on the
+            // legal (2, 1) shape. `Keyring::dual` enforces
+            // `active_id > previous_id` so any misconfiguration is
+            // rejected at startup (not silently in the rotation loop).
+            secrets_encryption_key_active_id: secrets_encryption_key_active_id_from_env(),
+            secrets_encryption_key_previous_id: secrets_encryption_key_previous_id_from_env(
+                secrets_encryption_key_active_id_from_env(),
+            ),
             signing_key: env::var("SIGNING_KEY").expect("SIGNING_KEY is required"),
             approval_expiry_secs: env::var("APPROVAL_EXPIRY_SECS")
                 .ok()
@@ -746,12 +832,165 @@ mod tests {
         assert!(!cfg.preview_origin_allowed("https://ok"));
     }
 
+    // ── Config::keyring() accessor ───────────────────────────────────────
+
+    #[test]
+    fn keyring_builds_single_key_when_previous_unset() {
+        let cfg = empty_test_config();
+        let kr = cfg.keyring().expect("single-key keyring builds");
+        assert_eq!(kr.active_id(), 1);
+        assert_eq!(kr.previous_id(), None);
+    }
+
+    #[test]
+    fn keyring_builds_dual_when_previous_set() {
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key = "cd".repeat(32);
+        cfg.secrets_encryption_key_previous = Some("ab".repeat(32));
+        cfg.secrets_encryption_key_active_id = 2;
+        cfg.secrets_encryption_key_previous_id = 1;
+        let kr = cfg.keyring().expect("dual-key keyring builds");
+        assert_eq!(kr.active_id(), 2);
+        assert_eq!(kr.previous_id(), Some(1));
+    }
+
+    #[test]
+    fn keyring_rejects_inverted_ids() {
+        // active_id < previous_id → Keyring::dual rejects, surfacing the
+        // misconfig at boot rather than silently mis-tagging blobs.
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key_previous = Some("cd".repeat(32));
+        cfg.secrets_encryption_key_active_id = 1;
+        cfg.secrets_encryption_key_previous_id = 2;
+        assert!(cfg.keyring().is_err());
+    }
+
+    #[test]
+    fn keyring_rejects_invalid_hex() {
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key = "not-hex".into();
+        assert!(cfg.keyring().is_err());
+    }
+
+    #[test]
+    fn keyring_treats_empty_previous_as_unset() {
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key_previous = Some(String::new());
+        let kr = cfg.keyring().expect("empty previous folds to single-key");
+        assert_eq!(kr.previous_id(), None);
+    }
+
+    // ── env-var helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn previous_id_defaults_to_active_minus_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 1);
+        assert_eq!(
+            secrets_encryption_key_previous_id_from_env(secrets_encryption_key_active_id_from_env()),
+            0,
+            "previous_id defaults to active_id - 1 (0 when active is 1)"
+        );
+    }
+
+    #[test]
+    fn active_id_reads_env_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "7");
+        }
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 7);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+    }
+
+    #[test]
+    fn previous_id_reads_env_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", "5");
+        }
+        assert_eq!(secrets_encryption_key_previous_id_from_env(8), 5);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+    }
+
+    #[test]
+    fn active_id_panics_on_unparseable_value() {
+        // Silent fallback to 1 would be unsafe: typo'd `_ACTIVE_ID=256`
+        // would re-tag new writes with the historical id while the
+        // active slot holds new key bytes, breaking decryption of every
+        // old blob. The helper must surface the typo.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "256");
+        }
+        let panicked = std::panic::catch_unwind(secrets_encryption_key_active_id_from_env).is_err();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+        assert!(panicked, "out-of-range u8 must panic at startup");
+    }
+
+    #[test]
+    fn active_id_panics_on_non_numeric_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "not-a-number");
+        }
+        let panicked = std::panic::catch_unwind(secrets_encryption_key_active_id_from_env).is_err();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+        assert!(panicked, "non-numeric value must panic at startup");
+    }
+
+    #[test]
+    fn previous_id_panics_on_unparseable_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", "not-a-number");
+        }
+        let panicked =
+            std::panic::catch_unwind(|| secrets_encryption_key_previous_id_from_env(2)).is_err();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+        assert!(panicked, "non-numeric previous_id must panic at startup");
+    }
+
+    #[test]
+    fn empty_env_falls_back_to_default() {
+        // Empty string is treated as "unset" — Cloud Run secret mounts
+        // sometimes materialise unset vars as empty strings.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "");
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", "");
+        }
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 1);
+        assert_eq!(secrets_encryption_key_previous_id_from_env(3), 2);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+    }
+
     fn empty_test_config() -> Config {
         Config {
             host: "127.0.0.1".into(),
             port: 0,
             database_url: String::new(),
             secrets_encryption_key: "ab".repeat(32),
+            secrets_encryption_key_previous: None,
+            secrets_encryption_key_active_id: 1,
+            secrets_encryption_key_previous_id: 0,
             signing_key: "cd".repeat(32),
             approval_expiry_secs: 1800,
             execution_pending_ttl_secs: 900,

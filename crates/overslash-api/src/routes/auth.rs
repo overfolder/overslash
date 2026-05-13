@@ -1156,16 +1156,32 @@ async fn drop_account_membership(
     Ok(axum::Json(json!({ "status": "dropped", "org_id": org_id })))
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct EmailPreferences {
-    /// `true` = subscribed to non-transactional email (default for new users);
-    /// `false` = unsubscribed via /account toggle or one-click link. Billing
-    /// receipts and other transactional email ignore this flag by policy.
-    welcome_emails: bool,
+    /// `true` = subscribed to non-transactional welcome / product email
+    /// (default for new users); `false` = unsubscribed via `/account` toggle
+    /// or one-click link. Billing receipts and other transactional email
+    /// ignore this flag by policy. Optional on PUT so the client can update
+    /// `webhook_digest_emails` in isolation; always present on GET.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    welcome_emails: Option<bool>,
+    /// `true` = subscribed to the daily webhook DLQ digest (default);
+    /// `false` = opted out via one-click link or this toggle. Independent
+    /// from `welcome_emails` — silencing one does not silence the other.
+    /// Optional on PUT for the same reason as `welcome_emails`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    webhook_digest_emails: Option<bool>,
+}
+
+fn prefs_from_user(user: &overslash_db::repos::user::UserRow) -> EmailPreferences {
+    EmailPreferences {
+        welcome_emails: Some(user.welcome_emails_unsubscribed_at.is_none()),
+        webhook_digest_emails: Some(user.webhook_digest_unsubscribed_at.is_none()),
+    }
 }
 
 /// GET /v1/account/email-preferences — return the caller's non-transactional
-/// email preference. Per-user (not per-identity), so the same value is
+/// email preferences. Per-user (not per-identity), so the same value is
 /// returned regardless of which org subdomain the session is currently in.
 async fn get_email_preferences(
     State(state): State<AppState>,
@@ -1175,76 +1191,103 @@ async fn get_email_preferences(
     let user = overslash_db::repos::user::get_by_id(&state.db, user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
-    Ok(axum::Json(EmailPreferences {
-        welcome_emails: user.welcome_emails_unsubscribed_at.is_none(),
-    }))
+    Ok(axum::Json(prefs_from_user(&user)))
 }
 
 /// PUT /v1/account/email-preferences — update the caller's non-transactional
-/// email preference. Idempotent; audited in the caller's current org so
-/// changes are visible to admins on the org's audit log.
+/// email preferences. Per-category and idempotent: only fields present in
+/// the body are applied; unchanged fields neither hit the DB nor write an
+/// audit row, so UIs that re-submit on every toggle flip-flop don't spam
+/// the audit log with non-events.
 async fn put_email_preferences(
     State(state): State<AppState>,
     session: crate::extractors::SessionAuth,
     axum::Json(prefs): axum::Json<EmailPreferences>,
 ) -> Result<axum::Json<EmailPreferences>, AppError> {
     let user_id = resolve_session_user_id(&state, &session).await?;
-    let existing = overslash_db::repos::user::get_by_id(&state.db, user_id)
+    let mut current = overslash_db::repos::user::get_by_id(&state.db, user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
-    let was_subscribed = existing.welcome_emails_unsubscribed_at.is_none();
-    if was_subscribed == prefs.welcome_emails {
-        // No state change — return current value without writing an audit
-        // row. Idempotent toggle PUTs (or UIs that re-submit on every toggle
-        // flip-flop) would otherwise spam the org audit log with non-events.
-        return Ok(axum::Json(EmailPreferences {
-            welcome_emails: was_subscribed,
-        }));
-    }
+    let scope = OrgScope::new(session.org_id, state.db.clone());
 
-    let unsubscribed_at = if prefs.welcome_emails {
-        None
-    } else {
-        Some(time::OffsetDateTime::now_utc())
-    };
-    let updated =
-        overslash_db::repos::user::set_welcome_unsubscribed(&state.db, user_id, unsubscribed_at)
+    if let Some(want) = prefs.welcome_emails {
+        let was = current.welcome_emails_unsubscribed_at.is_none();
+        if was != want {
+            let unsubscribed_at = (!want).then(time::OffsetDateTime::now_utc);
+            current = overslash_db::repos::user::set_welcome_unsubscribed(
+                &state.db,
+                user_id,
+                unsubscribed_at,
+            )
             .await?
             .ok_or_else(|| AppError::NotFound("user not found".into()))?;
-
-    let scope = OrgScope::new(session.org_id, state.db.clone());
-    let action = if prefs.welcome_emails {
-        "email.resubscribed"
-    } else {
-        "email.unsubscribed"
-    };
-    if let Err(e) = scope
-        .log_audit(overslash_db::repos::audit::AuditEntry {
-            org_id: session.org_id,
-            identity_id: Some(session.identity_id),
-            action,
-            resource_type: Some("user"),
-            resource_id: Some(user_id),
-            detail: json!({ "purpose": "welcome", "via": "account_toggle" }),
-            description: Some(if prefs.welcome_emails {
-                "Welcome / product emails re-enabled from /account"
+            let action = if want {
+                "email.resubscribed"
             } else {
-                "Welcome / product emails unsubscribed from /account"
-            }),
-            ip_address: None,
-        })
-        .await
-    {
-        // Audit failure is best-effort — the user-visible state is already
-        // updated. Log and move on so a hiccup writing the audit row doesn't
-        // leave the toggle stuck in the UI.
-        tracing::warn!(%user_id, error = %e, "email-preferences audit log failed");
+                "email.unsubscribed"
+            };
+            if let Err(e) = scope
+                .log_audit(overslash_db::repos::audit::AuditEntry {
+                    org_id: session.org_id,
+                    identity_id: Some(session.identity_id),
+                    action,
+                    resource_type: Some("user"),
+                    resource_id: Some(user_id),
+                    detail: json!({ "purpose": "welcome", "via": "account_toggle" }),
+                    description: Some(if want {
+                        "Welcome / product emails re-enabled from /account"
+                    } else {
+                        "Welcome / product emails unsubscribed from /account"
+                    }),
+                    ip_address: None,
+                })
+                .await
+            {
+                tracing::warn!(%user_id, error = %e, "email-preferences audit log failed (welcome)");
+            }
+        }
     }
 
-    Ok(axum::Json(EmailPreferences {
-        welcome_emails: updated.welcome_emails_unsubscribed_at.is_none(),
-    }))
+    if let Some(want) = prefs.webhook_digest_emails {
+        let was = current.webhook_digest_unsubscribed_at.is_none();
+        if was != want {
+            let unsubscribed_at = (!want).then(time::OffsetDateTime::now_utc);
+            current = overslash_db::repos::user::set_webhook_digest_unsubscribed(
+                &state.db,
+                user_id,
+                unsubscribed_at,
+            )
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+            let action = if want {
+                "email.resubscribed"
+            } else {
+                "email.unsubscribed"
+            };
+            if let Err(e) = scope
+                .log_audit(overslash_db::repos::audit::AuditEntry {
+                    org_id: session.org_id,
+                    identity_id: Some(session.identity_id),
+                    action,
+                    resource_type: Some("user"),
+                    resource_id: Some(user_id),
+                    detail: json!({ "purpose": "webhook_digest", "via": "account_toggle" }),
+                    description: Some(if want {
+                        "Webhook DLQ digest re-enabled from /account"
+                    } else {
+                        "Webhook DLQ digest unsubscribed from /account"
+                    }),
+                    ip_address: None,
+                })
+                .await
+            {
+                tracing::warn!(%user_id, error = %e, "email-preferences audit log failed (webhook_digest)");
+            }
+        }
+    }
+
+    Ok(axum::Json(prefs_from_user(&current)))
 }
 
 /// Resolve the human behind a `SessionAuth`. Prefers the JWT's `user_id`
@@ -1603,7 +1646,9 @@ async fn resolve_auth_credentials(
             )));
         }
 
-        let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+        let enc_key = state
+            .config
+            .keyring()
             .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
 
         // IdP uses its own dedicated credentials — decrypt them directly.

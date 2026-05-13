@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO webhook_digest_runs (org_id, run_date)\n         VALUES ($1, $2)\n         ON CONFLICT (org_id, run_date) DO NOTHING\n         RETURNING org_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "217fb2571c745c27f7b6b05039e85d43e4a93f8e60b1d280a031d859f9bc9e27"
+}

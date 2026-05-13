@@ -299,7 +299,7 @@ async fn submit_provide(
     }
 
     // Mirrors routes/secrets.rs::put_secret encryption + storage path.
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let encrypted = crypto::encrypt(&enc_key, body.value.as_bytes())?;
 
     let scope = OrgScope::new(row.org_id, state.db.clone());

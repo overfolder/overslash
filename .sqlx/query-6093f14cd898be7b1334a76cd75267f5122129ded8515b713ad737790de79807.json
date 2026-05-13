@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE users\n         SET email = COALESCE($2, email),\n             display_name = COALESCE($3, display_name),\n             updated_at = now()\n         WHERE id = $1\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
+  "query": "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.overslash_idp_subject, u.personal_org_id, u.is_instance_admin, u.welcome_email_sent_at, u.welcome_emails_unsubscribed_at, u.webhook_digest_unsubscribed_at, u.created_at, u.updated_at\n         FROM users u\n         JOIN user_org_memberships m ON m.user_id = u.id\n         WHERE m.org_id = $1 AND lower(u.email) = lower($2)\n         ORDER BY u.created_at DESC\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -50,11 +50,16 @@
       },
       {
         "ordinal": 9,
-        "name": "created_at",
+        "name": "webhook_digest_unsubscribed_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -62,7 +67,6 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text",
         "Text"
       ]
     },
@@ -76,9 +80,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "17a60064282064d97681711f60b9afd9ce49b6f7361cab66d3335d4afe31e2ea"
+  "hash": "6093f14cd898be7b1334a76cd75267f5122129ded8515b713ad737790de79807"
 }

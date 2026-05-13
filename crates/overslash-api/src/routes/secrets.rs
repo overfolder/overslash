@@ -126,7 +126,7 @@ async fn put_secret(
     Json(req): Json<PutSecretRequest>,
 ) -> Result<Json<PutSecretResponse>> {
     let auth = acl;
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
 
     let owner = crate::services::group_ceiling::resolve_owner_identity(
@@ -354,7 +354,7 @@ async fn reveal_version(
             AppError::NotFound(format!("secret '{name}' version {version} not found"))
         })?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let plaintext = crypto::decrypt(&enc_key, &row.encrypted_value)?;
     let value = String::from_utf8(plaintext)
         .map_err(|_| AppError::Internal("decrypted secret was not valid UTF-8".into()))?;

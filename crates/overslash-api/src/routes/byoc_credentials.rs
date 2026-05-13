@@ -74,7 +74,7 @@ async fn create_byoc(
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let encrypted_client_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;
     let encrypted_client_secret = crypto::encrypt(&enc_key, req.client_secret.as_bytes())?;
 
