@@ -542,15 +542,29 @@ pub async fn start_api_with<F>(pool: PgPool, customize: F) -> (SocketAddr, Clien
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
-    start_api_internal(pool, customize).await
+    start_api_internal(pool, customize, None).await
 }
 
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
-    start_api_internal(pool, |_| {}).await
+    start_api_internal(pool, |_| {}, None).await
 }
 
-async fn start_api_internal<F>(pool: PgPool, customize: F) -> (SocketAddr, Client)
+/// Start the API with a custom mailer injected into `AppState`. Used by tests
+/// that need to capture outbound transactional email (org-invite notification,
+/// future welcome-email integration tests) without spinning up a real provider.
+pub async fn start_api_with_mailer(
+    pool: PgPool,
+    mailer: std::sync::Arc<dyn overslash_core::email::Mailer>,
+) -> (SocketAddr, Client) {
+    start_api_internal(pool, |_| {}, Some(mailer)).await
+}
+
+async fn start_api_internal<F>(
+    pool: PgPool,
+    customize: F,
+    mailer_override: Option<std::sync::Arc<dyn overslash_core::email::Mailer>>,
+) -> (SocketAddr, Client)
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
@@ -644,7 +658,8 @@ where
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
-        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        mailer: mailer_override
+            .unwrap_or_else(|| std::sync::Arc::new(overslash_core::email::NoopMailer)),
     };
 
     let app = axum::Router::new()

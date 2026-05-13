@@ -43,6 +43,13 @@ pub const WEBHOOK_DIGEST_TEMPLATE_SUBJECT: &str = "Webhook delivery failures in 
 pub const WEBHOOK_DIGEST_TEMPLATE_HTML: &str =
     include_str!("../../templates/email/webhook_digest.html");
 
+/// Org-invite notification. Transactional (admin-initiated, one-to-one) —
+/// not gated by `welcome_emails_unsubscribed_at` and ships without an
+/// unsubscribe link or `List-Unsubscribe` header. Placeholders:
+/// `{org_name}`, `{inviter_name}`, `{role}`, `{accept_url}`.
+pub const ORG_INVITE_TEMPLATE_SUBJECT: &str = "You've been invited to {org_name} on Overslash";
+pub const ORG_INVITE_TEMPLATE_HTML: &str = include_str!("../../templates/email/org_invite.html");
+
 /// Interpolate a template with the same grammar action descriptions use,
 /// without the display-character cap that would truncate URLs / long values.
 pub fn render(template: &str, params: &HashMap<String, serde_json::Value>) -> String {
