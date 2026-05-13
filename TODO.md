@@ -22,7 +22,7 @@ No mailer exists today. Billing has no receipts and new accounts get no welcome 
 - [ ] Templated emails — store templates in `crates/overslash-core/templates/email/` with `{var}` interpolation matching the audit-description style.
 - [ ] **Billing**: receipt on `invoice.payment_succeeded`; dunning on `invoice.payment_failed`; subscription canceled / trial ending.
 - [ ] **Welcome / first login** for both root signups and corp-org JIT provisioning.
-- [ ] **Webhook DLQ digest** → daily digest to org admins listing webhook endpoints with terminal failures.
+- [x] **Webhook DLQ digest** → daily digest to org admins listing webhook endpoints with terminal failures.
 - [ ] Per-user unsubscribe state for non-transactional (welcome) emails only — billing emails are exempt by policy.
 - [ ] (Optional, post-MVP) User-level opt-in email for newly remembered permissions — informational only, not a control surface.
 

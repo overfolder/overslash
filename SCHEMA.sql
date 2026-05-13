@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict 6FwkMjm8thFkB35eBFVbgyKXfFYdlOhyyDN0ohpvvGsWupUjAhR0Ucq00i9eKNG
+\restrict UUcxcMBG21C30WsecwEbdo0btK54DwUWSiKupwGhFbfzzXFtuX2bqN3ea0LmpQP
 
--- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
+-- Dumped from database version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
@@ -149,7 +149,7 @@ CREATE TABLE public.email_unsubscribe_tokens (
     purpose text DEFAULT 'welcome'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     redeemed_at timestamp with time zone,
-    CONSTRAINT email_unsubscribe_tokens_purpose_check CHECK ((purpose = 'welcome'::text))
+    CONSTRAINT email_unsubscribe_tokens_purpose_check CHECK ((purpose = ANY (ARRAY['welcome'::text, 'webhook_digest'::text])))
 );
 
 
@@ -745,6 +745,7 @@ CREATE TABLE public.users (
     is_instance_admin boolean DEFAULT false NOT NULL,
     welcome_email_sent_at timestamp with time zone,
     welcome_emails_unsubscribed_at timestamp with time zone,
+    webhook_digest_unsubscribed_at timestamp with time zone,
     CONSTRAINT users_instance_admin_requires_overslash_idp CHECK (((NOT is_instance_admin) OR (overslash_idp_provider IS NOT NULL)))
 );
 
@@ -764,6 +765,17 @@ CREATE TABLE public.webhook_deliveries (
     next_retry_at timestamp with time zone,
     delivered_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: webhook_digest_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.webhook_digest_runs (
+    org_id uuid NOT NULL,
+    run_date date NOT NULL,
+    sent_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -1196,6 +1208,14 @@ ALTER TABLE ONLY public.users
 
 ALTER TABLE ONLY public.webhook_deliveries
     ADD CONSTRAINT webhook_deliveries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: webhook_digest_runs webhook_digest_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webhook_digest_runs
+    ADD CONSTRAINT webhook_digest_runs_pkey PRIMARY KEY (org_id, run_date);
 
 
 --
@@ -1785,6 +1805,13 @@ CREATE UNIQUE INDEX users_overslash_idp_unique ON public.users USING btree (over
 --
 
 CREATE UNIQUE INDEX users_stripe_customer ON public.users USING btree (stripe_customer_id) WHERE (stripe_customer_id IS NOT NULL);
+
+
+--
+-- Name: webhook_digest_runs_run_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX webhook_digest_runs_run_date ON public.webhook_digest_runs USING btree (run_date);
 
 
 --
@@ -2444,6 +2471,14 @@ ALTER TABLE ONLY public.webhook_deliveries
 
 
 --
+-- Name: webhook_digest_runs webhook_digest_runs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webhook_digest_runs
+    ADD CONSTRAINT webhook_digest_runs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: webhook_subscriptions webhook_subscriptions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2455,5 +2490,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 6FwkMjm8thFkB35eBFVbgyKXfFYdlOhyyDN0ohpvvGsWupUjAhR0Ucq00i9eKNG
+\unrestrict UUcxcMBG21C30WsecwEbdo0btK54DwUWSiKupwGhFbfzzXFtuX2bqN3ea0LmpQP
 

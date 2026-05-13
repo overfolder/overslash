@@ -9,14 +9,19 @@
 //!   returns `204 No Content`.
 //!
 //! Both are idempotent: a second click leaves the user in the same final
-//! state. Only the *first* redemption flips `welcome_emails_unsubscribed_at`
-//! and writes an audit row; replays (email scanners, re-clicks) are no-ops
-//! on user state so an old token can't silently re-unsubscribe a user who
-//! has since re-subscribed via `/account`. The GET path also renders a
-//! distinct "already used" page on replays so the response can't lie
-//! about the user's current state. Unknown / malformed tokens return
-//! `404` on GET and `204` on POST — RFC 8058 §3.1 recommends POST stay
-//! opaque so an attacker probing tokens can't distinguish hit from miss.
+//! state. Only the *first* redemption flips the user's opt-out column for
+//! the token's `purpose` (`welcome_emails_unsubscribed_at` for `welcome`
+//! tokens, `webhook_digest_unsubscribed_at` for `webhook_digest`) and writes
+//! an audit row; replays (email scanners, re-clicks) are no-ops on user
+//! state so an old token can't silently re-unsubscribe a user who has since
+//! re-subscribed via `/account`. The GET path also renders a distinct
+//! "already used" page on replays so the response can't lie about the
+//! user's current state. Unknown / malformed tokens return `404` on GET
+//! and `204` on POST — RFC 8058 §3.1 recommends POST stay opaque so an
+//! attacker probing tokens can't distinguish hit from miss. Tokens with
+//! an unrecognized `purpose` (shouldn't be reachable since the DB CHECK
+//! constraint enforces the allowed set, but defensive nonetheless) log
+//! and return 500 rather than silently flipping the wrong column.
 
 use axum::{
     Router,
@@ -83,9 +88,9 @@ fn applied_html() -> Html<&'static str> {
 <body>
   <div class="wrap">
     <h1>You've been unsubscribed.</h1>
-    <p>You won't receive product or welcome emails from Overslash anymore.</p>
+    <p>You won't receive these emails from Overslash anymore.</p>
     <p class="muted">Billing receipts and other transactional emails are exempt and will continue to be sent for any active subscription.</p>
-    <p class="muted">You can re-enable product emails any time from your account preferences.</p>
+    <p class="muted">You can re-enable any email category any time from your account settings.</p>
   </div>
 </body>
 </html>"#,
@@ -184,11 +189,19 @@ async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<RedeemOutcom
     if !was_first_redeem {
         return Ok(RedeemOutcome::Replayed);
     }
-    if let Err(e) =
-        user_repo::set_welcome_unsubscribed(&state.db, row.user_id, Some(OffsetDateTime::now_utc()))
-            .await
-    {
-        tracing::error!(user_id = %row.user_id, %token, error = %e, "unsubscribe: set_welcome_unsubscribed failed");
+    let now = OffsetDateTime::now_utc();
+    let set_result = match row.purpose.as_str() {
+        "welcome" => user_repo::set_welcome_unsubscribed(&state.db, row.user_id, Some(now)).await,
+        "webhook_digest" => {
+            user_repo::set_webhook_digest_unsubscribed(&state.db, row.user_id, Some(now)).await
+        }
+        other => {
+            tracing::error!(%token, purpose = %other, "unsubscribe: unknown purpose");
+            return Err(());
+        }
+    };
+    if let Err(e) = set_result {
+        tracing::error!(user_id = %row.user_id, %token, purpose = %row.purpose, error = %e, "unsubscribe: set_*_unsubscribed failed");
         return Err(());
     }
     let scope = OrgScope::new(row.org_id, state.db.clone());
@@ -200,7 +213,7 @@ async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<RedeemOutcom
             resource_type: Some("user"),
             resource_id: Some(row.user_id),
             detail: json!({ "purpose": row.purpose, "via": "one_click_token" }),
-            description: Some("Welcome / product emails unsubscribed via one-click link"),
+            description: Some("Non-transactional email unsubscribed via one-click link"),
             ip_address: None,
         })
         .await
