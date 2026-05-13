@@ -120,7 +120,7 @@ async fn test_google_drive_e2e() {
     // Encrypt access token with the test encryption key and insert a connection
     // directly into the DB. We skip the refresh-token flow: the caller is
     // expected to supply a fresh access token for each run.
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::test();
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
 

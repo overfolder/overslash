@@ -560,7 +560,7 @@ async fn callback(
     .map_err(|e| AppError::BadGateway(e.to_string()))?;
 
     // Encrypt and persist.
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let access_ct = crypto::encrypt(&enc_key, tokens.access_token.as_bytes())?;
     let refresh_ct = match &tokens.refresh_token {
         Some(rt) => Some(crypto::encrypt(&enc_key, rt.as_bytes())?),

@@ -144,7 +144,7 @@ pub async fn call_action_request(
     action_req: &ActionRequest,
 ) -> Result<CallOutcome, AppError> {
     // ── Resolve secrets ──────────────────────────────────────────────
-    let enc_key = crypto::parse_hex_key(&ctx.state.config.secrets_encryption_key)?;
+    let enc_key = ctx.state.config.keyring()?;
     let mut secret_values = HashMap::new();
     for secret_ref in &action_req.secrets {
         let version = ctx

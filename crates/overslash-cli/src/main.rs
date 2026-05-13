@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 mod common;
 mod mcp;
 mod mcp_login;
+mod reencrypt;
 mod serve;
 mod services;
 mod watch;
@@ -92,6 +93,32 @@ enum Command {
         /// Override the config path entirely.
         #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
         config: Option<std::path::PathBuf>,
+    },
+    /// Operator commands (runbook-driven, not for day-to-day use).
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Re-encrypt every ciphertext at rest under the active master key.
+    ///
+    /// Refuses to run unless `SECRETS_ENCRYPTION_KEY_PREVIOUS` is set, so
+    /// the only legitimate context is the middle step of a master-key
+    /// rotation: previous deploy added the new key as active and kept the
+    /// old key as previous; this command rotates ciphertext; next deploy
+    /// drops the previous key. Runbook forthcoming.
+    Reencrypt {
+        /// Decrypt + re-encrypt in memory but never write back. Surfaces
+        /// rows that would fail (e.g. tagged with a third unknown key)
+        /// without mutating state.
+        #[arg(long)]
+        dry_run: bool,
+        /// Rows fetched per batch. Default 500.
+        #[arg(long, default_value_t = 500)]
+        batch: usize,
     },
 }
 
@@ -240,6 +267,13 @@ async fn main() -> anyhow::Result<()> {
             let path = mcp::resolve_config_path(profile, config)?;
             services::call(path, fields_into_call_args(fields)?).await
         }
+        Command::Admin { command } => match command {
+            AdminCommand::Reencrypt { dry_run, batch } => {
+                common::bootstrap_server();
+                reencrypt::run(overslash_api::services::key_rotation::Options { dry_run, batch })
+                    .await
+            }
+        },
     }
 }
 

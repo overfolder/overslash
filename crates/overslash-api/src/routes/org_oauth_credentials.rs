@@ -70,7 +70,7 @@ async fn list_credentials(
     debug_assert_eq!(acl.org_id, scope.org_id());
 
     let providers = oauth_provider::list_all(&state.db).await?;
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let env_fallback_enabled =
         std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
 
@@ -152,7 +152,7 @@ async fn put_credentials(
         )));
     }
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let (id_name, secret_name) = oauth_secret_names(&provider_key);
 
     let encrypted_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;

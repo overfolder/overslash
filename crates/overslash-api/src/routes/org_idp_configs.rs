@@ -196,7 +196,7 @@ async fn create_idp_config(
     // resolution prefers the dedicated config — see
     // `resolve_auth_credentials`.
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
 
     // Validate request: either dedicated creds OR use_org_credentials, not both.
     let (encrypted_client_id, encrypted_client_secret): (Option<Vec<u8>>, Option<Vec<u8>>) = if req
@@ -377,7 +377,7 @@ async fn update_idp_config(
         .await?
         .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
 
     // Build the credentials update from the tri-state request shape.
     let encrypted_client_id = req

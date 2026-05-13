@@ -294,7 +294,7 @@ async fn oauth_callback(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let creds = client_credentials::resolve(
         &state.db,
         &enc_key,
@@ -553,7 +553,7 @@ async fn upgrade_connection_scopes(
                 AppError::NotFound(format!("provider '{}' not found", existing.provider_key))
             })?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     // Pin the same BYOC credential the original connection used so the
     // upgrade flow runs against the same OAuth client — otherwise the
     // provider may reject the incremental request as a new client.

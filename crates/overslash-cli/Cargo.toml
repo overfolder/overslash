@@ -18,6 +18,7 @@ embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
 
 [dependencies]
 overslash-api = { path = "../overslash-api" }
+overslash-core = { path = "../overslash-core" }
 overslash-mcp = { path = "../overslash-mcp" }
 clap = { workspace = true }
 tokio = { workspace = true }

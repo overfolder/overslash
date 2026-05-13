@@ -26,6 +26,9 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
@@ -1342,6 +1345,9 @@ async fn test_service_registry_api() {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
@@ -1807,7 +1813,11 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
         .unwrap();
 
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
     // Create org + identity
     let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test", "standard")
@@ -1869,7 +1879,11 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
 async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     let pool = common::test_pool().await;
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
     let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test", "standard")
         .await
@@ -1922,7 +1936,11 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
 async fn test_update_tokens_preserves_refresh_token_when_none() {
     let pool = common::test_pool().await;
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
     let org =
         overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test", "standard")
@@ -2342,6 +2360,9 @@ async fn start_api_with_registry(
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: enc_key_hex,
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
         execution_pending_ttl_secs: 900,
