@@ -1328,9 +1328,24 @@ async fn forward(
             "credential_missing",
             "not_in_your_chain",
         ];
-        if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+        // The REST envelope for the three OAuth-shaped typed errors carries
+        // a `raw` field (upstream provider `/authorize` URL) intended for
+        // white-label REST integrators. The MCP chat-delivery surface must
+        // never forward it — see the Obsidian threat model notes in
+        // `services/platform_connections.rs` §9–32 ("the user sees
+        // `https://github.com/...` and has no Overslash-branded
+        // checkpoint"). Strip it here as the single choke-point so the
+        // AppError variants stay source-of-truth complete.
+        const OAUTH_ERROR_CODES: &[&str] =
+            &["needs_authentication", "reauth_required", "missing_scopes"];
+        if let Ok(mut parsed) = serde_json::from_str::<Value>(&text) {
             if let Some(code) = parsed.get("error").and_then(Value::as_str) {
                 if TYPED_ERROR_CODES.contains(&code) {
+                    if OAUTH_ERROR_CODES.contains(&code) {
+                        if let Some(obj) = parsed.as_object_mut() {
+                            obj.remove("raw");
+                        }
+                    }
                     return Ok(ForwardOutcome::TypedError(parsed));
                 }
             }

@@ -135,12 +135,22 @@ pub enum AppError {
     /// page. Returned as 401 with a structured body (`error: needs_authentication`)
     /// so the MCP layer can branch on the typed error rather than parsing
     /// a free-form string.
+    ///
+    /// `short` is a best-effort `oversla.sh/<slug>` redirect to `auth_url`
+    /// — present only when the shortener is configured; friendlier for
+    /// chat delivery where the long base62 flow id gets mangled by line
+    /// wrapping. `raw` is the upstream provider authorize URL, useful
+    /// for white-label integrators wrapping consent in their own UI.
+    /// The MCP forwarder strips `raw` before handing the envelope to the
+    /// agent — see `routes/mcp.rs::forward`.
     #[error("needs_authentication: {service:?}")]
     NeedsAuthentication {
         service: Option<String>,
         service_instance_id: Option<uuid::Uuid>,
         connection_id: Option<uuid::Uuid>,
         auth_url: String,
+        short: Option<String>,
+        raw: Option<String>,
     },
 
     /// An existing connection's refresh token can no longer mint a new
@@ -150,10 +160,18 @@ pub enum AppError {
     /// connection in place via the upgrade-flow callback path. Without the
     /// in-place upgrade we'd orphan the broken row and any service
     /// instance bound to its id would still be broken.
+    ///
+    /// `short` and `raw` follow the same semantics as on
+    /// [`Self::NeedsAuthentication`]: `short` is the chat-friendly
+    /// shortened form, `raw` is the upstream provider authorize URL for
+    /// white-label rewrapping. The MCP forwarder strips `raw` before
+    /// handing the envelope to the agent.
     #[error("reauth_required: {connection_id}")]
     ReauthRequired {
         connection_id: uuid::Uuid,
         auth_url: String,
+        short: Option<String>,
+        raw: Option<String>,
         reason: String,
     },
 
@@ -162,12 +180,21 @@ pub enum AppError {
     /// callers can POST to; `auth_url` is the chat-deliverable gated
     /// `/connect-authorize` link that runs incremental-scope OAuth against the
     /// existing connection (preferred for agents). Returned as 403.
+    ///
+    /// `short` and `raw` follow the same semantics as on
+    /// [`Self::NeedsAuthentication`]. Note that `upgrade_url` (REST
+    /// endpoint) is distinct from `raw` (upstream provider URL) — the
+    /// former is Overslash-owned, the latter is the provider's own
+    /// `/authorize` URL for white-label rewrapping. The MCP forwarder
+    /// strips `raw` before handing the envelope to the agent.
     #[error("missing_scopes: {connection_id}")]
     MissingScopes {
         connection_id: uuid::Uuid,
         missing: Vec<String>,
         upgrade_url: String,
         auth_url: Option<String>,
+        short: Option<String>,
+        raw: Option<String>,
     },
 
     /// The action's template declared a required secret (an inline API key,
@@ -386,6 +413,8 @@ impl IntoResponse for AppError {
                 service_instance_id,
                 connection_id,
                 auth_url,
+                short,
+                raw,
             } => {
                 let mut body = json!({
                     "error": "needs_authentication",
@@ -400,29 +429,42 @@ impl IntoResponse for AppError {
                 if let Some(id) = connection_id {
                     body["connection_id"] = json!(id);
                 }
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
+                if let Some(r) = raw {
+                    body["raw"] = json!(r);
+                }
                 return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
             }
             Self::ReauthRequired {
                 connection_id,
                 auth_url,
+                short,
+                raw,
                 reason,
             } => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({
-                        "error": "reauth_required",
-                        "connection_id": connection_id,
-                        "auth_url": auth_url,
-                        "reason": reason,
-                    })),
-                )
-                    .into_response();
+                let mut body = json!({
+                    "error": "reauth_required",
+                    "connection_id": connection_id,
+                    "auth_url": auth_url,
+                    "reason": reason,
+                });
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
+                if let Some(r) = raw {
+                    body["raw"] = json!(r);
+                }
+                return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
             }
             Self::MissingScopes {
                 connection_id,
                 missing,
                 upgrade_url,
                 auth_url,
+                short,
+                raw,
             } => {
                 let mut body = json!({
                     "error": "missing_scopes",
@@ -432,6 +474,12 @@ impl IntoResponse for AppError {
                 });
                 if let Some(url) = auth_url {
                     body["auth_url"] = json!(url);
+                }
+                if let Some(s) = short {
+                    body["short"] = json!(s);
+                }
+                if let Some(r) = raw {
+                    body["raw"] = json!(r);
                 }
                 return (StatusCode::FORBIDDEN, Json(body)).into_response();
             }
@@ -503,6 +551,8 @@ mod tests {
             missing: vec!["calendar.readonly".into(), "calendar.events".into()],
             upgrade_url: "https://api.example/v1/connections/x/upgrade_scopes".into(),
             auth_url: Some("https://api.example/connect-authorize?id=abc".into()),
+            short: Some("https://oversla.sh/abc".into()),
+            raw: Some("https://accounts.google.com/o/oauth2/v2/auth?...".into()),
         };
         let (status, body) = body_json(err.into_response()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -520,23 +570,39 @@ mod tests {
             body["auth_url"],
             "https://api.example/connect-authorize?id=abc"
         );
+        assert_eq!(body["short"], "https://oversla.sh/abc");
+        assert_eq!(
+            body["raw"],
+            "https://accounts.google.com/o/oauth2/v2/auth?..."
+        );
     }
 
     #[tokio::test]
     async fn missing_scopes_omits_auth_url_when_mint_failed() {
         // Mint failure path: `auth_url: None` → key absent (not null), so
         // white-label callers can rely on `.upgrade_url` always being present
-        // and `.auth_url` only when it's actually a usable URL.
+        // and `.auth_url` only when it's actually a usable URL. Same elision
+        // contract applies to the optional `short` and `raw` fields.
         let err = AppError::MissingScopes {
             connection_id: Uuid::new_v4(),
             missing: vec!["s".into()],
             upgrade_url: "https://api.example/upg".into(),
             auth_url: None,
+            short: None,
+            raw: None,
         };
         let (_, body) = body_json(err.into_response()).await;
         assert!(
             body.get("auth_url").is_none(),
             "auth_url must be elided when None: {body}"
+        );
+        assert!(
+            body.get("short").is_none(),
+            "short must be elided when None: {body}"
+        );
+        assert!(
+            body.get("raw").is_none(),
+            "raw must be elided when None: {body}"
         );
     }
 
@@ -605,6 +671,8 @@ mod tests {
                 missing: vec![],
                 upgrade_url: String::new(),
                 auth_url: None,
+                short: None,
+                raw: None,
             }
             .status_code(),
             StatusCode::FORBIDDEN,
