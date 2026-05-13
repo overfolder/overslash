@@ -180,6 +180,7 @@
 - OpenTofu module `infra/modules/monitoring/` (PRs #200, #205, #207, #272) deploys 5 GCP dashboards — `overview`, `api-use`, `actions-and-oauth`, `cloudsql-use`, `business` — plus P0/P1/P2 alert policies: API down, API 5xx > 1%, API P99 > 5s, Cloud SQL CPU/disk, background-task staleness, OAuth refresh failure ratio, webhook terminal failure ratio, plus uptime checks.
 - OTel sidecar exports metrics into GMP (instance-label collision fixed in #272).
 - Notification channels: email channel auto-provisioned when `alert_email` is set (`infra/env/dev.tfvars` already wired); PagerDuty channel auto-provisioned when `pagerduty_integration_key` is set. **Slack / PagerDuty integration keys are not yet bound** (see Launch Blockers in TODO.md).
+- Public status page at <https://status.overslash.com> (Better Stack) with independent HTTPS uptime checks for `api.overslash.com` and `app.overslash.com`. Runbook: [`docs/runbooks/status-page.md`](docs/runbooks/status-page.md).
 - JSON-format logs with `message`/`span`/`textPayload` surfaced through `make logs` (PR #198).
 
 ### Actions surface — unified
@@ -202,7 +203,6 @@
 - Transactional email subsystem (billing receipts + welcome + webhook DLQ digest; approvals and secret-requests stay in dashboard/webhook only).
 - Corp-org invite flow (D12-compatible) and corp-subdomain login empty-state.
 - Human-facing documentation site (concepts + REST reference + per-template quickstarts).
-- Status page wired to the existing P0 alerts.
 - DPA, security.txt, vulnerability disclosure policy, subprocessor list.
 - Documented manual GDPR request process (export + hard-delete handled by hand at launch; automation deferred).
 - Master-key rotation runbook + tested rotation; Postgres PITR restore drill.

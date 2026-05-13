@@ -41,7 +41,8 @@ execution.
   service+action calls
 
 For the full product vision, see [SPEC.md](SPEC.md). For what's actually
-implemented today, see [STATUS.md](STATUS.md).
+implemented today, see [STATUS.md](STATUS.md). Live production health is at
+[status.overslash.com](https://status.overslash.com).
 
 ## Running locally
 
