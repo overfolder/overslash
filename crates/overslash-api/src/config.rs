@@ -237,18 +237,35 @@ fn ssrf_allowed_for(base_url: &str) -> bool {
 /// `2001:db8::1`) are wrapped in brackets per RFC 3986 so the resulting
 /// URL parses cleanly. Set `PUBLIC_URL` explicitly for production
 /// deployments behind a reverse proxy.
+/// Parse `SECRETS_ENCRYPTION_KEY_ACTIVE_ID` from the env. Defaults to `1`
+/// when unset. **Panics** if set to a value that doesn't parse as a `u8`
+/// (e.g. `256`, `0x02`, `two`) — silently folding such typos back to the
+/// default `1` would re-tag fresh writes with the historical key id while
+/// the active slot holds new key bytes, so old blobs (tagged id=1, old
+/// key) would stop decrypting at runtime. Better to surface the typo at
+/// boot, in the same `from_env` panic-on-misconfig path the required env
+/// vars use.
 fn secrets_encryption_key_active_id_from_env() -> u8 {
-    env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID")
-        .ok()
-        .and_then(|s| s.parse::<u8>().ok())
-        .unwrap_or(1)
+    match env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID") {
+        Err(_) => 1,
+        Ok(s) if s.is_empty() => 1,
+        Ok(s) => s.parse::<u8>().unwrap_or_else(|_| {
+            panic!("SECRETS_ENCRYPTION_KEY_ACTIVE_ID must be a u8 (1..=255), got {s:?}")
+        }),
+    }
 }
 
+/// Parse `SECRETS_ENCRYPTION_KEY_PREVIOUS_ID` from the env. Defaults to
+/// `active_id - 1` (the only legal rotation shape) when unset. Same
+/// fail-fast posture as the active-id helper.
 fn secrets_encryption_key_previous_id_from_env(active_id: u8) -> u8 {
-    env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID")
-        .ok()
-        .and_then(|s| s.parse::<u8>().ok())
-        .unwrap_or_else(|| active_id.saturating_sub(1))
+    match env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID") {
+        Err(_) => active_id.saturating_sub(1),
+        Ok(s) if s.is_empty() => active_id.saturating_sub(1),
+        Ok(s) => s.parse::<u8>().unwrap_or_else(|_| {
+            panic!("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID must be a u8 (1..=255), got {s:?}")
+        }),
+    }
 }
 
 pub fn default_public_url(host: &str, port: u16) -> String {
@@ -905,15 +922,63 @@ mod tests {
     }
 
     #[test]
-    fn id_helpers_ignore_unparseable_values() {
+    fn active_id_panics_on_unparseable_value() {
+        // Silent fallback to 1 would be unsafe: typo'd `_ACTIVE_ID=256`
+        // would re-tag new writes with the historical id while the
+        // active slot holds new key bytes, breaking decryption of every
+        // old blob. The helper must surface the typo.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "256");
+        }
+        let panicked = std::panic::catch_unwind(secrets_encryption_key_active_id_from_env).is_err();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+        assert!(panicked, "out-of-range u8 must panic at startup");
+    }
+
+    #[test]
+    fn active_id_panics_on_non_numeric_value() {
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "not-a-number");
         }
-        // Unparseable falls back to the default (1).
-        assert_eq!(secrets_encryption_key_active_id_from_env(), 1);
+        let panicked = std::panic::catch_unwind(secrets_encryption_key_active_id_from_env).is_err();
         unsafe {
             std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+        assert!(panicked, "non-numeric value must panic at startup");
+    }
+
+    #[test]
+    fn previous_id_panics_on_unparseable_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", "not-a-number");
+        }
+        let panicked =
+            std::panic::catch_unwind(|| secrets_encryption_key_previous_id_from_env(2)).is_err();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+        assert!(panicked, "non-numeric previous_id must panic at startup");
+    }
+
+    #[test]
+    fn empty_env_falls_back_to_default() {
+        // Empty string is treated as "unset" — Cloud Run secret mounts
+        // sometimes materialise unset vars as empty strings.
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "");
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", "");
+        }
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 1);
+        assert_eq!(secrets_encryption_key_previous_id_from_env(3), 2);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
         }
     }
 
