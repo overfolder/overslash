@@ -542,15 +542,33 @@ pub async fn start_api_with<F>(pool: PgPool, customize: F) -> (SocketAddr, Clien
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
-    start_api_internal(pool, customize).await
+    start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), customize).await
+}
+
+/// Like [`start_api_with`] but with an injected `Mailer`. Used by billing-
+/// email tests that need to capture rendered email bodies via an in-process
+/// mock-Resend server.
+pub async fn start_api_with_mailer<F>(
+    pool: PgPool,
+    mailer: Arc<dyn overslash_core::email::Mailer>,
+    customize: F,
+) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    start_api_internal(pool, mailer, customize).await
 }
 
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
-    start_api_internal(pool, |_| {}).await
+    start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), |_| {}).await
 }
 
-async fn start_api_internal<F>(pool: PgPool, customize: F) -> (SocketAddr, Client)
+async fn start_api_internal<F>(
+    pool: PgPool,
+    mailer: Arc<dyn overslash_core::email::Mailer>,
+    customize: F,
+) -> (SocketAddr, Client)
 where
     F: FnOnce(&mut overslash_api::config::Config),
 {
@@ -644,7 +662,7 @@ where
         platform_registry: std::sync::Arc::new(
             overslash_api::services::platform_registry::build_registry(),
         ),
-        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        mailer,
     };
 
     let app = axum::Router::new()

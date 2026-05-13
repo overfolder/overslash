@@ -19,6 +19,7 @@ pub mod api_key;
 pub mod approval;
 pub mod audit;
 pub mod billing;
+pub mod billing_email_log;
 pub mod byoc_credential;
 pub mod connection;
 pub mod email_unsubscribe_token;

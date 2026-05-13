@@ -494,6 +494,7 @@ pub async fn stripe_webhook(
 
     let event_type = event["type"].as_str().unwrap_or("");
     let data = &event["data"]["object"];
+    let event_id = event["id"].as_str().unwrap_or("");
 
     match event_type {
         "checkout.session.completed" => {
@@ -504,6 +505,15 @@ pub async fn stripe_webhook(
         }
         "customer.subscription.deleted" => {
             handle_subscription_deleted(&state, data).await?;
+            crate::services::billing_email::send_subscription_canceled(&state, event_id, data)
+                .await;
+        }
+        "invoice.payment_succeeded" => {
+            crate::services::billing_email::send_invoice_paid(&state, event_id, data).await;
+        }
+        "invoice.payment_failed" => {
+            crate::services::billing_email::send_invoice_payment_failed(&state, event_id, data)
+                .await;
         }
         _ => {}
     }

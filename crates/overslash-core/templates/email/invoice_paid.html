@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <body style="margin: 0; padding: 0; background: #f5f5f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: #383a42;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background: #f5f5f7;">
+      <tr>
+        <td align="center" style="padding: 40px 16px;">
+          <table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="max-width: 560px; background: #ffffff; border: 1px solid #e8e8ee; border-radius: 12px;">
+            <tr>
+              <td style="padding: 32px 32px 8px 32px;">
+                <div style="font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #737580;">Overslash · Receipt</div>
+                <h1 style="margin: 12px 0 0 0; font-size: 22px; line-height: 1.3; color: #17191c;">Payment received for {org_name}.</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 16px 32px 8px 32px; font-size: 15px; line-height: 1.55;">
+                <p style="margin: 0 0 14px 0;">We received your payment of <strong>{amount_display} {currency_upper}</strong>[ for invoice {invoice_number}]. Your subscription is paid through <strong>{period_end_display}</strong>.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 32px 24px 32px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td style="background: #6359d9; border-radius: 8px;">
+                      <a href="{hosted_invoice_url}" style="display: inline-block; padding: 11px 20px; font-size: 14px; font-weight: 600; color: #ffffff; text-decoration: none;">View invoice</a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0 32px 8px 32px; font-size: 14px; line-height: 1.55;">
+                <p style="margin: 0 0 6px 0;">Manage your subscription, update payment method, or download past invoices from the <a href="{billing_portal_url}" style="color: #4f45c2;">billing portal</a>.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 32px 28px 32px; font-size: 13px; color: #737580; line-height: 1.5; border-top: 1px solid #f5f5f7;">
+                <p style="margin: 18px 0 0 0;">This is a transactional billing email and cannot be unsubscribed from.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

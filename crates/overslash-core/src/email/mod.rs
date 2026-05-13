@@ -35,6 +35,29 @@ pub const TEST_TEMPLATE_HTML: &str = include_str!("../../templates/email/test.ht
 pub const WELCOME_TEMPLATE_SUBJECT: &str = "Welcome to Overslash";
 pub const WELCOME_TEMPLATE_HTML: &str = include_str!("../../templates/email/welcome.html");
 
+/// Billing receipt. Sent on Stripe `invoice.payment_succeeded`. Transactional —
+/// exempt from `welcome_emails_unsubscribed_at` by policy (TODO.md §1.1).
+/// Placeholders: `{org_name}`, `{amount_display}`, `{currency_upper}`,
+/// `{invoice_number}` (optional), `{period_end_display}`,
+/// `{hosted_invoice_url}`, `{billing_portal_url}`.
+pub const INVOICE_PAID_SUBJECT: &str = "Receipt for your Overslash subscription";
+pub const INVOICE_PAID_HTML: &str = include_str!("../../templates/email/invoice_paid.html");
+
+/// Dunning. Sent on Stripe `invoice.payment_failed`. Transactional.
+/// Placeholders: `{org_name}`, `{amount_display}`, `{currency_upper}`,
+/// `{attempt_count}`, `{next_attempt_display}` (optional),
+/// `{billing_portal_url}`.
+pub const INVOICE_PAYMENT_FAILED_SUBJECT: &str = "Your Overslash payment didn't go through";
+pub const INVOICE_PAYMENT_FAILED_HTML: &str =
+    include_str!("../../templates/email/invoice_payment_failed.html");
+
+/// Subscription canceled. Sent on Stripe `customer.subscription.deleted`.
+/// Transactional. Placeholders: `{org_name}`, `{access_until_display}`
+/// (optional), `{billing_portal_url}`.
+pub const SUBSCRIPTION_CANCELED_SUBJECT: &str = "Your Overslash subscription has been canceled";
+pub const SUBSCRIPTION_CANCELED_HTML: &str =
+    include_str!("../../templates/email/subscription_canceled.html");
+
 /// Interpolate a template with the same grammar action descriptions use,
 /// without the display-character cap that would truncate URLs / long values.
 pub fn render(template: &str, params: &HashMap<String, serde_json::Value>) -> String {

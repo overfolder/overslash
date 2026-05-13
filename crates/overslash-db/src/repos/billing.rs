@@ -233,6 +233,42 @@ pub async fn update_subscription_status(
     Ok(result.rows_affected() > 0)
 }
 
+/// Find the user with `users.stripe_customer_id = $1`. Used by billing-email
+/// senders to resolve recipient + display name from the `customer` field of
+/// a Stripe webhook payload. The partial unique index `users_stripe_customer`
+/// guarantees at most one match. Returns `(user_id, email, display_name)`.
+pub async fn get_user_by_stripe_customer(
+    pool: &PgPool,
+    customer_id: &str,
+) -> Result<Option<(Uuid, Option<String>, Option<String>)>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT id, email, display_name FROM users WHERE stripe_customer_id = $1",
+        customer_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.id, r.email, r.display_name)))
+}
+
+/// Look up the subscription row by Stripe customer id. Used by billing-email
+/// senders to enrich the email body with org-level context (currency, period
+/// end, seats) that isn't in the Stripe event payload directly.
+pub async fn get_org_subscription_by_customer(
+    pool: &PgPool,
+    customer_id: &str,
+) -> Result<Option<OrgSubscription>, sqlx::Error> {
+    sqlx::query_as!(
+        OrgSubscription,
+        "SELECT org_id, stripe_subscription_id, stripe_customer_id, plan, seats, status,
+                currency, current_period_start, current_period_end, cancel_at_period_end,
+                created_at, updated_at
+         FROM org_subscriptions WHERE stripe_customer_id = $1",
+        customer_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Cancel a subscription by Stripe subscription ID.
 pub async fn cancel_subscription(
     pool: &PgPool,
