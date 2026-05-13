@@ -496,6 +496,15 @@ pub async fn stripe_webhook(
     let data = &event["data"]["object"];
     let event_id = event["id"].as_str().unwrap_or("");
 
+    // Reject signed-but-malformed events without an `id` up front. Stripe
+    // always sets `evt_...`; falling through with the empty string would
+    // funnel every such event to the same `(stripe_event_id, kind) = ("", …)`
+    // idempotency key and silently drop the second one on the UNIQUE.
+    if event_id.is_empty() {
+        tracing::warn!(event_type, "stripe webhook missing event id");
+        return Err(AppError::BadRequest("missing event id".into()));
+    }
+
     match event_type {
         "checkout.session.completed" => {
             handle_checkout_completed(&state, data).await?;

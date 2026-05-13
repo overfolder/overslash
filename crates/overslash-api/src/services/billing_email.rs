@@ -236,12 +236,16 @@ pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &
         return;
     };
 
-    // For cancellation we never return Retryable — see the function doc.
-    // `Retryable` and `Skip` both collapse to "silently drop"; the
-    // distinguishing behavior only matters for invoice events.
+    // For cancellation we never propagate Retryable — see the function doc.
+    // Both Retryable and Skip collapse to "silently drop", but we still
+    // release the claim row so a manual replay (after the operator fixes
+    // the underlying data inconsistency) can re-claim and send.
     let org_ctx = match resolve_org_context(state, customer_id, KIND_SUBSCRIPTION_CANCELED).await {
         ResolveOrg::Found(c) => c,
-        ResolveOrg::Retryable | ResolveOrg::Skip => return,
+        ResolveOrg::Retryable | ResolveOrg::Skip => {
+            release_claim(state, log_id, KIND_SUBSCRIPTION_CANCELED, event_id).await;
+            return;
+        }
     };
 
     // current_period_end on the deleted subscription is the access cutoff. If

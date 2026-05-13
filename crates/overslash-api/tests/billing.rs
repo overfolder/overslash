@@ -807,6 +807,7 @@ async fn test_webhook_checkout_completed_provisions_org() {
 
     // Build the webhook payload.
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": {
             "object": {
@@ -890,6 +891,7 @@ async fn test_webhook_checkout_completed_idempotent() {
     .unwrap();
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": { "object": {
             "id": session_id, "object": "checkout.session", "status": "complete",
@@ -1008,6 +1010,7 @@ async fn test_webhook_slug_collision_does_not_provision_attacker() {
     .unwrap();
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": { "object": {
             "id": session_b, "object": "checkout.session", "status": "complete",
@@ -1157,6 +1160,7 @@ async fn test_webhook_idempotent_after_partial_provisioning() {
 
     // Stripe retries the webhook.
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "checkout.session.completed",
         "data": { "object": {
             "id": session_id, "object": "checkout.session", "status": "complete",
@@ -1247,6 +1251,7 @@ async fn test_webhook_subscription_updated() {
     let billing_base = format!("http://{billing_addr}");
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "customer.subscription.updated",
         "data": { "object": {
             "id": sub_id,
@@ -1312,6 +1317,7 @@ async fn test_webhook_subscription_deleted() {
     let billing_base = format!("http://{billing_addr}");
 
     let payload = serde_json::to_vec(&json!({
+        "id": format!("evt_{}", Uuid::new_v4().simple()),
         "type": "customer.subscription.deleted",
         "data": { "object": {
             "id": sub_id,
@@ -1875,6 +1881,44 @@ async fn test_webhook_invoice_paid_returns_5xx_when_subscription_not_yet_provisi
         total, 0,
         "claim row must be released so the redelivered event can re-claim"
     );
+}
+
+/// Signed-but-malformed Stripe webhooks without a top-level `id` get
+/// rejected with 400 rather than funneled to a `("", kind)` idempotency key
+/// that would silently drop the second such event on the UNIQUE.
+#[tokio::test]
+async fn test_webhook_missing_event_id_rejected() {
+    let pool = common::test_pool().await;
+    let (resend_base, _resend_captured) = start_mock_resend().await;
+    let (stripe_addr, _) = start_mock_stripe(vec![]).await;
+    let (billing_addr, billing_client) =
+        start_billing_api_with_mailer(pool.clone(), stripe_addr, resend_base).await;
+    let billing_base = format!("http://{billing_addr}");
+
+    // No "id" field at the top level.
+    let payload = serde_json::to_vec(&json!({
+        "type": "invoice.payment_succeeded",
+        "data": { "object": {
+            "id": "in_no_event_id",
+            "object": "invoice",
+            "customer": "cus_anything",
+            "amount_paid": 1000,
+            "currency": "usd",
+        }}
+    }))
+    .unwrap();
+    let ts = OffsetDateTime::now_utc().unix_timestamp();
+    let sig = stripe_sig("whsec_test", ts, &payload);
+
+    let resp = billing_client
+        .post(format!("{billing_base}/v1/webhooks/stripe"))
+        .header("Stripe-Signature", sig)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "missing event id rejected up front");
 }
 
 // ---------------------------------------------------------------------------
