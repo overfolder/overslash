@@ -175,8 +175,17 @@ pub(crate) enum RowDecision {
 
 /// Pure decision function for one row's blob. Reads byte 0 for the
 /// fast-path skip, otherwise round-trips through the keyring.
+///
+/// The fast path also requires the blob to be at least `MIN_BLOB_LEN`
+/// (1 version + 12 nonce + 16 GCM tag = 29 bytes). A truncated blob
+/// whose first byte happens to equal the active key id — disk-level
+/// corruption, partial write, manual SQL surgery — would otherwise be
+/// silently skipped as "already on the active key" and stay in the
+/// database undetected. Falling through to decrypt routes it to
+/// `DecryptError` instead, so the operator sees a log line and an
+/// error count.
 pub(crate) fn classify_row(keyring: &Keyring, blob: &[u8]) -> RowDecision {
-    if blob.first().copied() == Some(keyring.active_id()) {
+    if blob.len() >= crypto::MIN_BLOB_LEN && blob.first().copied() == Some(keyring.active_id()) {
         return RowDecision::AlreadyActive;
     }
     let plaintext = match crypto::decrypt(keyring, blob) {
@@ -366,6 +375,19 @@ mod tests {
         blob.extend_from_slice(&[0u8; 12]);
         blob.extend_from_slice(&[0xFFu8; 16]);
         assert_eq!(classify_row(&kr, &blob), RowDecision::DecryptError);
+    }
+
+    #[test]
+    fn classify_row_does_not_fast_path_truncated_blob_with_active_id_byte() {
+        // Disk corruption / partial write scenario: a 5-byte row whose
+        // first byte happens to equal the active key id. The fast-path
+        // skip MUST NOT classify this as AlreadyActive — that would
+        // leave the corrupt row in the DB undetected. Falling through
+        // to decrypt routes it to DecryptError so the operator sees a
+        // log line + an `errors` counter bump.
+        let kr = Keyring::dual(2, key_b(), 1, key_a()).unwrap();
+        let truncated = vec![2u8, 0u8, 0u8, 0u8, 0u8]; // 5 bytes, active id prefix
+        assert_eq!(classify_row(&kr, &truncated), RowDecision::DecryptError);
     }
 
     #[test]

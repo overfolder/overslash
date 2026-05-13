@@ -16,8 +16,11 @@ const NONCE_LEN: usize = 12;
 const VERSION_OFFSET: usize = 0;
 const NONCE_OFFSET: usize = 1;
 const CIPHERTEXT_OFFSET: usize = NONCE_OFFSET + NONCE_LEN;
-/// Minimum valid blob: 1 (version) + 12 (nonce) + 16 (GCM tag).
-const MIN_BLOB_LEN: usize = CIPHERTEXT_OFFSET + 16;
+/// Minimum valid blob: 1 (version) + 12 (nonce) + 16 (GCM tag). Exposed so
+/// downstream callers (e.g. the re-encrypt loop's fast-path skip) can
+/// reject visibly truncated rows up front instead of letting them slip
+/// past the version-byte check.
+pub const MIN_BLOB_LEN: usize = CIPHERTEXT_OFFSET + 16;
 
 /// Two-slot keyring: an `active` key (used for encrypt + decrypt) and an
 /// optional `previous` key (decrypt-only).
