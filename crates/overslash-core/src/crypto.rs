@@ -378,4 +378,81 @@ mod tests {
     fn parse_hex_key_wrong_length() {
         assert!(parse_hex_key("abcd").is_err());
     }
+
+    #[test]
+    fn parse_hex_key_non_hex_chars() {
+        // 64 chars but not all hex digits.
+        let bad = "g".repeat(64);
+        assert!(matches!(
+            parse_hex_key(&bad),
+            Err(CryptoError::InvalidKeyLength)
+        ));
+    }
+
+    #[test]
+    fn from_hex_dispatches_single_when_no_previous() {
+        let kr =
+            Keyring::from_hex(&"ab".repeat(32), 1, None, 99).expect("single-key keyring builds");
+        assert_eq!(kr.active_id(), 1);
+        assert_eq!(kr.previous_id(), None);
+    }
+
+    #[test]
+    fn from_hex_dispatches_dual_when_previous_set() {
+        let kr =
+            Keyring::from_hex(&"cd".repeat(32), 2, Some(&"ab".repeat(32)), 1).expect("dual builds");
+        assert_eq!(kr.active_id(), 2);
+        assert_eq!(kr.previous_id(), Some(1));
+    }
+
+    #[test]
+    fn from_hex_treats_empty_previous_as_unset() {
+        // Empty string for the previous hex must be treated as "no
+        // previous key set" — otherwise an env var that's defined but
+        // empty would attempt to parse "" and error out.
+        let kr = Keyring::from_hex(&"ab".repeat(32), 1, Some(""), 99)
+            .expect("empty previous folds to single");
+        assert_eq!(kr.previous_id(), None);
+    }
+
+    #[test]
+    fn from_hex_propagates_invalid_active_hex() {
+        assert!(matches!(
+            Keyring::from_hex("not-hex", 1, None, 0),
+            Err(CryptoError::InvalidKeyLength)
+        ));
+    }
+
+    #[test]
+    fn from_hex_propagates_invalid_previous_hex() {
+        assert!(matches!(
+            Keyring::from_hex(&"ab".repeat(32), 2, Some("not-hex"), 1),
+            Err(CryptoError::InvalidKeyLength)
+        ));
+    }
+
+    #[test]
+    fn debug_impl_never_prints_key_bytes() {
+        let kr = Keyring::dual(2, key_b(), 1, key_a()).unwrap();
+        let printed = format!("{kr:?}");
+        // Should mention the ids but never the byte 0xAB / 0xCD.
+        assert!(printed.contains("active_id"));
+        assert!(printed.contains("previous_id"));
+        assert!(!printed.contains("ab"));
+        assert!(!printed.contains("cd"));
+        assert!(!printed.contains("171"));
+        assert!(!printed.contains("205"));
+    }
+
+    #[test]
+    fn test_keyring_has_known_shape() {
+        // `Keyring::test()` is the canonical test fixture — pin its
+        // shape so a future refactor doesn't silently flip it.
+        let kr = Keyring::test();
+        assert_eq!(kr.active_id(), 1);
+        assert_eq!(kr.previous_id(), None);
+        let blob = encrypt(&kr, b"hello").unwrap();
+        assert_eq!(blob[0], 1);
+        assert_eq!(decrypt(&kr, &blob).unwrap(), b"hello");
+    }
 }

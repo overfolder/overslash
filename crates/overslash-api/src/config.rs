@@ -815,6 +815,108 @@ mod tests {
         assert!(!cfg.preview_origin_allowed("https://ok"));
     }
 
+    // ── Config::keyring() accessor ───────────────────────────────────────
+
+    #[test]
+    fn keyring_builds_single_key_when_previous_unset() {
+        let cfg = empty_test_config();
+        let kr = cfg.keyring().expect("single-key keyring builds");
+        assert_eq!(kr.active_id(), 1);
+        assert_eq!(kr.previous_id(), None);
+    }
+
+    #[test]
+    fn keyring_builds_dual_when_previous_set() {
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key = "cd".repeat(32);
+        cfg.secrets_encryption_key_previous = Some("ab".repeat(32));
+        cfg.secrets_encryption_key_active_id = 2;
+        cfg.secrets_encryption_key_previous_id = 1;
+        let kr = cfg.keyring().expect("dual-key keyring builds");
+        assert_eq!(kr.active_id(), 2);
+        assert_eq!(kr.previous_id(), Some(1));
+    }
+
+    #[test]
+    fn keyring_rejects_inverted_ids() {
+        // active_id < previous_id → Keyring::dual rejects, surfacing the
+        // misconfig at boot rather than silently mis-tagging blobs.
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key_previous = Some("cd".repeat(32));
+        cfg.secrets_encryption_key_active_id = 1;
+        cfg.secrets_encryption_key_previous_id = 2;
+        assert!(cfg.keyring().is_err());
+    }
+
+    #[test]
+    fn keyring_rejects_invalid_hex() {
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key = "not-hex".into();
+        assert!(cfg.keyring().is_err());
+    }
+
+    #[test]
+    fn keyring_treats_empty_previous_as_unset() {
+        let mut cfg = empty_test_config();
+        cfg.secrets_encryption_key_previous = Some(String::new());
+        let kr = cfg.keyring().expect("empty previous folds to single-key");
+        assert_eq!(kr.previous_id(), None);
+    }
+
+    // ── env-var helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn previous_id_defaults_to_active_minus_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 1);
+        assert_eq!(
+            secrets_encryption_key_previous_id_from_env(secrets_encryption_key_active_id_from_env()),
+            0,
+            "previous_id defaults to active_id - 1 (0 when active is 1)"
+        );
+    }
+
+    #[test]
+    fn active_id_reads_env_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "7");
+        }
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 7);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+    }
+
+    #[test]
+    fn previous_id_reads_env_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", "5");
+        }
+        assert_eq!(secrets_encryption_key_previous_id_from_env(8), 5);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
+        }
+    }
+
+    #[test]
+    fn id_helpers_ignore_unparseable_values() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", "not-a-number");
+        }
+        // Unparseable falls back to the default (1).
+        assert_eq!(secrets_encryption_key_active_id_from_env(), 1);
+        unsafe {
+            std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
+        }
+    }
+
     fn empty_test_config() -> Config {
         Config {
             host: "127.0.0.1".into(),

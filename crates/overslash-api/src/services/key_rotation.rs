@@ -156,55 +156,70 @@ pub async fn run<R: Reporter>(
     Ok(grand)
 }
 
+/// What `classify_row` decided to do with a single blob. Extracted so the
+/// pure decision logic — "tagged with active key?", "decrypts?", "what
+/// would we write?" — can be unit-tested without a live Postgres.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RowDecision {
+    /// Blob is already tagged with the active key id — skip the loop's
+    /// write entirely (the fast path).
+    AlreadyActive,
+    /// Blob decrypted under the keyring and re-encrypted into `new_blob`.
+    Rewrite { new_blob: Vec<u8> },
+    /// Blob did not decrypt with either key — the loop logs and skips.
+    DecryptError,
+    /// Re-encrypt of the plaintext failed (vanishingly rare; AES-GCM
+    /// encrypt is infallible once the key is valid).
+    EncryptError,
+}
+
+/// Pure decision function for one row's blob. Reads byte 0 for the
+/// fast-path skip, otherwise round-trips through the keyring.
+pub(crate) fn classify_row(keyring: &Keyring, blob: &[u8]) -> RowDecision {
+    if blob.first().copied() == Some(keyring.active_id()) {
+        return RowDecision::AlreadyActive;
+    }
+    let plaintext = match crypto::decrypt(keyring, blob) {
+        Ok(p) => p,
+        Err(_) => return RowDecision::DecryptError,
+    };
+    match crypto::encrypt(keyring, &plaintext) {
+        Ok(new_blob) => RowDecision::Rewrite { new_blob },
+        Err(_) => RowDecision::EncryptError,
+    }
+}
+
 async fn reencrypt_target(
     pool: &PgPool,
     keyring: &Keyring,
     target: &Target,
     opts: Options,
 ) -> Result<Stats> {
-    let active_id = keyring.active_id();
     let mut stats = Stats::default();
-    let mut after: Option<Uuid> = None;
+    // Keyset cursor. `Uuid::nil()` is `00000000-…-0000`, which sorts below
+    // every gen_random_uuid() value, so the very first page reads from the
+    // start without needing a separate "no-cursor" SQL variant.
+    let mut after: Uuid = Uuid::nil();
+
+    let null_filter = if target.nullable {
+        format!(" AND {col} IS NOT NULL", col = target.column)
+    } else {
+        String::new()
+    };
+    let sql = format!(
+        "SELECT id, {col} FROM {tbl} WHERE id > $1{null_filter} ORDER BY id LIMIT $2",
+        col = target.column,
+        tbl = target.table,
+        null_filter = null_filter,
+    );
 
     loop {
-        let null_filter = if target.nullable {
-            format!(" AND {col} IS NOT NULL", col = target.column)
-        } else {
-            String::new()
-        };
-        let rows: Vec<(Uuid, Vec<u8>)> = match after {
-            Some(a) => {
-                let sql = format!(
-                    "SELECT id, {col} FROM {tbl} WHERE id > $1{null_filter} ORDER BY id LIMIT $2",
-                    col = target.column,
-                    tbl = target.table,
-                    null_filter = null_filter,
-                );
-                sqlx::query_as(&sql)
-                    .bind(a)
-                    .bind(opts.batch as i64)
-                    .fetch_all(pool)
-                    .await
-                    .with_context(|| format!("scan {}.{}", target.table, target.column))?
-            }
-            None => {
-                let where_clause = if target.nullable {
-                    format!(" WHERE {col} IS NOT NULL", col = target.column)
-                } else {
-                    String::new()
-                };
-                let sql = format!(
-                    "SELECT id, {col} FROM {tbl}{where_clause} ORDER BY id LIMIT $1",
-                    col = target.column,
-                    tbl = target.table,
-                );
-                sqlx::query_as(&sql)
-                    .bind(opts.batch as i64)
-                    .fetch_all(pool)
-                    .await
-                    .with_context(|| format!("scan {}.{}", target.table, target.column))?
-            }
-        };
+        let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(&sql)
+            .bind(after)
+            .bind(opts.batch as i64)
+            .fetch_all(pool)
+            .await
+            .with_context(|| format!("scan {}.{}", target.table, target.column))?;
 
         if rows.is_empty() {
             break;
@@ -212,41 +227,34 @@ async fn reencrypt_target(
 
         for (id, blob) in &rows {
             stats.total += 1;
-            after = Some(*id);
+            after = *id;
 
-            if blob.first().copied() == Some(active_id) {
-                stats.already_active += 1;
-                continue;
-            }
-
-            let plaintext = match crypto::decrypt(keyring, blob) {
-                Ok(p) => p,
-                Err(e) => {
+            let new_blob = match classify_row(keyring, blob) {
+                RowDecision::AlreadyActive => {
+                    stats.already_active += 1;
+                    continue;
+                }
+                RowDecision::DecryptError => {
                     tracing::warn!(
                         table = target.table,
                         column = target.column,
                         row_id = %id,
-                        error = %e,
                         "reencrypt: decrypt failed, skipping",
                     );
                     stats.errors += 1;
                     continue;
                 }
-            };
-
-            let new_blob = match crypto::encrypt(keyring, &plaintext) {
-                Ok(b) => b,
-                Err(e) => {
+                RowDecision::EncryptError => {
                     tracing::warn!(
                         table = target.table,
                         column = target.column,
                         row_id = %id,
-                        error = %e,
                         "reencrypt: encrypt failed, skipping",
                     );
                     stats.errors += 1;
                     continue;
                 }
+                RowDecision::Rewrite { new_blob } => new_blob,
             };
 
             if opts.dry_run {
@@ -298,4 +306,99 @@ async fn reencrypt_target(
         }
     }
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_a() -> [u8; 32] {
+        [0xAB; 32]
+    }
+    fn key_b() -> [u8; 32] {
+        [0xCD; 32]
+    }
+
+    #[test]
+    fn classify_row_skips_blob_already_on_active_key() {
+        let kr = Keyring::dual(2, key_b(), 1, key_a()).unwrap();
+        let blob = crypto::encrypt(&kr, b"already rotated").unwrap();
+        assert_eq!(blob[0], 2, "encrypt writes the active key id");
+        assert_eq!(classify_row(&kr, &blob), RowDecision::AlreadyActive);
+    }
+
+    #[test]
+    fn classify_row_rewrites_blob_on_previous_key() {
+        // Write with single-key (id=1), then rotate.
+        let pre = Keyring::single(1, key_a()).unwrap();
+        let legacy = crypto::encrypt(&pre, b"needs rotation").unwrap();
+        assert_eq!(legacy[0], 1);
+
+        let post = Keyring::dual(2, key_b(), 1, key_a()).unwrap();
+        match classify_row(&post, &legacy) {
+            RowDecision::Rewrite { new_blob } => {
+                // New blob is tagged with the active id and decrypts to
+                // the same plaintext under the rotated keyring.
+                assert_eq!(new_blob[0], 2);
+                let recovered = crypto::decrypt(&post, &new_blob).unwrap();
+                assert_eq!(recovered, b"needs rotation");
+            }
+            other => panic!("expected Rewrite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_row_returns_decrypt_error_for_unknown_version() {
+        let kr = Keyring::dual(2, key_b(), 1, key_a()).unwrap();
+        // Hand-craft a blob with version=9 — neither slot's id.
+        let mut blob = vec![9u8];
+        blob.extend_from_slice(&[0u8; 12]); // nonce
+        blob.extend_from_slice(&[0u8; 16]); // bogus tag-sized ct
+        assert_eq!(classify_row(&kr, &blob), RowDecision::DecryptError);
+    }
+
+    #[test]
+    fn classify_row_decrypt_error_for_corrupt_ciphertext_under_known_id() {
+        let kr = Keyring::dual(2, key_b(), 1, key_a()).unwrap();
+        // Blob carries a known version byte but the ciphertext bytes are
+        // garbage — AEAD tag check fails inside decrypt.
+        let mut blob = vec![1u8];
+        blob.extend_from_slice(&[0u8; 12]);
+        blob.extend_from_slice(&[0xFFu8; 16]);
+        assert_eq!(classify_row(&kr, &blob), RowDecision::DecryptError);
+    }
+
+    #[test]
+    fn stats_add_sums_each_counter() {
+        let mut a = Stats {
+            total: 1,
+            already_active: 2,
+            re_encrypted: 3,
+            errors: 4,
+        };
+        let b = Stats {
+            total: 10,
+            already_active: 20,
+            re_encrypted: 30,
+            errors: 40,
+        };
+        a.add(&b);
+        assert_eq!(a.total, 11);
+        assert_eq!(a.already_active, 22);
+        assert_eq!(a.re_encrypted, 33);
+        assert_eq!(a.errors, 44);
+    }
+
+    #[test]
+    fn options_default_is_live_write_batch_500() {
+        let opts = Options::default();
+        assert!(!opts.dry_run);
+        assert_eq!(opts.batch, 500);
+    }
+
+    #[test]
+    fn noop_reporter_does_not_panic() {
+        let mut r = NoopReporter;
+        r.target_done("t", "c", &Stats::default());
+    }
 }
