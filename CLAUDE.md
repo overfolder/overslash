@@ -15,6 +15,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 | Understand the UI | [UI_SPEC.md](UI_SPEC.md) |
 | Visual design reference | [Figma](https://www.figma.com/design/g385jjr9vo48bWqZq2yKCi) |
 | Design tokens (CSS) | [dashboard/src/lib/styles/design-tokens.css](dashboard/src/lib/styles/design-tokens.css) |
+| Check production health | [status.overslash.com](https://status.overslash.com) — runbook in [docs/runbooks/status-page.md](docs/runbooks/status-page.md) |
 
 ## Tech Stack
 
