@@ -217,9 +217,18 @@ async fn send_for_org(
 
     let mut sent: usize = 0;
     for admin in &admins {
-        let user = match user::get_by_id(pool, admin.user_id).await? {
-            Some(u) => u,
-            None => continue,
+        // Per-admin lookups must NOT propagate (`?`) — the module contract is
+        // "per-admin failures are swallowed and logged". Otherwise a transient
+        // DB error on admin N would abort the loop after admins 1..N-1 had
+        // already received the email; the caller would release the claim and
+        // a future retry could re-send to those same admins.
+        let user = match user::get_by_id(pool, admin.user_id).await {
+            Ok(Some(u)) => u,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(user_id = %admin.user_id, error = %e, "webhook digest: user lookup failed; skipping admin");
+                continue;
+            }
         };
         if user.webhook_digest_unsubscribed_at.is_some() {
             continue;
