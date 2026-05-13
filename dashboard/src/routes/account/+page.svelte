@@ -4,7 +4,8 @@
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	interface EmailPreferences {
-		welcome_emails: boolean;
+		welcome_emails?: boolean;
+		webhook_digest_emails?: boolean;
 	}
 
 	let me: MeIdentity | null = $state(null);
@@ -13,6 +14,7 @@
 	let error: string | null = $state(null);
 	let dropping: string | null = $state(null);
 	let welcomeEmails = $state(true);
+	let webhookDigestEmails = $state(true);
 	let emailPrefsLoaded = $state(false);
 	let emailPrefsSaving = $state(false);
 	let emailPrefsError: string | null = $state(null);
@@ -35,7 +37,8 @@
 			me = identity;
 			memberships = identity?.memberships ?? [];
 			if (prefs) {
-				welcomeEmails = prefs.welcome_emails;
+				welcomeEmails = prefs.welcome_emails ?? true;
+				webhookDigestEmails = prefs.webhook_digest_emails ?? true;
 				emailPrefsLoaded = true;
 			}
 		} catch (e) {
@@ -55,9 +58,28 @@
 			const updated = await session.put<EmailPreferences>('/v1/account/email-preferences', {
 				welcome_emails: next
 			});
-			welcomeEmails = updated.welcome_emails;
+			welcomeEmails = updated.welcome_emails ?? next;
 		} catch (e) {
 			welcomeEmails = previous; // revert
+			emailPrefsError = e instanceof Error ? e.message : 'Failed to update email preferences';
+		} finally {
+			emailPrefsSaving = false;
+		}
+	}
+
+	async function toggleWebhookDigestEmails(next: boolean) {
+		if (emailPrefsSaving) return;
+		const previous = webhookDigestEmails;
+		webhookDigestEmails = next; // optimistic
+		emailPrefsSaving = true;
+		emailPrefsError = null;
+		try {
+			const updated = await session.put<EmailPreferences>('/v1/account/email-preferences', {
+				webhook_digest_emails: next
+			});
+			webhookDigestEmails = updated.webhook_digest_emails ?? next;
+		} catch (e) {
+			webhookDigestEmails = previous; // revert
 			emailPrefsError = e instanceof Error ? e.message : 'Failed to update email preferences';
 		} finally {
 			emailPrefsSaving = false;
@@ -133,6 +155,20 @@
 					<span id="welcome-emails-label" class="pref-label">Send me product and welcome emails</span>
 					<span class="muted">
 						Billing receipts and other transactional emails are always sent.
+					</span>
+				</div>
+			</div>
+			<div class="pref-row">
+				<ToggleSwitch
+					checked={webhookDigestEmails}
+					onchange={toggleWebhookDigestEmails}
+					disabled={!emailPrefsLoaded || emailPrefsSaving}
+					labelledby="webhook-digest-emails-label"
+				/>
+				<div class="pref-text">
+					<span id="webhook-digest-emails-label" class="pref-label">Send me the daily webhook DLQ digest</span>
+					<span class="muted">
+						Org admins receive a once-a-day summary of webhook endpoints that hit the retry limit.
 					</span>
 				</div>
 			</div>

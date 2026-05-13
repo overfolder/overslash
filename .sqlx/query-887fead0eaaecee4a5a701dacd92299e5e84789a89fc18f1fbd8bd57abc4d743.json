@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO users (email, display_name, overslash_idp_provider, overslash_idp_subject)\n         VALUES ($1, $2, $3, $4)\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at",
+  "query": "UPDATE users\n         SET welcome_emails_unsubscribed_at = $2, updated_at = now()\n         WHERE id = $1\n         RETURNING id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, webhook_digest_unsubscribed_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -50,21 +50,24 @@
       },
       {
         "ordinal": 9,
-        "name": "created_at",
+        "name": "webhook_digest_unsubscribed_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Text",
-        "Text"
+        "Uuid",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -77,9 +80,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "44c594661ce2809d8ae24bf3515e6487491b3d8f89272d5f5540e4ccb0d2735a"
+  "hash": "887fead0eaaecee4a5a701dacd92299e5e84789a89fc18f1fbd8bd57abc4d743"
 }

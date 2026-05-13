@@ -35,6 +35,14 @@ pub const TEST_TEMPLATE_HTML: &str = include_str!("../../templates/email/test.ht
 pub const WELCOME_TEMPLATE_SUBJECT: &str = "Welcome to Overslash";
 pub const WELCOME_TEMPLATE_HTML: &str = include_str!("../../templates/email/welcome.html");
 
+/// Daily webhook DLQ digest. One email per (org admin, day) when the org has
+/// terminal webhook failures in the last 24 hours. Placeholders:
+/// `{org_name}`, `{endpoint_count}`, `{rows_html}` (pre-rendered `<tr>` block
+/// — the interpolator doesn't loop), `{dashboard_url}`, `{unsubscribe_url}`.
+pub const WEBHOOK_DIGEST_TEMPLATE_SUBJECT: &str = "Webhook delivery failures in the last 24 hours";
+pub const WEBHOOK_DIGEST_TEMPLATE_HTML: &str =
+    include_str!("../../templates/email/webhook_digest.html");
+
 /// Interpolate a template with the same grammar action descriptions use,
 /// without the display-character cap that would truncate URLs / long values.
 pub fn render(template: &str, params: &HashMap<String, serde_json::Value>) -> String {

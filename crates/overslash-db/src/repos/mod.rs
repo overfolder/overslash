@@ -50,3 +50,4 @@ pub mod service_instance;
 pub mod service_template;
 pub mod user;
 pub mod webhook;
+pub mod webhook_digest_run;

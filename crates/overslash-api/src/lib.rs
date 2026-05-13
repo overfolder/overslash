@@ -226,6 +226,16 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             state.http_client.clone(),
         ));
 
+        // Webhook DLQ digest (daily, 13:00 UTC). Idempotent across replicas
+        // via `webhook_digest_runs` claim row — every replica that boots
+        // wakes at the anchor and races to send each org's digest exactly
+        // once. See services::webhook_digest.
+        tokio::spawn(services::webhook_digest::spawn_digest_loop(
+            state.db.clone(),
+            state.mailer.clone(),
+            state.config.public_url.clone(),
+        ));
+
         // Rate limit eviction loop (in-memory store only)
         if let Some(store) = in_memory_store {
             tokio::spawn(async move {

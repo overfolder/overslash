@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, created_at, updated_at\n         FROM users WHERE id = $1",
+  "query": "SELECT id, email, display_name, overslash_idp_provider, overslash_idp_subject, personal_org_id, is_instance_admin, welcome_email_sent_at, welcome_emails_unsubscribed_at, webhook_digest_unsubscribed_at, created_at, updated_at\n         FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -50,11 +50,16 @@
       },
       {
         "ordinal": 9,
-        "name": "created_at",
+        "name": "webhook_digest_unsubscribed_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -74,9 +79,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "e853f901f0cc18d0e836cb2636a875a13a42c79e4807e2dc325169f9e405ae33"
+  "hash": "4b833bdc1cf9e61caf33464712e95a6020e983b3592a02c40d8c34fee87d77a5"
 }

@@ -127,6 +127,100 @@ async fn email_prefs_default_subscribed_then_toggle_roundtrip() {
 }
 
 #[tokio::test]
+async fn email_prefs_webhook_digest_toggle_is_independent_from_welcome() {
+    // Dashboard surface for `webhook_digest_unsubscribed_at` — flipping the
+    // digest toggle must not affect `welcome_emails`, and the response must
+    // round-trip both fields so the UI can reflect them in one fetch.
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
+
+    let token_resp: Value = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
+
+    let prefs: Value = client
+        .get(format!("{base}/v1/account/email-preferences"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(prefs["welcome_emails"], true);
+    assert_eq!(prefs["webhook_digest_emails"], true);
+
+    // Opt out of the digest only.
+    let after: Value = client
+        .put(format!("{base}/v1/account/email-preferences"))
+        .header("cookie", &cookie)
+        .json(&serde_json::json!({ "webhook_digest_emails": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["welcome_emails"], true, "welcome stays subscribed");
+    assert_eq!(after["webhook_digest_emails"], false);
+
+    // DB confirms only the digest column flipped.
+    let user_row = sqlx::query(
+        "SELECT welcome_emails_unsubscribed_at, webhook_digest_unsubscribed_at FROM users
+         WHERE id = (SELECT user_id FROM user_org_memberships WHERE org_id = $1 LIMIT 1)",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        user_row
+            .get::<Option<time::OffsetDateTime>, _>("welcome_emails_unsubscribed_at")
+            .is_none()
+    );
+    assert!(
+        user_row
+            .get::<Option<time::OffsetDateTime>, _>("webhook_digest_unsubscribed_at")
+            .is_some()
+    );
+
+    // Audit row used the webhook_digest purpose, not welcome.
+    let row = sqlx::query(
+        "SELECT detail FROM audit_log
+         WHERE org_id = $1 AND action = 'email.unsubscribed'
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let detail: serde_json::Value = row.get("detail");
+    assert_eq!(detail["purpose"], "webhook_digest");
+    assert_eq!(detail["via"], "account_toggle");
+
+    // Re-subscribe round-trips back.
+    let resub: Value = client
+        .put(format!("{base}/v1/account/email-preferences"))
+        .header("cookie", &cookie)
+        .json(&serde_json::json!({ "webhook_digest_emails": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resub["webhook_digest_emails"], true);
+    assert_eq!(resub["welcome_emails"], true);
+}
+
+#[tokio::test]
 async fn unsubscribe_post_one_click_is_idempotent_and_opaque() {
     let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
