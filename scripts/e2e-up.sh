@@ -63,7 +63,7 @@ fi
 # instance on the worktree's port, so this is correct in both cases.
 if command -v sqlx >/dev/null 2>&1; then
     log "running sqlx migrate"
-    ( cd "$REPO_ROOT" && DATABASE_URL="$DATABASE_URL" sqlx migrate run --source crates/overslash-db/migrations >/dev/null ) \
+    ( cd "$REPO_ROOT" && DATABASE_URL="$DATABASE_URL" cargo sqlx migrate run --source crates/overslash-db/migrations >/dev/null ) \
         || fail "sqlx migrate failed"
 else
     log "sqlx CLI not found — assuming the DB is already migrated"
