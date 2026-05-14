@@ -21,12 +21,14 @@
     { "source": "/health",                "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/health" },
     { "source": "/SKILL.md",              "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/SKILL.md" },
     { "source": "/public/secrets/:path*", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/public/secrets/:path*" },
+    { "source": "/connect-authorize",     "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/connect-authorize" },
 
     { "source": "/v1/:path*",             "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/v1/:path*" },
     { "source": "/auth/:path*",           "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/auth/:path*" },
     { "source": "/health",                "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/health" },
     { "source": "/SKILL.md",              "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/SKILL.md" },
     { "source": "/public/secrets/:path*", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/public/secrets/:path*" },
+    { "source": "/connect-authorize",     "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/connect-authorize" },
 
     { "source": "/v1/:path*",                              "destination": "https://api.dev.overslash.com/v1/:path*" },
     { "source": "/auth/:path*",                            "destination": "https://api.dev.overslash.com/auth/:path*" },
