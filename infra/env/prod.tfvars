@@ -69,6 +69,7 @@ cloud_billing = true
 # email_provider / email_from / email_reply_to / email_api_key_secret_id.
 # The Resend API key (re_live_…) is populated post-apply via:
 #   gcloud secrets versions add overslash-prod-email-api-key --data-file=-
-# email_provider = "resend"
-# email_from     = "no-reply@overslash.com"
-# email_reply_to = "support@overslash.com"
+email_provider = "resend"
+email_from     = "no-reply@overslash.com"
+email_reply_to = "support@overslash.com"
+
