@@ -14,6 +14,7 @@
     { "source": "/oauth/token",                            "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/oauth/token" },
     { "source": "/oauth/revoke",                           "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/oauth/revoke" },
     { "source": "/mcp",                                    "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/mcp" },
+    { "source": "/connect-authorize",                      "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/connect-authorize" },
 
     { "source": "/v1/:path*",             "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/v1/:path*" },
     { "source": "/auth/:path*",           "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/auth/:path*" },
@@ -38,12 +39,15 @@
     { "source": "/oauth/authorize",                        "destination": "https://api.dev.overslash.com/oauth/authorize" },
     { "source": "/oauth/token",                            "destination": "https://api.dev.overslash.com/oauth/token" },
     { "source": "/oauth/revoke",                           "destination": "https://api.dev.overslash.com/oauth/revoke" },
-    { "source": "/mcp",                                    "destination": "https://api.dev.overslash.com/mcp" }
+    { "source": "/mcp",                                    "destination": "https://api.dev.overslash.com/mcp" },
+    { "source": "/connect-authorize",                      "destination": "https://api.dev.overslash.com/connect-authorize" }
   ],
   "redirects": [
-    { "source": "/.well-known/:path*", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/.well-known/:path*",     "permanent": false },
-    { "source": "/mcp",                "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/mcp",                  "permanent": false },
-    { "source": "/.well-known/:path*", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/.well-known/:path*", "permanent": false },
-    { "source": "/mcp",                "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/mcp",               "permanent": false }
+    { "source": "/.well-known/:path*",  "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/.well-known/:path*",     "permanent": false },
+    { "source": "/mcp",                 "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/mcp",                  "permanent": false },
+    { "source": "/connect-authorize",   "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/connect-authorize",    "permanent": false },
+    { "source": "/.well-known/:path*",  "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/.well-known/:path*", "permanent": false },
+    { "source": "/mcp",                 "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/mcp",                "permanent": false },
+    { "source": "/connect-authorize",   "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/connect-authorize",  "permanent": false }
   ]
 }
