@@ -215,12 +215,12 @@ clippy:
 
 # Run migrations
 migrate:
-	cd crates/overslash-db && sqlx migrate run
+	cd crates/overslash-db && cargo sqlx migrate run
 
 # Create new migration
 new-migration:
 	@read -p "Migration name: " name; \
-	cd crates/overslash-db && sqlx migrate add -r "$$name"
+	cd crates/overslash-db && cargo sqlx migrate add -r "$$name"
 
 # Regenerate SCHEMA.sql
 schema:
