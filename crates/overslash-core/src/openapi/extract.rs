@@ -1793,4 +1793,42 @@ mod tests {
         let (svc, _) = compile_service(&doc).unwrap();
         assert!(svc.actions["x"].params["id"].resolve.is_none());
     }
+
+    // ── per-op security → required_scopes ─────────────────────────────
+
+    #[test]
+    fn per_op_security_populates_required_scopes() {
+        let doc = json!({
+            "info": {"title": "Gmail", "x-overslash-key": "gmail"},
+            "paths": {
+                "/gmail/v1/users/{userId}/drafts": {"post": {
+                    "operationId": "create_draft",
+                    "security": [{"oauth": ["https://www.googleapis.com/auth/gmail.compose"]}]
+                }},
+                "/gmail/v1/users/{userId}/messages/send": {"post": {
+                    "operationId": "send_message",
+                    "security": [{"oauth": ["https://www.googleapis.com/auth/gmail.send"]}]
+                }}
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(
+            svc.actions["create_draft"].required_scopes,
+            vec!["https://www.googleapis.com/auth/gmail.compose"]
+        );
+        assert_eq!(
+            svc.actions["send_message"].required_scopes,
+            vec!["https://www.googleapis.com/auth/gmail.send"]
+        );
+    }
+
+    #[test]
+    fn missing_op_security_yields_empty_required_scopes() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {"/x": {"get": {"operationId": "x"}}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert!(svc.actions["x"].required_scopes.is_empty());
+    }
 }
