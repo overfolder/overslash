@@ -385,10 +385,12 @@ impl Config {
                 .ok()
                 .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
                 .unwrap_or(false),
-            stripe_secret_key: env::var("STRIPE_SECRET_KEY").ok().filter(|s| !s.is_empty()),
+            stripe_secret_key: env::var("STRIPE_SECRET_KEY")
+                .ok()
+                .filter(|s| !s.is_empty() && s != "REPLACE_ME"),
             stripe_webhook_secret: env::var("STRIPE_WEBHOOK_SECRET")
                 .ok()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty() && s != "REPLACE_ME"),
             stripe_eur_lookup_key: env::var("STRIPE_EUR_LOOKUP_KEY")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -418,7 +420,9 @@ impl Config {
             email_provider: env::var("EMAIL_PROVIDER").ok().filter(|s| !s.is_empty()),
             email_from: env::var("EMAIL_FROM").ok().filter(|s| !s.is_empty()),
             email_reply_to: env::var("EMAIL_REPLY_TO").ok().filter(|s| !s.is_empty()),
-            email_api_key: env::var("EMAIL_API_KEY").ok().filter(|s| !s.is_empty()),
+            email_api_key: env::var("EMAIL_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty() && s != "REPLACE_ME"),
             preview_origin_allowlist: parse_preview_origin_allowlist(
                 env::var("PREVIEW_ORIGIN_ALLOWLIST").ok().as_deref(),
             ),
@@ -454,7 +458,11 @@ impl Config {
             .iter()
             .chain(billing_required.iter())
             .chain(email_required.iter())
-            .filter(|k| env::var(k).map(|v| v.is_empty()).unwrap_or(true))
+            .filter(|k| {
+                env::var(k)
+                    .map(|v| v.is_empty() || v == "REPLACE_ME")
+                    .unwrap_or(true)
+            })
             .copied()
             .collect()
     }
