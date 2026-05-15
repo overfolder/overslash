@@ -7,6 +7,10 @@
 #   - exit 0  -> allow stop
 #   - exit 2  -> block stop, stderr "reason" surfaced to the model
 #
+# During the CI wait we poll every POLL_SECONDS and break out early on:
+#   - any required check having gone `fail` (rest of CI still pending)
+#   - Seer Code Review having finished while leaving unresolved Seer comments
+#
 # Caps at N=5 block attempts per turn (tracked in a per-session state file)
 # to avoid infinite looping. After 5 blocks we surface state and allow stop.
 
@@ -14,6 +18,7 @@ set -uo pipefail
 
 MAX_BLOCKS=5
 CI_WAIT_SECONDS=600  # 10 minutes total CI settle wait
+POLL_SECONDS=90      # poll cadence inside the wait window
 
 # Set to 1 when we hit a failure mode the agent cannot fix in-loop (gh/API
 # errors, owner/repo resolution, graphql failures). Fatal failures surface
@@ -73,19 +78,23 @@ if [[ -z "$PR_NUMBER" ]]; then
 fi
 PR_BASE="$(printf '%s' "$PR_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("baseRefName",""))')"
 
-# ----- gate 1: CI green (with bounded wait on pending) --------------------
+# Resolve owner/repo once: needed by fetch_review_threads() during the poll
+# loop AND by gate 2.
+OWNER="$(gh repo view --json owner -q .owner.login 2>/dev/null || true)"
+REPO="$(gh repo view --json name  -q .name        2>/dev/null || true)"
+
+# ----- check helpers -------------------------------------------------------
+gh_pr_checks_raw() {
+  # Echo raw `gh pr checks` output (stdout+stderr). Returns empty on call
+  # failure; downstream parsers treat "no parseable rows" as ERROR.
+  gh pr checks "$PR_NUMBER" 2>&1 || true
+}
+
 ci_status() {
-  # Returns: GREEN | FAILING:<csv> | PENDING:<csv> | ERROR:<msg>
-  # Fails CLOSED: any unexpected gh failure becomes ERROR, never GREEN.
-  local out rc
-  out="$(gh pr checks "$PR_NUMBER" 2>&1)"
-  rc=$?
-  # gh pr checks exits non-zero when checks are pending/failing, AND when
-  # the API call itself fails. Distinguish "real error" from "checks not green":
-  #   - rc=0 + parseable rows  -> some mix of pass/pending/fail
-  #   - rc!=0 + parseable rows -> pending/failing checks (normal)
-  #   - "no required checks" / "no checks reported" message -> GREEN
-  #   - rc!=0 + no parseable rows -> genuine API/auth/network error
+  # $1 = raw `gh pr checks` output.
+  # Echoes: GREEN | FAILING:<csv> | PENDING:<csv> | ERROR:<msg>
+  # Fails CLOSED: any unrecognized output becomes ERROR, never GREEN.
+  local out="$1"
   if printf '%s' "$out" | grep -qiE 'no required checks|no checks reported'; then
     echo "GREEN"
     return
@@ -96,10 +105,9 @@ ci_status() {
   pending="$(printf '%s\n' "$out" | awk -F'\t' '$2=="pending" {print $1}' | paste -sd, -)"
   total="$(printf '%s\n' "$out" | awk -F'\t' 'NF>=2 && ($2=="pass"||$2=="fail"||$2=="pending"||$2=="skipping")' | wc -l)"
   if [[ "$total" -eq 0 ]]; then
-    # No recognizable rows: treat as error rather than silently green.
     local first
     first="$(printf '%s' "$out" | head -1 | tr -d '\n')"
-    echo "ERROR:gh pr checks rc=$rc: ${first:-no output}"
+    echo "ERROR:gh pr checks: ${first:-no output}"
     return
   fi
   if [[ -n "$failing" ]]; then
@@ -111,40 +119,81 @@ ci_status() {
   fi
 }
 
-CI="$(ci_status)"
-if [[ "$CI" == PENDING:* ]]; then
-  # Wait up to CI_WAIT_SECONDS for CI to settle. --watch blocks until done.
-  timeout "$CI_WAIT_SECONDS" gh pr checks "$PR_NUMBER" --watch >/dev/null 2>&1 || true
-  CI="$(ci_status)"
-fi
-if [[ "$CI" == ERROR:* ]]; then
-  FATAL=1
-fi
+seer_check_state() {
+  # $1 = raw `gh pr checks` output.
+  # Echoes: RUNNING | DONE | MISSING | ERROR:<msg>
+  # MISSING means Seer is not configured on this PR (treat as "no signal").
+  local row state
+  row="$(printf '%s\n' "$1" | awk -F'\t' '$1=="Seer Code Review" {print; exit}')"
+  if [[ -z "$row" ]]; then
+    echo "MISSING"
+    return
+  fi
+  state="$(printf '%s' "$row" | awk -F'\t' '{print $2}')"
+  case "$state" in
+    pending)            echo "RUNNING" ;;
+    pass|fail|skipping) echo "DONE" ;;
+    *)                  echo "ERROR:unknown state '$state'" ;;
+  esac
+}
 
-# ----- gate 2: unresolved review conversations ----------------------------
-OWNER="$(gh repo view --json owner -q .owner.login 2>/dev/null || true)"
-REPO="$(gh repo view --json name  -q .name        2>/dev/null || true)"
-UNRESOLVED_ERR=""
-UNRESOLVED=0
-if [[ -z "$OWNER" || -z "$REPO" ]]; then
-  UNRESOLVED_ERR="could not resolve owner/repo via gh"
-  FATAL=1
-else
-  GQL_OUT="$(gh api graphql -f query='
+fetch_review_threads() {
+  # Echoes a JSON blob from the GraphQL response, or "ERR:<reason>" on failure.
+  if [[ -z "$OWNER" || -z "$REPO" ]]; then
+    echo "ERR:could not resolve owner/repo via gh"
+    return
+  fi
+  local out rc
+  out="$(gh api graphql -f query='
     query($owner:String!,$repo:String!,$num:Int!) {
       repository(owner:$owner,name:$repo) {
         pullRequest(number:$num) {
-          reviewThreads(first:100) { nodes { isResolved } }
+          reviewThreads(first:100) {
+            nodes {
+              isResolved
+              comments(first:1) { nodes { author { login } } }
+            }
+          }
         }
       }
     }' \
     -F owner="$OWNER" -F repo="$REPO" -F num="$PR_NUMBER" 2>&1)"
-  GQL_RC=$?
-  if [[ $GQL_RC -ne 0 ]]; then
-    UNRESOLVED_ERR="gh api graphql failed (rc=$GQL_RC)"
-    FATAL=1
-  else
-    PARSED="$(printf '%s' "$GQL_OUT" | python3 -c '
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERR:gh api graphql failed (rc=$rc)"
+    return
+  fi
+  printf '%s' "$out"
+}
+
+count_unresolved_seer() {
+  # $1 = JSON blob from fetch_review_threads.
+  # Echoes integer count of unresolved threads whose first comment author is
+  # "sentry" (Seer's GitHub identity). Echoes 0 on any parse trouble — caller
+  # decides whether absence is fatal.
+  printf '%s' "$1" | python3 -c '
+import sys, json
+try:
+  d = json.loads(sys.stdin.read())
+  if "errors" in d and d["errors"]:
+    print(0); sys.exit(0)
+  nodes = d["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+  c = 0
+  for t in nodes:
+    if t.get("isResolved"): continue
+    cs = t.get("comments", {}).get("nodes", [])
+    if cs and cs[0].get("author", {}).get("login") == "sentry":
+      c += 1
+  print(c)
+except Exception:
+  print(0)
+' 2>/dev/null
+}
+
+count_unresolved_total() {
+  # $1 = JSON blob from fetch_review_threads.
+  # Echoes either an integer count of all unresolved threads, or "ERR:<reason>".
+  printf '%s' "$1" | python3 -c '
 import sys, json
 try:
   d = json.loads(sys.stdin.read())
@@ -155,7 +204,95 @@ try:
     print(sum(1 for t in n if not t.get("isResolved")))
 except Exception as e:
   print(f"ERR:parse {type(e).__name__}")
-' 2>/dev/null)"
+' 2>/dev/null
+}
+
+# ----- gate 1: CI green (with bounded poll-and-fail-fast wait) ------------
+SEER_FAIL_FAST=""    # reason if Seer fail-fast fires
+CI_FAIL_FAST=""      # reason if any check has gone `fail` mid-pending
+THREADS_JSON=""      # cached threads JSON for gate 2 reuse
+
+raw="$(gh_pr_checks_raw)"
+CI="$(ci_status "$raw")"
+if [[ "$CI" == PENDING:* ]]; then
+  deadline=$(( $(date +%s) + CI_WAIT_SECONDS ))
+  while :; do
+    raw="$(gh_pr_checks_raw)"
+    CI="$(ci_status "$raw")"
+
+    # Fail-fast #1: any required check has gone red. ci_status returns
+    # FAILING:* whenever at least one row is `fail`, even if others are still
+    # pending — so this short-circuits the wait the moment a failure appears.
+    if [[ "$CI" == FAILING:* ]]; then
+      CI_FAIL_FAST="failing checks (${CI#FAILING:})"
+      break
+    fi
+
+    # CI fully settled green/error -> exit loop, normal flow handles it.
+    [[ "$CI" != PENDING:* ]] && break
+
+    # Fail-fast #2: Seer's own check is done AND it left unresolved comments.
+    seer="$(seer_check_state "$raw")"
+    if [[ "$seer" == "DONE" ]]; then
+      tj="$(fetch_review_threads)"
+      if [[ "$tj" != ERR:* ]]; then
+        THREADS_JSON="$tj"
+        n_seer="$(count_unresolved_seer "$tj")"
+        if [[ "${n_seer:-0}" -gt 0 ]]; then
+          SEER_FAIL_FAST="${n_seer} unresolved Seer comment(s); Seer Code Review has finished while other CI is still pending"
+          break
+        fi
+      fi
+      # GraphQL hiccup -> skip this tick, retry next loop.
+    fi
+
+    now=$(date +%s)
+    [[ "$now" -ge "$deadline" ]] && break
+    remain=$(( deadline - now ))
+    if (( remain < POLL_SECONDS )); then
+      sleep "$remain"
+    else
+      sleep "$POLL_SECONDS"
+    fi
+  done
+fi
+if [[ "$CI" == ERROR:* ]]; then
+  FATAL=1
+fi
+
+# ----- early exit on fail-fast signals from the loop ----------------------
+EARLY_REASON=""
+[[ -n "$CI_FAIL_FAST" ]] && EARLY_REASON="$CI_FAIL_FAST"
+[[ -z "$EARLY_REASON" && -n "$SEER_FAIL_FAST" ]] && EARLY_REASON="$SEER_FAIL_FAST"
+
+if [[ -n "$EARLY_REASON" ]]; then
+  REASON="PR #${PR_NUMBER}: ${EARLY_REASON}"
+  COUNT=$((COUNT + 1))
+  echo "$COUNT" > "$COUNTER_FILE"
+  if [[ "$COUNT" -gt "$MAX_BLOCKS" ]]; then
+    echo "pr-mergeability-gate: reached ${MAX_BLOCKS} block attempts; allowing stop. ${REASON}" >&2
+    echo 0 > "$COUNTER_FILE"
+    exit 0
+  fi
+  echo "${REASON} [block ${COUNT}/${MAX_BLOCKS}]" >&2
+  exit 2
+fi
+
+# ----- gate 2: unresolved review conversations ----------------------------
+UNRESOLVED_ERR=""
+UNRESOLVED=0
+if [[ -z "$OWNER" || -z "$REPO" ]]; then
+  UNRESOLVED_ERR="could not resolve owner/repo via gh"
+  FATAL=1
+else
+  if [[ -z "$THREADS_JSON" ]]; then
+    THREADS_JSON="$(fetch_review_threads)"
+  fi
+  if [[ "$THREADS_JSON" == ERR:* ]]; then
+    UNRESOLVED_ERR="${THREADS_JSON#ERR:}"
+    FATAL=1
+  else
+    PARSED="$(count_unresolved_total "$THREADS_JSON")"
     if [[ "$PARSED" == ERR:* ]]; then
       UNRESOLVED_ERR="${PARSED#ERR:}"
       FATAL=1

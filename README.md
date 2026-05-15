@@ -41,9 +41,63 @@ execution.
   service+action calls
 
 For the full product vision, see [SPEC.md](SPEC.md). For what's actually
-implemented today, see [STATUS.md](STATUS.md).
+implemented today, see [STATUS.md](STATUS.md). Live production health is at
+[status.overslash.com](https://status.overslash.com).
 
 ## Running locally
+
+The fastest way to try Overslash is to grab a prebuilt binary, point it at
+a Postgres instance, and start it. No clone, no Rust toolchain, no `make`.
+
+### 1. Download a binary
+
+Grab the latest release for your platform from
+[github.com/overfolder/overslash/releases](https://github.com/overfolder/overslash/releases):
+
+- `overslash-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` — Linux x86_64
+- `overslash-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` — Linux arm64
+- `overslash-vX.Y.Z-aarch64-apple-darwin.tar.gz` — macOS Apple Silicon
+- `overslash-vX.Y.Z-x86_64-pc-windows-msvc.zip` — Windows x86_64
+
+Each release also publishes a `SHA256SUMS.txt` — verify with:
+
+```bash
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+Extract the archive — you get a single `overslash` binary with the dashboard
+embedded.
+
+### 2. Start Postgres
+
+Any Postgres 14+ instance works. A throwaway one in Docker:
+
+```bash
+docker run -d --name overslash-pg \
+  -e POSTGRES_PASSWORD=overslash -e POSTGRES_DB=overslash \
+  -p 5432:5432 postgres:17
+```
+
+### 3. Start `overslash web`
+
+Set the three required env vars and run the binary. The API auto-applies
+migrations on first start.
+
+```bash
+export DATABASE_URL=postgres://postgres:overslash@localhost:5432/overslash
+export SECRETS_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export SIGNING_KEY=$(openssl rand -base64 32)
+./overslash web
+```
+
+Dashboard at <http://localhost:3000>. Stop with `Ctrl+C`; the binary leaves
+no state outside Postgres.
+
+> This path is enough to try Overslash. For development — hot-reload, tests,
+> writing migrations — see
+> [Running locally from source](#running-locally-from-source).
+
+## Running locally from source
 
 ### Prerequisites
 
@@ -58,15 +112,24 @@ implemented today, see [STATUS.md](STATUS.md).
 # 1. Start Postgres (and write .env.local if you're in a worktree)
 make local
 
-# 2. Run database migrations
-make migrate
-
-# 3. Run the full dev stack (Postgres + API + dashboard, hot-reload)
+# 2. Run the full dev stack (Postgres + API + dashboard, hot-reload).
+#    The API auto-runs database migrations on startup.
 make dev
 ```
 
 That's it. The API and dashboard will be available on their default local
 ports (see `docker/docker-compose.dev.yml`).
+
+> **Working on migrations or SQL queries?** A few Makefile targets
+> (`make new-migration`, `make sqlx-prepare`, `make check-sqlx`) need the
+> `sqlx-cli` Rust binary:
+>
+> ```bash
+> cargo install sqlx-cli --no-default-features --features postgres --locked
+> ```
+>
+> You don't need it just to run Overslash — the API auto-runs migrations on
+> startup.
 
 ### Useful targets
 
@@ -76,7 +139,7 @@ ports (see `docker/docker-compose.dev.yml`).
 | `make dev` | Start everything (Postgres + API + dashboard) |
 | `make dev-api` | Start Postgres + API only |
 | `make dev-dashboard` | Run the SvelteKit dev server (no container) |
-| `make migrate` | Apply database migrations |
+| `make migrate` | Apply database migrations (rarely needed — the API auto-migrates on boot) |
 | `make test` | Run the Rust test suite |
 | `make check` / `make fmt` / `make clippy` | Lint and formatting |
 | `make down` | Stop dev services |
@@ -97,6 +160,24 @@ If you work on Overslash from multiple git worktrees in parallel, `make local`
 auto-detects the worktree and spins up an isolated Postgres on a unique port.
 No manual config required. Tear down a worktree's containers with
 `make worktree-clean`.
+
+## Cutting a release
+
+Releases are published from GitHub Actions. To cut one, tag and push:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The [release workflow](.github/workflows/release.yml) builds binaries for
+linux-x64, linux-arm64, macos-arm64, and windows-x64, generates
+`SHA256SUMS.txt`, and publishes them to
+[github.com/overfolder/overslash/releases](https://github.com/overfolder/overslash/releases).
+
+For a dry-run, trigger the workflow manually with a `-test` suffix on the
+version (e.g. `v0.1.0-test`) — it builds and uploads artifacts to the run
+but does not publish a release.
 
 ## Connect an MCP client
 

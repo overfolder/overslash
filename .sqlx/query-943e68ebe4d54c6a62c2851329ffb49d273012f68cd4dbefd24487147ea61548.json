@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, slug, subagent_idle_timeout_secs, subagent_archive_retention_days, is_personal, plan, default_deferred_execution, allow_overslash_managed_signin, creator_user_id, created_at, updated_at\n         FROM orgs WHERE slug = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "subagent_idle_timeout_secs",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "subagent_archive_retention_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "is_personal",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "plan",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "default_deferred_execution",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "allow_overslash_managed_signin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "creator_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "943e68ebe4d54c6a62c2851329ffb49d273012f68cd4dbefd24487147ea61548"
+}

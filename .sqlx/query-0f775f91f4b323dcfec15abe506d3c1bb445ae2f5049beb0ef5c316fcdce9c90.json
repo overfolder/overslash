@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE subtree(id) AS (\n            SELECT id FROM identities WHERE id = $3 AND org_id = $1\n            UNION ALL\n            SELECT i.id FROM identities i\n            INNER JOIN subtree s ON i.parent_id = s.id\n            WHERE i.org_id = $1\n        )\n        SELECT 1 AS exists FROM secrets s\n        WHERE s.org_id = $1\n          AND s.name = $2\n          AND s.deleted_at IS NULL\n          AND s.owner_identity_id IN (SELECT id FROM subtree)\n        LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0f775f91f4b323dcfec15abe506d3c1bb445ae2f5049beb0ef5c316fcdce9c90"
+}

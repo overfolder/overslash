@@ -1,0 +1,106 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, client_id, client_name, redirect_uris,\n                software_id, software_version, created_at, last_seen_at,\n                created_ip, created_user_agent, is_revoked,\n                capabilities, client_info, protocol_version, last_session_id\n           FROM oauth_mcp_clients\n          WHERE client_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "software_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "software_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_ip",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_user_agent",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_revoked",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "capabilities",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "client_info",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "protocol_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "last_session_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3342aa79769d1ed57bb186ba1ddd20349154e7786ae212c4bf42d29cb919b0d2"
+}

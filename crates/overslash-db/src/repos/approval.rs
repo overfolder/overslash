@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ApprovalRow {
     pub id: Uuid,
     pub org_id: Uuid,
@@ -11,6 +11,14 @@ pub struct ApprovalRow {
     pub resolver_assigned_at: OffsetDateTime,
     pub action_summary: String,
     pub action_detail: Option<serde_json::Value>,
+    pub disclosed_fields: Option<serde_json::Value>,
+    /// Raw replay payload used by `POST /v1/approvals/{id}/call`. Carries
+    /// either an HTTP `StoredCallRequest` (`{ action, filter, prefer_stream }`)
+    /// or an MCP `StoredMcpCall` (`{ url, auth, tool, arguments }`),
+    /// disambiguated at parse time by the top-level `tool` key. Distinct
+    /// from `action_detail` (which may be the UI-facing redacted projection).
+    /// NULL for platform-runtime approvals and pre-feature rows.
+    pub replay_payload: Option<serde_json::Value>,
     pub permission_keys: Vec<String>,
     pub status: String,
     pub resolved_at: Option<OffsetDateTime>,
@@ -27,6 +35,8 @@ pub struct CreateApproval<'a> {
     pub current_resolver_identity_id: Uuid,
     pub action_summary: &'a str,
     pub action_detail: Option<serde_json::Value>,
+    pub disclosed_fields: Option<serde_json::Value>,
+    pub replay_payload: Option<serde_json::Value>,
     pub permission_keys: &'a [String],
     pub token: &'a str,
     pub expires_at: OffsetDateTime,
@@ -38,14 +48,16 @@ pub(crate) async fn create(
 ) -> Result<ApprovalRow, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, permission_keys, token, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+        "INSERT INTO approvals (org_id, identity_id, current_resolver_identity_id, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, token, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         input.org_id,
         input.identity_id,
         input.current_resolver_identity_id,
         input.action_summary,
         input.action_detail.clone() as Option<serde_json::Value>,
+        input.disclosed_fields.clone() as Option<serde_json::Value>,
+        input.replay_payload.clone() as Option<serde_json::Value>,
         input.permission_keys,
         input.token,
         input.expires_at,
@@ -63,7 +75,7 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -81,7 +93,7 @@ pub(crate) async fn get_by_token(
 ) -> Result<Option<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals WHERE token = $1 AND org_id = $2",
         token,
         org_id,
@@ -107,7 +119,7 @@ pub(crate) async fn resolve(
         ApprovalRow,
         "UPDATE approvals SET status = $2, resolved_at = now(), resolved_by = $3, remember = $4
          WHERE id = $1 AND org_id = $6 AND status = 'pending' AND current_resolver_identity_id = $5
-         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+         RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         id,
         status,
         resolved_by,
@@ -136,7 +148,7 @@ pub(crate) async fn update_resolver(
             SET current_resolver_identity_id = $2,
                 resolver_assigned_at = now()
           WHERE id = $1 AND org_id = $4 AND status = 'pending' AND current_resolver_identity_id = $3
-          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
+          RETURNING id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at",
         id,
         new_resolver,
         expected_resolver,
@@ -152,7 +164,7 @@ pub(crate) async fn list_pending_by_org(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals WHERE org_id = $1 AND status = 'pending' ORDER BY created_at DESC",
         org_id,
     )
@@ -168,12 +180,34 @@ pub(crate) async fn list_mine(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals
          WHERE org_id = $1 AND identity_id = $2 AND status = 'pending'
          ORDER BY created_at DESC",
         org_id,
         identity_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// List approvals for `identity_id` filtered by an arbitrary `status` string.
+/// Used when the caller explicitly passes `?status=<value>` (e.g. `allowed`).
+pub(crate) async fn list_mine_by_status(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    status: &str,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+         FROM approvals
+         WHERE org_id = $1 AND identity_id = $2 AND status = $3
+         ORDER BY created_at DESC",
+        org_id,
+        identity_id,
+        status,
     )
     .fetch_all(pool)
     .await
@@ -189,7 +223,7 @@ pub(crate) async fn list_assigned_to_identity(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
+        "SELECT id, org_id, identity_id, current_resolver_identity_id, resolver_assigned_at, action_summary, action_detail, disclosed_fields, replay_payload, permission_keys, status, resolved_at, resolved_by, remember, token, expires_at, created_at
          FROM approvals
          WHERE org_id = $1
            AND status = 'pending'
@@ -227,6 +261,8 @@ pub(crate) async fn list_actionable_for_identity(
                a.current_resolver_identity_id as "current_resolver_identity_id!",
                a.resolver_assigned_at as "resolver_assigned_at!",
                a.action_summary as "action_summary!", a.action_detail,
+               a.disclosed_fields,
+               a.replay_payload,
                a.permission_keys as "permission_keys!", a.status as "status!",
                a.resolved_at, a.resolved_by, a.remember as "remember!",
                a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!"
@@ -243,6 +279,48 @@ pub(crate) async fn list_actionable_for_identity(
     .await
 }
 
+/// List pending approvals whose **requester** is `root_id` itself or any
+/// descendant of it. Used by the cascade resolver after a remembered rule is
+/// committed at `root_id` — those approvals are the only ones the new rule
+/// could possibly satisfy.
+///
+/// Caller is responsible for excluding the just-resolved approval id from
+/// the returned set.
+pub(crate) async fn list_pending_for_descendants(
+    pool: &PgPool,
+    org_id: Uuid,
+    root_id: Uuid,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        r#"WITH RECURSIVE descendants AS (
+            SELECT id FROM identities WHERE id = $2 AND org_id = $1
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN descendants d ON i.parent_id = d.id
+            WHERE i.org_id = $1
+        )
+        SELECT a.id as "id!", a.org_id as "org_id!", a.identity_id as "identity_id!",
+               a.current_resolver_identity_id as "current_resolver_identity_id!",
+               a.resolver_assigned_at as "resolver_assigned_at!",
+               a.action_summary as "action_summary!", a.action_detail,
+               a.disclosed_fields,
+               a.replay_payload,
+               a.permission_keys as "permission_keys!", a.status as "status!",
+               a.resolved_at, a.resolved_by, a.remember as "remember!",
+               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!"
+        FROM approvals a
+        WHERE a.org_id = $1
+          AND a.status = 'pending'
+          AND a.identity_id IN (SELECT id FROM descendants)
+        ORDER BY a.created_at ASC"#,
+        org_id,
+        root_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// List pending approvals whose current resolver has held them longer than
 /// their org's `approval_auto_bubble_secs` setting (and the setting is non-zero).
 /// Cross-org by design — exposed via `SystemScope` only.
@@ -251,7 +329,7 @@ pub(crate) async fn list_pending_for_auto_bubble(
 ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
     sqlx::query_as!(
         ApprovalRow,
-        "SELECT a.id, a.org_id, a.identity_id, a.current_resolver_identity_id, a.resolver_assigned_at, a.action_summary, a.action_detail, a.permission_keys, a.status, a.resolved_at, a.resolved_by, a.remember, a.token, a.expires_at, a.created_at
+        "SELECT a.id, a.org_id, a.identity_id, a.current_resolver_identity_id, a.resolver_assigned_at, a.action_summary, a.action_detail, a.disclosed_fields, a.replay_payload, a.permission_keys, a.status, a.resolved_at, a.resolved_by, a.remember, a.token, a.expires_at, a.created_at
          FROM approvals a
          JOIN orgs o ON o.id = a.org_id
          WHERE a.status = 'pending'

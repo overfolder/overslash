@@ -1,3 +1,4 @@
+use axum::http::HeaderValue;
 use axum::response::IntoResponse;
 use axum::{extract::State, http::Request, middleware::Next, response::Response};
 use time::OffsetDateTime;
@@ -28,6 +29,27 @@ pub async fn rate_limit_middleware(
     let identity_id = identity.1;
     let owner_user_id = identity.2;
 
+    // Free-unlimited courtesy tier: bypass user bucket + identity cap entirely.
+    // Set out-of-band by an operator via `UPDATE orgs SET plan='free_unlimited'`.
+    // Emit a sentinel string ("unlimited") in the rate-limit headers so
+    // clients that integer-parse the values fail loudly rather than silently
+    // treating a missing/zero value as the limit.
+    if state
+        .free_unlimited_cache
+        .is_free_unlimited(&state.db, org_id)
+        .await
+    {
+        overslash_metrics::rate_limit::record_decision("free_unlimited", "allow");
+        let mut response = next.run(request).await;
+        let headers = response.headers_mut();
+        headers.insert("X-RateLimit-Limit", HeaderValue::from_static("unlimited"));
+        headers.insert(
+            "X-RateLimit-Remaining",
+            HeaderValue::from_static("unlimited"),
+        );
+        return response;
+    }
+
     // Check user bucket first (primary limit), then identity cap.
     // Order matters: we increment the user bucket first so that if the identity cap
     // rejects, we've only over-counted one user-bucket request (acceptable).
@@ -52,12 +74,14 @@ pub async fn rate_limit_middleware(
             .await;
         (format!("rl:{org_id}:org"), budget)
     };
+    let user_scope_label = if user_id.is_some() { "user" } else { "org" };
     let user_budget = {
         let result = state
             .rate_limiter
             .check_and_increment(&bucket_key, budget.max_requests, budget.window_seconds)
             .await;
         if !result.allowed {
+            overslash_metrics::rate_limit::record_decision(user_scope_label, "deny");
             let now = now_unix();
             let retry_after = result.reset_at.saturating_sub(now);
             return AppError::RateLimited {
@@ -67,6 +91,7 @@ pub async fn rate_limit_middleware(
             }
             .into_response();
         }
+        overslash_metrics::rate_limit::record_decision(user_scope_label, "allow");
         Some(result)
     };
 
@@ -83,6 +108,7 @@ pub async fn rate_limit_middleware(
                 .check_and_increment(&key, cap.max_requests, cap.window_seconds)
                 .await;
             if !result.allowed {
+                overslash_metrics::rate_limit::record_decision("identity_cap", "deny");
                 let now = now_unix();
                 let retry_after = result.reset_at.saturating_sub(now);
                 return AppError::RateLimited {
@@ -92,6 +118,7 @@ pub async fn rate_limit_middleware(
                 }
                 .into_response();
             }
+            overslash_metrics::rate_limit::record_decision("identity_cap", "allow");
         }
     }
 

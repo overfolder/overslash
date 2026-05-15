@@ -2,8 +2,8 @@ import type {
   ServiceSummary,
   ServiceDetail,
   ConnectionSummary,
-  ExecuteRequest,
-  ExecuteResponse
+  CallRequest,
+  CallResponse
 } from './types';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
@@ -43,11 +43,11 @@ export async function listConnections(apiKey: string): Promise<ConnectionSummary
   return request(apiKey, 'GET', '/v1/connections');
 }
 
-export async function executeAction(
+export async function callAction(
   apiKey: string,
-  req: ExecuteRequest
-): Promise<ExecuteResponse> {
-  return request(apiKey, 'POST', '/v1/actions/execute', req);
+  req: CallRequest
+): Promise<CallResponse> {
+  return request(apiKey, 'POST', '/v1/actions/call', req);
 }
 
 function escapeHtml(str: string): string {

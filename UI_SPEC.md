@@ -28,6 +28,20 @@ This login form has:
 
 UNauth users go here, and on auth, they go back to the page they were trying to access previously, or /agents if no such page or a loop would form
 
+### Root vs. corp-org subdomain login (multi-org)
+
+The same `/login` page renders differently depending on the host the browser hit. The backend's `/auth/providers` response carries a `scope` field that drives the UI.
+
+- **Root apex (`app.overslash.com`)** — `scope: "root"`. Lists only Overslash-level IdPs (env-var Google / GitHub / Dev Login). A user who signs in here gets their personal org on first login.
+- **Corp subdomain (`<slug>.app.overslash.com`)** — `scope: "org"`. Lists only that org's IdPs from `org_idp_configs`. Env-level IdPs are NOT shown — a corp-subdomain login must go through the corp's IdP. This is the trust-domain boundary.
+- **Corp subdomain with no IdP configured yet** — `scope: "org"` with an empty providers list. The page shows an explanatory empty state: "This organization has no sign-in configured yet. Ask the org admin to add an Identity Provider on their Org Settings page." The admin (= org creator) reaches the org via `/auth/switch-org` from the root dashboard, not via this login page.
+
+### Org creator = regular admin, no "breakglass" framing
+
+When a user creates a corp org via `POST /v1/orgs`, they receive a normal `admin` membership and an admin `identities` row. There is no special "bootstrap" or "breakglass" labeling anywhere in the UI — the creator is simply the org's admin. Their Overslash-level login continues to reach the org regardless of whether the org configures a custom IdP later.
+
+An org may stay on Overslash-level auth indefinitely (only the creator is a member), or later enable one or more IdPs in **Org Settings → Identity Providers**. After an IdP is enabled, additional humans sign in via the corp IdP on the subdomain; the creator's Overslash-level login keeps working via their existing admin membership.
+
 ## Global UX Conventions
 
 **Appearance**: light and dark modes, toggled in user settings. No custom theming.
@@ -302,17 +316,17 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Logo ("Overs/ash") at top (bold 18px)
 - Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
-- User avatar (32px circle) + name at the bottom.
+- **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
 - Collapse button (chevron «) at the bottom or top-right of the sidebar.
 
 **Collapsed** (64px): same background and border. Contains:
 - Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
 - Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
 - "ADMIN" label hidden. Admin nav items still show as icon-only.
-- User avatar only (no name), centered.
+- Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
 - Expand button (chevron ») to restore.
 
-**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). Notification bell + badge on right.
+**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. Clicking the user badge opens the User Profile view.
 
 **Notification badge**: Error-red circle (16px) overlapping the bell icon, with white bold count text.
 
@@ -362,7 +376,7 @@ Under an "ADMIN" label (org-admins only): **Users**, **Groups**.
 
 At the bottom of the sidebar: **Settings** (gear icon) — opens user settings. For org-admins, a second settings link or sub-menu provides org settings.
 
-**Profile is NOT a nav item.** The logged-in user's avatar and name appear at the bottom of the sidebar (desktop) or top-right (mobile). Clicking opens the User Profile view.
+**Profile is NOT a nav item.** The logged-in user's avatar and name appear in the top bar (desktop) or top-right (mobile). Clicking opens the User Profile view, which is also the only place to sign out.
 
 **Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Agents view tree.
 
@@ -590,7 +604,7 @@ After approval, shows a success message. The agent picks up its API key via poll
 
 ## User Profile view
 
-Accessible by clicking the user's avatar/name at the bottom of the sidebar. Shows the authenticated user's identity and preferences. Not a nav item — it's a profile overlay or view.
+Accessible by clicking the user badge in the top bar. Shows the authenticated user's identity and preferences. Not a nav item — it's a profile overlay or view.
 
 ### Identity
 
@@ -599,6 +613,7 @@ Accessible by clicking the user's avatar/name at the bottom of the sidebar. Show
 - **Org**: which org the user belongs to, and their role (admin, member, read-only)
 - **Login method**: which IDP was used (Google, GitHub, corporate SSO, dev login)
 - **Created / Last login** timestamps
+- **`[Sign out]`** — danger-styled button in the identity header. Posts `/auth/logout` and redirects to `/login`. This is the only sign-out affordance in the app; the top bar no longer carries one.
 
 Users authenticate to Overslash via OAuth/OIDC only — there are no user API keys for dashboard access.
 
@@ -654,6 +669,14 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 - **Group detail**:
   - **Members**: list with add/remove
   - **Service grants**: permission key patterns that define the ceiling for this group. Managed by org-admins.
+
+**Myself groups in the dashboard.** Per-user Myself groups (`system_kind === 'self'`, see SPEC §7 *Myself groups*) appear in the dashboard with the following rules:
+
+- *Groups list (`/org/groups`).* Calls `GET /v1/groups` (default), so each user sees their own Myself row alongside Everyone, Admins, and any custom groups they belong to. The row renders as **"Myself"** — never the raw storage form `Myself: <email> (<id8>)`. Admins surveying other users' Myself rows pass `?include_self=true`; those rows render as **"Myself (email)"**, falling back to **"Myself (email, id8)"** only on email collision.
+- *Delete button.* Hidden on every system row (Everyone, Admins, all Myself). The backend rejects deletes on system groups, so the action is suppressed at the UI layer rather than surfaced as a broken button.
+- *Group detail (`/org/groups/<self-id>`).* For a Myself group, the page hides the rename form, delete button, and add-member affordance (system metadata is immutable; membership is fixed to the owner). Grant management — Add grant, Remove, and the auto-approve toggle — is shown only when the caller *is* the Myself owner; non-owner viewers (admins via `?include_self=true`) see a read-only audit view, since the backend cross-owner guard rejects their writes anyway. When the owner is viewing, the "Add grant" service picker is filtered to services owned by the group's `owner_identity_id` — matching the same guard.
+- *Services list groups column (`/services`).* Group pills for self grants render as **"Myself"**, derived from `system_kind === 'self'` on the per-grant `ServiceGroupRef`.
+- *Service detail Groups table (`/services/<name>`).* Owner's self grants render as **"Myself"** (same rule). The "Restore Myself grant" inline affordance remains for owners who removed their own grant.
 
 ```
 Group: Engineering
@@ -817,16 +840,16 @@ See SPEC §11 *Standalone Pages → User Signed Mode* for the full policy spec a
 
 ## Secrets view
 
-A dedicated nav item. Manages secrets owned by the user and their agents. Users see only secrets in their own subtree. Org admins see all secrets across the org.
+A dedicated nav item at `/secrets`. Manages secrets owned by the user and their agents. Users see only secrets in their own subtree. Org admins see all secrets across the org.
 
 Pending secret requests do NOT appear here — they are surfaced in the agent detail panel and as notifications.
 
-### Secret list
+### Secret list (`/secrets`)
 
 Uses the **Search Bar** (see Design System). Filterable by name, owner.
 
 ```
-Secret Name          Owner          Versions    Last Used
+Secret Name          Owner          Versions    Updated
 ────────────────────────────────────────────────────────────────
 github_token         alice (you)    3           2m ago
 stripe_api_key       alice (you)    1           1h ago
@@ -834,22 +857,22 @@ openai_key           agent:henry    2           5m ago
 ```
 
 - **Name** — the secret identifier used for injection
-- **Owner** — which identity in the subtree owns this secret
-- **Versions** — count
-- **Last used** — last time any version was injected during action execution
+- **Owner** — which identity in the subtree owns this secret. Resolved as the `created_by` of **version 1** — the original creator owns the slot, even if later versions were written by other agents under that user.
+- **Versions** — count (equal to `current_version` since versions are dense and 1-indexed)
+- **Updated** — `updated_at` timestamp of the most recent write (new version, restore). *Last used* (most recent injection at action time) is intentionally omitted — there is no per-secret access log; agents proving rotation should rely on the audit trail.
 
-`[+ New Secret]` button — name + value input. Value in a password-type field during creation.
+`[+ New Secret]` button opens an inline dialog: **Name** + **Value** (password-type) inputs. Submission calls `PUT /v1/secrets/{name}` with the typed value, then navigates to the new secret's detail page.
 
-### Secret detail
+### Secret detail (`/secrets/{name}`)
 
-Clicking a secret row opens the detail view:
+Clicking a secret row navigates to the full-screen detail page (push, not modal — versions and used-by lists need room):
 
-- **Secret name**
-- **Owner** — which identity owns this secret
-- **Last used** timestamp
-- **Used by** — list of services (and agents, if direct) that reference this secret. Each row links to the service detail. Empty state: "No services use this secret yet."
-- **`[Update Value]`** — creates a new version. Password-type input.
-- **`[Delete]`** — removes the secret entirely (all versions). Confirmation dialog warns which agents/services reference it.
+- **Secret name** — page title
+- **Owner** — identity that owns this secret (see *Owner* above)
+- **Created / Updated** — timestamps
+- **Used by** — list of service instances whose `secret_name` matches this secret. Each row links to `/services/{name}`. Empty state: "No services use this secret yet."
+- **`[Update value]`** — opens a small dialog with a password-type input. Submission creates a new version (`PUT /v1/secrets/{name}`).
+- **`[Delete]`** — soft-deletes the secret entirely (all versions). Confirmation dialog warns which services reference it.
 
 #### Version list
 
@@ -869,9 +892,9 @@ v1        2026-03-10 09:00     user:alice         ○ previous
 Clicking a version row (or `[Reveal]` button) opens a modal showing:
 
 - Version number, created timestamp, created by
-- **Secret value** — masked by default. A `[Reveal]` button shows the value inline (click-to-reveal pattern). This is the **only way** to view secret values in the dashboard — agents never receive values via API.
+- **Secret value** — masked by default. A `[Reveal]` button calls `POST /v1/secrets/{name}/versions/{version}/reveal` and shows the value inline (click-to-reveal pattern). The reveal is audit-logged as `secret.revealed`. This is the **only way** to view secret values in the dashboard — agents never receive values via API.
 - `[Copy]` button to copy the revealed value
-- `[Restore this version]` if not the current version
+- `[Restore this version]` if not the current version — calls `POST /v1/secrets/{name}/versions/{version}/restore`, which creates a new version pointing to the old value. Audit-logged as `secret.restored`.
 
 This modal is the dashboard-only privilege for viewing secret values.
 
@@ -919,16 +942,16 @@ Template Catalog
 
 Template            Source          Actions   Category
 ──────────────────────────────────────────────────────────────
-GitHub              Overslash       12        Dev Tools         [View] [Create Service]
-Google Calendar     Overslash       8         Productivity      [View] [Create Service]
-Stripe              Overslash       15        Payments          [View] [Create Service]
-Internal CRM        Org             3         Custom            [View] [Create Service]
-My Scraper API      You             2         Custom            [View] [Edit] [Share]
+GitHub              Overslash       12        Dev Tools         [+ New] [View]
+Google Calendar     Overslash       8         Productivity      [+ New] [View]
+Stripe              Overslash       15        Payments          [+ New] [View]
+Internal CRM        Org             3         Custom            [+ New] [View]
+My Scraper API      You             2         Custom            [+ New] [Edit] [Share]
 ```
 
 - **Source**: Overslash (global, read-only), Org (org-admin managed), You (user-created)
+- **`[+ New]`** — opens the service creation flow with this template pre-selected. Routes to `/services/new?template=<key>`, which auto-skips the picker step and lands directly on the configure form. Available for every tier, including read-only `global` templates.
 - **`[View]`** — opens the Template Editor in read-only mode
-- **`[Create Service]`** — starts the service creation flow with this template pre-selected
 - **`[Edit]`** — opens the Template Editor (only for user/org templates)
 - **`[Share]`** — proposes sharing a user template to org level
 
@@ -1017,6 +1040,8 @@ The editing view for user-defined and org-defined templates. Two tabs.
 - **`Archived`** (muted gray) — retired template, hidden from catalogs but still referenced by historical services.
 
 The pill is omitted if the template has no special status. Changing status happens via the kebab menu in the header (`Publish`, `Unpublish`, `Archive`).
+
+**Header action — `[+ New service]`**: a primary button on the right side of the header that opens the create-service flow with this template pre-selected (routes to `/services/new?template=<key>`). Visible for every tier, including read-only `global` templates — the editor is read-only on globals, but instantiation is always allowed.
 
 #### OpenAPI YAML editor
 
@@ -1204,9 +1229,9 @@ Can be **hidden from users via an org setting** (e.g., orgs that don't want user
 
 A pill toggle at the top of the tab switches between two execution modes:
 
-1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/execute` as Mode C.
+1. **Service + Action** — pick one of your service instances, then pick a defined action. Parameters render as an auto-generated form (text, number, enum dropdowns, JSON textarea for object/array params). Execute hits `POST /v1/actions/call` as Mode C.
 
-2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/execute` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
+2. **Raw HTTP** — method dropdown + full URL input, free-form headers and body textareas. Execute hits `POST /v1/actions/call` as Mode A. Headers support `{{SECRET_NAME}}` template substitution:
 
    ```
    Method:  [POST ▾]
@@ -1231,6 +1256,25 @@ Renders to the right of (or below, on narrow viewports) the request card:
 #### Identity
 
 The API Explorer always executes as the **logged-in user's own identity**. No agent impersonation. All actions are logged in the audit trail under the user's identity.
+
+## Account view (`/account`)
+
+A top-level page scoped to the human, not any one org — always reachable from the sidebar footer's user avatar. Uses the app shell (sidebar, top bar) like the rest of the dashboard.
+
+**Profile card**:
+- Display name, email (last value the IdP returned, informational)
+- `User ID` (a UUID, in a monospaced chip) so the user can reference their own account when filing support
+
+**Organizations card**:
+- List of the user's memberships, one per row
+- Each row shows the org name, the role (`admin` / `member`), and a `personal` tag for the user's own personal org
+- Per-row actions:
+  - **Current** (disabled) / **Switch** — same `/auth/switch-org` flow as the sidebar switcher
+  - **Leave** — `DELETE /v1/account/memberships/{org_id}`. Confirms before the request. Refused server-side for personal orgs and for the last admin of a non-personal org (dashboard surfaces the error verbatim).
+
+There is no "breakglass" / "bootstrap" tag in this view. The org creator shows up the same as any other admin — a row with `admin`. Their Overslash-level login route is implicit in the fact that the row exists.
+
+**Create org** CTA (top-right of the Organizations card): visible only when `ALLOW_ORG_CREATION=true` on the server. Clicking opens a slim modal (name + slug); on success the browser hard-reloads onto the new org's subdomain (the server returns `redirect_to`) where the creator lands as the sole admin.
 
 ## Standalone Pages
 

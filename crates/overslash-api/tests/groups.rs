@@ -105,7 +105,6 @@ async fn group_crud() {
         .json(&json!({
             "name": "Engineering",
             "description": "Dev team",
-            "allow_raw_http": false,
         }))
         .send()
         .await
@@ -114,7 +113,6 @@ async fn group_crud() {
     let group: Value = resp.json().await.unwrap();
     let group_id = group["id"].as_str().unwrap();
     assert_eq!(group["name"], "Engineering");
-    assert_eq!(group["allow_raw_http"], false);
 
     // List groups
     let resp = client
@@ -125,8 +123,11 @@ async fn group_crud() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let groups: Vec<Value> = resp.json().await.unwrap();
-    // 2 system groups (Everyone, Admins) + 1 test group = 3
-    assert_eq!(groups.len(), 3);
+    // 2 non-self system groups (Everyone, Admins) + caller's own Myself + 1 test group = 4.
+    // The default listing surfaces the caller's own Myself row so users can manage
+    // their own grants from /org/groups; other users' Myself rows stay hidden
+    // unless `?include_self=true`. See SPEC §7 *Myself groups*.
+    assert_eq!(groups.len(), 4);
 
     // Get group
     let resp = client
@@ -144,14 +145,12 @@ async fn group_crud() {
         .json(&json!({
             "name": "Engineering",
             "description": "Updated desc",
-            "allow_raw_http": true,
         }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
     let updated: Value = resp.json().await.unwrap();
-    assert_eq!(updated["allow_raw_http"], true);
     assert_eq!(updated["description"], "Updated desc");
 
     // Delete group
@@ -173,8 +172,8 @@ async fn group_crud() {
         .await
         .unwrap();
     let groups: Vec<Value> = resp.json().await.unwrap();
-    // Only system groups remain
-    assert_eq!(groups.len(), 2);
+    // Only system groups remain: Everyone, Admins, and the caller's own Myself.
+    assert_eq!(groups.len(), 3);
 }
 
 #[tokio::test]
@@ -277,7 +276,7 @@ async fn member_assignment_users_only() {
 }
 
 #[tokio::test]
-async fn grants_require_org_level_service() {
+async fn grants_accept_owned_services_for_admin_sharing() {
     let (base, org_key, _user_id, user_key) = bootstrap().await;
     let client = reqwest::Client::new();
 
@@ -350,7 +349,10 @@ async fn grants_require_org_level_service() {
         .unwrap();
     let user_svc_id = user_svc_resp["id"].as_str().unwrap();
 
-    // Try to add grant for user-level service — should fail
+    // Granting a user-owned service to a regular org-level group is now allowed:
+    // admins can share alice's `user-svc` with the Engineering group so its
+    // members can use it. The Myself-group guard only kicks in when the target
+    // group is a `system_kind = 'self'` group of someone other than the owner.
     let resp = client
         .post(format!("{base}/v1/groups/{group_id}/grants"))
         .header("Authorization", format!("Bearer {org_key}"))
@@ -361,7 +363,7 @@ async fn grants_require_org_level_service() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.status(), 200);
 
     // Invalid access level
     let resp = client
@@ -387,6 +389,472 @@ async fn grants_require_org_level_service() {
     assert_eq!(resp.status(), 200);
 }
 
+/// PATCH preserves the grant id and patches the requested fields without
+/// going through DELETE+POST. The grant id is the receipt the dashboard
+/// keys off of, so any "toggle" UX that swaps the id breaks downstream
+/// references and audit continuity.
+#[tokio::test]
+async fn patch_grant_preserves_id_and_patches_fields() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-patch").await;
+
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+            "auto_approve_reads": false,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap().to_string();
+
+    // Toggle auto_approve_reads alone.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(
+        patched["id"].as_str().unwrap(),
+        grant_id,
+        "patch must preserve grant id"
+    );
+    assert_eq!(patched["auto_approve_reads"], true);
+    assert_eq!(
+        patched["access_level"], "read",
+        "omitted field stays untouched"
+    );
+
+    // Now patch access_level alone — auto_approve_reads must persist.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "admin");
+    assert_eq!(patched["auto_approve_reads"], true);
+    assert_eq!(patched["service_name"], "svc-patch");
+}
+
+#[tokio::test]
+async fn patch_grant_rejects_empty_and_invalid_bodies() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-empty").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    // Empty body — both fields absent.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Invalid access_level value.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "owner"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn patch_grant_requires_admin_for_org_group() {
+    let (base, org_key, user_id, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-auth").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    // Make the test user a member of the group so they can otherwise see it,
+    // but they aren't an admin — PATCH on a non-self group must 403.
+    client
+        .post(format!("{base}/v1/groups/{group_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_id}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // A syntactically invalid `access_level` from a non-admin must still
+    // 403, not 400 — running field-shape validation before the admin gate
+    // would let unauthorized callers probe valid enum values.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"access_level": "owner"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+/// `auto_approve_reads` is a UX toggle — flipping it on the Everyone group
+/// is a real operator workflow (e.g. "let everyone skip approval for read
+/// calls on this service"). The system-group guard must allow it.
+#[tokio::test]
+async fn patch_grant_allows_auto_approve_reads_on_system_groups() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-everyone").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+            "auto_approve_reads": false,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["auto_approve_reads"], true);
+    assert_eq!(patched["access_level"], "read");
+}
+
+/// `access_level` on Admins stays immutable — admins must always retain
+/// their admin-grade `overslash` / `http` recovery surface, so the guard
+/// rejects a downgrade-by-PATCH outright. (Removal is also rejected by
+/// `remove_grant`; see `remove_grant_still_rejects_admins`.) Everyone is
+/// free to be edited by an org admin — covered by
+/// `patch_grant_allows_access_level_on_everyone`.
+#[tokio::test]
+async fn patch_grant_rejects_access_level_on_admins() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-admins-lvl").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{admins_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Combined patch with both fields is also rejected — the guard rejects
+    // access_level outright rather than silently dropping it.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{admins_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin", "auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+/// Companion to `patch_grant_rejects_access_level_on_admins`: an org admin
+/// can downgrade or upgrade `access_level` on a grant attached to Everyone.
+/// This is the whole point of letting orgs trim the bootstrapped
+/// `overslash:write` and `http:admin` defaults.
+#[tokio::test]
+async fn patch_grant_allows_access_level_on_everyone() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-everyone-lvl").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "write",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    // Downgrade write → read.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "read"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "read");
+
+    // Combined patch (both fields) also accepted.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"access_level": "admin", "auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let patched: Value = resp.json().await.unwrap();
+    assert_eq!(patched["access_level"], "admin");
+    assert_eq!(patched["auto_approve_reads"], true);
+}
+
+/// Non-admins still can't toggle `auto_approve_reads` on system groups even
+/// though the field itself is now mutable — the admin gate still applies.
+#[tokio::test]
+async fn patch_grant_requires_admin_for_system_groups() {
+    let (base, org_key, _, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let svc_id = create_org_service(&base, &client, &org_key, "svc-everyone-auth").await;
+    let grant: Value = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "read",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let grant_id = grant["id"].as_str().unwrap();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // A non-admin sending `access_level` on a system group must also 403 —
+    // the admin gate runs before the field-shape check, so the response
+    // doesn't leak that `access_level` is even a contested field for
+    // callers who weren't allowed to PATCH this grant in the first place.
+    let resp = client
+        .patch(format!("{base}/v1/groups/{everyone_id}/grants/{grant_id}"))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .json(&json!({"access_level": "admin"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn patch_grant_404_for_unknown_grant_id() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "Engineering"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+    let stranger = Uuid::new_v4();
+
+    let resp = client
+        .patch(format!("{base}/v1/groups/{group_id}/grants/{stranger}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"auto_approve_reads": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
 #[tokio::test]
 async fn service_visibility_filtered_by_groups() {
     let (base, org_key, user_id, user_key) = bootstrap().await;
@@ -396,8 +864,9 @@ async fn service_visibility_filtered_by_groups() {
     let svc1_id = create_org_service(&base, &client, &org_key, "svc-a").await;
     create_org_service(&base, &client, &org_key, "svc-b").await;
 
-    // User is only in system groups (Everyone) which don't trigger filtering.
-    // Permissive mode applies — user sees all services.
+    // After the Myself-group migration, Layer-1 always enforces. A user in
+    // only the system Everyone + Myself groups has no grant on either svc-a or
+    // svc-b, so neither shows up.
     let resp = client
         .get(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {user_key}"))
@@ -407,12 +876,12 @@ async fn service_visibility_filtered_by_groups() {
     let services: Vec<Value> = resp.json().await.unwrap();
     let before_names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
     assert!(
-        before_names.contains(&"svc-a"),
-        "permissive: should see svc-a when only in system groups"
+        !before_names.contains(&"svc-a"),
+        "system-only membership: svc-a must not be visible without a grant"
     );
     assert!(
-        before_names.contains(&"svc-b"),
-        "permissive: should see svc-b when only in system groups"
+        !before_names.contains(&"svc-b"),
+        "system-only membership: svc-b must not be visible without a grant"
     );
 
     // Create group with only svc-a granted
@@ -750,5 +1219,385 @@ async fn admin_agent_cannot_delete_owner_user_service_by_name() {
         resp.status(),
         200,
         "service must still exist after denied delete"
+    );
+}
+
+/// Helper: seed a user-level service owned by the given user. Returns its name.
+async fn seed_user_level_service(
+    base: &str,
+    client: &reqwest::Client,
+    org_key: &str,
+    owner_key: &str,
+    name: &str,
+) {
+    // Create the template at org level so any user can instantiate it.
+    client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({ "openapi": common::minimal_openapi(name) }))
+        .send()
+        .await
+        .unwrap();
+
+    // Owner creates a user-level instance.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({
+            "template_key": name,
+            "name": name,
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "seeding user-level service '{name}' must succeed"
+    );
+}
+
+/// `?include_user_level=true` is silently ignored for callers without the
+/// `is_org_admin` flag — the listing falls back to the standard group-ceiling
+/// view. We do not 403 so a tab open across an admin-flag revocation does
+/// not start failing.
+#[tokio::test]
+async fn include_user_level_is_silently_ignored_for_non_admins() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+
+    // admin-user owns a user-level service. Auto-grant lands on admin-user's
+    // Myself group, so write-user has no group route to see it.
+    seed_user_level_service(&base, &client, &fx.org_key, &fx.admin_key, "admin-user-svc").await;
+
+    // write-user is not flagged is_org_admin and has no grant on
+    // admin-user's service. The flag must not broaden their view.
+    let resp = client
+        .get(format!("{base}/v1/services?include_user_level=true"))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        !names.contains(&"admin-user-svc"),
+        "non-admin must not see another user's user-level service even with the flag (got: {names:?})"
+    );
+}
+
+/// A flag-only org admin (set `is_org_admin=true` directly, without Admins
+/// group membership) must see every user-level service in the org when they
+/// pass `?include_user_level=true`.
+#[tokio::test]
+async fn flag_only_admin_sees_other_users_services_with_flag() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    // admin-user owns a user-level service. Auto-grant lands on admin-user's
+    // Myself group, so write-user has no group route to see it.
+    seed_user_level_service(&base, &client, &fx.org_key, &fx.admin_key, "admin-user-svc").await;
+
+    // Flip the flag on write-user. The bootstrap fixture leaves
+    // write-user out of the Admins group, so this is the flag-only path.
+    sqlx::query!(
+        "UPDATE identities SET is_org_admin = true WHERE id = $1",
+        fx.user_ids[1],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = client
+        .get(format!("{base}/v1/services?include_user_level=true"))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        names.contains(&"admin-user-svc"),
+        "flag-only admin with include_user_level=true must see other users' user-level services (got: {names:?})"
+    );
+}
+
+/// Even an admin must not see other users' user-level services when the
+/// override flag is absent — default behaviour stays group-gated.
+#[tokio::test]
+async fn admin_without_flag_keeps_group_gated_view() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    // admin-user owns a user-level service. Auto-grant lands on admin-user's
+    // Myself group, so write-user has no group route to see it.
+    seed_user_level_service(&base, &client, &fx.org_key, &fx.admin_key, "admin-user-svc").await;
+
+    sqlx::query!(
+        "UPDATE identities SET is_org_admin = true WHERE id = $1",
+        fx.user_ids[1],
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // No `include_user_level` query param → kernel still applies the
+    // ceiling, and write-user has no grant on admin-user's service.
+    let resp = client
+        .get(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {}", fx.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let services: Vec<Value> = resp.json().await.unwrap();
+    let names: Vec<&str> = services.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert!(
+        !names.contains(&"admin-user-svc"),
+        "admin without the flag must keep the group-gated view (got: {names:?})"
+    );
+}
+
+/// An org admin can remove the bootstrapped `overslash` grant from the
+/// Everyone group. This is the mechanism that lets an org disallow agent
+/// access to the metaservice for the org's general population — covered in
+/// `crates/overslash-api/src/routes/groups.rs`'s `remove_grant` after the
+/// system-group guard was narrowed to Admins-only.
+#[tokio::test]
+async fn remove_grant_allows_everyone() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The Everyone group ships with a bootstrapped `overslash:write` grant
+    // (migration 023). Find it by service name.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .expect("Everyone should have a bootstrapped overslash grant")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // First DELETE removes the grant.
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{everyone_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["deleted"], true);
+
+    // Second DELETE is a no-op — the row is gone but the system-group guard
+    // does not stand in the way.
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{everyone_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["deleted"], false);
+
+    // Confirm the grant no longer surfaces on the group.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should be absent after delete"
+    );
+}
+
+/// Admins keeps the locked behavior: the admin-grade `overslash` grant is
+/// the recovery surface for the group, and `remove_grant` must refuse to
+/// strip it. Without this rail, an admin can disarm themselves.
+#[tokio::test]
+async fn remove_grant_still_rejects_admins() {
+    let (base, org_key, _, _) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .expect("Admins should have a bootstrapped overslash grant")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{admins_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    let msg = body["error"].as_str().unwrap_or("");
+    assert!(
+        msg.to_lowercase().contains("admins"),
+        "error should reference the Admins group, got: {msg}"
+    );
+
+    // And the grant is still there.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should still be present on Admins"
+    );
+}
+
+/// A non-admin caller targeting the Admins group hits the authorization
+/// check first (403), not the system-lock (400). Mirrors `add_grant` and
+/// `update_grant` so the error code doesn't leak which groups are locked
+/// to callers who weren't allowed to touch them in the first place.
+#[tokio::test]
+async fn remove_grant_returns_403_for_non_admin_on_admins() {
+    let (base, org_key, _, user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let admins_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("admins"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let overslash_grant_id = grants
+        .iter()
+        .find(|g| g["service_name"].as_str() == Some("overslash"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = client
+        .delete(format!(
+            "{base}/v1/groups/{admins_id}/grants/{overslash_grant_id}"
+        ))
+        .header("Authorization", format!("Bearer {user_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Sanity: grant untouched.
+    let grants: Vec<Value> = client
+        .get(format!("{base}/v1/groups/{admins_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        grants
+            .iter()
+            .any(|g| g["service_name"].as_str() == Some("overslash")),
+        "overslash grant should still be present on Admins"
     );
 }

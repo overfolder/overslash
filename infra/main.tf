@@ -9,12 +9,15 @@ resource "google_project_service" "apis" {
       "secretmanager.googleapis.com",
       "compute.googleapis.com",
       "cloudscheduler.googleapis.com",
+      "monitoring.googleapis.com",
+      "billingbudgets.googleapis.com",
     ],
     var.use_private_vpc ? [
       "servicenetworking.googleapis.com",
       "vpcaccess.googleapis.com",
     ] : [],
     var.enable_dns ? ["dns.googleapis.com"] : [],
+    var.enable_api_lb ? ["certificatemanager.googleapis.com"] : [],
     var.enable_valkey ? ["redis.googleapis.com"] : [],
   ))
 
@@ -80,7 +83,16 @@ module "cloud_sql" {
 
   db_password = module.secret_manager.db_password_value
 
-  depends_on = [google_project_service.apis]
+  # module.networking must be fully applied (not just the VPC, but the
+  # google_service_networking_connection peering resource) before Cloud
+  # SQL can be flipped to private_network. The implicit dep through
+  # private_network_id only waits for VPC creation, which resolves before
+  # the peering is established, causing NETWORK_NOT_PEERED on the SQL
+  # update. Explicit depends_on forces the correct order.
+  depends_on = [
+    google_project_service.apis,
+    module.networking,
+  ]
 }
 
 # --- Cloud Run ---
@@ -113,21 +125,102 @@ module "cloud_run" {
   google_services_client_id_secret_id     = module.secret_manager.google_services_client_id_secret_id
   google_services_client_secret_secret_id = module.secret_manager.google_services_client_secret_secret_id
 
+  # Billing
+  cloud_billing                   = var.cloud_billing
+  stripe_eur_lookup_key           = var.stripe_eur_lookup_key
+  stripe_usd_lookup_key           = var.stripe_usd_lookup_key
+  stripe_secret_key_secret_id     = module.secret_manager.stripe_secret_key_secret_id
+  stripe_webhook_secret_secret_id = module.secret_manager.stripe_webhook_secret_secret_id
+
+  # Transactional email
+  email_provider          = var.email_provider
+  email_from              = var.email_from
+  email_reply_to          = var.email_reply_to
+  email_api_key_secret_id = module.secret_manager.email_api_key_secret_id
+
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain           = var.domain
-  dashboard_origin = var.dashboard_origin
-  dashboard_url    = var.dashboard_url
-  enable_dev_auth  = var.enable_dev_auth
+  domain                    = var.domain
+  app_host_suffix           = var.app_host_suffix
+  api_host_suffix           = var.api_host_suffix
+  session_cookie_domain     = var.session_cookie_domain
+  dashboard_origin          = var.dashboard_origin
+  mcp_extra_origins         = var.mcp_extra_origins
+  dashboard_url             = var.dashboard_url
+  enable_dev_auth           = var.enable_dev_auth
+  extra_api_domain_mappings = var.extra_api_domain_mappings
+
+  overslash_env               = var.env
+  vercel_preview_origin_regex = var.vercel_preview_origin_regex
 
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
+
+  enable_metrics_sidecar = var.enable_metrics_sidecar
 
   depends_on = [
     module.cloud_sql,
     module.secret_manager,
     module.artifact_registry,
+  ]
+}
+
+# --- Monitoring (dashboards always; alerts gated on alert_email) ---
+module "monitoring" {
+  source      = "./modules/monitoring"
+  project_id  = var.project_id
+  base_prefix = local.base_prefix
+
+  alert_email             = var.alert_email
+  pagerduty_enabled       = var.pagerduty_enabled
+  pagerduty_secret_id     = module.secret_manager.pagerduty_integration_key_secret_id
+  api_domain              = var.domain
+  api_service_name        = module.cloud_run.service_name
+  cloud_sql_instance_name = module.cloud_sql.instance_name
+  monthly_budget_usd      = var.monthly_budget_usd
+  billing_account_id      = var.billing_account_id
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
+    module.cloud_sql,
+  ]
+}
+
+# --- API Load Balancer (global HTTPS LB with wildcard Certificate Manager cert) ---
+#
+# Required for `*.api.<apex>` routing at scale — Cloud Run's native domain
+# mapping is single-domain and DNS-TXT-validated, which doesn't grow with
+# tens of orgs. When `enable_api_lb=true` this module fronts Cloud Run with
+# a global HTTPS LB + Certificate Manager wildcard cert (and the operator
+# should leave `domain=""` on the cloud-run module).
+#
+# Wildcard issuance needs DNS-01, so a CNAME challenge has to live in the
+# zone covering `api_apex`. When `enable_dns` is also on, we hand the api-lb
+# module the zone name and the record is published automatically; otherwise
+# the module exposes the record values via outputs and the operator wires
+# them up in their external DNS provider.
+#
+# When `enable_api_lb=false` (dev), the cloud-run module instead provisions
+# 1-1 `google_cloud_run_domain_mapping` resources for each entry in
+# `extra_api_domain_mappings` (plus the apex `domain` if non-empty), which
+# keeps the bill at zero for a small dogfood-org count.
+module "api_lb" {
+  count = var.enable_api_lb ? 1 : 0
+
+  source      = "./modules/api-lb"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  cloud_run_service = module.cloud_run.service_name
+  api_apex          = var.api_host_suffix
+  dns_zone_name     = var.enable_dns ? module.dns[0].zone_name : ""
+
+  depends_on = [
+    google_project_service.apis,
+    module.cloud_run,
   ]
 }
 
@@ -150,6 +243,54 @@ module "cloud_build" {
   depends_on = [
     module.artifact_registry,
     module.iam,
+  ]
+}
+
+# --- Metrics exporter Cloud Run Job + Scheduler trigger ---
+module "metrics_exporter_job" {
+  source      = "./modules/metrics-exporter-job"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  service_account_email = module.iam.cloud_run_sa_email
+  scheduler_sa_email    = module.iam.scheduler_sa_email
+
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/overslash-metrics-exporter:latest"
+
+  cloud_sql_connection_name = module.cloud_sql.connection_name
+  db_user                   = module.cloud_sql.db_user
+  db_name                   = module.cloud_sql.db_name
+  db_password_secret_id     = module.secret_manager.db_password_secret_id
+
+  depends_on = [
+    module.cloud_sql,
+    module.secret_manager,
+    module.artifact_registry,
+    module.iam,
+  ]
+}
+
+# --- Cloud Build trigger for the exporter image ---
+module "cloud_build_metrics_exporter" {
+  source      = "./modules/cloud-build-metrics-exporter"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  repository_name = module.artifact_registry.repository_name
+
+  cloud_build_sa_id  = module.iam.cloud_build_sa_id
+  cloud_run_job_name = module.metrics_exporter_job.job_name
+
+  github_owner  = var.github_owner
+  github_repo   = var.github_repo
+  github_branch = var.github_branch
+
+  depends_on = [
+    module.artifact_registry,
+    module.iam,
+    module.metrics_exporter_job,
   ]
 }
 
@@ -195,4 +336,65 @@ module "memorystore" {
   authorized_network = module.networking[0].vpc_id
 
   depends_on = [google_project_service.apis]
+}
+
+# --- oversla.sh shortener Cloud Run service (optional) ---
+# Requires `enable_valkey = true` + `use_private_vpc = true` so the service
+# can reach private Memorystore via the Serverless VPC Access connector.
+module "cloud_run_shortener" {
+  count = var.enable_shortener ? 1 : 0
+
+  source      = "./modules/cloud-run-shortener"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  service_account_email = module.iam.cloud_run_sa_email
+  vpc_connector_id      = var.use_private_vpc ? module.networking[0].vpc_connector_id : ""
+
+  image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/oversla-sh:latest"
+
+  cpu           = var.shortener_cpu
+  memory        = var.shortener_memory
+  max_instances = var.shortener_max_instances
+
+  api_key_secret_id = module.secret_manager.shortener_api_key_secret_id
+
+  valkey_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
+  valkey_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
+
+  base_url          = var.shortener_base_url
+  domain            = var.shortener_domain
+  root_redirect_url = var.shortener_root_redirect_url
+
+  depends_on = [
+    module.memorystore,
+    module.secret_manager,
+    module.artifact_registry,
+  ]
+}
+
+# --- Cloud Build trigger for the shortener image (optional) ---
+module "cloud_build_shortener" {
+  count = var.enable_shortener ? 1 : 0
+
+  source      = "./modules/cloud-build-shortener"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  repository_name = module.artifact_registry.repository_name
+
+  cloud_build_sa_id = module.iam.cloud_build_sa_id
+  cloud_run_service = module.cloud_run_shortener[0].service_name
+
+  github_owner  = var.github_owner
+  github_repo   = var.github_repo
+  github_branch = var.github_branch
+
+  depends_on = [
+    module.artifact_registry,
+    module.iam,
+    module.cloud_run_shortener,
+  ]
 }

@@ -70,7 +70,7 @@ async fn list_credentials(
     debug_assert_eq!(acl.org_id, scope.org_id());
 
     let providers = oauth_provider::list_all(&state.db).await?;
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let env_fallback_enabled =
         std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
 
@@ -152,7 +152,7 @@ async fn put_credentials(
         )));
     }
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let (id_name, secret_name) = oauth_secret_names(&provider_key);
 
     let encrypted_id = crypto::encrypt(&enc_key, req.client_id.as_bytes())?;
@@ -161,9 +161,13 @@ async fn put_credentials(
     // Atomic: both secret versions land in one transaction. If the second
     // write fails, the first rolls back too — no half-configured state
     // where the id is rotated but the secret is stale.
+    // Org-OAuth credentials are admin-only (AdminAcl gates this route). The
+    // calling admin owns the slot for visibility purposes; in practice the
+    // dashboard list path admin-shortcuts so all admins see it regardless.
     scope
         .put_secrets(
             &[(&id_name, &encrypted_id), (&secret_name, &encrypted_secret)],
+            acl.identity_id,
             acl.identity_id,
         )
         .await?;

@@ -1,9 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 mod common;
 mod mcp;
 mod mcp_login;
+mod reencrypt;
 mod serve;
+mod services;
+mod watch;
 mod web;
 
 #[derive(Parser)]
@@ -34,9 +37,29 @@ enum Command {
     Web {
         #[arg(long, env = "HOST", default_value = "0.0.0.0")]
         host: String,
-        /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 8080.
+        /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 7171.
         #[arg(long)]
         port: Option<u16>,
+    },
+    /// Watch a pending approval until it resolves (or times out), then exit.
+    ///
+    /// Polls GET /v1/approvals/{id} and writes the final JSON to stdout.
+    /// Exit code: 0 = allowed, 1 = denied/expired/timeout, 2 = error.
+    Watch {
+        /// Approval UUID to watch.
+        approval_id: String,
+        /// Maximum time to wait, e.g. "15m", "1h", "900s". Default: 15m.
+        #[arg(long, default_value = "15m")]
+        timeout: String,
+        /// Poll interval, e.g. "3s", "10s". Default: 3s.
+        #[arg(long, default_value = "3s")]
+        poll: String,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
     },
     /// MCP server and configuration helper.
     Mcp {
@@ -49,6 +72,94 @@ enum Command {
         #[arg(long, env = "OVERSLASH_MCP_CONFIG", global = true)]
         config: Option<std::path::PathBuf>,
     },
+    /// List and call services.
+    Services {
+        #[command(subcommand)]
+        command: ServicesCommand,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Call a service action (shortcut for `services call`).
+    Call {
+        #[command(flatten)]
+        fields: CallFields,
+        /// Profile name (reads `~/.config/overslash/mcp.<profile>.json`).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the config path entirely.
+        #[arg(long, env = "OVERSLASH_MCP_CONFIG")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Operator commands (runbook-driven, not for day-to-day use).
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Re-encrypt every ciphertext at rest under the active master key.
+    ///
+    /// Refuses to run unless `SECRETS_ENCRYPTION_KEY_PREVIOUS` is set, so
+    /// the only legitimate context is the middle step of a master-key
+    /// rotation: previous deploy added the new key as active and kept the
+    /// old key as previous; this command rotates ciphertext; next deploy
+    /// drops the previous key. Runbook forthcoming.
+    Reencrypt {
+        /// Decrypt + re-encrypt in memory but never write back. Surfaces
+        /// rows that would fail (e.g. tagged with a third unknown key)
+        /// without mutating state.
+        #[arg(long)]
+        dry_run: bool,
+        /// Rows fetched per batch. Default 500.
+        #[arg(long, default_value_t = 500)]
+        batch: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServicesCommand {
+    /// List all service instances visible to this identity.
+    List,
+    /// Call a service action.
+    Call {
+        #[command(flatten)]
+        fields: CallFields,
+    },
+}
+
+/// Shared fields for `call` and `services call`.
+#[derive(Args)]
+struct CallFields {
+    /// Service instance name or UUID (Mode C).
+    #[arg(long)]
+    service: Option<String>,
+    /// Action key (Mode C).
+    #[arg(long)]
+    action: Option<String>,
+    /// Action parameter as key=value (repeatable; value is JSON or plain string).
+    #[arg(long = "param", value_name = "KEY=VALUE")]
+    params: Vec<String>,
+    /// Raw URL to call (Mode A).
+    #[arg(long)]
+    url: Option<String>,
+    /// HTTP method for raw call (Mode A, default GET).
+    #[arg(long)]
+    method: Option<String>,
+    /// Extra request header as key:value (repeatable, Mode A).
+    #[arg(long = "header", value_name = "KEY:VALUE")]
+    headers: Vec<String>,
+    /// Raw request body string (Mode A).
+    #[arg(long)]
+    body: Option<String>,
+    /// jq expression to filter the response body.
+    #[arg(long)]
+    filter: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -98,12 +209,23 @@ async fn main() -> anyhow::Result<()> {
             //      doesn't collide with sibling worktrees or the Docker API
             //      container (which uses API_HOST_PORT / internal :3000).
             //   3. PORT — legacy fallback from .env / shell env.
-            //   4. 8080 default.
+            //   4. 7171 default.
             let effective_port = port
                 .or_else(|| env_port("OVERSLASH_WEB_PORT"))
                 .or_else(|| env_port("PORT"))
-                .unwrap_or(8080);
+                .unwrap_or(7171);
             web::run(host, effective_port).await
+        }
+        Command::Watch {
+            approval_id,
+            timeout,
+            poll,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            watch::run(path, approval_id, timeout, poll).await
         }
         Command::Mcp {
             command,
@@ -122,7 +244,60 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Services {
+            command,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            match command {
+                ServicesCommand::List => services::list(path).await,
+                ServicesCommand::Call { fields } => {
+                    services::call(path, fields_into_call_args(fields)?).await
+                }
+            }
+        }
+        Command::Call {
+            fields,
+            profile,
+            config,
+        } => {
+            common::bootstrap_cli();
+            let path = mcp::resolve_config_path(profile, config)?;
+            services::call(path, fields_into_call_args(fields)?).await
+        }
+        Command::Admin { command } => match command {
+            AdminCommand::Reencrypt { dry_run, batch } => {
+                common::bootstrap_server();
+                reencrypt::run(overslash_api::services::key_rotation::Options { dry_run, batch })
+                    .await
+            }
+        },
     }
+}
+
+fn fields_into_call_args(fields: CallFields) -> anyhow::Result<services::CallArgs> {
+    let params = fields
+        .params
+        .iter()
+        .map(|s| services::parse_param(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let headers = fields
+        .headers
+        .iter()
+        .map(|s| services::parse_header(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(services::CallArgs {
+        service: fields.service,
+        action: fields.action,
+        params,
+        url: fields.url,
+        method: fields.method,
+        headers,
+        body: fields.body,
+        filter: fields.filter,
+    })
 }
 
 #[cfg(test)]
@@ -183,7 +358,7 @@ mod cli_tests {
         }
     }
 
-    // Precedence helper mirrors main(): --port > OVERSLASH_WEB_PORT > PORT > 8080.
+    // Precedence helper mirrors main(): --port > OVERSLASH_WEB_PORT > PORT > 7171.
     fn resolve_web_port(
         cli_port: Option<u16>,
         web_env: Option<&str>,
@@ -192,7 +367,7 @@ mod cli_tests {
         cli_port
             .or_else(|| web_env.and_then(|v| v.parse().ok()))
             .or_else(|| port_env.and_then(|v| v.parse().ok()))
-            .unwrap_or(8080)
+            .unwrap_or(7171)
     }
 
     #[test]
@@ -212,7 +387,7 @@ mod cli_tests {
     #[test]
     fn web_port_falls_back_to_port_env_then_default() {
         assert_eq!(resolve_web_port(None, None, Some("3000")), 3000);
-        assert_eq!(resolve_web_port(None, None, None), 8080);
+        assert_eq!(resolve_web_port(None, None, None), 7171);
     }
 
     #[test]

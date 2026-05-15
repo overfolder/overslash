@@ -6,9 +6,10 @@
 //! still inherit their org via the `subscription_id` foreign key — the
 //! dispatcher is trusted to act on whichever org's row it pulls.
 
+use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::repos::webhook::{PendingDeliveryRow, WebhookDeliveryRow};
+use crate::repos::webhook::{DigestEndpointSummary, PendingDeliveryRow, WebhookDeliveryRow};
 use crate::scopes::SystemScope;
 
 impl SystemScope {
@@ -50,5 +51,27 @@ impl SystemScope {
         limit: i64,
     ) -> Result<Vec<PendingDeliveryRow>, sqlx::Error> {
         crate::repos::webhook::get_pending_deliveries(self.db(), limit).await
+    }
+
+    /// Distinct org ids with at least one terminal webhook failure
+    /// (`delivered_at IS NULL AND attempts >= 5`) on an active subscription
+    /// since `since`. Used by the daily DLQ digest loop to build its
+    /// candidate-org list before racing for the per-org claim row.
+    pub async fn list_org_ids_with_webhook_terminal_failures(
+        &self,
+        since: OffsetDateTime,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        crate::repos::webhook::list_org_ids_with_terminal_failures(self.db(), since).await
+    }
+
+    /// One row per subscription with terminal failures in the window. Excludes
+    /// inactive subscriptions and pre-truncates the error excerpt at the SQL
+    /// layer so the template doesn't have to think about clamping.
+    pub async fn summarize_webhook_terminal_failures_for_org(
+        &self,
+        org_id: Uuid,
+        since: OffsetDateTime,
+    ) -> Result<Vec<DigestEndpointSummary>, sqlx::Error> {
+        crate::repos::webhook::summarize_terminal_failures_for_org(self.db(), org_id, since).await
     }
 }

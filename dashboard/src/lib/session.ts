@@ -35,11 +35,17 @@ async function request<T>(
 	const res = await fetch(path, init);
 
 	if (!res.ok) {
-		let errorBody: unknown;
-		try {
-			errorBody = await res.json();
-		} catch {
-			errorBody = await res.text();
+		// Read once, parse if it looks like JSON. Calling `.json()` and then
+		// falling back to `.text()` blows up on empty 404 bodies because the
+		// stream is already consumed.
+		const text = await res.text();
+		let errorBody: unknown = text;
+		if (text) {
+			try {
+				errorBody = JSON.parse(text);
+			} catch {
+				/* keep as text */
+			}
 		}
 		if (res.status === 401 && typeof window !== 'undefined') {
 			const here = window.location.pathname + window.location.search;
@@ -69,11 +75,17 @@ async function requestText<T>(path: string, text: string, signal?: AbortSignal):
 	});
 
 	if (!res.ok) {
-		let errorBody: unknown;
-		try {
-			errorBody = await res.json();
-		} catch {
-			errorBody = await res.text();
+		// Read once, parse if it looks like JSON. Calling `.json()` and then
+		// falling back to `.text()` blows up on empty 404 bodies because the
+		// stream is already consumed.
+		const text = await res.text();
+		let errorBody: unknown = text;
+		if (text) {
+			try {
+				errorBody = JSON.parse(text);
+			} catch {
+				/* keep as text */
+			}
 		}
 		if (res.status === 401 && typeof window !== 'undefined') {
 			const here = window.location.pathname + window.location.search;
@@ -104,6 +116,15 @@ export const session = {
 	delete: <T>(path: string, signal?: AbortSignal) => request<T>('DELETE', path, undefined, signal)
 };
 
+/** One org the caller belongs to. Mirrors the server's `MembershipSummary`. */
+export interface MembershipSummary {
+	org_id: string;
+	slug: string;
+	name: string;
+	role: 'admin' | 'member' | string;
+	is_personal: boolean;
+}
+
 /** Response from GET /auth/me/identity — full identity details */
 export interface MeIdentity {
 	identity_id: string;
@@ -116,6 +137,17 @@ export interface MeIdentity {
 	external_id: string | null;
 	picture?: string | null;
 	is_org_admin?: boolean;
+	/** Operator-granted instance admin flag (set only via DB). The single
+	 *  elevated capability today is creating free-unlimited orgs through
+	 *  the Create-Org modal. Drives the small "Instance" badge in the
+	 *  layout. */
+	is_instance_admin?: boolean;
+	/** Multi-org additions. `user_id` + `memberships` are present once a
+	 *  post-multi-org-rewire session is minted; legacy tokens leave them
+	 *  empty until re-login. */
+	user_id?: string | null;
+	personal_org_id?: string | null;
+	memberships?: MembershipSummary[];
 }
 
 /** GET /v1/secrets item */
@@ -131,15 +163,6 @@ export interface PermissionRule {
 	action_pattern: string;
 	effect: string;
 	expires_at: string | null;
-	created_at: string;
-}
-
-/** GET /v1/enrollment-tokens item */
-export interface EnrollmentTokenItem {
-	id: string;
-	identity_id: string;
-	token_prefix: string;
-	expires_at: string;
 	created_at: string;
 }
 
@@ -162,6 +185,22 @@ export interface SuggestedTier {
 	description: string;
 }
 
+/** One entry from approvals.disclosed_fields — a labeled, human-readable
+ *  slice of the resolved request extracted via the template's
+ *  x-overslash-disclose jq filters. See SPEC §N "Detail disclosure". */
+export interface DisclosedField {
+	label: string;
+	/** Filter output, stringified. Null when the filter produced no value
+	 *  (e.g. missing input field) or when `error` is set. */
+	value: string | null;
+	/** Per-field error message when the filter failed at runtime. Siblings
+	 *  still render normally — errors are isolated per-field. */
+	error: string | null;
+	/** True when the value hit the per-field `max_chars` clamp or a 10 KB
+	 *  hard ceiling. The returned `value` is still the prefix. */
+	truncated: boolean;
+}
+
 /** Mirrors crates/overslash-api/src/routes/approvals.rs ApprovalResponse */
 export interface ApprovalResponse {
 	id: string;
@@ -175,6 +214,11 @@ export interface ApprovalResponse {
 	 *  `spiffe://acme/user/alice/agent/henry`. May be null if the chain
 	 *  could not be resolved. */
 	identity_path: string | null;
+	/** Identity ids for each `(kind, name)` unit in `identity_path`, in the
+	 *  same order. Excludes the org slug, so its length matches the unit
+	 *  count of `identity_path`. Empty when `identity_path` is null.
+	 *  IdentityPath uses these to build `/agents/<id>` links per segment. */
+	identity_path_ids: string[];
 	action_summary: string;
 	permission_keys: string[];
 	derived_keys: DerivedKey[];
@@ -187,10 +231,65 @@ export interface ApprovalResponse {
 	/** Byte length of the full pretty-printed action_detail prior to
 	 *  truncation. 0 when no detail was stored. */
 	action_detail_size_bytes: number;
+	/** Labeled summary of the resolved request, extracted at approval-create
+	 *  time via the template's x-overslash-disclose filters. Rendered as the
+	 *  "Summary" block above the raw payload. Null when the action template
+	 *  declared no disclose entries. */
+	disclosed_fields: DisclosedField[] | null;
 	status: string;
 	token: string;
 	expires_at: string;
 	created_at: string;
+	/** Replay lifecycle state, present once /resolve allow has created the
+	 *  pending execution row. Absent on denied / bubbled / pre-replay
+	 *  approvals. */
+	execution?: ExecutionSummary;
+	/** Other pending approvals auto-resolved as a side effect of this call.
+	 *  Populated only on the response to POST /v1/approvals/{id}/call when
+	 *  an "Allow & Remember" rule was committed and that rule structurally
+	 *  satisfied other pending approvals under the same placement identity.
+	 *  Empty / omitted in all other contexts. */
+	cascaded_approval_ids?: string[];
+	/** Risk class derived from the matching ServiceAction.risk in the live
+	 *  service registry. Drives the approval card's risk top bar.
+	 *  Read → "low", Write → "med", Delete → "high". Defaults to "med" when
+	 *  the lookup misses. */
+	risk: 'low' | 'med' | 'high';
+	/** Caller↔requester relationship from the *viewing* identity's
+	 *  perspective. Populated on identity-bound reads (API key tied to an
+	 *  identity); omitted on dashboard-session reads where the relationship
+	 *  has no defined viewer. MCP clients use this to pick
+	 *  `overslash_approve_self` vs `overslash_approve`. */
+	relationship?: 'self' | 'downstream' | 'not_in_your_chain';
+}
+
+/** Mirrors crates/overslash-api/src/routes/approvals.rs ExecutionSummary. */
+export interface ExecutionSummary {
+	id: string;
+	/** pending | executing | executed | failed | cancelled | expired —
+	 *  authoritative values come from the `executions.status` column;
+	 *  the API does no translation. */
+	status: string;
+	result?: unknown;
+	error?: string;
+	/** `auto` is set when the resolve handler kicked off the replay because
+	 *  the requesting agent's identity has `auto_call_on_approve` enabled
+	 *  (default true). Applies uniformly to MCP, REST, and white-label
+	 *  agents. */
+	triggered_by?: 'agent' | 'user' | 'auto';
+	started_at?: string;
+	completed_at?: string;
+	expires_at: string;
+	created_at: string;
+	/** `http` | `mcp` — disambiguates the meaning of `http_status_code`.
+	 *  Absent while the execution is still pending. */
+	runtime?: string;
+	/** Upstream HTTP status for HTTP-runtime executions only. */
+	http_status_code?: number;
+	/** False until the requesting agent fetches `/v1/approvals/{id}/execution`
+	 *  for the first time. Drives the "called but output unread" surface
+	 *  on the dashboard's pending-calls list. */
+	output_read: boolean;
 }
 
 export interface ResolveApprovalRequest {

@@ -1,3 +1,12 @@
+// The OAuth-shaped typed-error variants on `AppError` (`NeedsAuthentication`,
+// `ReauthRequired`, `MissingScopes`) carry three URL flavors (gated /
+// shortened / raw upstream) plus contextual ids — see the doc-comment on
+// each variant for the wire contract. Boxing the variants to shrink
+// `Result<_, AppError>` to clippy's default 128-byte threshold would add an
+// allocation on every cold error path and complicate ~10 match sites for no
+// runtime benefit. Suppress the size lint instead.
+#![allow(clippy::result_large_err)]
+
 pub mod config;
 pub mod error;
 pub mod extractors;
@@ -9,7 +18,7 @@ pub mod services;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderValue, Method, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
 use tower_http::{
     compression::CompressionLayer,
@@ -18,6 +27,7 @@ use tower_http::{
 };
 
 use crate::config::Config;
+use overslash_core::email::Mailer;
 use overslash_core::embeddings::{DisabledEmbedder, Embedder};
 use overslash_core::registry::ServiceRegistry;
 
@@ -30,6 +40,10 @@ pub struct AppState {
     pub registry: Arc<ServiceRegistry>,
     pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
     pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
+    /// Caches per-org `plan` lookups so the rate-limit middleware can decide
+    /// whether to bypass for `free_unlimited` orgs without hitting Postgres
+    /// on every request. See `services::billing_tier`.
+    pub free_unlimited_cache: Arc<services::billing_tier::FreeUnlimitedCache>,
     /// In-memory store for one-shot OAuth 2.1 authorization codes (60s TTL).
     /// Process-local for v1; promoted to Redis once horizontal replication
     /// is on the roadmap (tracked in `TECH_DEBT.md`).
@@ -48,20 +62,90 @@ pub struct AppState {
     /// short-circuits the cosine retrieval and blends only keyword +
     /// fuzzy scores.
     pub embeddings_available: bool,
+    pub platform_registry: std::sync::Arc<services::platform_caller::PlatformRegistry>,
+    /// Transactional-email sender. `NoopMailer` until `EMAIL_PROVIDER` is set;
+    /// callers (billing, onboarding, DLQ digest) just `state.mailer.send(...)`
+    /// and stay oblivious to provider wiring.
+    pub mailer: Arc<dyn Mailer>,
 }
 
 /// Create the application router with all routes and middleware.
-pub async fn create_app(config: Config) -> anyhow::Result<Router> {
+pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
+    // Validate the master-key keyring eagerly — `Config::keyring()` is the
+    // only place that enforces the `active_id > previous_id` invariant
+    // (and the hex-parse of `SECRETS_ENCRYPTION_KEY[_PREVIOUS]`). Without
+    // this check the misconfigured deploy would boot fine and 500 on the
+    // first encrypt/decrypt request, which is exactly what Seer flagged on
+    // PR #287. Same fail-fast posture as the Stripe price-id resolution
+    // below.
+    config.keyring().map_err(|e| {
+        anyhow::anyhow!(
+            "invalid SECRETS_ENCRYPTION_KEY configuration: {e} — fix the env vars and redeploy"
+        )
+    })?;
+
+    let metrics_handle = overslash_metrics::setup();
+    overslash_metrics::webhooks::init();
+
     let db = PgPool::connect(&config.database_url).await?;
 
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
 
-    // Load service registry
+    // Resolve Stripe price IDs from lookup keys at startup so a misconfigured
+    // billing deploy fails fast (not at first checkout). Skip when billing is
+    // disabled or the secret key isn't set — the validation in `from_env`
+    // already enforces that pairing.
+    if config.cloud_billing {
+        if let Some(secret_key) = config.stripe_secret_key.as_deref() {
+            let http = reqwest::Client::new();
+            config.stripe_eur_price_id = Some(
+                routes::billing::resolve_stripe_price_by_lookup_key(
+                    &http,
+                    secret_key,
+                    &config.stripe_eur_lookup_key,
+                    &config.stripe_api_base,
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to resolve EUR Stripe price (lookup_key={}): {e}",
+                        config.stripe_eur_lookup_key
+                    )
+                })?,
+            );
+            config.stripe_usd_price_id = Some(
+                routes::billing::resolve_stripe_price_by_lookup_key(
+                    &http,
+                    secret_key,
+                    &config.stripe_usd_lookup_key,
+                    &config.stripe_api_base,
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to resolve USD Stripe price (lookup_key={}): {e}",
+                        config.stripe_usd_lookup_key
+                    )
+                })?,
+            );
+            tracing::info!(
+                eur_lookup = %config.stripe_eur_lookup_key,
+                usd_lookup = %config.stripe_usd_lookup_key,
+                "Resolved Stripe price IDs from lookup keys"
+            );
+        }
+    }
+
+    // Load service registry. Falling back to `with_builtins()` (rather
+    // than `default()`) preserves the synthetic `http` pseudo-service even
+    // when shipped templates fail to load — without it, `service: "http"`
+    // requests would 404 in the same boot where the migration created the
+    // `http` service_instances row.
     let registry = ServiceRegistry::load_from_dir(std::path::Path::new(&config.services_dir))
         .unwrap_or_else(|e| {
             tracing::warn!("Failed to load service registry: {e}");
-            ServiceRegistry::default()
+            ServiceRegistry::with_builtins()
         });
     tracing::info!("Loaded {} service definitions", registry.len());
 
@@ -70,20 +154,29 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
     let rate_limit_cache = Arc::new(services::rate_limit::RateLimitConfigCache::new(
         std::time::Duration::from_secs(30),
     ));
+    let free_unlimited_cache = Arc::new(services::billing_tier::FreeUnlimitedCache::new(
+        std::time::Duration::from_secs(30),
+    ));
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
+
+    let http_client = reqwest::Client::new();
+    let mailer = services::email::build_mailer(&config, http_client.clone());
 
     let state = AppState {
         db,
         config,
-        http_client: reqwest::Client::new(),
+        http_client,
         registry: Arc::new(registry),
         rate_limiter,
         rate_limit_cache,
+        free_unlimited_cache,
         auth_code_store: services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: services::oauth_as::PendingAuthorizeStore::new(),
         embedder,
         embeddings_available,
+        platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
+        mailer,
     };
 
     // Spawn background tasks
@@ -94,35 +187,58 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                match system.expire_stale_approvals().await {
-                    Ok(n) if n > 0 => tracing::info!("Expired {n} stale approvals"),
-                    Err(e) => tracing::error!("Approval expiry error: {e}"),
-                    _ => {}
-                }
-                match overslash_db::repos::pending_enrollment::expire_stale(&db).await {
-                    Ok(n) if n > 0 => tracing::info!("Expired {n} stale pending enrollments"),
-                    Err(e) => tracing::error!("Enrollment expiry error: {e}"),
-                    _ => {}
-                }
-                match system.archive_idle_subagents().await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("Archived {n} idle sub-agent identities")
+                instrumented_step("approval_expiry", system.expire_stale_approvals(), |n| {
+                    tracing::info!("Expired {n} stale approvals");
+                    for _ in 0..n {
+                        overslash_metrics::approvals::record_event("expired", "system");
                     }
-                    Err(e) => tracing::error!("Sub-agent archive error: {e}"),
-                    _ => {}
-                }
-                match system.purge_archived_subagents().await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("Purged {n} archived sub-agent identities")
-                    }
-                    Err(e) => tracing::error!("Sub-agent purge error: {e}"),
-                    _ => {}
-                }
-                match services::permission_chain::process_auto_bubble(&system).await {
-                    Ok(n) if n > 0 => tracing::info!("Auto-bubbled {n} approvals"),
-                    Err(e) => tracing::error!("Auto-bubble error: {e}"),
-                    _ => {}
-                }
+                })
+                .await;
+                instrumented_step("execution_expiry", system.expire_stale_executions(), |n| {
+                    tracing::info!("Expired {n} pending executions")
+                })
+                .await;
+                // Orphaned `executing` rows — API crashed mid-replay. Grace
+                // window is the replay timeout plus a minute of slack.
+                let orphan_grace =
+                    (state.config.execution_replay_timeout_secs as i64).saturating_add(60);
+                instrumented_step(
+                    "orphan_execution_reap",
+                    system.expire_orphaned_executions(orphan_grace),
+                    |n| tracing::info!("Reaped {n} orphaned executing executions"),
+                )
+                .await;
+                instrumented_step("subagent_archive", system.archive_idle_subagents(), |n| {
+                    tracing::info!("Archived {n} idle sub-agent identities")
+                })
+                .await;
+                instrumented_step("subagent_purge", system.purge_archived_subagents(), |n| {
+                    tracing::info!("Purged {n} archived sub-agent identities")
+                })
+                .await;
+                instrumented_step(
+                    "auto_bubble",
+                    services::permission_chain::process_auto_bubble(&system),
+                    |n| tracing::info!("Auto-bubbled {n} approvals"),
+                )
+                .await;
+                // Reap expired gate-flow rows. Both `oauth_connection_flows`
+                // and `mcp_upstream_flows` carry a 10-minute TTL but
+                // accumulate indefinitely if the user never clicks the
+                // gated URL — agents that retry an unauthenticated action
+                // would otherwise grow this table without bound.
+                instrumented_step(
+                    "oauth_connection_flow_expiry",
+                    async { overslash_db::repos::oauth_connection_flow::delete_expired(&db).await },
+                    |n| tracing::info!("Expired {n} oauth_connection_flows"),
+                )
+                .await;
+                instrumented_step(
+                    "mcp_upstream_flow_expiry",
+                    async { overslash_db::repos::mcp_upstream_flow::delete_expired(&db).await },
+                    |n| tracing::info!("Expired {n} mcp_upstream_flows"),
+                )
+                .await;
             }
         });
 
@@ -132,12 +248,51 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
             state.http_client.clone(),
         ));
 
+        // Webhook DLQ digest (daily, 13:00 UTC). Idempotent across replicas
+        // via `webhook_digest_runs` claim row — every replica that boots
+        // wakes at the anchor and races to send each org's digest exactly
+        // once. See services::webhook_digest.
+        tokio::spawn(services::webhook_digest::spawn_digest_loop(
+            state.db.clone(),
+            state.mailer.clone(),
+            state.config.public_url.clone(),
+        ));
+
         // Rate limit eviction loop (in-memory store only)
         if let Some(store) = in_memory_store {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let start = std::time::Instant::now();
                     store.evict_expired();
+                    overslash_metrics::background::record_tick(
+                        "rate_limit_evict",
+                        "ok",
+                        start.elapsed(),
+                    );
+                    overslash_metrics::background::set_last_success("rate_limit_evict");
+                }
+            });
+        }
+
+        // DB pool stats poller — emits gauge every 30s.
+        {
+            let db = state.db.clone();
+            tokio::spawn(async move {
+                let interval = std::time::Duration::from_secs(30);
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let start = std::time::Instant::now();
+                    let active = db.size();
+                    let idle = db.num_idle() as u32;
+                    let active_only = active.saturating_sub(idle);
+                    overslash_metrics::db::record_pool(active_only, idle);
+                    overslash_metrics::background::record_tick(
+                        "db_pool_poller",
+                        "ok",
+                        start.elapsed(),
+                    );
+                    overslash_metrics::background::set_last_success("db_pool_poller");
                 }
             });
         }
@@ -154,6 +309,20 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
             });
         }
     }
+
+    let billing_api_routes = if state.config.cloud_billing {
+        routes::billing::router()
+    } else {
+        Router::new()
+    };
+
+    // Stripe webhook lives outside rate limiting so bursts of Stripe retries
+    // are never rejected, and the raw body is available for sig verification.
+    let stripe_webhook_routes = if state.config.cloud_billing {
+        routes::billing::webhook_router()
+    } else {
+        Router::new()
+    };
 
     let rate_limited_routes = Router::new()
         .merge(routes::orgs::router())
@@ -173,52 +342,182 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
         .merge(routes::byoc_credentials::router())
         .merge(routes::oauth_providers::router())
         .merge(routes::auth::router())
+        .merge(routes::dev_e2e::router())
         .merge(routes::preferences::router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::org_idp_configs::router())
+        .merge(routes::org_invites::router())
         .merge(routes::org_oauth_credentials::router())
-        .merge(routes::enrollment::router())
+        .merge(routes::org_service_keys::router())
         .merge(routes::groups::router())
         .merge(routes::rate_limits::router())
+        .merge(billing_api_routes)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::rate_limit::rate_limit_middleware,
         ));
 
-    // Build allowed-origin matcher. `DASHBOARD_ORIGIN` accepts:
-    //   - "*localhost*" (default): any http(s) localhost / 127.0.0.1 origin on any port
-    //     — needed because worktrees pick dynamic dashboard ports.
-    //   - a comma-separated list of explicit origins (e.g. "https://app.example.com")
-    let allow_origin = {
-        let raw = state.config.dashboard_origin.trim().to_string();
-        if raw == "*localhost*" {
-            AllowOrigin::predicate(|origin: &HeaderValue, _req| {
-                origin
-                    .to_str()
-                    .map(|o| {
-                        o.starts_with("http://localhost:")
-                            || o.starts_with("http://127.0.0.1:")
-                            || o == "http://localhost"
-                            || o == "http://127.0.0.1"
-                    })
-                    .unwrap_or(false)
-            })
+    // CORS is split in two:
+    //
+    //   * `cors_global` — covers the dashboard API surface (`/v1/*`,
+    //     auth, billing, etc.). Allows only the dashboard origin(s).
+    //     `DASHBOARD_ORIGIN` accepts:
+    //       - "*localhost*" (default): any http localhost / 127.0.0.1
+    //         origin on any port — needed because worktrees pick
+    //         dynamic dashboard ports.
+    //       - a comma-separated list of explicit origins. Entries
+    //         beginning with `https://*.` (or `http://*.`) are treated
+    //         as single-label wildcard subdomain patterns
+    //         (e.g. `https://*.app.overslash.com`) so per-org dashboard
+    //         subdomains all match without enumerating every slug.
+    //
+    //   * `cors_mcp` — covers `/mcp` and the OAuth metadata / DCR /
+    //     token endpoints. Allows the dashboard origin(s) PLUS any
+    //     entries in `MCP_EXTRA_ORIGINS`. This is where we let a
+    //     locally-run MCP Inspector (e.g. `http://localhost:6274`)
+    //     complete the OAuth handshake without giving it the ability
+    //     to read `/v1/*` cross-origin (which would expose secrets and
+    //     connections from a logged-in user's session).
+    let dashboard_allow_origin =
+        build_allow_origin(&state.config.dashboard_origin, "DASHBOARD_ORIGIN")?;
+    let mcp_allow_origin = {
+        let combined = if state.config.mcp_extra_origins.trim().is_empty() {
+            state.config.dashboard_origin.clone()
         } else {
-            let origins: Vec<HeaderValue> = raw
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| {
-                    s.parse::<HeaderValue>()
-                        .map_err(|e| anyhow::anyhow!("invalid DASHBOARD_ORIGIN entry {s:?}: {e}"))
-                })
-                .collect::<anyhow::Result<_>>()?;
-            AllowOrigin::list(origins)
-        }
+            format!(
+                "{},{}",
+                state.config.dashboard_origin.trim(),
+                state.config.mcp_extra_origins.trim()
+            )
+        };
+        build_allow_origin(&combined, "DASHBOARD_ORIGIN+MCP_EXTRA_ORIGINS")?
     };
 
-    let cors = CorsLayer::new()
-        .allow_origin(allow_origin)
+    let cors_global = base_cors_layer().allow_origin(dashboard_allow_origin);
+    let cors_mcp = base_cors_layer().allow_origin(mcp_allow_origin);
+
+    // MCP transport + OAuth handshake. `cors_mcp` is wider (allows the
+    // Inspector origin); the layer is attached to this subrouter only.
+    let mcp_oauth_routes = Router::new()
+        .merge(routes::oauth_as::router())
+        .merge(routes::oauth::router())
+        .merge(routes::mcp::router())
+        .layer(cors_mcp);
+
+    // Everything else gets `cors_global`, scoped via a sibling subrouter
+    // so the two CORS layers don't compose (an outer cors_global would
+    // reject the Inspector origin during preflight before cors_mcp could
+    // see it). `oauth::consent_router` lives here — even though it's
+    // part of the OAuth flow, it serves dashboard-only `/v1/oauth/consent/*`
+    // endpoints that leak pending-request metadata and must NOT be readable
+    // from the Inspector origin.
+    // `/v1/actions/validate` is a dry-run probe: cheap, side-effect-free,
+    // and explicitly exempted from rate limiting so callers can pre-flight
+    // bad params without burning quota. Same auth + CORS as the rest of
+    // the dashboard API surface; only the rate-limit layer is dropped.
+    let validate_routes = routes::actions::validate_router();
+
+    let global_routes = Router::new()
+        .merge(routes::health::router())
+        .merge(routes::skill_md::router())
+        .merge(routes::oauth_upstream::router())
+        .merge(routes::oauth::consent_router())
+        // Public one-click unsubscribe — must stay outside auth + rate-limit
+        // layers because email clients and recipients clicking from inboxes
+        // have no session cookie. The token in the URL is the sole authority.
+        .merge(routes::unsubscribe::router())
+        .merge(stripe_webhook_routes)
+        .merge(validate_routes)
+        .merge(rate_limited_routes)
+        .layer(cors_global);
+
+    let app = Router::new()
+        .merge(mcp_oauth_routes)
+        .merge(global_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::subdomain::subdomain_middleware,
+        ))
+        .with_state(state)
+        // /internal/metrics is mounted outside subdomain + rate-limit middleware
+        // so the GMP / OTel sidecar can scrape it over loopback unconditionally.
+        .merge(overslash_metrics::metrics_router(metrics_handle))
+        .layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn(
+            overslash_metrics::http::middleware,
+        ))
+        .layer(TraceLayer::new_for_http());
+
+    Ok(app)
+}
+
+/// Parse a comma-separated CORS origin spec into a tower-http `AllowOrigin`.
+///
+/// Accepts:
+///   - the `*localhost*` sentinel (any http localhost / 127.0.0.1 origin on
+///     any port — used in local/worktree dev where the dashboard port is
+///     dynamic);
+///   - explicit origins (e.g. `https://app.example.com`);
+///   - single-label wildcard subdomain patterns (e.g.
+///     `https://*.app.example.com`) — match any single DNS label between
+///     scheme and suffix, so per-org subdomains like
+///     `https://acme.app.example.com` are allowed without enumerating slugs,
+///     while `https://evil.attacker.app.example.com` is rejected.
+///
+/// All three forms can be mixed in one spec.
+fn build_allow_origin(raw: &str, env_var: &str) -> anyhow::Result<AllowOrigin> {
+    let mut allow_localhost = false;
+    let mut explicit: Vec<HeaderValue> = Vec::new();
+    let mut wild: Vec<(String, String)> = Vec::new();
+    for entry in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if entry == "*localhost*" {
+            allow_localhost = true;
+        } else if let Some(rest) = entry.strip_prefix("https://*.") {
+            wild.push(("https://".into(), format!(".{rest}")));
+        } else if let Some(rest) = entry.strip_prefix("http://*.") {
+            wild.push(("http://".into(), format!(".{rest}")));
+        } else {
+            explicit.push(
+                entry
+                    .parse::<HeaderValue>()
+                    .map_err(|e| anyhow::anyhow!("invalid {env_var} entry {entry:?}: {e}"))?,
+            );
+        }
+    }
+    Ok(AllowOrigin::predicate(move |origin: &HeaderValue, _req| {
+        if explicit.iter().any(|e| e == origin) {
+            return true;
+        }
+        let Ok(o) = origin.to_str() else {
+            return false;
+        };
+        if allow_localhost
+            && (o.starts_with("http://localhost:")
+                || o.starts_with("http://127.0.0.1:")
+                || o == "http://localhost"
+                || o == "http://127.0.0.1")
+        {
+            return true;
+        }
+        wild.iter().any(|(scheme, suffix)| {
+            let Some(rest) = o.strip_prefix(scheme.as_str()) else {
+                return false;
+            };
+            let Some(label_end) = rest.find(suffix.as_str()) else {
+                return false;
+            };
+            let label = &rest[..label_end];
+            let tail = &rest[label_end + suffix.len()..];
+            !label.is_empty() && !label.contains('.') && tail.is_empty()
+        })
+    }))
+}
+
+/// Shared `CorsLayer` config for both the global and MCP/OAuth route groups.
+/// Only the allowed-origin set differs between the two — everything else
+/// (methods, headers, credentials, exposed response headers) is identical.
+fn base_cors_layer() -> CorsLayer {
+    CorsLayer::new()
         .allow_credentials(true)
         .allow_methods([
             Method::GET,
@@ -228,20 +527,48 @@ pub async fn create_app(config: Config) -> anyhow::Result<Router> {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            HeaderName::from_static("mcp-session-id"),
+            HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("last-event-id"),
+        ])
+        // Browser-based MCP clients (e.g. MCP Inspector) need to read these
+        // back across origins: `Mcp-Session-Id` is part of Streamable HTTP,
+        // and `WWW-Authenticate` carries the `resource_metadata=` discovery
+        // hint emitted by `/mcp` 401s.
+        .expose_headers([
+            HeaderName::from_static("mcp-session-id"),
+            header::WWW_AUTHENTICATE,
+        ])
+}
 
-    let app = Router::new()
-        .merge(routes::health::router())
-        .merge(routes::oauth_as::router())
-        .merge(routes::oauth::router())
-        .merge(routes::mcp::router())
-        .merge(rate_limited_routes)
-        .with_state(state)
-        .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
-        .layer(cors);
-
-    Ok(app)
+/// Run one background-loop step and emit the matching metrics. `task` becomes
+/// the metric label and the silent-hang alert key, so it must stay stable.
+/// `on_change` only runs when the step did real work (`Ok(n)` with `n > 0`)
+/// — keeping the existing log behavior identical to the pre-instrumented loop.
+async fn instrumented_step<E: std::fmt::Display>(
+    task: &'static str,
+    fut: impl std::future::Future<Output = Result<u64, E>>,
+    on_change: impl FnOnce(u64),
+) {
+    let start = std::time::Instant::now();
+    let result = fut.await;
+    let status = match &result {
+        Ok(0) => "noop",
+        Ok(_) => "ok",
+        Err(_) => "err",
+    };
+    overslash_metrics::background::record_tick(task, status, start.elapsed());
+    if result.is_ok() {
+        overslash_metrics::background::set_last_success(task);
+    }
+    match result {
+        Ok(n) if n > 0 => on_change(n),
+        Ok(_) => {}
+        Err(e) => tracing::error!("{task} error: {e}"),
+    }
 }
 
 /// Construct the embedding backend for this process lifetime.

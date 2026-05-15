@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use axum::{
     Form, Json, Router,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -30,19 +30,38 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
+    middleware::subdomain::RequestOrgContext,
     services::{jwt, oauth_as, session},
 };
 use overslash_db::repos::{
-    identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client,
+    identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client, org_idp_config,
 };
 use overslash_db::scopes::OrgScope;
 
+/// Public OAuth Authorization Server endpoints (RFC 7591 / OAuth 2.1).
+///
+/// These are reached cross-origin by external OAuth clients — including
+/// browser-based debug tools like MCP Inspector — so they sit under the
+/// wider `cors_mcp` layer in `lib.rs` (origins = `dashboard_origin` ∪
+/// `mcp_extra_origins`). Nothing here returns user data without a
+/// preceding consent step, which is gated by `consent_router` below
+/// under the tighter `cors_global` layer.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/oauth/register", post(register))
         .route("/oauth/authorize", get(authorize))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
+}
+
+/// Dashboard-facing consent UI helpers. The dashboard fetches the
+/// consent context and posts the user's decision back here while a
+/// `/oauth/authorize` request is paused mid-flow. These leak the
+/// pending request's metadata to whoever can read the response, so
+/// they MUST stay behind the tight `cors_global` layer that only
+/// trusts the dashboard origin — never the MCP Inspector origin.
+pub fn consent_router() -> Router<AppState> {
+    Router::new()
         .route("/v1/oauth/consent/{request_id}", get(consent_context))
         .route(
             "/v1/oauth/consent/{request_id}/finish",
@@ -191,9 +210,14 @@ struct AuthorizeQuery {
 
 async fn authorize(
     State(state): State<AppState>,
+    ctx: Option<Extension<RequestOrgContext>>,
     Query(params): Query<AuthorizeQuery>,
     headers: HeaderMap,
 ) -> Response {
+    // Older test harnesses mount the OAuth router without the subdomain
+    // middleware; treat the missing extension as Root so the existing
+    // env-var IdP path still works.
+    let ctx = ctx.map(|Extension(c)| c).unwrap_or(RequestOrgContext::Root);
     // Reject bad params BEFORE checking auth so every failure is diagnosable.
     if params.response_type != "code" {
         return oauth_error(
@@ -263,27 +287,34 @@ async fn authorize(
     let session_claims = match session::extract_session(&state, &headers) {
         Some(c) => c,
         None => {
-            let provider = match default_idp_provider(&state) {
-                Some(p) => p,
-                None => {
+            let authorize_path = rebuild_authorize_path(&params);
+            let next = urlencoding::encode(&authorize_path);
+            match default_idp_provider_for_request(&state, &ctx).await {
+                IdpBounce::Provider(provider) => {
+                    // Dev login is a separate endpoint, not the generic
+                    // /auth/login/{provider_key} path (which requires an
+                    // oauth_providers DB row).
+                    let login = if provider == "dev" {
+                        format!("/auth/dev/token?next={next}")
+                    } else {
+                        format!("/auth/login/{provider}?next={next}")
+                    };
+                    return Redirect::to(&login).into_response();
+                }
+                IdpBounce::Picker => {
+                    // Corp subdomain with multiple enabled IdPs and no
+                    // designated default — let the user pick. The dashboard
+                    // login page calls /auth/providers and renders the list.
+                    return Redirect::to(&format!("/login?next={next}")).into_response();
+                }
+                IdpBounce::None => {
                     return oauth_error(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "login_required",
-                        "no IdP is configured on this Overslash deployment",
+                        "no IdP is configured for this org",
                     );
                 }
-            };
-            let authorize_path = rebuild_authorize_path(&params);
-            let next = urlencoding::encode(&authorize_path);
-            // Dev login is a separate endpoint, not the generic
-            // /auth/login/{provider_key} path (which requires an
-            // oauth_providers DB row).
-            let login = if provider == "dev" {
-                format!("/auth/dev/token?next={next}")
-            } else {
-                format!("/auth/login/{provider}?next={next}")
-            };
-            return Redirect::to(&login).into_response();
+            }
         }
     };
 
@@ -393,25 +424,59 @@ fn issue_authorization_code(
     Redirect::to(&redirect).into_response()
 }
 
-/// Pick the first configured env-var IdP for bouncing `/oauth/authorize`
-/// through login. Production deployments should always have exactly one
-/// default; installations with multiple IdPs can pick via a UI redirect
-/// layer above `/oauth/authorize`.
-fn default_idp_provider(state: &AppState) -> Option<&'static str> {
-    if state.config.google_auth_client_id.is_some()
-        && state.config.google_auth_client_secret.is_some()
-    {
-        return Some("google");
+/// Outcome of picking an IdP to bounce an unauthenticated `/oauth/authorize`
+/// caller through.
+enum IdpBounce {
+    /// One specific provider key — redirect straight to its login.
+    Provider(String),
+    /// Multiple IdPs configured for the org and none marked default — the
+    /// dashboard `/login` page should render a picker.
+    Picker,
+    /// No IdP available at all → service-unavailable.
+    None,
+}
+
+/// Pick how to bounce an unauthenticated `/oauth/authorize` caller through
+/// IdP login.
+///
+/// On a corp subdomain (`RequestOrgContext::Org`) we honor the org's
+/// designated default IdP, then fall back to the picker if any IdPs are
+/// enabled. We **never** fall through to env-var (Overslash-managed) login
+/// on a corp subdomain — corp subdomains are strict trust domains
+/// (DECISIONS.md D12).
+///
+/// On the apex (`RequestOrgContext::Root`) we keep the existing env-var
+/// behavior so personal-org sign-up keeps working without any DB IdP rows.
+async fn default_idp_provider_for_request(state: &AppState, ctx: &RequestOrgContext) -> IdpBounce {
+    match ctx {
+        RequestOrgContext::Org { org_id, .. } => {
+            // Designated default first.
+            if let Ok(Some(row)) = org_idp_config::get_default_by_org(&state.db, *org_id).await {
+                return IdpBounce::Provider(row.provider_key);
+            }
+            // No default but at least one enabled IdP → picker.
+            match org_idp_config::list_enabled_by_org(&state.db, *org_id).await {
+                Ok(rows) if !rows.is_empty() => IdpBounce::Picker,
+                _ => IdpBounce::None,
+            }
+        }
+        RequestOrgContext::Root => {
+            if state.config.google_auth_client_id.is_some()
+                && state.config.google_auth_client_secret.is_some()
+            {
+                return IdpBounce::Provider("google".into());
+            }
+            if state.config.github_auth_client_id.is_some()
+                && state.config.github_auth_client_secret.is_some()
+            {
+                return IdpBounce::Provider("github".into());
+            }
+            if state.config.dev_auth_enabled {
+                return IdpBounce::Provider("dev".into());
+            }
+            IdpBounce::None
+        }
     }
-    if state.config.github_auth_client_id.is_some()
-        && state.config.github_auth_client_secret.is_some()
-    {
-        return Some("github");
-    }
-    if state.config.dev_auth_enabled {
-        return Some("dev");
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +497,7 @@ struct ConsentClientInfo {
     client_name: Option<String>,
     software_id: Option<String>,
     software_version: Option<String>,
+    elicitation_supported: bool,
 }
 
 #[derive(Serialize)]
@@ -461,6 +527,10 @@ struct ConsentReauthTarget {
     parent_id: Option<Uuid>,
     parent_name: Option<String>,
     last_seen_at: Option<String>,
+    /// Pre-fill for the elicitation toggle on the consent page so a reauth
+    /// doesn't silently flip a user's previously-saved choice back to the
+    /// `false` default. Read from the existing binding for this agent.
+    elicitation_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -491,6 +561,12 @@ struct ConsentFinishRequest {
     /// happens to return (newer enrollments, revocations, etc. could
     /// shift it between GET context and POST finish).
     reauth_agent_id: Option<Uuid>,
+    /// User's choice from the Connection Settings card. `None` means the
+    /// caller didn't speak the per-binding setting (older dashboard build,
+    /// third-party POST) and the existing binding value is preserved.
+    /// `Some(b)` is an explicit choice from the consent page; the server
+    /// applies it across the agent's bindings, gated by capability.
+    elicitation_enabled: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -637,6 +713,8 @@ async fn consent_context(
         });
     }
 
+    let elicitation_supported = client.elicitation_supported();
+
     let (mode, reauth_target) = if let Some(sim) = similar {
         let agent = identity::get_by_id(&state.db, pending.org_id, sim.agent_identity_id).await?;
         match agent {
@@ -650,6 +728,11 @@ async fn consent_context(
                 } else {
                     None
                 };
+                let existing_elicitation =
+                    mcp_client_agent_binding::get_by_agent_identity(&state.db, a.id)
+                        .await?
+                        .map(|b| b.elicitation_enabled)
+                        .unwrap_or(false);
                 (
                     "reauth",
                     Some(ConsentReauthTarget {
@@ -658,6 +741,7 @@ async fn consent_context(
                         parent_id: a.parent_id,
                         parent_name,
                         last_seen_at: sim.client.last_seen_at.map(super::util::fmt_time),
+                        elicitation_enabled: existing_elicitation,
                     }),
                 )
             }
@@ -674,6 +758,7 @@ async fn consent_context(
             client_name: client.client_name.clone(),
             software_id: client.software_id.clone(),
             software_version: client.software_version.clone(),
+            elicitation_supported,
         },
         connection: ConsentConnectionInfo {
             ip: client.created_ip.clone(),
@@ -785,7 +870,7 @@ async fn consent_finish(
                         }
                         g.id
                     } else {
-                        match scope.create_group(name, "", false).await {
+                        match scope.create_group(name, "").await {
                             Ok(g) => g.id,
                             Err(e) => {
                                 tracing::warn!("consent: create group '{name}' failed: {e}");
@@ -853,12 +938,43 @@ async fn consent_finish(
         }
     };
 
+    // Read the agent's existing per-binding elicitation flag BEFORE
+    // upserting. Reauth under a re-registered client_id creates a fresh
+    // binding row that uses schema defaults, so without a pre-fetch the new
+    // row would hide whatever value the user saved on a prior binding.
+    // (`auto_call_on_approve` lives on the agent identity now and is
+    // naturally preserved across reauth — no special handling needed.)
+    let prior_binding =
+        mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_identity_id).await?;
+    let prior_elicitation = prior_binding
+        .as_ref()
+        .map(|b| b.elicitation_enabled)
+        .unwrap_or(false);
+
     mcp_client_agent_binding::upsert(
         &state.db,
         pending.org_id,
         pending.user_identity_id,
         &pending.client_id,
         agent_identity_id,
+    )
+    .await?;
+
+    // Resolve the per-agent value: an explicit choice from the consent page
+    // wins (gated by capability — a hand-crafted `true` against a client
+    // that didn't announce elicitation gets forced to `false`); a missing
+    // field inherits the agent's prior value so older dashboard builds /
+    // third-party POSTs don't destroy a previously-saved choice. Fan out
+    // unconditionally to keep every binding row in sync with the per-agent
+    // toggle (see `set_elicitation_enabled_for_agent`).
+    let resolved_elicitation = match body.elicitation_enabled {
+        Some(requested) => requested && client.elicitation_supported(),
+        None => prior_elicitation,
+    };
+    mcp_client_agent_binding::set_elicitation_enabled_for_agent(
+        &state.db,
+        agent_identity_id,
+        resolved_elicitation,
     )
     .await?;
 
@@ -913,7 +1029,12 @@ struct TokenRequest {
 }
 
 async fn token(State(state): State<AppState>, Form(req): Form<TokenRequest>) -> Response {
-    match req.grant_type.as_str() {
+    let flow = match req.grant_type.as_str() {
+        "authorization_code" => "token",
+        "refresh_token" => "refresh",
+        _ => "unknown_grant",
+    };
+    let response = match req.grant_type.as_str() {
         "authorization_code" => exchange_authorization_code(&state, req).await,
         "refresh_token" => exchange_refresh_token(&state, req).await,
         other => oauth_error(
@@ -921,7 +1042,14 @@ async fn token(State(state): State<AppState>, Form(req): Form<TokenRequest>) -> 
             "unsupported_grant_type",
             format!("unsupported grant_type: {other}"),
         ),
-    }
+    };
+    let status = if response.status().is_success() {
+        "success"
+    } else {
+        "failure"
+    };
+    overslash_metrics::oauth::record_event("overslash", flow, status);
+    response
 }
 
 async fn exchange_authorization_code(state: &AppState, req: TokenRequest) -> Response {
@@ -1099,7 +1227,8 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
     let _ = oauth_mcp_client::mark_seen(&state.db, &row.client_id).await;
 
     let email = identity.email.as_deref().unwrap_or("");
-    let access = match mint_access_token(state, row.identity_id, row.org_id, email) {
+    let access = match mint_access_token(state, row.identity_id, row.org_id, email, &row.client_id)
+    {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -1137,7 +1266,7 @@ async fn issue_tokens(
         );
     }
     let _ = oauth_mcp_client::mark_seen(&state.db, client_id).await;
-    let access = match mint_access_token(state, identity_id, org_id, email) {
+    let access = match mint_access_token(state, identity_id, org_id, email, client_id) {
         Ok(t) => t,
         Err(resp) => return resp,
     };
@@ -1150,6 +1279,7 @@ fn mint_access_token(
     identity_id: Uuid,
     org_id: Uuid,
     email: &str,
+    mcp_client_id: &str,
 ) -> Result<String, Response> {
     let signing_key = hex::decode(&state.config.signing_key)
         .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
@@ -1159,6 +1289,7 @@ fn mint_access_token(
         org_id,
         email.to_string(),
         oauth_as::ACCESS_TOKEN_TTL_SECS,
+        Some(mcp_client_id.to_string()),
     )
     .map_err(|e| {
         tracing::error!("jwt mint failed: {e}");

@@ -1,9 +1,55 @@
 {
   "rewrites": [
-    { "source": "/v1/:path*", "destination": "https://api.dev.overslash.com/v1/:path*" },
-    { "source": "/auth/:path*", "destination": "https://api.dev.overslash.com/auth/:path*" },
-    { "source": "/health", "destination": "https://api.dev.overslash.com/health" },
-    { "source": "/enroll/approve/:path*", "destination": "https://api.dev.overslash.com/enroll/approve/:path*" },
-    { "source": "/public/secrets/:path*", "destination": "https://api.dev.overslash.com/public/secrets/:path*" }
+    { "source": "/auth/handoff",                           "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/__handoff_disabled_in_prod" },
+    { "source": "/auth/handoff",                           "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }], "destination": "https://api.overslash.com/__handoff_disabled_in_prod" },
+    { "source": "/v1/:path*",                              "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/v1/:path*" },
+    { "source": "/auth/:path*",                            "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/auth/:path*" },
+    { "source": "/health",                                 "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/health" },
+    { "source": "/SKILL.md",                               "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/SKILL.md" },
+    { "source": "/public/secrets/:path*",                  "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/public/secrets/:path*" },
+    { "source": "/.well-known/oauth-authorization-server", "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/.well-known/oauth-authorization-server" },
+    { "source": "/.well-known/oauth-protected-resource",   "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/.well-known/oauth-protected-resource" },
+    { "source": "/oauth/register",                         "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/oauth/register" },
+    { "source": "/oauth/authorize",                        "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/oauth/authorize" },
+    { "source": "/oauth/token",                            "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/oauth/token" },
+    { "source": "/oauth/revoke",                           "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/oauth/revoke" },
+    { "source": "/mcp",                                    "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/mcp" },
+    { "source": "/connect-authorize",                      "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/connect-authorize" },
+
+    { "source": "/v1/:path*",             "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/v1/:path*" },
+    { "source": "/auth/:path*",           "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/auth/:path*" },
+    { "source": "/health",                "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/health" },
+    { "source": "/SKILL.md",              "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/SKILL.md" },
+    { "source": "/public/secrets/:path*", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/public/secrets/:path*" },
+    { "source": "/connect-authorize",     "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],              "destination": "https://api.overslash.com/connect-authorize" },
+
+    { "source": "/v1/:path*",             "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/v1/:path*" },
+    { "source": "/auth/:path*",           "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/auth/:path*" },
+    { "source": "/health",                "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/health" },
+    { "source": "/SKILL.md",              "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/SKILL.md" },
+    { "source": "/public/secrets/:path*", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/public/secrets/:path*" },
+    { "source": "/connect-authorize",     "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],         "destination": "https://api.dev.overslash.com/connect-authorize" },
+
+    { "source": "/v1/:path*",                              "destination": "https://api.dev.overslash.com/v1/:path*" },
+    { "source": "/auth/:path*",                            "destination": "https://api.dev.overslash.com/auth/:path*" },
+    { "source": "/health",                                 "destination": "https://api.dev.overslash.com/health" },
+    { "source": "/SKILL.md",                               "destination": "https://api.dev.overslash.com/SKILL.md" },
+    { "source": "/public/secrets/:path*",                  "destination": "https://api.dev.overslash.com/public/secrets/:path*" },
+    { "source": "/.well-known/oauth-authorization-server", "destination": "https://api.dev.overslash.com/.well-known/oauth-authorization-server" },
+    { "source": "/.well-known/oauth-protected-resource",   "destination": "https://api.dev.overslash.com/.well-known/oauth-protected-resource" },
+    { "source": "/oauth/register",                         "destination": "https://api.dev.overslash.com/oauth/register" },
+    { "source": "/oauth/authorize",                        "destination": "https://api.dev.overslash.com/oauth/authorize" },
+    { "source": "/oauth/token",                            "destination": "https://api.dev.overslash.com/oauth/token" },
+    { "source": "/oauth/revoke",                           "destination": "https://api.dev.overslash.com/oauth/revoke" },
+    { "source": "/mcp",                                    "destination": "https://api.dev.overslash.com/mcp" },
+    { "source": "/connect-authorize",                      "destination": "https://api.dev.overslash.com/connect-authorize" }
+  ],
+  "redirects": [
+    { "source": "/.well-known/:path*",  "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/.well-known/:path*",     "permanent": false },
+    { "source": "/mcp",                 "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/mcp",                  "permanent": false },
+    { "source": "/connect-authorize",   "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/connect-authorize",    "permanent": false },
+    { "source": "/.well-known/:path*",  "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/.well-known/:path*", "permanent": false },
+    { "source": "/mcp",                 "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/mcp",                "permanent": false },
+    { "source": "/connect-authorize",   "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://:sub.api.dev.overslash.com/connect-authorize",  "permanent": false }
   ]
 }

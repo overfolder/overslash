@@ -7,32 +7,52 @@
 	// non-clickable. The leading `spiffe://` scheme is hidden by default for
 	// readability; pass `showScheme` to keep it.
 	//
-	// Used by the standalone approval page and the audit log identity column.
+	// Used by the standalone approval page and the approvals list. The audit
+	// log no longer uses this component — its rows have only a leaf identity
+	// (id + display name) and link directly to /agents/<id>.
 
-	let { path, showScheme = false }: { path: string; showScheme?: boolean } = $props();
+	let {
+		path,
+		pathIds = [],
+		showScheme = false
+	}: { path: string; pathIds?: string[]; showScheme?: boolean } = $props();
 
 	type Segment =
 		| { type: 'org'; name: string; href: string }
 		| { type: 'unit'; kind: string; name: string; href: string };
 
-	function parse(p: string): Segment[] {
+	function parse(p: string, ids: string[]): Segment[] {
 		const stripped = p.replace(/^spiffe:\/\//, '');
 		const parts = stripped.split('/').filter(Boolean);
 		if (parts.length === 0) return [];
 		const out: Segment[] = [];
 		// First part is the org slug.
 		out.push({ type: 'org', name: parts[0], href: `/org` });
-		// Remaining parts come in (kind, name) pairs.
+		// Remaining parts come in (kind, name) pairs aligned with `ids`
+		// (one id per pair, no id for the org slug).
+		let unitIndex = 0;
 		for (let i = 1; i + 1 < parts.length; i += 2) {
 			const kind = parts[i];
 			const name = parts[i + 1];
-			const href = kind === 'user' ? `/users/${name}` : `/agents/${name}`;
+			const id = ids[unitIndex];
+			// Agent units link by id when available so /agents/<id> can
+			// resolve directly without a name → id lookup. User units stay
+			// name-keyed to match the /users/[name] route. If the caller
+			// hasn't supplied ids (legacy), fall back to name-keyed agent
+			// links and accept the (rare) name-collision risk.
+			const href =
+				kind === 'user'
+					? `/users/${name}`
+					: id
+						? `/agents/${id}`
+						: `/agents/${name}`;
 			out.push({ type: 'unit', kind, name, href });
+			unitIndex += 1;
 		}
 		return out;
 	}
 
-	const segments = $derived(parse(path));
+	const segments = $derived(parse(path, pathIds));
 </script>
 
 <span class="ip mono">

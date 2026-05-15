@@ -103,6 +103,14 @@ impl OrgScope {
             .await
     }
 
+    /// List every service instance in this org regardless of owner or group
+    /// grants. Caller is responsible for gating this on `is_org_admin`.
+    pub async fn list_all_service_instances_in_org(
+        &self,
+    ) -> Result<Vec<ServiceInstanceRow>, sqlx::Error> {
+        service_instance::list_all_in_org(self.db(), self.org_id()).await
+    }
+
     /// List service instances visible to a caller in this org, filtered by
     /// the supplied set of group-visible org-level service ids.
     ///

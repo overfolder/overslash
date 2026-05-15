@@ -210,6 +210,57 @@ async fn agent_puts_secret_on_behalf_of_owner_user() {
 }
 
 #[tokio::test]
+async fn agent_can_rotate_secret_it_created_on_behalf_of_owner_user() {
+    // Regression test for the put-path subtree gate. After an agent
+    // creates a slot via `on_behalf_of`, the slot's `owner_identity_id`
+    // is the parent user — not the agent itself. A second PUT must
+    // re-pass `on_behalf_of` so the resolved owner still matches the
+    // slot owner; otherwise the gate 404s.
+    let (base, client, _org, user_id, _agent, agent_key, _admin) = setup().await;
+
+    // First PUT — creates the slot, owner = user.
+    let resp = client
+        .put(format!("{base}/v1/secrets/shared-rotation"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({"value": "v1", "on_behalf_of": user_id}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Second PUT with on_behalf_of — rotation succeeds.
+    let resp = client
+        .put(format!("{base}/v1/secrets/shared-rotation"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({"value": "v2", "on_behalf_of": user_id}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "agent must be able to rotate its own user-owned slot via on_behalf_of: {:?}",
+        resp.text().await
+    );
+
+    // Second PUT *without* on_behalf_of — slot owner = user, resolved
+    // owner = agent → strict match fails → 404. This is the explicit-
+    // intent contract: shared rotation requires re-declaring `on_behalf_of`.
+    let resp = client
+        .put(format!("{base}/v1/secrets/shared-rotation"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({"value": "v3"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        404,
+        "agent must NOT silently hijack a user-owned slot without on_behalf_of",
+    );
+}
+
+#[tokio::test]
 async fn agent_cannot_put_secret_on_behalf_of_other_user() {
     let (base, client, _org, _user, _agent, agent_key, admin_key) = setup().await;
 

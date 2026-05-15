@@ -64,7 +64,7 @@
 				<ul class="agent-list">
 					{#each agents as a (a.id)}
 						<li>
-							<a class="link" href={`/agents/${encodeURIComponent(a.name)}`}>{a.name}</a>
+							<a class="link" href={`/agents/${a.id}`}>{a.name}</a>
 							<span class="muted small">· {a.kind}</span>
 						</li>
 					{/each}

@@ -147,6 +147,16 @@ impl OrgScope {
         identity::set_inherit_permissions(self.db(), self.org_id(), id, inherit).await
     }
 
+    /// Toggle the per-agent `auto_call_on_approve` flag on an identity in
+    /// this org. See [`identity::set_auto_call_on_approve`] for semantics.
+    pub async fn set_identity_auto_call_on_approve(
+        &self,
+        id: Uuid,
+        value: bool,
+    ) -> Result<bool, sqlx::Error> {
+        identity::set_auto_call_on_approve(self.db(), self.org_id(), id, value).await
+    }
+
     /// Delete an identity by id, scoped to this org.
     pub async fn delete_identity(&self, id: Uuid) -> Result<bool, sqlx::Error> {
         identity::delete(self.db(), self.org_id(), id).await

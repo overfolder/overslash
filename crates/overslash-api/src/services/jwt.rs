@@ -12,12 +12,29 @@ pub const AUD_MCP: &str = "mcp";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
+    /// Identity id (the org-scoped actor). `sub` stays the identity so all
+    /// existing extractors that build an `OrgScope` from `(org, sub)` keep
+    /// working unchanged.
     pub sub: Uuid,
     pub org: Uuid,
     pub email: String,
     pub aud: String,
     pub iat: i64,
     pub exp: i64,
+    /// The human behind the identity. Added for multi-org — a user can
+    /// have one identity per org they belong to, so the session switcher
+    /// re-keys on `(user_id, target_org)` to find the right `sub`. Legacy
+    /// tokens minted before this field existed deserialize it as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<Uuid>,
+    /// Source MCP OAuth client (`oauth_mcp_clients.client_id`) when this
+    /// token was minted by the MCP Authorization Server. Lets MCP-side
+    /// handlers correlate the calling identity back to its registered
+    /// client so capabilities/session state can be persisted on the
+    /// right row. `None` for non-MCP tokens and for legacy MCP tokens
+    /// minted before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_client_id: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +97,7 @@ pub fn mint_mcp(
     org: Uuid,
     email: String,
     ttl_secs: i64,
+    mcp_client_id: Option<String>,
 ) -> Result<String, JwtError> {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let claims = Claims {
@@ -89,6 +107,8 @@ pub fn mint_mcp(
         aud: AUD_MCP.into(),
         iat: now,
         exp: now + ttl_secs,
+        user_id: None,
+        mcp_client_id,
     };
     mint(secret, &claims)
 }
@@ -114,6 +134,15 @@ pub fn mint_secret_request(
 ) -> Result<String, JwtError> {
     let key = EncodingKey::from_secret(secret);
     Ok(jsonwebtoken::encode(&Header::default(), claims, &key)?)
+}
+
+/// Decode the configured `signing_key` into raw bytes. Hex-encoded keys are
+/// preferred (the `OVERSLASH_SIGNING_KEY` env var is documented as hex), but
+/// callers may pass an arbitrary string for local dev — fall back to its
+/// UTF-8 bytes in that case. Both the REST handler and the MCP kernel call
+/// this so the JWT secret stays in lockstep.
+pub fn signing_key_bytes(key: &str) -> Vec<u8> {
+    hex::decode(key).unwrap_or_else(|_| key.as_bytes().to_vec())
 }
 
 pub fn verify_secret_request(secret: &[u8], token: &str) -> Result<SecretRequestClaims, JwtError> {
@@ -149,6 +178,8 @@ mod tests {
             aud: AUD_SESSION.into(),
             iat: now,
             exp: now + 3600,
+            user_id: None,
+            mcp_client_id: None,
         }
     }
 
@@ -174,6 +205,8 @@ mod tests {
             aud: AUD_SESSION.into(),
             iat: now - 7200,
             exp: now - 3600,
+            user_id: None,
+            mcp_client_id: None,
         };
         let token = mint(&secret, &claims).unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());
@@ -205,6 +238,7 @@ mod tests {
             Uuid::new_v4(),
             "u@example.com".into(),
             3600,
+            None,
         )
         .unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());

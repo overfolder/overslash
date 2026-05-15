@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { ApiError, type MeIdentity } from '$lib/session';
 	import {
@@ -13,13 +14,16 @@
 	import type {
 		ConnectionSummary,
 		OAuthProviderInfo,
+		SecretSummary,
 		TemplateDetail,
 		TemplateSummary
 	} from '$lib/types';
+	import { listSecrets } from '$lib/api/secrets';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean } } = $props();
@@ -46,10 +50,24 @@
 	let nameInput = $state('');
 	let connectionId = $state<string>('');
 	let secretName = $state('');
+	let urlInput = $state('');
 	let userLevel = $state(true);
 	let submitting = $state(false);
 	let connectingOAuth = $state(false);
 	let oauthAbort: AbortController | null = null;
+
+	let availableSecrets = $state<SecretSummary[]>([]);
+	let secretsLoading = $state(false);
+	let secretsLoaded = false;
+
+	// MCP-derived helpers
+	const isMcp = $derived(selectedDetail?.runtime === 'mcp');
+	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url);
+	const mcpNeedsSecret = $derived(
+		isMcp &&
+		selectedDetail?.mcp?.auth_kind === 'bearer' &&
+		!selectedDetail?.mcp?.has_default_secret_name
+	);
 
 	const searchKeys = $derived<SearchKey[]>([
 		{
@@ -152,6 +170,26 @@
 		// connection) is the whole point of this feature, so stay quiet there.
 		return c.used_by_service_templates.includes(tplKey) ? '(already connected)' : '';
 	}
+	// Lazy-fetch the secrets list the first time the secret-name field would
+	// render. Soft-fails: on error the picker still works as free-text entry.
+	$effect(() => {
+		if (step !== 'configure') return;
+		if (secretsLoaded) return;
+		if (!((usesApiKey && !usesOAuth) || mcpNeedsSecret)) return;
+		secretsLoaded = true;
+		secretsLoading = true;
+		listSecrets()
+			.then((s) => {
+				availableSecrets = s;
+			})
+			.catch(() => {
+				/* leave list empty — picker still works as free-text input */
+			})
+			.finally(() => {
+				secretsLoading = false;
+			});
+	});
+
 	// When we enter the configure step with matching connections available,
 	// default to the existing-connection path and pre-select the best match.
 	$effect(() => {
@@ -337,10 +375,11 @@
 				name: nameInput.trim() || undefined,
 				connection_id: connectionId || undefined,
 				secret_name: secretName.trim() || undefined,
+				url: urlInput.trim() || undefined,
 				status: 'active',
 				user_level: userLevel
 			});
-			await goto(`/services/${encodeURIComponent(created.name)}`);
+			await goto(`/services/${created.id}`);
 		} catch (e) {
 			error = e instanceof ApiError
 				? `Failed to create service (${e.status}): ${JSON.stringify(e.body)}`
@@ -349,7 +388,17 @@
 		}
 	}
 
-	onMount(loadTemplates);
+	onMount(async () => {
+		await loadTemplates();
+		const presetKey = $page.url.searchParams.get('template');
+		if (presetKey) {
+			const match = templates.find((t) => t.key === presetKey);
+			if (match) {
+				await selectTemplate(match);
+				if (selectedDetail) step = 'configure';
+			}
+		}
+	});
 </script>
 
 <svelte:head><title>New service - Overslash</title></svelte:head>
@@ -548,16 +597,39 @@
 				</div>
 			{/if}
 
-			{#if usesApiKey && !usesOAuth}
+			{#if isMcp}
 				<label class="field">
-					<span class="label">API key secret name</span>
+					<span class="label">MCP server URL</span>
 					<input
 						type="text"
-						bind:value={secretName}
-						placeholder="my-api-key"
+						bind:value={urlInput}
+						placeholder={selectedDetail?.mcp?.url ?? 'http://host:8081/mcp'}
 					/>
-					<small>The name of a secret previously stored in the vault.</small>
+					{#if mcpNeedsUrl}
+						<small>Required — this template has no default URL.</small>
+					{:else}
+						<small>Leave blank to use the template's default.</small>
+					{/if}
 				</label>
+			{/if}
+
+			{#if (usesApiKey && !usesOAuth) || mcpNeedsSecret}
+				<div class="field">
+					<label class="label" for="new-service-secret">
+						{mcpNeedsSecret ? 'Bearer token secret name' : 'API key secret name'}
+					</label>
+					<SecretNamePicker
+						id="new-service-secret"
+						bind:value={secretName}
+						available={availableSecrets}
+						loading={secretsLoading}
+					/>
+					{#if mcpNeedsSecret}
+						<small>Vault key holding the MCP server's bearer token. Required — this template has no default.</small>
+					{:else}
+						<small>Pick an existing secret from your vault, or type a new name to use later.</small>
+					{/if}
+				</div>
 			{/if}
 
 			<div class="actions">

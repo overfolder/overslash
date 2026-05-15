@@ -9,7 +9,11 @@ export interface Group {
 	org_id: string;
 	name: string;
 	description: string;
-	allow_raw_http: boolean;
+	is_system: boolean;
+	/** "everyone" | "admins" | "self" for system groups; absent otherwise. */
+	system_kind?: 'everyone' | 'admins' | 'self';
+	/** Set iff system_kind === 'self' — the user-identity this Myself group is for. */
+	owner_identity_id?: string;
 	created_at: string;
 	updated_at: string;
 }
@@ -17,7 +21,6 @@ export interface Group {
 export interface CreateGroupRequest {
 	name: string;
 	description?: string;
-	allow_raw_http?: boolean;
 }
 
 export type UpdateGroupRequest = CreateGroupRequest;
@@ -38,6 +41,11 @@ export interface AddGrantRequest {
 	auto_approve_reads?: boolean;
 }
 
+export interface PatchGrantRequest {
+	access_level?: string;
+	auto_approve_reads?: boolean;
+}
+
 export interface ServiceInstanceSummary {
 	id: string;
 	name: string;
@@ -55,6 +63,7 @@ export interface Identity {
 	name: string;
 	kind: string; // "user" | "agent" | "sub_agent"
 	external_id?: string | null;
+	email?: string | null;
 	parent_id?: string | null;
 	depth: number;
 	owner_id?: string | null;
@@ -63,6 +72,15 @@ export interface Identity {
 
 export const groupsApi = {
 	list: (signal?: AbortSignal) => session.get<Group[]>('/v1/groups', signal),
+	/**
+	 * Like `list`, but includes per-user "Myself" system groups
+	 * (`system_kind === 'self'`). The default listing hides them so the org
+	 * admin's group view doesn't get flooded by one row per user; the service
+	 * detail page calls this variant so an owner can see and manage their own
+	 * Myself grant inline.
+	 */
+	listIncludingSelf: (signal?: AbortSignal) =>
+		session.get<Group[]>('/v1/groups?include_self=true', signal),
 	get: (id: string) => session.get<Group>(`/v1/groups/${id}`),
 	create: (body: CreateGroupRequest) => session.post<Group>('/v1/groups', body),
 	update: (id: string, body: UpdateGroupRequest) => session.put<Group>(`/v1/groups/${id}`, body),
@@ -71,6 +89,8 @@ export const groupsApi = {
 	listGrants: (id: string) => session.get<GroupGrant[]>(`/v1/groups/${id}/grants`),
 	addGrant: (id: string, body: AddGrantRequest) =>
 		session.post<GroupGrant>(`/v1/groups/${id}/grants`, body),
+	patchGrant: (id: string, grantId: string, body: PatchGrantRequest) =>
+		session.patch<GroupGrant>(`/v1/groups/${id}/grants/${grantId}`, body),
 	removeGrant: (id: string, grantId: string) =>
 		session.delete<{ deleted: boolean }>(`/v1/groups/${id}/grants/${grantId}`),
 

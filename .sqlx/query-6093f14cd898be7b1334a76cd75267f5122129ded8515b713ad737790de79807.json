@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.overslash_idp_subject, u.personal_org_id, u.is_instance_admin, u.welcome_email_sent_at, u.welcome_emails_unsubscribed_at, u.webhook_digest_unsubscribed_at, u.created_at, u.updated_at\n         FROM users u\n         JOIN user_org_memberships m ON m.user_id = u.id\n         WHERE m.org_id = $1 AND lower(u.email) = lower($2)\n         ORDER BY u.created_at DESC\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "overslash_idp_provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "overslash_idp_subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "personal_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_instance_admin",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "welcome_email_sent_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "welcome_emails_unsubscribed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "webhook_digest_unsubscribed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6093f14cd898be7b1334a76cd75267f5122129ded8515b713ad737790de79807"
+}

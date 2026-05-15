@@ -39,7 +39,7 @@ for i in $(seq 1 "$ITERATIONS"); do
   start=$(date +%s%N)
   psql_no_db "CREATE DATABASE ${db_name};"
   migrate_url="${DB_URL/overslash@${DB_HOST}\/overslash/overslash@${DB_HOST}\/${db_name}}"
-  DATABASE_URL="$migrate_url" sqlx migrate run --source "$MIGRATIONS" > /dev/null 2>&1
+  DATABASE_URL="$migrate_url" cargo sqlx migrate run --source "$MIGRATIONS" > /dev/null 2>&1
   end=$(date +%s%N)
 
   elapsed_ms=$(( (end - start) / 1000000 ))
@@ -56,7 +56,7 @@ echo "--- Creating template database ---"
 psql_no_db "DROP DATABASE IF EXISTS bench_template;" || true
 psql_no_db "CREATE DATABASE bench_template;"
 template_url="${DB_URL/overslash@${DB_HOST}\/overslash/overslash@${DB_HOST}\/bench_template}"
-DATABASE_URL="$template_url" sqlx migrate run --source "$MIGRATIONS" > /dev/null 2>&1
+DATABASE_URL="$template_url" cargo sqlx migrate run --source "$MIGRATIONS" > /dev/null 2>&1
 echo "  Template created with all migrations applied."
 
 # --- Benchmark 2: Template approach (CREATE DATABASE ... TEMPLATE) ---

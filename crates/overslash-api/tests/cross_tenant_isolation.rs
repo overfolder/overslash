@@ -363,34 +363,6 @@ async fn cross_tenant_connection_delete_returns_404() {
     assert_eq!(still.0, 1, "org A managed to delete org B's connection");
 }
 
-// ─── enrollment_tokens ─────────────────────────────────────────────────
-
-#[tokio::test]
-async fn cross_tenant_enrollment_token_revoke_returns_404() {
-    let pool = common::test_pool().await;
-    let (base, client, _ia, _ka, admin_a, ident_b, _kb, admin_b) = two_orgs(pool).await;
-
-    let tok: Value = client
-        .post(format!("{base}/v1/enrollment-tokens"))
-        .header(auth(&admin_b).0, auth(&admin_b).1)
-        .json(&json!({"identity_id": ident_b}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let tok_id = tok["id"].as_str().unwrap();
-
-    let r = client
-        .delete(format!("{base}/v1/enrollment-tokens/{tok_id}"))
-        .header(auth(&admin_a).0, auth(&admin_a).1)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 404);
-}
-
 // ─── byoc_credentials ──────────────────────────────────────────────────
 
 #[tokio::test]

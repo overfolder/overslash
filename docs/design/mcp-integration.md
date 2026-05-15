@@ -22,7 +22,7 @@ All three are thin wrappers over the same backend. This doc focuses on the MCP s
 Overslash's trust model: **agents cannot approve their own requests.** Approvals must come from a credential with authority over the requesting identity (a user, or an ancestor agent with sufficient permissions).
 
 In the MCP context:
-1. Claude Code calls `overslash_execute` via MCP server
+1. Claude Code calls `overslash_call` via MCP server
 2. MCP server calls Overslash REST API with the **agent's API key**
 3. Overslash returns `{ "status": "pending_approval", "approval_id": "apr_abc123" }`
 4. ...the agent cannot resolve this with its own key
@@ -50,7 +50,7 @@ The MCP server holds **two credentials**:
 - **Agent API key** — for executing actions as the agent identity
 - **User token** — for resolving approvals on the user's behalf
 
-The user IS sitting at the terminal. The MCP server runs on their machine. Having user credentials there is natural and doesn't violate the trust model — the agent key executes, the user key approves. Two separate identities.
+The user IS sitting at the terminal. The MCP server runs on their machine. Having user credentials there is natural and doesn't violate the trust model — the agent key calls, the user key approves. Two separate identities.
 
 - **Pros:** Inline approval. Trust model intact. Best DX.
 - **Cons:** Requires two-credential setup. User token needs refresh logic.
@@ -90,7 +90,7 @@ Config stored at `~/.config/overslash/mcp.json`:
 | Tool | Credential Used | Purpose |
 |------|----------------|---------|
 | `overslash_search` | agent key | Discover available services and actions |
-| `overslash_execute` | agent key | Execute an action (may return `pending_approval`) |
+| `overslash_call` | agent key | Call an action (may return `pending_approval`) |
 | `overslash_auth` | agent key | Initiate OAuth connection or manage secrets |
 | `overslash_approve` | **user token** | Resolve a pending approval inline |
 
@@ -99,9 +99,9 @@ The fourth tool (`overslash_approve`) only exists in the MCP context. REST calle
 ### Inline Approval Flow
 
 ```
-1. LLM calls overslash_execute({service: "github", action: "create_pull_request", ...})
+1. LLM calls overslash_call({service: "github", action: "create_pull_request", ...})
 
-2. MCP server → POST /v1/actions/execute (agent key) → 202 pending_approval
+2. MCP server → POST /v1/actions/call (agent key) → 202 pending_approval
 
 3. MCP server returns tool result:
    {
@@ -131,12 +131,12 @@ The fourth tool (`overslash_approve`) only exists in the MCP context. REST calle
 
 7. MCP server → POST /v1/approvals/apr_abc123/resolve (user token) → 200 OK
 
-8. MCP server retries original execute → 200 OK → returns result to LLM
+8. MCP server retries original call → 200 OK → returns result to LLM
 ```
 
 ### Why This Works Well
 
-- **Trust model intact**: Agent key executes, user key approves. Two identities, proper separation.
+- **Trust model intact**: Agent key calls, user key approves. Two identities, proper separation.
 - **No context switch**: Approval happens inline in the conversation. No browser.
 - **Natural language specificity**: The user says "allow for all repos" and the LLM maps it to the right suggested tier. Better than clicking radio buttons.
 - **"Allow & Remember" reduces friction over time**: First call to a new service needs approval. Subsequent calls auto-approve. The MCP experience improves the more you use it.
@@ -161,7 +161,7 @@ For platforms like Overfolder that white-label Overslash, the MCP server is **no
 The MCP server is for **direct Overslash users**: developers using Claude Code, Cursor, or other MCP clients who want to connect to overslash.dev (or a self-hosted instance) without going through a platform.
 
 Two modes:
-- **Branded mode** (direct users): Tools show as `overslash_search`, `overslash_execute`, etc.
+- **Branded mode** (direct users): Tools show as `overslash_search`, `overslash_call`, etc.
 - **White-label mode** (platform-embedded): The platform wraps Overslash's REST API behind its own tool names and UX. MCP server not involved.
 
 ---

@@ -243,7 +243,7 @@ async fn test_cascade_errors_on_half_configured_env_pair() {
     let (org_id, ident_id, _agent_key, _admin) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = crypto::Keyring::test();
     let err = match overslash_api::services::client_credentials::resolve(
         &pool,
         &enc_key,
@@ -412,7 +412,7 @@ async fn test_cascade_resolves_org_secret_when_no_byoc() {
     put_google_creds(&base, &client, &admin_key).await;
 
     // Call resolve() directly — no BYOC, no env var fallback enabled.
-    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = crypto::Keyring::test();
     let creds = overslash_api::services::client_credentials::resolve(
         &pool,
         &enc_key,
@@ -465,7 +465,7 @@ async fn test_cascade_byoc_still_wins_over_org_secret() {
         .unwrap();
     assert!(byoc["id"].is_string(), "byoc create: {byoc:?}");
 
-    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = crypto::Keyring::test();
     let creds = overslash_api::services::client_credentials::resolve(
         &pool,
         &enc_key,
@@ -491,7 +491,7 @@ async fn test_cascade_errors_when_nothing_configured() {
     let (org_id, ident_id, _agent_key, _admin) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    let enc_key = crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = crypto::Keyring::test();
     let err = match overslash_api::services::client_credentials::resolve(
         &pool,
         &enc_key,

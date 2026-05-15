@@ -10,13 +10,13 @@ Overslash buffers all HTTP responses in memory as `String`. This breaks for file
 
 ## Key Constraint
 
-**Secrets never leave the vault.** An earlier design considered returning authenticated URLs + tokens to callers ("prefer_url"). This was rejected — it would leak OAuth tokens and API keys to the caller, undermining Overslash's core security model. Instead, all auth stays server-side: Overslash injects credentials, executes the upstream request, and streams the response bytes through.
+**Secrets never leave the vault.** An earlier design considered returning authenticated URLs + tokens to callers ("prefer_url"). This was rejected — it would leak OAuth tokens and API keys to the caller, undermining Overslash's core security model. Instead, all auth stays server-side: Overslash injects credentials, calls the upstream request, and streams the response bytes through.
 
 ## Problem
 
 ```
-POST /v1/actions/execute
-  → http_executor::execute()
+POST /v1/actions/call
+  → http_caller::call()
       → response.text().await?        ← buffers entire response as String
       → ActionResult { body: String }  ← returned inline in JSON
 ```
@@ -43,13 +43,13 @@ Current behavior with a safety net. Configurable via `MAX_RESPONSE_BODY_BYTES` (
 
 ### Strategy C: Streaming Proxy (`prefer_stream: true`)
 
-Caller adds `"prefer_stream": true` to the execute request. Overslash:
+Caller adds `"prefer_stream": true` to the call request. Overslash:
 1. Resolves auth (OAuth tokens, secrets) — same as always, server-side
 2. Checks permissions — same as always
-3. Executes the upstream request
+3. Calls the upstream request
 4. Pipes the response bytes directly to the caller without buffering
 
-The response is the raw upstream HTTP response (status + selected headers + streamed body), not a `Json<ExecuteResponse>`. This works because the handler returns `impl IntoResponse`.
+The response is the raw upstream HTTP response (status + selected headers + streamed body), not a `Json<CallResponse>`. This works because the handler returns `impl IntoResponse`.
 
 **Headers forwarded**: `content-type`, `content-length`, `content-disposition`, `etag`, `last-modified`, `cache-control`. Auth headers are NOT forwarded.
 
@@ -65,7 +65,7 @@ The response is the raw upstream HTTP response (status + selected headers + stre
 | `crates/overslash-api/Cargo.toml` | Added `futures-util` |
 | `crates/overslash-api/src/config.rs` | `max_response_body_bytes` field |
 | `crates/overslash-api/src/error.rs` | `ResponseTooLarge` variant |
-| `crates/overslash-api/src/services/http_executor.rs` | Size-limited `execute()`, new `execute_streaming()` |
+| `crates/overslash-api/src/services/http_caller.rs` | Size-limited `call()`, new `call_streaming()` |
 | `crates/overslash-api/src/routes/actions.rs` | `prefer_stream` field, streaming response path |
 | `crates/overslash-core/src/types/service.rs` | `response_type` on `ServiceAction` |
 | `crates/overslash-api/tests/common/mod.rs` | `/large-file`, `/drive/files/download` mock endpoints |
@@ -73,8 +73,8 @@ The response is the raw upstream HTTP response (status + selected headers + stre
 
 ### http_executor changes
 
-- `execute()` now takes `max_body_bytes`. Checks `Content-Length` first; if absent, streams chunks up to limit. Returns `ExecuteError::ResponseTooLarge` if exceeded.
-- `execute_streaming()` returns the raw `reqwest::Response` unconsumed — caller streams from it.
+- `call()` now takes `max_body_bytes`. Checks `Content-Length` first; if absent, streams chunks up to limit. Returns `CallError::ResponseTooLarge` if exceeded.
+- `call_streaming()` returns the raw `reqwest::Response` unconsumed — caller streams from it.
 - Shared `build_request()` helper to avoid duplication.
 
 ### Google Drive redirect handling
@@ -103,4 +103,4 @@ The mock server simulates this:
 - Secrets never leave the vault — they're injected into the upstream request, not exposed to the caller
 - Streamed response only forwards safe headers (content-type, content-length, etc.)
 - Auth headers (Authorization, X-Token, etc.) are NOT forwarded to the caller
-- Audit captures that a streaming action was executed, with method, URL, and status code
+- Audit captures that a streaming action was called, with method, URL, and status code

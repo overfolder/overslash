@@ -1,0 +1,31 @@
+[package]
+name = "oversla-sh"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oversla-sh"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true }
+url = { workspace = true }
+subtle = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }

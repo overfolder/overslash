@@ -8,9 +8,10 @@ use crate::types::{PermissionEffect, PermissionRule};
 
 /// A derived permission key from an action request.
 ///
-/// Two formats depending on execution mode:
-/// - Raw HTTP / connection: `http:{METHOD}:{host}{path}`
-/// - Service action (Mode C): `{service}:{action}:{arg}`
+/// Two formats depending on call shape (SPEC §8):
+/// - Service + defined action: `{service}:{action}:{arg}`
+/// - Service + HTTP verb: `{service}:{METHOD}:{path}` (with the synthetic
+///   `http` pseudo-service, the `path` segment is `host[:port]/path?query`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionKey(pub String);
 
@@ -31,18 +32,20 @@ pub struct SuggestedTier {
 }
 
 impl PermissionKey {
-    /// Derive permission keys from an HTTP request (Mode A / Mode B).
-    /// Format: `http:{METHOD}:{host}{path}`
-    pub fn from_http(method: &str, url: &str) -> Vec<Self> {
-        let host_path = url
-            .strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .unwrap_or(url);
-
-        vec![Self(format!("http:{method}:{host_path}"))]
+    /// Derive permission keys from a Service + HTTP verb request (SPEC §8).
+    /// Format: `{service}:{METHOD}:{path}` — host is omitted because the
+    /// service instance bounds it via `svc.hosts`.
+    ///
+    /// The method is normalized to uppercase so `"post"` and `"POST"` both
+    /// match a rule like `github:POST:/**`. Permission rules are written
+    /// with uppercase methods by convention; without normalization, a
+    /// caller using lowercase would silently fail authorization.
+    pub fn from_service_http(service_key: &str, method: &str, path: &str) -> Vec<Self> {
+        let method = method.to_ascii_uppercase();
+        vec![Self(format!("{service_key}:{method}:{path}"))]
     }
 
-    /// Derive permission keys from a service action request (Mode C).
+    /// Derive permission keys from a service action request.
     /// Format: `{service}:{action}:{arg}` where arg comes from `scope_param` or defaults to `*`.
     pub fn from_service_action(
         service_key: &str,
@@ -108,11 +111,24 @@ fn broadening_ladder(dk: &DerivedKey) -> Vec<String> {
             }
         }
         _ => {
-            // Service action: {service}:{action}:{arg} → {service}:{action}:* → {service}:*:*
-            if dk.arg != "*" {
-                ladder.push(format!("{}:{}:*", dk.service, dk.action));
+            // Service-HTTP keys (`{service}:{METHOD}:{path}`) carry a path
+            // in `arg` starting with `/`. Path globs need `/**` because
+            // `*` does not span `/` in `glob_match`. Detect and emit the
+            // path-aware ladder.
+            if dk.arg.starts_with('/') {
+                // {service}:{METHOD}:{path} → {service}:{METHOD}:/** → {service}:*:/**
+                let method_wildcard = format!("{}:{}:/**", dk.service, dk.action);
+                if method_wildcard != dk.key {
+                    ladder.push(method_wildcard);
+                }
+                ladder.push(format!("{}:*:/**", dk.service));
+            } else {
+                // Service action: {service}:{action}:{arg} → {service}:{action}:* → {service}:*:*
+                if dk.arg != "*" {
+                    ladder.push(format!("{}:{}:*", dk.service, dk.action));
+                }
+                ladder.push(format!("{}:*:*", dk.service));
             }
-            ladder.push(format!("{}:*:*", dk.service));
         }
     }
 
@@ -347,10 +363,10 @@ pub struct CeilingGrant {
 /// Result of a group ceiling check.
 #[derive(Debug, PartialEq, Eq)]
 pub enum GroupCeilingResult {
-    /// All keys are within the group ceiling.
-    WithinCeiling,
-    /// Within ceiling AND auto-approve-reads applies (non-mutating + flag set).
-    WithinCeilingAutoApprove,
+    /// Within the ceiling. `read_bypass` is true when the matching grant has
+    /// `auto_approve_reads = true` and the action is non-mutating — callers
+    /// should skip Layer 2 (no permission rule written, no approval filed).
+    WithinCeiling { read_bypass: bool },
     /// Exceeds ceiling — denied, not approvable.
     ExceedsCeiling(String),
     /// Identity has no groups assigned — no ceiling enforced (permissive).
@@ -359,29 +375,24 @@ pub enum GroupCeilingResult {
 
 /// Check if a request is within the group ceiling.
 ///
-/// - `service_name`: the resolved service name (e.g., "github") or "http" for raw HTTP (Mode A)
+/// - `service_name`: the resolved service name (e.g., "github", or "http"
+///   for raw HTTP via the system-managed singleton instance)
 /// - `risk`: the action's risk level
 /// - `grants`: all grants from the owner-user's groups
-/// - `allow_raw_http`: OR of `allow_raw_http` across the user's groups
 /// - `has_groups`: whether the user has any group assignments
+///
+/// `http` is no longer a special case: the org's system-managed `http`
+/// service instance is treated as any other service. Access level on the
+/// grant gates the verb (read = GET/HEAD/OPTIONS, write = + POST/PUT/PATCH,
+/// admin = + DELETE) via the standard `permits_risk` mapping.
 pub fn check_group_ceiling(
     service_name: &str,
     risk: Risk,
     grants: &[CeilingGrant],
-    allow_raw_http: bool,
     has_groups: bool,
 ) -> GroupCeilingResult {
     if !has_groups {
         return GroupCeilingResult::NoGroups;
-    }
-
-    // Mode A raw HTTP — gated by the allow_raw_http flag, not by service grants
-    if service_name == "http" {
-        return if allow_raw_http {
-            GroupCeilingResult::WithinCeiling
-        } else {
-            GroupCeilingResult::ExceedsCeiling("raw HTTP access not allowed by group".into())
-        };
     }
 
     // Find matching grant(s) for this service across all groups
@@ -406,12 +417,10 @@ pub fn check_group_ceiling(
         ));
     }
 
-    // Auto-approve: if risk is read AND any matching grant has auto_approve_reads
-    if !risk.is_mutating() && matching.iter().any(|g| g.auto_approve_reads) {
-        return GroupCeilingResult::WithinCeilingAutoApprove;
-    }
+    // Read bypass: non-mutating risk AND at least one matching grant flips the flag.
+    let read_bypass = !risk.is_mutating() && matching.iter().any(|g| g.auto_approve_reads);
 
-    GroupCeilingResult::WithinCeiling
+    GroupCeilingResult::WithinCeiling { read_bypass }
 }
 
 #[cfg(test)]
@@ -493,9 +502,24 @@ mod tests {
     }
 
     #[test]
-    fn derive_keys_from_http() {
-        let keys = PermissionKey::from_http("POST", "https://api.github.com/repos/x/pulls");
+    fn derive_keys_from_service_http() {
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
+    }
+
+    #[test]
+    fn derive_keys_for_http_pseudo_service_via_service_http() {
+        // The synthetic `http` pseudo-service uses the same `from_service_http`
+        // builder. The path segment carries `host[:port]/path?query` (no
+        // leading `/`) so the produced key matches the legacy raw-HTTP shape.
+        let keys = PermissionKey::from_service_http("http", "POST", "api.github.com/repos/x/pulls");
         assert_eq!(keys[0].0, "http:POST:api.github.com/repos/x/pulls");
+    }
+
+    #[test]
+    fn derive_keys_from_service_http_uppercases_method() {
+        let keys = PermissionKey::from_service_http("github", "post", "/repos/x/pulls");
+        assert_eq!(keys[0].0, "github:POST:/repos/x/pulls");
     }
 
     #[test]
@@ -540,6 +564,67 @@ mod tests {
             "github:create_pull_request:overfolder/backend".into(),
         )];
         assert_eq!(check_permissions(&rules, &keys), PermissionResult::Allowed);
+    }
+
+    /// Service-HTTP keys (`{service}:{METHOD}:{path}`) need globstar (`/**`)
+    /// to span path segments — plain `*` does not match across `/`. Pin the
+    /// matching contract so a rule like `github:POST:/**` actually allows
+    /// `github:POST:/repos/x/pulls`.
+    #[test]
+    fn glob_matches_service_http_keys_with_globstar() {
+        let rules = vec![rule("github:POST:/**", PermissionEffect::Allow)];
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert_eq!(check_permissions(&rules, &keys), PermissionResult::Allowed);
+    }
+
+    /// Sanity: `*` (without globstar) does NOT match a path containing `/`.
+    /// This is what motivates the path-aware broadening ladder for
+    /// service-HTTP keys (it suggests `/**`, not `*`).
+    #[test]
+    fn glob_star_without_globstar_does_not_span_slashes() {
+        let rules = vec![rule("github:POST:*", PermissionEffect::Allow)];
+        let keys = PermissionKey::from_service_http("github", "POST", "/repos/x/pulls");
+        assert!(matches!(
+            check_permissions(&rules, &keys),
+            PermissionResult::NeedsApproval { .. }
+        ));
+    }
+
+    #[test]
+    fn broadening_ladder_for_service_http_uses_globstar() {
+        let dk = parse_derived_key("github:POST:/repos/x/pulls");
+        let ladder = broadening_ladder(&dk);
+        assert_eq!(
+            ladder,
+            vec![
+                "github:POST:/repos/x/pulls".to_string(),
+                "github:POST:/**".to_string(),
+                "github:*:/**".to_string(),
+            ]
+        );
+    }
+
+    /// SPEC §5: the `http` pseudo-service ladder must NEVER suggest
+    /// `http:*:*` or `http:VERB:*` — only host-scoped wildcards
+    /// (`http:VERB:host/**` and `http:ANY:host/**`).
+    #[test]
+    fn broadening_ladder_for_http_never_emits_unscoped_wildcards() {
+        let dk = parse_derived_key("http:POST:api.github.com/v3/repos");
+        let ladder = broadening_ladder(&dk);
+        assert_eq!(
+            ladder,
+            vec![
+                "http:POST:api.github.com/v3/repos".to_string(),
+                "http:POST:api.github.com/**".to_string(),
+                "http:ANY:api.github.com/**".to_string(),
+            ]
+        );
+        for rung in &ladder {
+            assert!(
+                !rung.starts_with("http:*:") && !rung.ends_with(":*"),
+                "ladder must not suggest unbounded http wildcards (got {rung:?})"
+            );
+        }
     }
 
     // ── DerivedKey / SuggestedTier tests ───────────────────────────────
@@ -698,7 +783,7 @@ mod tests {
     #[test]
     fn ceiling_no_groups_is_permissive() {
         assert_eq!(
-            check_group_ceiling("github", Risk::Write, &[], false, false),
+            check_group_ceiling("github", Risk::Write, &[], false),
             GroupCeilingResult::NoGroups,
         );
     }
@@ -707,8 +792,8 @@ mod tests {
     fn ceiling_read_allowed_by_read_grant() {
         let grants = vec![grant("github", AccessLevel::Read, false)];
         assert_eq!(
-            check_group_ceiling("github", Risk::Read, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            check_group_ceiling("github", Risk::Read, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -716,7 +801,7 @@ mod tests {
     fn ceiling_write_denied_by_read_grant() {
         let grants = vec![grant("github", AccessLevel::Read, false)];
         assert!(matches!(
-            check_group_ceiling("github", Risk::Write, &grants, false, true),
+            check_group_ceiling("github", Risk::Write, &grants, true),
             GroupCeilingResult::ExceedsCeiling(_),
         ));
     }
@@ -725,8 +810,8 @@ mod tests {
     fn ceiling_write_allowed_by_write_grant() {
         let grants = vec![grant("github", AccessLevel::Write, false)];
         assert_eq!(
-            check_group_ceiling("github", Risk::Write, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            check_group_ceiling("github", Risk::Write, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -734,7 +819,7 @@ mod tests {
     fn ceiling_delete_denied_by_write_grant() {
         let grants = vec![grant("github", AccessLevel::Write, false)];
         assert!(matches!(
-            check_group_ceiling("github", Risk::Delete, &grants, false, true),
+            check_group_ceiling("github", Risk::Delete, &grants, true),
             GroupCeilingResult::ExceedsCeiling(_),
         ));
     }
@@ -743,8 +828,8 @@ mod tests {
     fn ceiling_delete_allowed_by_admin_grant() {
         let grants = vec![grant("github", AccessLevel::Admin, false)];
         assert_eq!(
-            check_group_ceiling("github", Risk::Delete, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            check_group_ceiling("github", Risk::Delete, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -752,23 +837,45 @@ mod tests {
     fn ceiling_service_not_granted() {
         let grants = vec![grant("slack", AccessLevel::Write, false)];
         assert!(matches!(
-            check_group_ceiling("github", Risk::Read, &grants, false, true),
+            check_group_ceiling("github", Risk::Read, &grants, true),
             GroupCeilingResult::ExceedsCeiling(_),
         ));
     }
 
     #[test]
-    fn ceiling_raw_http_allowed() {
+    fn ceiling_http_allowed_by_admin_grant() {
+        // After Mode A collapse, raw HTTP is gated by a normal grant on the
+        // org's `http` instance — there's no special boolean. Admin permits
+        // every verb (read/write/delete).
+        let grants = vec![grant("http", AccessLevel::Admin, false)];
         assert_eq!(
-            check_group_ceiling("http", Risk::Write, &[], true, true),
-            GroupCeilingResult::WithinCeiling,
+            check_group_ceiling("http", Risk::Write, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
+        );
+        assert_eq!(
+            check_group_ceiling("http", Risk::Delete, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
     #[test]
-    fn ceiling_raw_http_denied() {
+    fn ceiling_http_write_denied_by_read_grant() {
+        // A read-level http grant permits only GET/HEAD/OPTIONS (Risk::Read).
+        let grants = vec![grant("http", AccessLevel::Read, false)];
+        assert_eq!(
+            check_group_ceiling("http", Risk::Read, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
+        );
         assert!(matches!(
-            check_group_ceiling("http", Risk::Write, &[], false, true),
+            check_group_ceiling("http", Risk::Write, &grants, true),
+            GroupCeilingResult::ExceedsCeiling(_),
+        ));
+    }
+
+    #[test]
+    fn ceiling_http_denied_when_not_granted() {
+        assert!(matches!(
+            check_group_ceiling("http", Risk::Write, &[], true),
             GroupCeilingResult::ExceedsCeiling(_),
         ));
     }
@@ -777,8 +884,8 @@ mod tests {
     fn ceiling_auto_approve_reads() {
         let grants = vec![grant("github", AccessLevel::Write, true)];
         assert_eq!(
-            check_group_ceiling("github", Risk::Read, &grants, false, true),
-            GroupCeilingResult::WithinCeilingAutoApprove,
+            check_group_ceiling("github", Risk::Read, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: true },
         );
     }
 
@@ -786,8 +893,8 @@ mod tests {
     fn ceiling_auto_approve_reads_not_for_writes() {
         let grants = vec![grant("github", AccessLevel::Write, true)];
         assert_eq!(
-            check_group_ceiling("github", Risk::Write, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            check_group_ceiling("github", Risk::Write, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -799,8 +906,8 @@ mod tests {
             grant("github", AccessLevel::Admin, false),
         ];
         assert_eq!(
-            check_group_ceiling("github", Risk::Delete, &grants, false, true),
-            GroupCeilingResult::WithinCeiling,
+            check_group_ceiling("github", Risk::Delete, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: false },
         );
     }
 
@@ -812,8 +919,8 @@ mod tests {
             grant("github", AccessLevel::Read, true),
         ];
         assert_eq!(
-            check_group_ceiling("github", Risk::Read, &grants, false, true),
-            GroupCeilingResult::WithinCeilingAutoApprove,
+            check_group_ceiling("github", Risk::Read, &grants, true),
+            GroupCeilingResult::WithinCeiling { read_bypass: true },
         );
     }
 

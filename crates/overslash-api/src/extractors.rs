@@ -59,6 +59,34 @@ pub struct AuthContext {
     /// `None` when the caller authenticated via dashboard session cookie
     /// (no API key was used).
     pub key_id: Option<Uuid>,
+    /// Set for session-cookie callers whose JWT carries the new `user_id`
+    /// claim. `None` for API-key callers and for legacy session tokens
+    /// minted before the multi-org rewire.
+    pub user_id: Option<Uuid>,
+    /// Set when the request carried `X-Overslash-As` and the presenting API
+    /// key had the `"impersonate"` scope. Holds the *caller's* identity (the
+    /// service account doing the impersonating). `identity_id` is rewritten
+    /// to the target so all downstream permission checks use target context.
+    pub impersonated_by: Option<Uuid>,
+    /// `oauth_mcp_clients.client_id` for callers presenting an MCP access
+    /// token; `None` otherwise (session cookie, agent key, dev shim).
+    /// Used by `routes/mcp.rs` to attribute capabilities + sessions to the
+    /// right MCP client row.
+    pub mcp_client_id: Option<String>,
+}
+
+/// Enforces subdomain↔JWT consistency: if the request hit `<slug>.<apex>`
+/// and the JWT's org claim points somewhere else, reject with
+/// `org_mismatch` so the dashboard can forward through `/auth/switch-org`.
+fn check_subdomain_matches_jwt(parts: &Parts, jwt_org: Uuid) -> Result<(), AppError> {
+    use crate::middleware::subdomain::RequestOrgContext;
+    if let Some(RequestOrgContext::Org { org_id, .. }) = parts.extensions.get::<RequestOrgContext>()
+    {
+        if *org_id != jwt_org {
+            return Err(AppError::Unauthorized("org_mismatch".into()));
+        }
+    }
+    Ok(())
 }
 
 /// Extractor that validates the API key and provides AuthContext.
@@ -76,10 +104,14 @@ impl FromRequestParts<AppState> for AuthContext {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
+                check_subdomain_matches_jwt(parts, claims.org)?;
                 return Ok(AuthContext {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
                     key_id: None,
+                    user_id: claims.user_id,
+                    impersonated_by: None,
+                    mcp_client_id: None,
                 });
             }
         }
@@ -127,6 +159,9 @@ impl FromRequestParts<AppState> for AuthContext {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
                     key_id: None,
+                    user_id: None,
+                    impersonated_by: None,
+                    mcp_client_id: claims.mcp_client_id,
                 });
             }
             return Err(AppError::Unauthorized("invalid key format".into()));
@@ -232,10 +267,64 @@ impl FromRequestParts<AppState> for AuthContext {
             let _ = touch_scope.touch_api_key_last_used(key_id).await;
         });
 
+        // X-Overslash-As: identity substitution for keys with "impersonate" scope.
+        let has_impersonate_scope = key_row.scopes.iter().any(|s| s == "impersonate");
+        let as_header = parts.headers.get("x-overslash-as");
+
+        let (effective_identity_id, impersonated_by) = match as_header {
+            Some(raw) if has_impersonate_scope => {
+                let target_id: Uuid =
+                    raw.to_str()
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| {
+                            AppError::BadRequest("x-overslash-as must be a valid UUID".into())
+                        })?;
+
+                let tmp_scope = OrgScope::new(key_row.org_id, state.db.clone());
+                let target = tmp_scope
+                    .get_identity(target_id)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| AppError::NotFound("impersonation target not found".into()))?;
+
+                if target.archived_at.is_some() {
+                    return Err(AppError::Forbidden(
+                        "impersonation target is archived".into(),
+                    ));
+                }
+
+                // ACL cap: prevent privilege escalation via impersonation.
+                // The key's own identity cannot impersonate an identity whose
+                // effective access level exceeds its own.
+                let caller_access =
+                    resolve_identity_access(&tmp_scope, key_row.identity_id).await?;
+                let target_access = resolve_identity_access(&tmp_scope, target_id).await?;
+                if target_access > caller_access {
+                    return Err(AppError::Forbidden(
+                        "impersonation target has higher access level than the key's identity"
+                            .into(),
+                    ));
+                }
+
+                (Some(target_id), Some(key_row.identity_id))
+            }
+            Some(_) => {
+                // Header present but key lacks "impersonate" scope — reject explicitly.
+                return Err(AppError::Forbidden(
+                    "this API key does not have the 'impersonate' scope".into(),
+                ));
+            }
+            None => (Some(key_row.identity_id), None),
+        };
+
         Ok(AuthContext {
             org_id: key_row.org_id,
-            identity_id: Some(key_row.identity_id),
+            identity_id: effective_identity_id,
             key_id: Some(key_row.id),
+            user_id: None,
+            impersonated_by,
+            mcp_client_id: None,
         })
     }
 }
@@ -255,11 +344,15 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // Try JWT session cookie first
+        // Try JWT session cookie first. Same subdomain↔JWT guard as
+        // `AuthContext` and `SessionAuth` — without it, a personal-org
+        // session would answer against a corp-org subdomain whose scope
+        // it has no membership in.
         if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
+                check_subdomain_matches_jwt(parts, claims.org)?;
                 return Ok(UserOrKeyAuth {
                     org_id: claims.org,
                     identity_id: Some(claims.sub),
@@ -267,7 +360,9 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
             }
         }
 
-        // Fall back to API key
+        // Fall back to API key (`AuthContext` runs the same subdomain check
+        // on its own session-cookie branch and treats API-key auth as
+        // subdomain-agnostic — keys are identity-bound, not host-bound).
         let auth_ctx = AuthContext::from_request_parts(parts, state).await?;
         Ok(UserOrKeyAuth {
             org_id: auth_ctx.org_id,
@@ -284,6 +379,11 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
 pub struct SessionAuth {
     pub org_id: Uuid,
     pub identity_id: Uuid,
+    /// The human behind the identity. `None` only for legacy session tokens
+    /// minted before the multi-org rewire — they continue to work until
+    /// they expire, at which point the user signs in again and gets the
+    /// new claim.
+    pub user_id: Option<Uuid>,
 }
 
 impl FromRequestParts<AppState> for SessionAuth {
@@ -299,9 +399,11 @@ impl FromRequestParts<AppState> for SessionAuth {
             .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
         let claims = jwt::verify(&signing_key, &token, jwt::AUD_SESSION)
             .map_err(|_| AppError::Unauthorized("invalid session".into()))?;
+        check_subdomain_matches_jwt(parts, claims.org)?;
         Ok(SessionAuth {
             org_id: claims.org,
             identity_id: claims.sub,
+            user_id: claims.user_id,
         })
     }
 }
@@ -313,6 +415,42 @@ impl FromRequestParts<AppState> for SessionAuth {
 // overslash service and reject if insufficient.
 
 use overslash_core::permissions::AccessLevel;
+
+/// Resolves the effective overslash `AccessLevel` for `identity_id` within
+/// `scope`, without going through Axum's extractor machinery.
+///
+/// Used by the impersonation path to compare caller vs. target ACL levels so
+/// that an impersonation key cannot be used to gain access beyond the key's
+/// own identity's permissions.
+async fn resolve_identity_access(
+    scope: &OrgScope,
+    identity_id: Uuid,
+) -> Result<AccessLevel, AppError> {
+    if let Some(ident) = scope
+        .get_identity(identity_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+    {
+        if ident.is_org_admin {
+            return Ok(AccessLevel::Admin);
+        }
+    }
+    let ceiling_user_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id)
+            .await
+            .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+    let ceiling = scope
+        .get_ceiling_for_user(ceiling_user_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+    Ok(ceiling
+        .grants
+        .iter()
+        .filter(|g| g.template_key == "overslash")
+        .filter_map(|g| AccessLevel::parse(&g.access_level))
+        .max()
+        .unwrap_or(AccessLevel::Read))
+}
 
 /// Resolved ACL level for the overslash platform service.
 #[derive(Debug, Clone)]
@@ -417,6 +555,43 @@ impl FromRequestParts<AppState> for AdminAcl {
     }
 }
 
+/// Requires that the caller's `users` row has `is_instance_admin = true`.
+///
+/// Session-cookie only — bearer API keys can't carry instance-admin
+/// privilege because the role is bound to the human, not to an identity
+/// inside an org. The single elevated capability today is creating
+/// `free_unlimited` orgs through `POST /v1/orgs/free-unlimited`.
+///
+/// **No cache.** A `SELECT is_instance_admin FROM users WHERE id = $1`
+/// runs on every request. The flag flips infrequently (operator psql) and
+/// removing the cache means revocation is immediate.
+#[derive(Debug, Clone)]
+pub struct InstanceAdminAuth {
+    pub user_id: Uuid,
+    pub session: SessionAuth,
+}
+
+impl FromRequestParts<AppState> for InstanceAdminAuth {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = SessionAuth::from_request_parts(parts, state).await?;
+        let user_id = session
+            .user_id
+            .ok_or_else(|| AppError::Unauthorized("multi-org session required".into()))?;
+        let is_admin = overslash_db::repos::user::is_instance_admin(&state.db, user_id)
+            .await
+            .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+        if !is_admin {
+            return Err(AppError::Forbidden("instance_admin_required".into()));
+        }
+        Ok(InstanceAdminAuth { user_id, session })
+    }
+}
+
 /// Optional ACL extractor for endpoints that allow unauthenticated bootstrap.
 /// Returns `Ok(Some(acl))` if valid auth was provided, `Ok(None)` only when
 /// NO auth was provided at all, and `Err` if auth was provided but invalid.
@@ -477,6 +652,8 @@ impl FromRequestParts<AppState> for UserScope {
 
 /// Axum extractor that mints an `OrgScope` from a verified API key or
 /// session cookie. Any authenticated caller in any role can produce one.
+/// Uses `AuthContext` (not `UserOrKeyAuth`) so impersonation context is
+/// captured and propagated to `log_audit` without touching handler call sites.
 impl FromRequestParts<AppState> for OrgScope {
     type Rejection = AppError;
 
@@ -484,8 +661,15 @@ impl FromRequestParts<AppState> for OrgScope {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth = UserOrKeyAuth::from_request_parts(parts, state).await?;
-        Ok(OrgScope::new(auth.org_id, state.db.clone()))
+        let auth = AuthContext::from_request_parts(parts, state).await?;
+        match auth.impersonated_by {
+            Some(caller_id) => Ok(OrgScope::new_impersonated(
+                auth.org_id,
+                state.db.clone(),
+                caller_id,
+            )),
+            None => Ok(OrgScope::new(auth.org_id, state.db.clone())),
+        }
     }
 }
 
@@ -495,7 +679,7 @@ impl FromRequestParts<AppState> for OrgScope {
 #[allow(dead_code)]
 fn _scope_types_exist(_: AgentScope, _: SystemScope) {}
 
-fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     for pair in cookie_header.split(';') {
         let pair = pair.trim();

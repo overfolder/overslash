@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET status = 'failed',\n                error = 'orphaned',\n                completed_at = now()\n          WHERE status = 'executing'\n            AND started_at IS NOT NULL\n            AND started_at < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61e06e69ee0a9897953b7135a2d49064c7ae7bc12021065be5068a55deac134a"
+}

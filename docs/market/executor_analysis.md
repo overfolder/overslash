@@ -119,7 +119,7 @@ These are capabilities outside Overslash's scope (by design):
 
 **What Executor does:** `executor mcp` turns the tool catalog into an MCP server. Any MCP client (Claude Code, Cursor, Windsurf) connects and gets the full tool catalog with auth handled transparently.
 
-**What Overslash should consider:** We already plan MCP compatibility (market_survey.md notes it). Executor's approach is instructive: ship a standalone MCP server binary/process that wraps the 3 meta tools (`overslash_search`, `overslash_execute`, `overslash_auth`) and translates MCP tool calls to Overslash API calls. The MCP server handles elicitation → approval mapping natively.
+**What Overslash should consider:** We already plan MCP compatibility (market_survey.md notes it). Executor's approach is instructive: ship a standalone MCP server binary/process that wraps the 3 meta tools (`overslash_search`, `overslash_call`, `overslash_auth`) and translates MCP tool calls to Overslash API calls. The MCP server handles elicitation → approval mapping natively.
 
 **Scope:** New `overslash-mcp` binary or sidecar. The 3 meta tools already provide the right abstraction — the MCP server is a thin transport adapter. Priority: high. MCP adoption is accelerating fast and Executor already has this.
 

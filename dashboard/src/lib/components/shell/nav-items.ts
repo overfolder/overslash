@@ -7,6 +7,7 @@ export interface NavItemDef {
 export const NAV_ITEMS: NavItemDef[] = [
 	{ href: '/agents', label: 'Agents', icon: '⊟' },
 	{ href: '/services', label: 'Services', icon: '◫' },
+	{ href: '/secrets', label: 'Secrets', icon: '⚷' },
 	{ href: '/approvals', label: 'Approvals', icon: '✓' },
 	{ href: '/audit', label: 'Audit Log', icon: '☰' }
 ];
@@ -21,6 +22,20 @@ export const SETTINGS_NAV_ITEM: NavItemDef = { href: '/org', label: 'Settings', 
 
 export function isActive(pathname: string, href: string): boolean {
 	return pathname === href || pathname.startsWith(href + '/');
+}
+
+/**
+ * Pick the single nav item whose href is the longest prefix of `pathname`.
+ * Use this instead of calling `isActive` per-item when items can be prefixes
+ * of one another (e.g. `/org` and `/org/groups`) — otherwise both light up.
+ */
+export function pickActiveHref(pathname: string, items: { href: string }[]): string | null {
+	let best: string | null = null;
+	for (const it of items) {
+		if (!isActive(pathname, it.href)) continue;
+		if (best === null || it.href.length > best.length) best = it.href;
+	}
+	return best;
 }
 
 export function pageTitleFromPath(pathname: string): string {

@@ -9,7 +9,9 @@ use overslash_db::repos::org;
 use uuid::Uuid;
 
 /// Resolve `identity_id` into a SPIFFE-style path
-/// `spiffe://<org_slug>/<kind>/<name>/...` (root first, leaf last).
+/// `spiffe://<org_slug>/<kind>/<name>/...` (root first, leaf last) plus the
+/// id of each `(kind, name)` unit in the same order. The id list excludes the
+/// org slug, so its length matches the number of unit segments in the path.
 ///
 /// Returns `None` if the identity does not exist within the caller's org.
 /// Falls back to the literal `unknown` org slug if the org row has gone
@@ -18,7 +20,7 @@ use uuid::Uuid;
 pub async fn build_for_identity(
     scope: &OrgScope,
     identity_id: Uuid,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Option<(String, Vec<Uuid>)>, sqlx::Error> {
     let chain = scope.get_identity_ancestor_chain(identity_id).await?;
     if chain.is_empty() {
         return Ok(None);
@@ -33,6 +35,7 @@ pub async fn build_for_identity(
         .iter()
         .map(|i| (i.kind.as_str(), i.name.as_str()))
         .collect();
+    let ids: Vec<Uuid> = chain.iter().map(|i| i.id).collect();
 
-    Ok(Some(build_spiffe_path(&org_slug, &segments)))
+    Ok(Some((build_spiffe_path(&org_slug, &segments), ids)))
 }

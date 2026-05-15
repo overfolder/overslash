@@ -7,9 +7,9 @@
 
 ## Context
 
-Today the Overslash MCP surface exposes four tools: `overslash_search`, `overslash_execute`, `overslash_auth` (a multiplexer over six sub-actions), and `overslash_approve`. In practice only the "use a configured service" path is safe and useful to an agent: discovery + execution + identity introspection. The rest of the surface — creating subagents, creating service instances, requesting secrets, resolving approvals — is self-management, and a self-managing agent combined with Claude Code's auto mode opens real privilege-escalation paths that we don't yet have the gates for.
+Today the Overslash MCP surface exposes four tools: `overslash_search`, `overslash_call`, `overslash_auth` (a multiplexer over six sub-actions), and `overslash_approve`. In practice only the "use a configured service" path is safe and useful to an agent: discovery + execution + identity introspection. The rest of the surface — creating subagents, creating service instances, requesting secrets, resolving approvals — is self-management, and a self-managing agent combined with Claude Code's auto mode opens real privilege-escalation paths that we don't yet have the gates for.
 
-This document captures the long-term vision for agent self-management without committing to an implementation. It is the follow-up bucket for everything that was pulled out of the MCP surface in the cleanup PR ("MCP execute-only"). Short-term the MCP tool list is trimmed to `overslash_search`, `overslash_execute`, and a reduced `overslash_auth` (`whoami` + `service_status` only). Self-management happens in the dashboard until this document's pieces land.
+This document captures the long-term vision for agent self-management without committing to an implementation. It is the follow-up bucket for everything that was pulled out of the MCP surface in the cleanup PR ("MCP call-only"). Short-term the MCP tool list is trimmed to `overslash_search`, `overslash_call`, and a reduced `overslash_auth` (`whoami` + `service_status` only). Self-management happens in the dashboard until this document's pieces land.
 
 ---
 
@@ -28,10 +28,10 @@ Non-goal: arbitrary admin actions from an agent. The `overslash` metaservice dec
 
 ### 1. Platform-action bridge on the metaservice
 
-The `overslash` service template declares `platform_actions` but the execute route doesn't route them — they exist only as permission labels on REST endpoints. Bridge a subset through `overslash_execute` so an agent with the right permission can do e.g.:
+The `overslash` service template declares `platform_actions` but the call route doesn't route them — they exist only as permission labels on REST endpoints. Bridge a subset through `overslash_call` so an agent with the right permission can do e.g.:
 
 ```
-overslash_execute(service="overslash", action="create_service_instance", params={...})
+overslash_call(service="overslash", action="create_service_instance", params={...})
 ```
 
 Candidate actions to bridge (in rough order of safety):
@@ -57,27 +57,47 @@ Approvals today have one `overslash_approve` MCP tool and one `POST /v1/approval
 
 **MCP tools** (tool-name granularity lets Claude Code permission-rule each separately):
 
-- `overslash_approve_downstream` — resolves an approval whose requester is a *proper descendant* of the caller's identity. Safe to allow in auto mode. Ancestor approving descendant is the delegation model working.
+- `overslash_approve` — resolves an approval whose requester is a *proper descendant* of the caller's identity. Safe to allow in auto mode. Ancestor approving descendant is the delegation model working.
 - `overslash_approve_self` — resolves an approval whose requester is the caller itself. Always ask in Claude Code. May also be outright denied by an admin setting.
 
 **Server classifier** (enforcement — tool dispatch is UX, the security must be server-side):
 
 - Compare `caller.identity_id` with `approval.requester_identity_id`.
 - Caller == requester → **self** — accept only through `overslash_approve_self`; even then, caller must hold an explicit `self_approve` permission (dashboard-granted, rare).
-- Caller is ancestor of requester → **downstream** — accept through `overslash_approve_downstream`.
+- Caller is ancestor of requester → **downstream** — accept through `overslash_approve`.
 - Caller is sibling / unrelated → **not_in_your_chain** — reject with structured error.
 
-**Tool-selection ergonomics**: the `PendingApproval` response from `overslash_execute` already carries `approval_id`. Extend it to also carry `relationship: "self" | "downstream"` (from the classifier above, evaluated at creation time) so the agent knows which tool to call without trial-and-error. This avoids fatigue approvals where the human is prompted once per mis-chosen tool.
+**Tool-selection ergonomics**: the `PendingApproval` response from `overslash_call` already carries `approval_id`. Extend it to also carry `relationship: "self" | "downstream"` (from the classifier above, evaluated at creation time) so the agent knows which tool to call without trial-and-error. This avoids fatigue approvals where the human is prompted once per mis-chosen tool.
 
-### 3. Identity-scoped secret visibility
+### 3. Identity-scoped secret visibility *(shipped)*
 
-Today `GET /v1/secrets` uses the dashboard `SessionAuth` extractor and the MCP dispatch map advertises `list_secrets` but the call 401s — a broken promise. The right shape is not to remove the feature but to scope it:
+`GET /v1/secrets` now accepts session, MCP bearer, and `osk_` API key
+auth uniformly via the `AuthContext` extractor. To make per-identity
+visibility well-defined the data model was extended: `secrets` gained
+an `owner_identity_id` column (NULL = legacy/org-wide / admin-only),
+written on first insert and preserved across versions via COALESCE.
 
-- Accept bearer on `GET /v1/secrets` in addition to session.
-- When called with a bearer, return only secret *names* visible to the calling identity — i.e. the intersection of the org's secrets with the permission rules in the caller's identity chain.
-- Never return values, regardless of auth.
+Visibility for a non-admin caller is "the secret's owner is the caller
+or any descendant of the caller via `identities.parent_id`" — the same
+recursive subtree pattern used by approvals and the identity hierarchy.
+Admins (`is_org_admin` flag, or `overslash` ceiling Admin grant) see
+every row. The same predicate gates session, bearer, and the
+detail/reveal/restore checks.
 
-The visibility query is non-trivial because Overslash secrets today are org-wide rows; "which identity can see which" is derived from permission rules at execution time. The filtering logic should reuse whatever `get_current_secret_value` uses to decide access, not reimplement it. Prior work on this codepath is the baseline.
+Two response shapes branch on the calling identity's kind: user-kind
+callers see the full `SecretMetadata` (name, current_version,
+owner_identity_id, timestamps); agent and sub-agent callers see a
+narrow `SecretNameRow` (name, version_count, last_rotated_at) — no
+value, no owner identity, no creation timestamp.
+
+The MCP dispatch map's `list_secrets` arm was *not* added — agents
+already hold a bearer and can call `GET /v1/secrets` directly. The
+broken-promise advertisement was removed at the dispatch layer.
+
+Detail (`GET /v1/secrets/:name`) and reveal/restore stay session-only
+in this iteration: detail surfaces `versions[].provisioned_by_user_id`,
+which leaks human identities outside the agent's view. Extending the
+detail surface with a parallel narrowed shape is a follow-up.
 
 ### 4. Claude Code permission-rule recommendations
 
@@ -90,10 +110,10 @@ Claude Code's permission engine matches on tool name and argument patterns, not 
       "mcp__overslash__overslash_search",
       "mcp__overslash__overslash_auth(action:whoami)",
       "mcp__overslash__overslash_auth(action:service_status)",
-      "mcp__overslash__overslash_approve_downstream"
+      "mcp__overslash__overslash_approve"
     ],
     "ask": [
-      "mcp__overslash__overslash_execute(service:overslash)",
+      "mcp__overslash__overslash_call(service:overslash)",
       "mcp__overslash__overslash_approve_self"
     ]
   }
@@ -102,16 +122,21 @@ Claude Code's permission engine matches on tool name and argument patterns, not 
 
 This relies on Claude Code matching argument patterns in permission rules; if the pattern isn't expressive enough (`action:whoami` vs `action:service_status`), the `overslash_auth` multiplexer should be split into one tool per sub-action at the MCP layer. That's a small ergonomic choice, not a design constraint.
 
-### 5. Structured errors from `overslash_execute`
+### 5. Structured errors from `overslash_call` *(shipped)*
 
-Related but separate from self-management: today when an OAuth connection needs reauth, the MCP `forward` returns a string-wrapped 400 that ends up as "secret not found". For agents to self-serve recovery, `overslash_execute` needs to surface structured error types alongside `PendingApproval`:
+`overslash_call` (and the search/read/auth siblings) surface every recoverable failure as a typed envelope alongside `PendingApproval`:
 
-- `reauth_required { connection_id, reauth_url, reason }`
-- `missing_scopes { connection_id, missing, upgrade_url }` *(already structured)*
-- `credential_missing { service, hint_url }`
-- `not_in_your_chain`
+- `needs_authentication { service, service_instance_id?, connection_id?, auth_url }` — service has no live credentials yet; agent hands `auth_url` to the user.
+- `reauth_required { connection_id, auth_url, reason }` — refresh token is dead; `auth_url` runs an in-place upgrade against the same connection.
+- `missing_scopes { connection_id, missing, upgrade_url, auth_url? }` — connection exists but the action's `required_scopes` aren't all granted; `auth_url` runs incremental-scope OAuth.
+- `credential_missing { service?, secret_name, hint_url? }` — a non-OAuth secret the action needs is absent.
+- `not_in_your_chain { identity_id, action, reason }` — caller is asking to act on an identity outside their reachable chain. Distinct from `Forbidden` (explicit deny). Wire shape shipped now; emit sites land with the cross-identity ACL work.
 
-This work predates self-management but unblocks much of it: an agent that can distinguish "I don't have this permission" from "the connection is dead" knows whether to ask for a permission grant vs nudge the user to reconnect.
+**Transport.** Typed envelopes travel as MCP tool **success results with `isError: true`** — not as JSON-RPC errors. Per the MCP spec, JSON-RPC errors are reserved for protocol-level failures (malformed request, unknown method); tool-execution failures use `result: { content, isError: true }` so the model still sees the body. Claude.ai, Claude Code, and Openclaw all forward `result.content` to the model but treat JSON-RPC `error.data` as client-private — using JSON-RPC errors would lose the typed envelope at the model boundary in two of three clients. The existing `pending_approval` flow already used this idiom; typed errors extend the convention by setting `isError: true`.
+
+The pipeline has two halves: the REST layer renders typed envelopes via `AppError::IntoResponse` (`crates/overslash-api/src/error.rs`); the MCP `forward()` helper detects them on non-2xx responses by matching the top-level `error` field against an allow-list of the five spec codes above, then routes the envelope through `rpc_tool_error_response` so the JSON-RPC wrapper carries `result.isError = true` and `result.content[0].text` is the stringified envelope. Every other AppError shape — generic `Forbidden`, `NotFound`, `BadRequest`, etc. — still falls through to JSON-RPC `INTERNAL_ERROR (-32603)`. Adding a new typed envelope is a deliberate two-step move: ship the `AppError` variant, then add the code to the `forward()` allow-list.
+
+Locked in by `crates/overslash-api/tests/mcp_typed_errors.rs` (`needs_authentication` + `reauth_required` over the JSON-RPC `tools/call` surface) and `crates/overslash-api/tests/actions_reauth.rs` (REST `needs_authentication` shape; `reauth_required` REST coverage is at unit-test level via `routes::actions::tests::classify_oauth_*`).
 
 ---
 

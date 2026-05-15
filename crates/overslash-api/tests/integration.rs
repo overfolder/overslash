@@ -16,27 +16,60 @@ use uuid::Uuid;
 
 /// Start the Overslash API server in-process on a random port.
 async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    // Bind first so `public_url` reflects the real port — MCP loopback calls
+    // use `public_url` as the base and would fail against a wrong address.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     // Build the app with the test pool directly
@@ -44,7 +77,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -53,10 +86,19 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -74,10 +116,8 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
+        .merge(overslash_api::routes::mcp::router())
         .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -247,6 +287,21 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid, String) {
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
+    // Disable auto-call-on-approve so the suite's manual `/call` tests
+    // continue to win the execution claim. The universal default (true)
+    // would race the manual call with a background auto-call after every
+    // `/resolve`. New auto-call coverage lives in `auto_call_on_approve.rs`
+    // and re-enables it explicitly.
+    client
+        .patch(format!(
+            "{base}/v1/identities/{ident_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {raw_key}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
     // Create identity-bound API key
     let agent_key: Value = client
         .post(format!("{base}/v1/api-keys"))
@@ -335,7 +390,7 @@ async fn test_whoami_returns_caller_identity_for_bearer_key() {
 }
 
 #[tokio::test]
-async fn test_happy_path_execute_with_permission() {
+async fn test_happy_path_call_with_permission() {
     let pool = common::test_pool().await;
     let mock_addr = start_mock().await;
     let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
@@ -366,9 +421,10 @@ async fn test_happy_path_execute_with_permission() {
     assert_eq!(resp.status(), 200);
 
     // Execute action — should auto-approve
-    let resp = client.post(format!("{base}/v1/actions/execute"))
+    let resp = client.post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},
@@ -379,7 +435,7 @@ async fn test_happy_path_execute_with_permission() {
     assert_eq!(resp.status(), 200);
 
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
 
     // Verify secret injection in echo response
     let echo_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
@@ -404,9 +460,10 @@ async fn test_approval_flow() {
 
     // Execute without permission — should get 202
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -446,6 +503,21 @@ async fn test_approval_flow() {
         panic!("pending_approval.expires_at {pending_expires:?} not RFC 3339: {e}")
     });
 
+    // `suggested_tiers` is inlined on the 202 so callers can offer
+    // "remember at a broader scope" without a follow-up GET. Matches the
+    // same shape as GET /v1/approvals/{id} (see
+    // test_approval_response_includes_derived_keys_and_tiers).
+    let pending_tiers = body["suggested_tiers"].as_array().unwrap();
+    assert!(
+        pending_tiers.len() >= 2 && pending_tiers.len() <= 4,
+        "pending_approval.suggested_tiers length {} out of 2..=4",
+        pending_tiers.len()
+    );
+    for tier in pending_tiers {
+        assert!(!tier["keys"].as_array().unwrap().is_empty());
+        assert!(!tier["description"].as_str().unwrap().is_empty());
+    }
+
     // Resolve with allow (admin key, not the agent's own)
     let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
@@ -464,6 +536,30 @@ async fn test_approval_flow() {
         time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|e| panic!("ApprovalResponse.{field} {s:?} not RFC 3339: {e}"));
     }
+
+    // /resolve does NOT run the action — it creates a pending execution row.
+    // The approval must carry that row on response, status='pending'.
+    let execution = &resolved["execution"];
+    assert_eq!(execution["status"], "pending");
+    assert!(execution["id"].as_str().is_some());
+
+    // Now trigger the replay from the agent side.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let executed: Value = resp.json().await.unwrap();
+    assert_eq!(executed["execution"]["status"], "executed");
+    assert_eq!(executed["execution"]["triggered_by"], "agent");
+    // Replay result is carried inline on the response.
+    assert!(
+        executed["execution"]["result"]["status_code"]
+            .as_u64()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -483,9 +579,10 @@ async fn test_allow_remember_creates_rule() {
 
     // First execute — needs approval
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -499,20 +596,42 @@ async fn test_allow_remember_creates_rule() {
         .unwrap()
         .to_string();
 
-    // Resolve with allow_remember (admin context)
-    client
+    // Resolve with allow_remember (admin context). Under the new two-stage
+    // model this does NOT create a permission rule yet — it only queues a
+    // pending execution. The rule is stored after a successful /execute.
+    let resp = client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({"resolution": "allow_remember"}))
         .send()
         .await
         .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resolved: Value = resp.json().await.unwrap();
+    assert_eq!(resolved["execution"]["status"], "pending");
 
-    // Second execute — should auto-approve (rule was created)
+    // A second top-level execute BEFORE the /execute fires would still 202
+    // because no rule exists yet. (We don't assert it here to keep the happy
+    // path test focused.) Trigger the pending execution.
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["execution"]["status"],
+        "executed"
+    );
+
+    // Now the rule exists. A second top-level execute auto-approves and
+    // runs without creating a new approval.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -521,7 +640,379 @@ async fn test_allow_remember_creates_rule() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "called");
+}
+
+#[tokio::test]
+async fn test_call_is_at_most_once() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // First /execute succeeds
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Second /execute on the same approval: terminal state, 409 conflict.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn test_user_cancels_pending_execution_blocks_agent() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // User cancels.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["execution"]["status"],
+        "cancelled"
+    );
+
+    // Agent's subsequent /execute is rejected; the approval is terminal
+    // from the agent's perspective.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn test_agent_can_cancel_own_pending_execution() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Agent (the requester) can now cancel their own pending execution (200).
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/cancel"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_deny_creates_no_execution_row() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Deny: no execution row should be created.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "deny"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let resolved: Value = resp.json().await.unwrap();
+    assert!(
+        resolved.get("execution").is_none() || resolved["execution"].is_null(),
+        "denied approvals must not carry an execution row; got {resolved:?}"
+    );
+
+    // GET /execution → 404
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // /execute → 409 (approval not allowed)
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn test_allow_remember_failed_call_does_not_create_rule() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Point the stored URL at an unreachable address so /execute fails.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": "http://127.0.0.1:1/definitely-not-listening",
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow_remember"}))
+        .send()
+        .await
+        .unwrap();
+
+    // /execute fails at replay time.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["execution"]["status"], "failed");
+
+    // Second top-level execute hitting the mock should still require approval
+    // (the rule wasn't stored because the replay failed).
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+}
+
+#[tokio::test]
+async fn test_get_execution_endpoint_shape() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Before resolve: no execution row, 404.
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // After resolve: pending execution visible.
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "pending");
+    assert!(body["id"].as_str().is_some());
+    assert!(body["expires_at"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -540,9 +1031,10 @@ async fn test_resolve_rejects_invalid_remember_keys() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -586,9 +1078,10 @@ async fn test_resolve_rejects_invalid_ttl() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -648,9 +1141,9 @@ async fn test_secret_versioning() {
         .unwrap();
     assert_eq!(r["version"], 2);
 
-    // GET /v1/secrets/{name} is dashboard-only (JWT session). API keys
-    // must be rejected so a compromised agent token can't enumerate the
-    // secret namespace.
+    // GET /v1/secrets/{name} (detail) is still session-only. Detail
+    // would surface `versions[].provisioned_by_user_id` which leaks
+    // human identities, so agent bearers are rejected.
     let resp = client
         .get(format!("{base}/v1/secrets/s1"))
         .header(auth(&key).0, auth(&key).1)
@@ -659,13 +1152,30 @@ async fn test_secret_versioning() {
         .unwrap();
     assert_eq!(resp.status(), 401);
 
+    // GET /v1/secrets (list) accepts bearer auth and returns the narrow
+    // {name, version_count, last_rotated_at} shape for agent callers,
+    // scoped to the calling identity's parent_id subtree. The agent
+    // here owns `s1` (it wrote v1 and v2), so it sees that one row —
+    // and crucially no value field.
     let resp = client
         .get(format!("{base}/v1/secrets"))
         .header(auth(&key).0, auth(&key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401);
+    assert_eq!(resp.status(), 200);
+    let body: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(body.len(), 1, "agent should see exactly one owned secret");
+    assert_eq!(body[0]["name"], "s1");
+    assert_eq!(body[0]["version_count"], 2);
+    assert!(body[0]["last_rotated_at"].is_string());
+    let obj = body[0].as_object().unwrap();
+    for forbidden in ["value", "encrypted_value", "secret", "ciphertext"] {
+        assert!(
+            !obj.contains_key(forbidden),
+            "list response leaked {forbidden:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -685,9 +1195,10 @@ async fn test_deny_keeps_gating() {
 
     // First — needs approval
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -711,9 +1222,10 @@ async fn test_deny_keeps_gating() {
 
     // Second — still needs approval (deny doesn't create allow rule)
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -733,9 +1245,10 @@ async fn test_unauthenticated_request_no_gate() {
 
     // Execute without secrets — should go through without permission check
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "headers": {"Content-Type": "application/json"},
@@ -745,7 +1258,7 @@ async fn test_unauthenticated_request_no_gate() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "called");
 }
 
 #[tokio::test]
@@ -765,9 +1278,10 @@ async fn test_audit_trail() {
         .unwrap();
 
     client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo")
         }))
@@ -807,9 +1321,10 @@ async fn test_mode_c_service_action() {
 
     // Mode A works as before (raw HTTP pointing at mock)
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "body": "{\"test\": true}"
@@ -818,7 +1333,7 @@ async fn test_mode_c_service_action() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "executed");
+    assert_eq!(resp.json::<Value>().await.unwrap()["status"], "called");
 }
 
 #[tokio::test]
@@ -830,8 +1345,13 @@ async fn test_service_registry_api() {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -843,9 +1363,32 @@ async fn test_service_registry_api() {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -871,10 +1414,19 @@ async fn test_service_registry_api() {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1012,9 +1564,10 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1055,11 +1608,25 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         !webhooks.is_empty(),
         "expected at least one webhook delivery"
     );
-    assert_eq!(webhooks[0]["status"], "allowed");
-    assert!(webhooks[0]["approval_id"].is_string());
 
-    // Verify HMAC signature was sent
+    // Envelope: { id, type, created_at, data: <inner payload> }
+    assert_eq!(webhooks[0]["type"], "approval.resolved");
+    let delivery_id = webhooks[0]["id"].as_str().expect("envelope.id");
+    assert!(uuid::Uuid::parse_str(delivery_id).is_ok());
+    assert!(webhooks[0]["created_at"].is_string());
+    assert_eq!(webhooks[0]["data"]["status"], "allowed");
+    assert!(webhooks[0]["data"]["approval_id"].is_string());
+
+    // Verify routing + signature headers
     let headers = received["headers"].as_array().unwrap();
+    assert_eq!(
+        headers[0]["x-overslash-event"].as_str().unwrap(),
+        "approval.resolved"
+    );
+    assert_eq!(
+        headers[0]["x-overslash-delivery"].as_str().unwrap(),
+        delivery_id
+    );
     let sig_header = headers[0]["x-overslash-signature"].as_str().unwrap();
     assert!(
         sig_header.starts_with("sha256="),
@@ -1246,10 +1813,14 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
         .unwrap();
 
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
     // Create org + identity
-    let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test")
+    let org = overslash_db::repos::org::create(&pool, "RefreshOrg", "refresh-test", "standard")
         .await
         .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
@@ -1308,9 +1879,13 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
 async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
     let pool = common::test_pool().await;
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
-    let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test")
+    let org = overslash_db::repos::org::create(&pool, "ValidOrg", "valid-test", "standard")
         .await
         .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
@@ -1361,11 +1936,16 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
 async fn test_update_tokens_preserves_refresh_token_when_none() {
     let pool = common::test_pool().await;
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
-    let org = overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test")
-        .await
-        .unwrap();
+    let org =
+        overslash_db::repos::org::create(&pool, "PreserveOrg", "preserve-refresh-test", "standard")
+            .await
+            .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
         .await
         .unwrap();
@@ -1780,8 +2360,13 @@ async fn start_api_with_registry(
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: enc_key_hex,
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1793,9 +2378,32 @@ async fn start_api_with_registry(
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -1811,10 +2419,19 @@ async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1888,7 +2505,7 @@ async fn test_e2e_resend_send_email() {
 
     // Execute Mode C: service=resend, action=send_email
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
             "service": "resend",
@@ -1906,7 +2523,7 @@ async fn test_e2e_resend_send_email() {
     assert_eq!(resp.status(), 200);
 
     let result: Value = resp.json().await.unwrap();
-    assert_eq!(result["status"], "executed");
+    assert_eq!(result["status"], "called");
 
     // Resend returns {"id": "..."} on successful send
     let body: Value = serde_json::from_str(result["result"]["body"].as_str().unwrap()).unwrap();
@@ -1936,9 +2553,10 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
 
     // Execute without permission → 202 pending approval
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -1988,6 +2606,14 @@ async fn test_approval_response_includes_derived_keys_and_tiers() {
 
     // permission_keys should still be present for backward compat
     assert!(approval["permission_keys"].is_array());
+
+    // 202 and GET return byte-identical tiers — that's the consistency
+    // guarantee from computing `suggest_tiers` from the same
+    // `permission_keys` at both sites.
+    assert_eq!(
+        &exec_body["suggested_tiers"], &approval["suggested_tiers"],
+        "POST /v1/actions/call 202 suggested_tiers must equal GET /v1/approvals/{{id}} suggested_tiers"
+    );
 }
 
 #[tokio::test]
@@ -2007,9 +2633,10 @@ async fn test_resolve_with_broader_remember_keys_succeeds() {
 
     // Execute → 202
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "POST",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2083,9 +2710,10 @@ async fn test_resolve_with_unrelated_broader_keys_still_fails() {
         .unwrap();
 
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(auth(&key).0, auth(&key).1)
         .json(&json!({
+            "service": "http",
             "method": "GET",
             "url": format!("http://{mock_addr}/echo"),
             "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
@@ -2175,4 +2803,551 @@ async fn test_members_list_includes_extended_fields_and_api_keys() {
         assert!(k["key_prefix"].is_string());
         assert!(k["created_at"].is_string());
     }
+}
+
+/// The 15-minute pending-execution sweep should move timed-out pending rows
+/// to `expired` and clear them out of the dashboard's default view.
+#[tokio::test]
+async fn test_sweeper_expires_pending_executions() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, org_id, _ident_id, admin_key) = setup(pool.clone()).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id: Uuid = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Backdate the pending row so the sweeper considers it expired.
+    sqlx::query!(
+        "UPDATE executions SET expires_at = now() - interval '1 second'
+         WHERE approval_id = $1 AND org_id = $2",
+        approval_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
+    let swept = system.expire_stale_executions().await.unwrap();
+    assert_eq!(swept, 1);
+
+    // State is now expired, agent's /execute returns 410 Gone.
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 410);
+}
+
+/// An `executing` row abandoned by a process crash should be reaped to
+/// `failed` with `error='orphaned'` once the grace window elapses.
+#[tokio::test]
+async fn test_sweeper_reaps_orphaned_executing_rows() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, org_id, _ident_id, admin_key) = setup(pool.clone()).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id: Uuid = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Manually transition to 'executing' and backdate started_at to simulate
+    // a process crash partway through a replay.
+    sqlx::query!(
+        "UPDATE executions
+            SET status = 'executing',
+                started_at = now() - interval '10 minutes'
+         WHERE approval_id = $1 AND org_id = $2",
+        approval_id,
+        org_id,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
+    // Grace window of 60s — our backdated row is well past it.
+    let reaped = system.expire_orphaned_executions(60).await.unwrap();
+    assert_eq!(reaped, 1);
+
+    let resp = client
+        .get(format!("{base}/v1/approvals/{approval_id}/execution"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "failed");
+    assert_eq!(body["error"], "orphaned");
+}
+
+/// Regression for the Sentry finding on action_caller.rs — the original
+/// `filter` must survive through approval → resolve → execute and shape the
+/// replay's response body. Without the `replay_payload` column, the wrapped
+/// filter was being lost on replay.
+#[tokio::test]
+async fn test_filter_preserved_across_approval_and_replay() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    client
+        .put(format!("{base}/v1/secrets/tk"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    // First execute carries a jq filter that reshapes the response. The
+    // mock's /echo endpoint returns { headers, body, uri } — filter to
+    // `.uri` so we can tell from the replay body whether the filter ran.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}],
+            "filter": {"lang": "jq", "expr": ".uri"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["execution"]["status"], "executed");
+    // The filtered_body on the replay's result must be populated — proof that
+    // the stored `filter` travelled through the approval → /execute path.
+    let filtered = &body["execution"]["result"]["filtered_body"];
+    assert!(
+        !filtered.is_null(),
+        "replay must carry filtered_body when the original request had a filter; got {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Pending calls monitor — scope=mine&status=allowed + MCP platform actions
+// ---------------------------------------------------------------------------
+
+/// Helper: create a secret, trigger a raw-HTTP action (gets approved because
+/// secrets are used), have admin allow it, return the approval_id.
+async fn create_allowed_approval(
+    base: &str,
+    mock_addr: &SocketAddr,
+    agent_key: &str,
+    admin_key: &str,
+) -> String {
+    let client = Client::new();
+    client
+        .put(format!("{base}/v1/secrets/pending-tk"))
+        .header(auth(agent_key).0, auth(agent_key).1)
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(agent_key).0, auth(agent_key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "pending-tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let approval_id = resp.json::<Value>().await.unwrap()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header(auth(admin_key).0, auth(admin_key).1)
+        .json(&json!({"resolution": "allow"}))
+        .send()
+        .await
+        .unwrap();
+
+    approval_id
+}
+
+#[tokio::test]
+async fn test_scope_mine_status_allowed_returns_allowed_approvals() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    // Before any approval: list is empty.
+    let pre: Vec<Value> = client
+        .get(format!("{base}/v1/approvals?scope=mine&status=allowed"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(pre.is_empty(), "expected empty before any approval");
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    // After allow: scope=mine&status=allowed returns the approval with pending execution.
+    let post: Vec<Value> = client
+        .get(format!("{base}/v1/approvals?scope=mine&status=allowed"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(post.len(), 1, "expected one allowed approval; got {post:?}");
+    assert_eq!(post[0]["id"], approval_id);
+    assert_eq!(post[0]["status"], "allowed");
+    assert_eq!(post[0]["execution"]["status"], "pending");
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_list_pending() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "list_pending"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let items: Vec<Value> = serde_json::from_str(text).unwrap();
+    assert_eq!(items.len(), 1, "expected one pending item; got {items:?}");
+    assert_eq!(items[0]["id"], approval_id);
+    assert_eq!(items[0]["status"], "allowed");
+    assert_eq!(items[0]["execution"]["status"], "pending");
+
+    // After the execution is dispatched it should be filtered out of list_pending.
+    client
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .send()
+        .await
+        .unwrap();
+    let frame2: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "list_pending"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(frame2["error"].is_null(), "MCP error after call: {frame2}");
+    let text2 = frame2["result"]["content"][0]["text"].as_str().unwrap();
+    let items2: Vec<Value> = serde_json::from_str(text2).unwrap();
+    assert!(
+        items2.is_empty(),
+        "list_pending should exclude non-pending executions; got {items2:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_call_pending() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "call_pending",
+                    "params": {"approval_id": approval_id}
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "executed");
+    assert_eq!(inner["execution"]["triggered_by"], "agent");
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_cancel_pending() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "cancel_pending",
+                    "params": {"approval_id": approval_id}
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_mcp_stringified_params_object_is_decoded() {
+    // The claude.ai connector (and some Claude Desktop builds) sometimes
+    // ships the `params` argument as a JSON-encoded string instead of an
+    // object — see anthropics/claude-code#5504, #24599, #26094. Without the
+    // normalize_stringified_params workaround, `dispatch_overslash_platform`
+    // sees `params` as a string, `.get("approval_id")` returns None, and the
+    // call fails with "call_pending requires params.approval_id". With the
+    // workaround the string is parsed and the call succeeds.
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let approval_id = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+    let stringified = format!("{{\"approval_id\":\"{approval_id}\"}}");
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "call_pending",
+                    "params": stringified
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let inner: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(inner["execution"]["status"], "executed");
+}
+
+#[tokio::test]
+async fn test_mcp_stringified_empty_params_object_succeeds() {
+    // Variant that exercises the most common shape claude.ai sends:
+    // `"params": "{}"`. Routed to `list_pending` which doesn't read params
+    // at all — the bug surface here is purely "does the dispatcher choke on
+    // a string-typed `params` field on the way through?".
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let _ = create_allowed_approval(&base, &mock_addr, &key, &admin_key).await;
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {
+                    "service": "overslash",
+                    "action": "list_pending",
+                    "params": "{}"
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(frame["error"].is_null(), "MCP error: {frame}");
+    let text = frame["result"]["content"][0]["text"].as_str().unwrap();
+    let items: Vec<Value> = serde_json::from_str(text).unwrap();
+    assert_eq!(items.len(), 1);
+}
+
+#[tokio::test]
+async fn test_mcp_overslash_unknown_platform_action_returns_error() {
+    let pool = common::test_pool().await;
+    let (base, key, ..) = setup(pool).await;
+    let client = Client::new();
+
+    let frame: Value = client
+        .post(format!("{base}/mcp"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {
+                "name": "overslash_call",
+                "arguments": {"service": "overslash", "action": "nonexistent"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(
+        !frame["error"].is_null(),
+        "expected error for unknown platform action; got {frame}"
+    );
 }

@@ -7,6 +7,7 @@
 		cancelLabel = 'Cancel',
 		destructive = false,
 		busy = false,
+		error = null,
 		onConfirm,
 		onCancel
 	}: {
@@ -17,6 +18,7 @@
 		cancelLabel?: string;
 		destructive?: boolean;
 		busy?: boolean;
+		error?: string | null;
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
@@ -27,6 +29,9 @@
 		<div class="card">
 			<h2 id="cm-title">{title}</h2>
 			<p>{message}</p>
+			{#if error}
+				<p class="error" role="alert">{error}</p>
+			{/if}
 			<div class="actions">
 				<button class="btn" disabled={busy} onclick={onCancel}>{cancelLabel}</button>
 				<button
@@ -75,6 +80,10 @@
 		margin: 0;
 		font: var(--text-body);
 		color: var(--color-text-secondary, var(--color-text));
+	}
+	p.error {
+		color: var(--color-danger, #b91c1c);
+		font-size: 13px;
 	}
 	.actions {
 		display: flex;

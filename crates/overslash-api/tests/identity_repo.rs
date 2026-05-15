@@ -15,10 +15,14 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn make_scope(pool: &PgPool) -> OrgScope {
-    let org =
-        overslash_db::repos::org::create(pool, "T", &format!("o-{}", Uuid::new_v4().simple()))
-            .await
-            .unwrap();
+    let org = overslash_db::repos::org::create(
+        pool,
+        "T",
+        &format!("o-{}", Uuid::new_v4().simple()),
+        "standard",
+    )
+    .await
+    .unwrap();
     OrgScope::new(org.id, pool.clone())
 }
 

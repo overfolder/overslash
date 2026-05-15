@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions\n            SET result_viewed_at = now()\n          WHERE id = $1\n            AND org_id = $2\n            AND result_viewed_at IS NULL\n            AND status IN ('executed', 'failed')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "040d1a213490882d25994a943fce4753d71139775bf1549dee562ac22edc197a"
+}

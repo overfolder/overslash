@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-cli", "tests/mock-target"]
+members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-mcp-puppet", "crates/overslash-cli", "crates/oversla-sh", "crates/overslash-metrics", "crates/overslash-metrics-exporter", "crates/overslash-fakes", "tests/mock-target"]
 
 [workspace.package]
 edition = "2024"
@@ -30,6 +30,12 @@ clap = { version = "4", features = ["derive", "env"] }
 rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path", "debug-embed"] }
 mime_guess = "2"
 url = "2"
+subtle = "2"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+regex = "1"
+async-trait = "0.1"
 
 # Fast dev builds: minimal debug info
 [profile.dev]

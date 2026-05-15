@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gmail
-  description: Gmail API — send, read, search, and manage email messages and labels.
+  description: Gmail API — send, read, search, and manage email messages, labels, and drafts.
   key: gmail
   category: Communication
 servers:
@@ -15,10 +15,19 @@ components:
         authorizationCode:
           authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
           tokenUrl: https://oauth2.googleapis.com/token
+          # The top-level map is the *union* of every per-operation scope below.
+          # Tier (per Google's OAuth verification regime):
+          #   - gmail.metadata, gmail.compose       → SENSITIVE (no CASA)
+          #   - gmail.readonly, gmail.send, gmail.modify → RESTRICTED (needs CASA)
+          # Each operation's `security:` block declares the *minimum* scope
+          # required, so a connection granted only sensitive scopes can still
+          # invoke the metadata/draft surface.
           scopes:
             https://www.googleapis.com/auth/gmail.readonly: ""
             https://www.googleapis.com/auth/gmail.send: ""
             https://www.googleapis.com/auth/gmail.modify: ""
+            https://www.googleapis.com/auth/gmail.compose: ""
+            https://www.googleapis.com/auth/gmail.metadata: ""
 paths:
   /gmail/v1/users/{userId}/profile:
     get:
@@ -26,6 +35,9 @@ paths:
       summary: "Get Gmail profile for {userId}"
       risk: read
       scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.metadata
       parameters:
         - name: userId
           in: path
@@ -43,6 +55,9 @@ paths:
       summary: "List Gmail labels for {userId}"
       risk: read
       scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.metadata
       parameters:
         - name: userId
           in: path
@@ -60,6 +75,9 @@ paths:
       summary: "Search messages for {userId}"
       risk: read
       scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.readonly
       parameters:
         - name: userId
           in: path
@@ -102,6 +120,9 @@ paths:
       summary: "Get message {id} for {userId}"
       risk: read
       scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.readonly
       parameters:
         - name: userId
           in: path
@@ -136,6 +157,27 @@ paths:
       summary: "Send email as {userId}"
       risk: write
       scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.send
+      # Surface the decoded RFC 2822 To/Subject/Body in the approval review
+      # UI and audit log. The base64url `raw` field is opaque to a human
+      # resolver; these filters decode it once and pull out the three
+      # fields that determine whether to allow the send.
+      #
+      # Gmail's API expects base64url (`-`/`_`, unpadded). `@base64d` only
+      # accepts standard base64, so each filter first normalizes `-`→`+`,
+      # `_`→`/`, and right-pads to a multiple of 4 with `=`. The shared
+      # prelude is inlined into each filter rather than factored out
+      # because jq/jaq has no way to declare reusable snippets per-action.
+      disclose:
+        - label: To
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Subject
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Body
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
+          max_chars: 2000
       parameters:
         - name: userId
           in: path
@@ -164,6 +206,9 @@ paths:
       summary: "Move message {id} to trash for {userId}"
       risk: delete
       scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.modify
       parameters:
         - name: userId
           in: path
@@ -181,3 +226,236 @@ paths:
           description: The ID of the message to move to trash
           schema:
             type: string
+  /gmail/v1/users/{userId}/drafts:
+    get:
+      operationId: list_drafts
+      summary: "List draft messages for {userId}"
+      risk: read
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.compose
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: q
+          in: query
+          description: "Search query (Gmail search syntax)"
+          schema:
+            type: string
+        - name: maxResults
+          in: query
+          description: Maximum number of drafts to return (default 100, max 500)
+          schema:
+            type: integer
+        - name: pageToken
+          in: query
+          description: Page token from a previous list request
+          schema:
+            type: string
+        - name: includeSpamTrash
+          in: query
+          description: Include drafts from SPAM and TRASH in results
+          schema:
+            type: boolean
+    post:
+      operationId: create_draft
+      summary: "Create a draft email for {userId}"
+      risk: write
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.compose
+      # Drafts wrap the RFC 2822 payload one level deeper than messages.send,
+      # so the filter source is `.body.message.raw` rather than `.body.raw`.
+      disclose:
+        - label: To
+          filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Subject
+          filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Body
+          filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
+          max_chars: 2000
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: object
+                  required: [raw]
+                  properties:
+                    raw:
+                      type: string
+                      description: "Base64url-encoded RFC 2822 email message (headers + body)"
+                    threadId:
+                      type: string
+                      description: "Optional thread ID to attach the draft to an existing conversation"
+  /gmail/v1/users/{userId}/drafts/{id}:
+    get:
+      operationId: get_draft
+      summary: "Get draft {id} for {userId}"
+      risk: read
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.compose
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the draft to retrieve
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: The format to return the draft in
+          schema:
+            type: string
+            enum: [full, metadata, minimal, raw]
+    put:
+      operationId: update_draft
+      summary: "Replace draft {id} for {userId}"
+      risk: write
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.compose
+      disclose:
+        - label: To
+          filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Subject
+          filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Body
+          filter: '.body.message.raw | gsub("-"; "+") | gsub("_"; "/") | (if (length % 4 == 2) then . + "==" elif (length % 4 == 3) then . + "=" else . end) | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
+          max_chars: 2000
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the draft to replace
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: object
+                  required: [raw]
+                  properties:
+                    raw:
+                      type: string
+                      description: "Base64url-encoded RFC 2822 email message (headers + body)"
+                    threadId:
+                      type: string
+                      description: "Optional thread ID to attach the draft to an existing conversation"
+    delete:
+      operationId: delete_draft
+      summary: "Delete draft {id} for {userId}"
+      risk: delete
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.compose
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+        - name: id
+          in: path
+          required: true
+          description: The ID of the draft to delete
+          schema:
+            type: string
+  /gmail/v1/users/{userId}/drafts/send:
+    post:
+      operationId: send_draft
+      summary: "Send a previously created draft for {userId}"
+      risk: write
+      scope_param: userId
+      security:
+        - oauth:
+            - https://www.googleapis.com/auth/gmail.compose
+      # The send_draft request body only references the draft by id; the
+      # actual To/Subject/Body content was set at create_draft / update_draft
+      # time and is not visible in this payload. Disclose the draft id so the
+      # reviewer can correlate the send with the previously-disclosed draft.
+      disclose:
+        - label: Draft
+          filter: '.body.id'
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: "User ID (use 'me' for the authenticated user)"
+          schema:
+            type: string
+            default: me
+          resolve:
+            get: /gmail/v1/users/{userId}/profile
+            pick: emailAddress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: The ID of the draft to send

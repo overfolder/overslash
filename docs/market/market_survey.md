@@ -44,14 +44,14 @@ Overslash sits in the emerging "AI agent infrastructure" category — specifical
 
 ### Arcade AI (arcade-ai.com)
 
-**What:** Tool-use platform specifically for AI agents. Registry of tools/actions agents can discover and execute. Handles auth for tool execution.
+**What:** Tool-use platform specifically for AI agents. Registry of tools/actions agents can discover and call. Handles auth for tool calls.
 
 - **Open source:** Partial (SDK and toolkits). Core platform is commercial.
 - **Funding:** ~$6M seed (2024).
 - **Pricing:** Free tier; usage-based for production.
 
 **vs Overslash:**
-- **Closest conceptual competitor** — both are gateways that let agents authenticate and execute actions.
+- **Closest conceptual competitor** — both are gateways that let agents authenticate and call actions.
 - Arcade has a tool registry similar to Overslash's service registry.
 - Arcade's auth model is **simpler** — OAuth but no multi-level permission chains or approval bubbling.
 - Arcade **lacks**: Versioned secret vault, identity hierarchy, inherit_permissions, human-in-the-loop approval workflows.

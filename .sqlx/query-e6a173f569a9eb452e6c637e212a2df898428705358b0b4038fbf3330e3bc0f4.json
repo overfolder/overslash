@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT provider_key AS \"provider!\", COUNT(*)::bigint AS \"count!\"\n        FROM connections\n        GROUP BY provider_key\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "provider!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "e6a173f569a9eb452e6c637e212a2df898428705358b0b4038fbf3330e3bc0f4"
+}

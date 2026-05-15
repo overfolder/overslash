@@ -15,6 +15,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 | Understand the UI | [UI_SPEC.md](UI_SPEC.md) |
 | Visual design reference | [Figma](https://www.figma.com/design/g385jjr9vo48bWqZq2yKCi) |
 | Design tokens (CSS) | [dashboard/src/lib/styles/design-tokens.css](dashboard/src/lib/styles/design-tokens.css) |
+| Check production health | [status.overslash.com](https://status.overslash.com) — runbook in [docs/runbooks/status-page.md](docs/runbooks/status-page.md) |
 
 ## Tech Stack
 
@@ -43,6 +44,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 
 - **Split integration tests by provider.** Provider-specific tests (OAuth flows, service actions) go in their own file under `crates/overslash-api/tests/` (e.g., `oauth_x.rs`, `google_calendar.rs`). Shared helpers live in `tests/common/mod.rs`. The main `integration.rs` keeps core/generic tests only.
 - **Use `--test-threads=4`** (or similar) when running the full suite locally to avoid Postgres connection pool exhaustion.
+- **PR screenshots use the scenarios library.** `dashboard/tests/scenarios/` is the canonical way to capture dashboard screenshots for PRs. Boot the real stack with `make e2e-up`, then run a `dashboard/scripts/screenshot-*.mjs` script — each one signs in via `/auth/dev/token` and seeds fixtures by hitting the real API, so the resulting PNGs reflect what the dashboard actually renders, not a hand-rolled JSON fake. Do not add new route-interception screenshot scripts; extend the scenarios library instead. See [dashboard/tests/scenarios/README.md](dashboard/tests/scenarios/README.md).
 
 ## Worktree Isolation
 
@@ -59,3 +61,17 @@ When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` autom
 3. **Secrets never leave the vault.** Encrypted at rest, injected at execution time, never returned via API.
 4. **No platform-specific logic.** Overslash is a generic gateway. Telegram buttons, Slack bots, etc. are caller-side concerns.
 5. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `overfolder/overslash`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical names used verbatim: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Two-tier: `DECISIONS.md` (short numbered decisions) + `docs/design/` (long-form, indexed by `docs/design/INDEX.md` with Status). No `docs/adr/`. See `docs/agents/domain.md`.

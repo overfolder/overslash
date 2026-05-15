@@ -74,6 +74,20 @@ export const promoteDraft = (id: string) =>
 export const discardDraft = (id: string) =>
 	session.delete<{ deleted: boolean }>(`/v1/templates/drafts/${encodeURIComponent(id)}`);
 
+// -- MCP tools resync --
+
+export interface McpResyncResponse {
+	key: string;
+	tool_count: number;
+	discovered_at: string;
+}
+
+export const resyncMcpTemplate = (key: string) =>
+	session.post<McpResyncResponse>(
+		`/v1/templates/${encodeURIComponent(key)}/mcp/resync`,
+		{}
+	);
+
 // -- Template validation (pending endpoint, graceful 404) --
 
 export async function validateTemplate(yaml: string): Promise<ValidationResult | null> {
@@ -87,7 +101,12 @@ export async function validateTemplate(yaml: string): Promise<ValidationResult |
 
 // -- Service instances --
 
-export const listServices = () => session.get<ServiceInstanceSummary[]>('/v1/services');
+export const listServices = (opts: { includeUserLevel?: boolean } = {}) => {
+	const path = opts.includeUserLevel
+		? '/v1/services?include_user_level=true'
+		: '/v1/services';
+	return session.get<ServiceInstanceSummary[]>(path);
+};
 
 export const getService = (name: string, signal?: AbortSignal) =>
 	session.get<ServiceInstanceDetail>(

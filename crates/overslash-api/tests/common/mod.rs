@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -47,15 +47,28 @@ pub async fn test_pool() -> PgPool {
 
     ensure_template(&base_url).await;
 
-    // Clone template for this test.
+    // Clone template for this test. CREATE DATABASE … TEMPLATE fails with
+    // "source database is being accessed by other users" if a prior session
+    // hasn't fully closed yet (the cleanup is async). Retry briefly — the
+    // bootstrapped pool below uses the same pattern.
     let test_db = format!("test_{}", Uuid::new_v4().simple());
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
-    sqlx::query(&format!(
-        "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-    ))
-    .execute(&admin_pool)
-    .await
-    .unwrap();
+    let mut retries = 0u32;
+    loop {
+        match sqlx::query(&format!(
+            "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
+        ))
+        .execute(&admin_pool)
+        .await
+        {
+            Ok(_) => break,
+            Err(e) if retries < 20 && format!("{e}").contains("being accessed") => {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("clone template: {e}"),
+        }
+    }
     admin_pool.close().await;
 
     register_for_cleanup(base_url.clone(), test_db.clone());
@@ -522,20 +535,71 @@ async fn run_standard_bootstrap(base: &str, client: &Client) -> BootstrapFixture
     }
 }
 
+/// Variant of `start_api` that lets callers tweak the `Config` before the
+/// server starts — multi-org tests use this to toggle `allow_org_creation`,
+/// `single_org_mode`, `app_host_suffix`, etc.
+pub async fn start_api_with<F>(pool: PgPool, customize: F) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), customize).await
+}
+
+/// Like [`start_api_with`] but with an injected `Mailer`. Used by tests that
+/// need to capture outbound transactional email (billing receipt/dunning,
+/// org-invite notification, future welcome-email integration tests) without
+/// spinning up a real provider.
+pub async fn start_api_with_mailer<F>(
+    pool: PgPool,
+    mailer: Arc<dyn overslash_core::email::Mailer>,
+    customize: F,
+) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    start_api_internal(pool, mailer, customize).await
+}
+
 /// Start the Overslash API server in-process on a random port.
 pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
+    start_api_internal(pool, Arc::new(overslash_core::email::NoopMailer), |_| {}).await
+}
+
+async fn start_api_internal<F>(
+    pool: PgPool,
+    mailer: Arc<dyn overslash_core::email::Mailer>,
+    customize: F,
+) -> (SocketAddr, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    // Surface server-side errors during tests — without this, `tracing::error!`
+    // calls inside AppError are silently dropped and a 500 looks like a bare
+    // "database error" string to the client.
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
+        )
+        .try_init();
     // Bind first so `public_url` matches the real bound address. This lets
     // server-internal loopback calls (e.g. the `/mcp` dispatcher proxying to
     // REST) reach this test's process instead of a non-existent 3000.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let config = overslash_api::config::Config {
+    let mut config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(), // unused, we pass pool directly
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -547,17 +611,41 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
+    customize(&mut config);
 
     // Build the app with the test pool directly
     let state = overslash_api::AppState {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -566,10 +654,19 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer,
     };
 
     let app = axum::Router::new()
@@ -581,6 +678,7 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
@@ -590,16 +688,35 @@ pub async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::dev_e2e::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::unsubscribe::router());
+
+    // Billing routes are gated on cloud_billing — test fixtures that flip the
+    // flag get the routes; default-config tests don't see them.
+    let app = if state.config.cloud_billing {
+        app.merge(overslash_api::routes::billing::router())
+            .merge(overslash_api::routes::billing::webhook_router())
+    } else {
+        app
+    };
+
+    let app = app
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::subdomain::subdomain_middleware,
+        ))
         .with_state(state);
 
     tokio::spawn(async move {
@@ -618,8 +735,13 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -631,16 +753,39 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -649,10 +794,19 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -664,6 +818,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
@@ -673,16 +828,21 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::byoc_credentials::router())
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::routes::dev_e2e::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
+        .merge(overslash_api::routes::oauth_upstream::router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .merge(overslash_api::routes::unsubscribe::router())
         .with_state(state);
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -703,8 +863,13 @@ pub async fn start_api_with_auth_providers(
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: google_creds.as_ref().map(|(id, _)| id.clone()),
         google_auth_client_secret: google_creds.map(|(_, s)| s),
@@ -716,9 +881,32 @@ pub async fn start_api_with_auth_providers(
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -728,7 +916,7 @@ pub async fn start_api_with_auth_providers(
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -737,10 +925,19 @@ pub async fn start_api_with_auth_providers(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -752,6 +949,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
@@ -762,8 +960,8 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -780,226 +978,15 @@ pub async fn start_api_with_auth_providers(
 
 /// Start the mock target in-process on a random port.
 /// Includes: echo, webhook receiver, and mock OAuth token endpoint.
+/// Boot the combined OAuth/OIDC + GitHub user + echo + webhook fake on an
+/// OS-assigned `127.0.0.1` port. The handle is leaked because tests treat
+/// the fake as long-lived; dropping it would shut the server down.
 pub async fn start_mock() -> SocketAddr {
-    use axum::{
-        Form, Json, Router,
-        body::Bytes,
-        extract::State,
-        http::HeaderMap,
-        routing::{get, post},
-    };
-    use tokio::sync::Mutex;
-
-    #[derive(Default)]
-    struct MockState {
-        webhooks: Vec<Value>,
-        webhook_headers: Vec<Value>,
-    }
-
-    type S = Arc<Mutex<MockState>>;
-
-    async fn echo(uri: axum::http::Uri, headers: HeaderMap, body: Bytes) -> Json<Value> {
-        let h: serde_json::Map<String, Value> = headers
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
-            .collect();
-        Json(json!({
-            "headers": h,
-            "body": String::from_utf8_lossy(&body).to_string(),
-            "uri": uri.to_string(),
-        }))
-    }
-
-    async fn receive_webhook(
-        State(s): State<S>,
-        headers: HeaderMap,
-        Json(p): Json<Value>,
-    ) -> &'static str {
-        let h: serde_json::Map<String, Value> = headers
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
-            .collect();
-        let mut state = s.lock().await;
-        state.webhooks.push(p);
-        state.webhook_headers.push(json!(h));
-        "ok"
-    }
-
-    async fn list_webhooks(State(s): State<S>) -> Json<Value> {
-        let state = s.lock().await;
-        Json(json!({
-            "webhooks": state.webhooks.clone(),
-            "headers": state.webhook_headers.clone(),
-        }))
-    }
-
-    // Mock OAuth token endpoint — returns fake tokens for any code/refresh_token
-    async fn oauth_token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {
-        let grant_type = params
-            .iter()
-            .find(|(k, _)| k == "grant_type")
-            .map(|(_, v)| v.as_str())
-            .unwrap_or("");
-
-        match grant_type {
-            "authorization_code" => {
-                let code = params
-                    .iter()
-                    .find(|(k, _)| k == "code")
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or("unknown");
-                Json(json!({
-                    "access_token": format!("mock_access_{code}"),
-                    "refresh_token": format!("mock_refresh_{code}"),
-                    "expires_in": 3600,
-                    "token_type": "Bearer",
-                }))
-            }
-            "refresh_token" => Json(json!({
-                "access_token": "mock_refreshed_access_token",
-                "refresh_token": "mock_refreshed_refresh_token",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-            })),
-            _ => Json(json!({"error": "unsupported_grant_type"})),
-        }
-    }
-
-    /// Returns N bytes of 0xAB. Usage: GET /large-file?size=1000
-    async fn large_file(
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> axum::response::Response {
-        let size: usize = params
-            .get("size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1024);
-        let data = vec![0xABu8; size];
-        ([("content-type", "application/octet-stream")], data).into_response()
-    }
-
-    use axum::response::IntoResponse;
-
-    /// Simulates Google Drive redirect: returns 302 to /drive/files/content
-    async fn drive_download(
-        headers: HeaderMap,
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> axum::response::Response {
-        // Verify auth header is present
-        let has_auth = headers.get("authorization").is_some();
-        let size: usize = params
-            .get("size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
-        if !has_auth {
-            return (axum::http::StatusCode::UNAUTHORIZED, "missing auth").into_response();
-        }
-        // Redirect to content endpoint (simulating Google's redirect)
-        axum::response::Redirect::temporary(&format!("/drive/files/content?size={size}"))
-            .into_response()
-    }
-
-    /// Serves file content (redirect target — no auth required, like Google's CDN)
-    async fn drive_content(
-        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
-    ) -> axum::response::Response {
-        let size: usize = params
-            .get("size")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
-        let data = vec![0xCDu8; size];
-        ([("content-type", "application/pdf")], data).into_response()
-    }
-
-    // Mock OIDC userinfo endpoint — returns a standard OIDC claims set.
-    // The access token encodes the user identity: "mock_access_<code>".
-    async fn oidc_userinfo(headers: HeaderMap) -> Json<Value> {
-        let token = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("unknown");
-        Json(json!({
-            "sub": format!("oidc-sub-{token}"),
-            "email": "testuser@example.com",
-            "name": "Test User",
-            "picture": "https://example.com/avatar.png",
-        }))
-    }
-
-    // Mock GitHub user endpoint
-    async fn github_user(headers: HeaderMap) -> Json<Value> {
-        let _token = headers.get("authorization");
-        Json(json!({
-            "id": 12345,
-            "login": "testuser",
-            "name": "Test GitHub User",
-            "avatar_url": "https://github.com/avatar.png",
-        }))
-    }
-
-    // Mock GitHub user emails endpoint
-    async fn github_user_emails() -> Json<Value> {
-        Json(json!([
-            { "email": "testuser@example.com", "primary": true, "verified": true },
-            { "email": "other@example.com", "primary": false, "verified": true },
-        ]))
-    }
-
-    // Mock OIDC Discovery endpoint — returns a well-known config document.
-    // The issuer is dynamically constructed from the Host header so tests can
-    // use the mock server's address and pass issuer validation.
-    async fn oidc_discovery(headers: HeaderMap) -> Json<Value> {
-        let host = headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("localhost");
-        let base = format!("http://{host}");
-        Json(json!({
-            "issuer": base,
-            "authorization_endpoint": format!("{base}/oauth/authorize"),
-            "token_endpoint": format!("{base}/oauth/token"),
-            "userinfo_endpoint": format!("{base}/oidc/userinfo"),
-            "jwks_uri": format!("{base}/oidc/jwks"),
-            "scopes_supported": ["openid", "email", "profile", "offline_access"],
-            "response_types_supported": ["code"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
-        }))
-    }
-
-    // Mock GitHub user endpoint with no verified emails (edge case)
-    async fn github_user_emails_none_verified() -> Json<Value> {
-        Json(json!([
-            { "email": "unverified@example.com", "primary": true, "verified": false },
-        ]))
-    }
-
-    let state: S = Arc::new(Mutex::new(MockState::default()));
-    let app = Router::new()
-        .route(
-            "/echo",
-            get(echo).post(echo).put(echo).delete(echo).patch(echo),
-        )
-        .route("/large-file", get(large_file))
-        .route("/drive/files/download", get(drive_download))
-        .route("/drive/files/content", get(drive_content))
-        .route("/webhooks/receive", post(receive_webhook))
-        .route("/webhooks/received", get(list_webhooks))
-        .route("/oauth/token", post(oauth_token))
-        .route("/oidc/userinfo", get(oidc_userinfo))
-        .route("/.well-known/openid-configuration", get(oidc_discovery))
-        .route("/github/user", get(github_user))
-        .route("/github/user/emails", get(github_user_emails))
-        .route(
-            "/github/user/emails-none-verified",
-            get(github_user_emails_none_verified),
-        )
-        .fallback(echo)
-        .with_state(state);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let handle = overslash_fakes::combined::start_in_process().await;
+    let addr = handle.addr;
+    // Leak so the listener stays alive for the whole test process — matches
+    // the prior in-process implementation that never shut its spawn down.
+    Box::leak(Box::new(handle));
     addr
 }
 
@@ -1056,6 +1043,22 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
+    // Disable auto-call-on-approve so the suite's manual `/call` flow keeps
+    // winning the execution claim race. The universal default (true) would
+    // spawn a background auto-call after each `/resolve`, which would beat
+    // the manual call most of the time and break tests that assert
+    // `triggered_by == "agent"`. Tests covering the auto-call path live in
+    // `auto_call_on_approve.rs` and re-enable it explicitly.
+    client
+        .patch(format!(
+            "{base}/v1/identities/{ident_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {org_api_key}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
     // Identity-bound key for the agent
     let key_resp: Value = client
         .post(format!("{base}/v1/api-keys"))
@@ -1074,6 +1077,107 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
 
 pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
+}
+
+/// Test helper: ensure an org-level instance for `template_key` exists, then
+/// grant Everyone admin access on it so any user-identity in the org clears
+/// Layer 1 for that service. Idempotent — safe to call repeatedly. Returns
+/// the service instance id.
+pub async fn grant_service_to_everyone(
+    base: &str,
+    client: &Client,
+    admin_key: &str,
+    template_key: &str,
+) -> Uuid {
+    // Create or fetch an org-level service instance for this template. The
+    // create endpoint uses the template_key as the default service name, which
+    // is what we want.
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": template_key,
+            "name": template_key,
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .expect("create service");
+
+    let svc_id: Uuid = if create_resp.status() == 200 {
+        let v: Value = create_resp.json().await.unwrap();
+        v["id"].as_str().unwrap().parse().unwrap()
+    } else {
+        // 409: already exists — look it up via /v1/services
+        let list: Vec<Value> = client
+            .get(format!("{base}/v1/services"))
+            .header("Authorization", format!("Bearer {admin_key}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        list.iter()
+            .find(|s| s["name"] == template_key)
+            .expect("service should exist after conflict")["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+
+    // Find the Everyone group and grant admin on it.
+    let groups: Vec<Value> = client
+        .get(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let everyone_id = groups
+        .iter()
+        .find(|g| g["system_kind"].as_str() == Some("everyone"))
+        .and_then(|g| g["id"].as_str())
+        .expect("Everyone group must exist after bootstrap");
+
+    let grant_resp = client
+        .post(format!("{base}/v1/groups/{everyone_id}/grants"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "service_instance_id": svc_id.to_string(),
+            "access_level": "admin",
+            "auto_approve_reads": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    // 409 = already granted (idempotent), 200 = newly granted.
+    assert!(
+        grant_resp.status() == 200 || grant_resp.status() == 409,
+        "unexpected grant status: {}",
+        grant_resp.status()
+    );
+
+    svc_id
+}
+
+/// Opt the test process out of the SSRF guard so MCP/HTTP stubs bound to
+/// 127.0.0.1 are reachable. The production binary never sets this env var;
+/// the knob exists solely so tests can use loopback stubs without widening
+/// the guard. Idempotent across calls.
+pub fn allow_loopback_ssrf() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: runs exactly once, before any thread that might read the
+        // env concurrently (Once provides the happens-before).
+        unsafe {
+            std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+        }
+    });
 }
 
 /// Submit the MCP OAuth consent JSON endpoint with mode=new to enroll a
@@ -1150,27 +1254,61 @@ pub async fn start_api_with_registry(
         }
     }
 
+    // Bind first so `public_url` matches the real bound address — the MCP
+    // dispatcher's `forward()` helper uses `public_url` to loop back to
+    // `/v1/...` REST routes inside the same process. A hardcoded
+    // `localhost:3000` would silently route to a non-existent host.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: enc_key_hex,
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
         github_auth_client_id: None,
         github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
+        public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -1186,10 +1324,19 @@ pub async fn start_api_with_registry(
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1201,6 +1348,7 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
@@ -1211,20 +1359,20 @@ pub async fn start_api_with_registry(
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::search::router())
         .with_state(state);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     (format!("http://{addr}"), Client::new())
@@ -1250,8 +1398,13 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1263,9 +1416,32 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
@@ -1281,10 +1457,19 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::StubEmbedder),
         embeddings_available: true,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1298,6 +1483,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::search::router())
+        .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
         .with_state(state);
@@ -1316,8 +1503,13 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1329,16 +1521,39 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let state = overslash_api::AppState {
         db: pool,
         config,
         http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
+        registry: Arc::new(overslash_core::registry::ServiceRegistry::with_builtins()),
         rate_limiter: std::sync::Arc::new(
             overslash_api::services::rate_limit::InMemoryRateLimitStore::new(),
         ),
@@ -1347,10 +1562,19 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
                 std::time::Duration::from_secs(30),
             ),
         ),
+        free_unlimited_cache: std::sync::Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(
+                std::time::Duration::from_secs(30),
+            ),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     };
 
     let app = axum::Router::new()
@@ -1362,6 +1586,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::secret_requests::router())
         .merge(overslash_api::routes::permissions::router())
         .merge(overslash_api::routes::actions::router())
+        .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::approvals::router())
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
@@ -1372,13 +1597,15 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::oauth_providers::router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::routes::org_idp_configs::router())
+        .merge(overslash_api::routes::org_invites::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .merge(overslash_api::routes::enrollment::router())
+        .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::routes::oauth_as::router())
         .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state);
@@ -1419,4 +1646,84 @@ pub fn minimal_openapi(key: &str) -> String {
         include_str!("../fixtures/openapi/minimal.yaml.tmpl"),
         &[("key", key), ("display_name", key)],
     )
+}
+
+/// Options for `seed_org_user_key`.
+#[derive(Default, Clone, Copy)]
+pub struct SeedOptions {
+    /// Mark the new org as a personal (1-member) tenant.
+    pub is_personal: bool,
+    /// Flip `identities.is_org_admin` so the resulting API key passes
+    /// `AdminAcl` extraction.
+    pub is_admin: bool,
+}
+
+/// Insert org + user identity + user-bound API key directly via SQL,
+/// bypassing the HTTP bootstrap path. Returns `(org_id, user_id, raw_api_key)`.
+///
+/// The raw key is the literal `osk_<32-char-suffix>` string the caller would
+/// send in `Authorization: Bearer …`; the row stored in `api_keys` carries
+/// the argon2 hash (matches the production flow). Used by tests that need
+/// fine control over org/identity setup without going through the public
+/// `POST /v1/orgs` route — useful for testing rate-limit middleware,
+/// per-org plan flags, etc.
+pub async fn seed_org_user_key(pool: &PgPool, opts: SeedOptions) -> (Uuid, Uuid, String) {
+    use rand::RngExt;
+
+    let org_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO orgs (id, name, slug, is_personal) VALUES ($1, $2, $3, $4)")
+        .bind(org_id)
+        .bind("test-org")
+        .bind(format!("test-{}", Uuid::new_v4()))
+        .bind(opts.is_personal)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO identities (id, org_id, name, kind, is_org_admin)
+         VALUES ($1, $2, $3, 'user', $4)",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .bind("test-user")
+    .bind(opts.is_admin)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let suffix: String = (0..32)
+        .map(|_| {
+            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            chars[rand::rng().random_range(0..chars.len())] as char
+        })
+        .collect();
+    let raw_key = format!("osk_{suffix}");
+    let prefix = raw_key[..12].to_string();
+
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+    };
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = Argon2::default()
+        .hash_password(raw_key.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+
+    sqlx::query(
+        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
+         VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[])",
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind("test-key")
+    .bind(&hash)
+    .bind(&prefix)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    (org_id, user_id, raw_key)
 }

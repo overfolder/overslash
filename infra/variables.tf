@@ -21,10 +21,46 @@ variable "domain" {
   default     = ""
 }
 
+variable "app_host_suffix" {
+  description = "Apex for the dashboard subdomain surface (e.g. app.overslash.com). Empty disables wildcard routing on this surface."
+  type        = string
+  default     = ""
+}
+
+variable "api_host_suffix" {
+  description = "Apex for the programmatic / MCP / OAuth-AS subdomain surface (e.g. api.overslash.com). Empty disables wildcard routing here."
+  type        = string
+  default     = ""
+}
+
+variable "session_cookie_domain" {
+  description = "Domain attribute for the session cookie. Typically a leading dot + app_host_suffix (e.g. .app.overslash.com) so the cookie is shared across org subdomains."
+  type        = string
+  default     = ""
+}
+
+variable "enable_api_lb" {
+  description = "Provision a global HTTPS LB with wildcard managed cert in front of Cloud Run (required for *.api.<apex> routing at scale)."
+  type        = bool
+  default     = false
+}
+
+variable "extra_api_domain_mappings" {
+  description = "No-LB path: list of fully-qualified hostnames to expose via 1-1 google_cloud_run_domain_mapping (e.g. [\"acme.api.dev.overslash.com\"]). Used when enable_api_lb=false to map a small set of per-org subdomains without standing up a global LB. DNS for each entry must already point at Cloud Run (CNAME ghs.googlehosted.com) and the apex must be Search-Console verified."
+  type        = list(string)
+  default     = []
+}
+
 variable "dashboard_origin" {
-  description = "Comma-separated allowed CORS origins for the dashboard (e.g. https://app.overslash.com)"
+  description = "Comma-separated allowed CORS origins for the dashboard. Wildcards `https://*.app.overslash.com` allowed."
   type        = string
   default     = "*localhost*"
+}
+
+variable "mcp_extra_origins" {
+  description = "Additional CORS origins allowed only on /mcp + /.well-known/oauth-* + /oauth/* (e.g. http://localhost:6274 for MCP Inspector). Does NOT widen CORS on the rest of the API."
+  type        = string
+  default     = ""
 }
 
 variable "dashboard_url" {
@@ -37,6 +73,12 @@ variable "enable_dev_auth" {
   description = "Enable DEV_AUTH bypass login on Cloud Run (dev only)"
   type        = bool
   default     = false
+}
+
+variable "vercel_preview_origin_regex" {
+  description = "Regex matching Vercel preview-deployment URLs allowed to use the OAuth handoff (dev-only). Empty = feature off (production must leave it empty). Combined with OVERSLASH_ENV=dev as a defense-in-depth gate; a non-dev environment never advertises the endpoint, even if this is set by mistake."
+  type        = string
+  default     = ""
 }
 
 # --- Feature flags ---
@@ -149,4 +191,120 @@ variable "valkey_memory_size_gb" {
   description = "Redis instance memory size in GB"
   type        = number
   default     = 1
+}
+
+# --- oversla.sh shortener ---
+
+variable "enable_shortener" {
+  description = "Deploy the oversla.sh URL shortener Cloud Run service. Requires enable_valkey=true and use_private_vpc=true."
+  type        = bool
+  default     = false
+}
+
+variable "shortener_domain" {
+  description = "Custom domain for the shortener (e.g. oversla.sh). Empty = no domain mapping."
+  type        = string
+  default     = ""
+}
+
+variable "shortener_base_url" {
+  description = "Public base URL used in short_url responses (e.g. https://oversla.sh)."
+  type        = string
+  default     = ""
+}
+
+variable "shortener_cpu" {
+  description = "Cloud Run CPU for the shortener"
+  type        = string
+  default     = "1"
+}
+
+variable "shortener_memory" {
+  description = "Cloud Run memory for the shortener"
+  type        = string
+  default     = "256Mi"
+}
+
+variable "shortener_max_instances" {
+  description = "Max Cloud Run instances for the shortener"
+  type        = number
+  default     = 3
+}
+
+variable "shortener_root_redirect_url" {
+  description = "URL that `GET /` redirects to on the shortener domain. Empty = 404 on root."
+  type        = string
+  default     = ""
+}
+
+# --- Billing ---
+
+variable "cloud_billing" {
+  description = "Enable Stripe billing gate for Team org creation. Requires Stripe secrets in Secret Manager."
+  type        = bool
+  default     = false
+}
+
+variable "stripe_eur_lookup_key" {
+  description = "Stripe lookup key for the EUR seat price. The literal price_… ID is resolved at server startup. Default: overslash_seat_eur."
+  type        = string
+  default     = "overslash_seat_eur"
+}
+
+variable "stripe_usd_lookup_key" {
+  description = "Stripe lookup key for the USD seat price. Default: overslash_seat_usd."
+  type        = string
+  default     = "overslash_seat_usd"
+}
+
+# --- Transactional email ---
+
+variable "email_provider" {
+  description = "Transactional-email provider. `resend` is the only recognised value today; empty (default) keeps the API on the NoopMailer fallback. Setting this without populating the `<base_prefix>-email-api-key` secret will fail validate_env at Cloud Run boot."
+  type        = string
+  default     = ""
+}
+
+variable "email_from" {
+  description = "From address used on all outbound transactional email (e.g. no-reply@mail.overslash.com). Required when email_provider != \"\"."
+  type        = string
+  default     = ""
+}
+
+variable "email_reply_to" {
+  description = "Optional Reply-To address. Empty leaves the provider's default."
+  type        = string
+  default     = ""
+}
+
+# --- Monitoring ---
+
+variable "alert_email" {
+  description = "Email that receives every alert. Required for the monitoring module."
+  type        = string
+  default     = ""
+}
+
+variable "pagerduty_enabled" {
+  description = "Enable PagerDuty paging for P0 alerts. Requires the `<base_prefix>-pagerduty-integration-key` secret (e.g. overslash-prod-pagerduty-integration-key) to be populated in Secret Manager."
+  type        = bool
+  default     = false
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly billing budget in USD. Triggers email alerts at 50%/80%/100%."
+  type        = number
+  default     = 200
+}
+
+variable "billing_account_id" {
+  description = "GCP billing account ID. Empty = skip the billing-budget alert."
+  type        = string
+  default     = ""
+}
+
+variable "enable_metrics_sidecar" {
+  description = "Run the OTel sidecar that scrapes /internal/metrics into Google Managed Prometheus."
+  type        = bool
+  default     = true
 }

@@ -1,22 +1,37 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
+    response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use overslash_db::repos::audit::AuditEntry;
+use overslash_db::repos::oauth_connection_flow;
 use overslash_db::scopes::{OrgScope, UserScope};
 
+use super::connect_gate::{
+    ParsedSession, SessionError, gone_html, mismatch_html, read_session,
+    session_authorized_for_org_identity,
+};
 use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{ClientIp, WriteAcl},
-    services::{client_credentials, oauth},
+    services::{
+        client_credentials, oauth,
+        platform_caller::PlatformCallContext,
+        platform_connections::{
+            CreateConnectionInput, CreateConnectionResponse, RequestMeta, kernel_create_connection,
+            merge_scopes,
+        },
+    },
 };
 use overslash_core::crypto;
 
@@ -32,6 +47,7 @@ pub fn router() -> Router<AppState> {
             post(upgrade_connection_scopes),
         )
         .route("/v1/oauth/callback", get(oauth_callback))
+        .route("/connect-authorize", get(connect_authorize))
 }
 
 #[derive(Deserialize)]
@@ -41,106 +57,189 @@ struct InitiateConnectionRequest {
     scopes: Vec<String>,
     /// Pin a specific BYOC credential for this connection. If omitted, the
     /// cascade resolver picks identity-level → org-level → env fallback.
+    #[serde(default)]
     byoc_credential_id: Option<Uuid>,
     /// Bind the resulting connection to this user identity instead of the
     /// calling agent. Caller must be an agent whose owner is this user (or the
     /// user itself). Lets all agents under the user share the connection.
     #[serde(default)]
     on_behalf_of: Option<Uuid>,
+    /// REST-only opt-in: include the raw provider authorize URL alongside
+    /// the proxied form. Intended for white-label integrations that wrap
+    /// the dance in their own consent UI. The MCP path never sets this —
+    /// chat-delivered links must always go through the gate.
+    #[serde(default)]
+    include_raw: bool,
 }
 
+/// Wire shape for `POST /v1/connections`.
+///
+/// Field name `auth_url` is unchanged from the pre-PR shape — the *value*
+/// upgrades to the Overslash-gated URL (`/connect-authorize?id=…`) which
+/// fail-fasts on session mismatch before redirecting to the provider, so
+/// existing callers transparently inherit the chat-delivery hardening
+/// described in the kernel doc-comment in
+/// `services/platform_connections.rs`. White-label callers that still
+/// need the raw provider URL can opt in via `include_raw: true`.
 #[derive(Serialize)]
 struct InitiateConnectionResponse {
     auth_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    short: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
     state: String,
     provider: String,
+    expires_at: OffsetDateTime,
+    flow_id: String,
 }
 
 async fn initiate_connection(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
-    scope: OrgScope,
+    ip: ClientIp,
+    headers: HeaderMap,
     Json(req): Json<InitiateConnectionRequest>,
 ) -> Result<Json<InitiateConnectionResponse>> {
-    let auth = acl;
-    let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, &req.provider)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", req.provider)))?;
-
-    // OAuth connections require an identity-bound API key
-    let caller_identity_id = auth
-        .identity_id
-        .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
-
-    // If on_behalf_of is set, validate it walks the agent's owner chain and
-    // bind the resulting connection to the user instead of the calling agent.
-    let identity_id = if let Some(target) = req.on_behalf_of {
-        crate::services::group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target)
-            .await?
-    } else {
-        caller_identity_id
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let ctx = PlatformCallContext {
+        org_id: acl.org_id,
+        identity_id: acl.identity_id,
+        access_level: acl.access_level,
+        db: state.db.clone(),
+        registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     };
-
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
-    let creds = client_credentials::resolve(
-        &state.db,
-        &enc_key,
-        auth.org_id,
-        Some(identity_id),
-        &req.provider,
-        None,
-        req.byoc_credential_id,
+    let input = CreateConnectionInput {
+        provider: req.provider,
+        scopes: req.scopes,
+        byoc_credential_id: req.byoc_credential_id,
+        on_behalf_of: req.on_behalf_of,
+        // REST `POST /v1/connections` is the create-from-scratch entry
+        // point. The reauth/upgrade flows go through the action handler's
+        // recovery arms (or the dedicated `/upgrade_scopes` route).
+        upgrade_connection_id: None,
+    };
+    let kernel_response: CreateConnectionResponse = kernel_create_connection(
+        ctx,
+        input,
+        RequestMeta {
+            ip: ip.0.as_deref(),
+            user_agent,
+        },
     )
     .await?;
 
-    let redirect_uri = format!(
-        "{}/v1/oauth/callback",
-        state.config.public_url.trim_end_matches('/')
-    );
-
-    let byoc_id = creds.byoc_credential_id;
-    let byoc_segment = byoc_id.map_or_else(|| "_".to_string(), |id| id.to_string());
-
-    // Generate PKCE pair if the provider requires it
-    let pkce = if provider.supports_pkce {
-        Some(oauth::generate_pkce())
-    } else {
-        None
-    };
-
-    let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
-
-    // The actor (caller agent) is preserved separately from `identity_id` so the
-    // callback can audit the agent that initiated the OAuth flow even when the
-    // resulting connection is bound to the owner user via on_behalf_of.
-    let actor_segment = if caller_identity_id == identity_id {
-        "_".to_string()
-    } else {
-        caller_identity_id.to_string()
-    };
-
-    // State encodes: org_id:identity_id:provider_key:byoc_credential_id:code_verifier:actor_identity_id:upgrade_connection_id
-    // Initiate path never carries an upgrade id — the callback treats a bare
-    // trailing `_` (or absence) as "create a new connection".
-    let oauth_state = format!(
-        "{}:{}:{}:{}:{}:{}:_",
-        auth.org_id, identity_id, req.provider, byoc_segment, verifier_segment, actor_segment
-    );
-
-    let auth_url = oauth::build_auth_url(
-        &provider,
-        &creds.client_id,
-        &redirect_uri,
-        &req.scopes,
-        &oauth_state,
-        pkce.as_ref().map(|p| p.challenge.as_str()),
-    );
+    // White-label REST callers opting into `include_raw` are agreeing to
+    // render their own consent screen and have already cleared the
+    // Obsidian threat model server-side (PKCE + state binding still hold
+    // either way). The kernel response carries `raw` in a `#[serde(skip)]`
+    // field, so MCP `dispatch_create_connection` can never accidentally
+    // surface it — only this explicit opt-in does.
+    let raw = req.include_raw.then(|| kernel_response.raw.clone());
 
     Ok(Json(InitiateConnectionResponse {
-        auth_url,
-        state: oauth_state,
-        provider: req.provider,
+        auth_url: kernel_response.auth_url,
+        short: kernel_response.short,
+        raw,
+        state: kernel_response.state,
+        provider: kernel_response.provider,
+        expires_at: kernel_response.expires_at,
+        flow_id: kernel_response.flow_id,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /connect-authorize?id=F
+// ---------------------------------------------------------------------------
+//
+// Public-facing fail-fast UX gate for the HTTP-OAuth flow. Mirrors
+// `oauth_upstream::gated_authorize`: reads the dashboard session, looks up
+// the flow row, and only redirects to the provider when the session
+// actually matches. This is the chat-delivery hardening described in
+// `docs/design/agent-mcp-bootstrap-story.md` §3 ("Is this vulnerable to
+// the Obsidian pitfalls?") — without this gate, an agent could hand a
+// raw provider URL to the user with no Overslash-branded checkpoint.
+
+#[derive(Debug, Deserialize)]
+struct ConnectAuthorizeParams {
+    id: String,
+}
+
+async fn connect_authorize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConnectAuthorizeParams>,
+) -> Result<Response> {
+    let Some(flow) = oauth_connection_flow::get_by_id(&state.db, &params.id).await? else {
+        return Ok(gone_html("This OAuth link is invalid or has been revoked."));
+    };
+    if flow.consumed_at.is_some() {
+        return Ok(gone_html(
+            "This OAuth link has already been used. Initiate the connection again to retry.",
+        ));
+    }
+    if flow.expires_at <= OffsetDateTime::now_utc() {
+        return Ok(gone_html(
+            "This OAuth link has expired. Initiate the connection again to retry.",
+        ));
+    }
+
+    let session = match read_session(&state, &headers) {
+        Ok(s) => s,
+        Err(SessionError::Missing) => {
+            // Out-of-band delivery (Slack/email/agent chat) clicked
+            // without an active session. Bounce through login and
+            // resume.
+            let return_to = format!(
+                "{}/connect-authorize?id={}",
+                state.config.public_url.trim_end_matches('/'),
+                flow.id
+            );
+            let login_url = state.config.dashboard_url_for(&format!(
+                "/auth/login?next={}",
+                urlencoding::encode(&return_to)
+            ));
+            return Ok(Redirect::to(&login_url).into_response());
+        }
+        Err(SessionError::Invalid) => {
+            return Err(AppError::Unauthorized("invalid session cookie".into()));
+        }
+    };
+
+    if session_authorized_for_flow(&state, &session, flow.org_id, flow.identity_id).await? {
+        // Atomically claim the flow for redirect. `consume` is the
+        // gate's single-use UX flag — a concurrent click that already
+        // marked the row returns `None`, in which case we render the
+        // "already been used" page instead of letting two browser tabs
+        // race into the upstream provider. The `/v1/oauth/callback`
+        // security boundary still re-validates everything from the
+        // OAuth `state` parameter regardless.
+        match oauth_connection_flow::consume(&state.db, &flow.id).await? {
+            Some(row) => {
+                return Ok(Redirect::to(&row.upstream_authorize_url).into_response());
+            }
+            None => {
+                return Ok(gone_html(
+                    "This OAuth link has already been used. Initiate the connection again to retry.",
+                ));
+            }
+        }
+    }
+
+    Ok(mismatch_html())
+}
+
+async fn session_authorized_for_flow(
+    state: &AppState,
+    session: &ParsedSession,
+    flow_org_id: Uuid,
+    flow_identity_id: Uuid,
+) -> std::result::Result<bool, AppError> {
+    session_authorized_for_org_identity(state, session, flow_org_id, flow_identity_id).await
 }
 
 #[derive(Deserialize)]
@@ -188,7 +287,7 @@ async fn oauth_callback(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     let creds = client_credentials::resolve(
         &state.db,
         &enc_key,
@@ -245,59 +344,60 @@ async fn oauth_callback(
     // initiate time — which we already validated above by decoding into Uuids.
     let scope = OrgScope::new(org_id, state.db.clone());
 
-    let (connection_id, audit_action) = if let Some(existing_id) = upgrade_connection_id {
-        // Incremental upgrade: union the granted scope set with what was on
-        // the connection, update tokens, keep the same row id so every
-        // service pointing at it stays bound.
-        let existing = scope
-            .get_connection(existing_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
-        if existing.identity_id != identity_id || existing.provider_key != provider_key {
-            return Err(AppError::BadRequest(
-                "state mismatch: upgrade connection does not match identity/provider".into(),
-            ));
-        }
-        let merged: Vec<String> = merge_scopes(&existing.scopes, &granted_scopes);
-        let updated = scope
-            .update_connection_tokens_and_scopes(
-                existing_id,
-                &encrypted_access,
-                encrypted_refresh.as_deref(),
-                expires_at,
-                &merged,
-                // Refresh the label too — the provider may have renamed the
-                // account between the original connect and the upgrade.
-                // `COALESCE` on the repo side leaves the existing value
-                // intact when we pass `None` (userinfo fetch failed).
-                account_email.as_deref(),
-            )
-            .await?;
-        if !updated {
-            // Concurrent deletion between the initial get_connection() read
-            // and this update. Surface a specific error instead of telling
-            // the caller the upgrade succeeded against a row that's gone.
-            return Err(AppError::NotFound(
-                "connection was deleted during upgrade".into(),
-            ));
-        }
-        (existing_id, "connection.scopes_upgraded")
-    } else {
-        let conn = scope
-            .create_connection(overslash_db::repos::connection::CreateConnection {
-                org_id,
-                identity_id,
-                provider_key,
-                encrypted_access_token: &encrypted_access,
-                encrypted_refresh_token: encrypted_refresh.as_deref(),
-                token_expires_at: expires_at,
-                scopes: &granted_scopes,
-                account_email: account_email.as_deref(),
-                byoc_credential_id: effective_byoc_id,
-            })
-            .await?;
-        (conn.id, "connection.created")
-    };
+    let (connection_id, audit_action, effective_scopes) =
+        if let Some(existing_id) = upgrade_connection_id {
+            // Incremental upgrade: union the granted scope set with what was on
+            // the connection, update tokens, keep the same row id so every
+            // service pointing at it stays bound.
+            let existing = scope
+                .get_connection(existing_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
+            if existing.identity_id != identity_id || existing.provider_key != provider_key {
+                return Err(AppError::BadRequest(
+                    "state mismatch: upgrade connection does not match identity/provider".into(),
+                ));
+            }
+            let merged: Vec<String> = merge_scopes(&existing.scopes, &granted_scopes);
+            let updated = scope
+                .update_connection_tokens_and_scopes(
+                    existing_id,
+                    &encrypted_access,
+                    encrypted_refresh.as_deref(),
+                    expires_at,
+                    &merged,
+                    // Refresh the label too — the provider may have renamed the
+                    // account between the original connect and the upgrade.
+                    // `COALESCE` on the repo side leaves the existing value
+                    // intact when we pass `None` (userinfo fetch failed).
+                    account_email.as_deref(),
+                )
+                .await?;
+            if !updated {
+                // Concurrent deletion between the initial get_connection() read
+                // and this update. Surface a specific error instead of telling
+                // the caller the upgrade succeeded against a row that's gone.
+                return Err(AppError::NotFound(
+                    "connection was deleted during upgrade".into(),
+                ));
+            }
+            (existing_id, "connection.scopes_upgraded", merged)
+        } else {
+            let conn = scope
+                .create_connection(overslash_db::repos::connection::CreateConnection {
+                    org_id,
+                    identity_id,
+                    provider_key,
+                    encrypted_access_token: &encrypted_access,
+                    encrypted_refresh_token: encrypted_refresh.as_deref(),
+                    token_expires_at: expires_at,
+                    scopes: &granted_scopes,
+                    account_email: account_email.as_deref(),
+                    byoc_credential_id: effective_byoc_id,
+                })
+                .await?;
+            (conn.id, "connection.created", granted_scopes.clone())
+        };
 
     let _ = scope
         .log_audit(AuditEntry {
@@ -316,6 +416,34 @@ async fn oauth_callback(
         })
         .await;
 
+    {
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let provider_key = provider_key.to_string();
+        let account_email = account_email.clone();
+        // For upgrades, this is the merged scope set (the connection's full
+        // current scopes), not just the delta granted in this OAuth flow.
+        // Webhook consumers want the resulting state, not the diff.
+        let scopes = effective_scopes;
+        tokio::spawn(async move {
+            let payload = serde_json::json!({
+                "connection_id": connection_id,
+                "provider": provider_key,
+                "account_email": account_email,
+                "scopes": scopes,
+                "identity_id": identity_id,
+            });
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                audit_action,
+                payload,
+            )
+            .await;
+        });
+    }
+
     Ok(Json(serde_json::json!({
         "status": "connected",
         "connection_id": connection_id,
@@ -323,16 +451,6 @@ async fn oauth_callback(
         "account_email": account_email,
         "scopes": granted_scopes,
     })))
-}
-
-/// Return the union of `existing` and `incoming`, preserving an order that's
-/// deterministic for downstream comparison (lexicographic via BTreeSet).
-fn merge_scopes(existing: &[String], incoming: &[String]) -> Vec<String> {
-    let mut set: BTreeSet<String> = existing.iter().cloned().collect();
-    for s in incoming {
-        set.insert(s.clone());
-    }
-    set.into_iter().collect()
 }
 
 #[derive(Serialize)]
@@ -428,7 +546,7 @@ async fn upgrade_connection_scopes(
                 AppError::NotFound(format!("provider '{}' not found", existing.provider_key))
             })?;
 
-    let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)?;
+    let enc_key = state.config.keyring()?;
     // Pin the same BYOC credential the original connection used so the
     // upgrade flow runs against the same OAuth client — otherwise the
     // provider may reject the incremental request as a new client.
@@ -518,6 +636,26 @@ async fn delete_connection(
                 ip_address: ip.0.as_deref(),
             })
             .await;
+
+        let db = state.db.clone();
+        let client = state.http_client.clone();
+        let org_id = auth.org_id;
+        let identity_id = auth.identity_id;
+        tokio::spawn(async move {
+            let payload = serde_json::json!({
+                "connection_id": id,
+                "org_id": org_id,
+                "identity_id": identity_id,
+            });
+            crate::services::webhook_dispatcher::dispatch(
+                &db,
+                &client,
+                org_id,
+                "connection.deleted",
+                payload,
+            )
+            .await;
+        });
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))

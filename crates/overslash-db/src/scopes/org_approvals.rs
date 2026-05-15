@@ -22,6 +22,8 @@ impl OrgScope {
         current_resolver_identity_id: Uuid,
         action_summary: &'a str,
         action_detail: Option<serde_json::Value>,
+        disclosed_fields: Option<serde_json::Value>,
+        replay_payload: Option<serde_json::Value>,
         permission_keys: &'a [String],
         token: &'a str,
         expires_at: OffsetDateTime,
@@ -32,6 +34,8 @@ impl OrgScope {
             current_resolver_identity_id,
             action_summary,
             action_detail,
+            disclosed_fields,
+            replay_payload,
             permission_keys,
             token,
             expires_at,
@@ -109,6 +113,16 @@ impl OrgScope {
         crate::repos::approval::list_mine(self.db(), self.org_id(), identity_id).await
     }
 
+    /// List approvals for `identity_id` with the given `status`.
+    pub async fn list_mine_approvals_by_status(
+        &self,
+        identity_id: Uuid,
+        status: &str,
+    ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+        crate::repos::approval::list_mine_by_status(self.db(), self.org_id(), identity_id, status)
+            .await
+    }
+
     /// List approvals where `identity_id` is the current resolver right now.
     pub async fn list_assigned_approvals(
         &self,
@@ -125,6 +139,17 @@ impl OrgScope {
         identity_id: Uuid,
     ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
         crate::repos::approval::list_actionable_for_identity(self.db(), self.org_id(), identity_id)
+            .await
+    }
+
+    /// List pending approvals whose **requester** is `root_id` or any
+    /// descendant of it. Used by the cascade resolver to find candidates
+    /// after a remembered rule lands on `root_id`.
+    pub async fn list_pending_approvals_for_descendants(
+        &self,
+        root_id: Uuid,
+    ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+        crate::repos::approval::list_pending_for_descendants(self.db(), self.org_id(), root_id)
             .await
     }
 }

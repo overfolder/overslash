@@ -75,15 +75,24 @@
 
 <div class="page">
 	<header class="page-head">
-		<div class="breadcrumb">
-			<a href="/services" class="back">Services</a>
-			<span class="sep">/</span>
-			<span>Template Editor:</span>
-			<span class="name">{template.display_name}</span>
-			<StatusBadge variant={template.tier} />
-			{#if readOnly}
-				<span class="read-only-badge">Read-only</span>
-			{/if}
+		<div class="head-row">
+			<div class="breadcrumb">
+				<a href="/services" class="back">Services</a>
+				<span class="sep">/</span>
+				<span>Template Editor:</span>
+				<span class="name">{template.display_name}</span>
+				<StatusBadge variant={template.tier} />
+				{#if readOnly}
+					<span class="read-only-badge">Read-only</span>
+				{/if}
+			</div>
+			<button
+				type="button"
+				class="btn primary"
+				onclick={() => goto(`/services/new?template=${encodeURIComponent(template.key)}`)}
+			>
+				+ New service
+			</button>
 		</div>
 		<p class="subtitle">OpenAPI 3.1 with <code>x-overslash-*</code> extensions. Aliases like <code>risk:</code>, <code>scope_param:</code>, <code>resolve:</code> are accepted and canonicalized on save.</p>
 	</header>
@@ -147,6 +156,13 @@
 	}
 	.page-head {
 		margin-bottom: 1rem;
+	}
+	.head-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 1rem;
+		flex-wrap: wrap;
 	}
 	.breadcrumb {
 		display: flex;

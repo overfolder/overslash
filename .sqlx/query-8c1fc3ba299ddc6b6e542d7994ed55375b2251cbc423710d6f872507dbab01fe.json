@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE email_unsubscribe_tokens\n         SET redeemed_at = now()\n         WHERE token = $1 AND redeemed_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8c1fc3ba299ddc6b6e542d7994ed55375b2251cbc423710d6f872507dbab01fe"
+}

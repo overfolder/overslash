@@ -1,10 +1,10 @@
 //! Shared helpers for reading the dashboard's `oss_session` cookie off a
 //! raw [`HeaderMap`].
 //!
-//! Several public (unauthenticated) endpoints — the enrollment-consent
-//! flow and the standalone "Provide Secret" flow — want to *opportunistically*
-//! know if a visitor happens to be signed in, without using a full extractor
-//! like [`crate::extractors::SessionAuth`] (which rejects the request when no
+//! Several public (unauthenticated) endpoints — the OAuth consent flow and
+//! the standalone "Provide Secret" flow — want to *opportunistically* know if
+//! a visitor happens to be signed in, without using a full extractor like
+//! [`crate::extractors::SessionAuth`] (which rejects the request when no
 //! session is present). This module is that escape hatch.
 
 use axum::http::{HeaderMap, header};

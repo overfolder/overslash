@@ -15,7 +15,7 @@ impl OrgScope {
     /// (or maliciously) write into another tenant's log.
     pub async fn log_audit(&self, mut entry: AuditEntry<'_>) -> Result<(), sqlx::Error> {
         entry.org_id = self.org_id();
-        crate::repos::audit::log(self.db(), &entry).await
+        crate::repos::audit::log(self.db(), &entry, self.impersonated_by_identity_id).await
     }
 
     /// Query this org's audit log. The filter's `org_id` field is

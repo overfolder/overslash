@@ -11,6 +11,7 @@
 	let parentId = $state('');
 	let inherits = $state(false);
 	let groupNames = $state<string[]>([]);
+	let elicitationEnabled = $state(false);
 	let submitting = $state(false);
 	let errorMsg = $state<string | null>(null);
 
@@ -22,9 +23,16 @@
 		if (ctx.mode === 'reauth' && ctx.reauth_target) {
 			agentName = ctx.reauth_target.agent_name;
 			parentId = ctx.reauth_target.parent_id ?? '';
+			// Pre-fill from the existing binding so reconnecting doesn't
+			// silently flip the user's saved choice off. Capability gating
+			// still wins — if the rebound client no longer announces
+			// elicitation, force the toggle off.
+			elicitationEnabled =
+				ctx.reauth_target.elicitation_enabled && ctx.client.elicitation_supported;
 		} else {
 			agentName = ctx.suggested_agent_name;
 			parentId = ctx.parents.find((p) => p.is_you)?.id ?? ctx.parents[0]?.id ?? '';
+			elicitationEnabled = false;
 		}
 	});
 
@@ -58,14 +66,16 @@
 				data.context.mode === 'reauth'
 					? {
 							mode: 'reauth',
-							reauth_agent_id: data.context.reauth_target?.agent_id
+							reauth_agent_id: data.context.reauth_target?.agent_id,
+							elicitation_enabled: elicitationEnabled
 						}
 					: {
 							mode: 'new',
 							agent_name: agentName.trim(),
 							parent_id: parentId,
 							inherit_permissions: inherits,
-							group_names: groupNames
+							group_names: groupNames,
+							elicitation_enabled: elicitationEnabled
 						};
 			const res = await session.post<{ redirect_uri: string }>(
 				`/v1/oauth/consent/${encodeURIComponent(data.context.request_id)}/finish`,
@@ -260,6 +270,31 @@
 					<dd>existing rules preserved</dd>
 				</dl>
 			{/if}
+
+			<!-- Connection Settings -->
+			<div class="conn-settings">
+				<div class="conn-head">Connection Settings</div>
+				<div class="conn-option">
+					<div class="conn-option-text">
+						<div class="opt-title" id="opt-elicitation-label">Elicitation approvals</div>
+						<div class="hint">
+							Elicitation allows approving in line but stops the approval from being
+							async.
+						</div>
+						{#if !ctx.client.elicitation_supported}
+							<div class="opt-warn">
+								This MCP client did not declare elicitation support at connect time.
+							</div>
+						{/if}
+					</div>
+					<ToggleSwitch
+						checked={elicitationEnabled}
+						disabled={!ctx.client.elicitation_supported}
+						labelledby="opt-elicitation-label"
+						onchange={(v) => (elicitationEnabled = v)}
+					/>
+				</div>
+			</div>
 
 			<!-- Summary strip -->
 			<div class="summary">
@@ -587,6 +622,41 @@
 	.kv dd {
 		margin: 0;
 		color: var(--color-text);
+	}
+	.conn-settings {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding-top: 4px;
+		border-top: 1px solid var(--color-border);
+	}
+	.conn-head {
+		font: var(--text-label);
+		color: var(--color-text);
+		padding-top: 12px;
+	}
+	.conn-option {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 16px;
+	}
+	.conn-option-text {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.opt-title {
+		font-size: 14px;
+		font-weight: 500;
+		color: var(--color-text);
+	}
+	.opt-warn {
+		font-size: 12px;
+		color: var(--color-text-muted);
+		font-style: italic;
 	}
 	.summary {
 		background: var(--color-primary-bg);

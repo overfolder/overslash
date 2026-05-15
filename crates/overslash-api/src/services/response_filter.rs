@@ -1,6 +1,6 @@
 //! Server-side jq filter applied to upstream HTTP response bodies.
 //!
-//! Callers attach `filter: { lang: "jq", expr: "..." }` to an execute
+//! Callers attach `filter: { lang: "jq", expr: "..." }` to a call
 //! request and the gateway returns the filter's output alongside the
 //! original body (never replacing it).
 
@@ -13,7 +13,7 @@ use jaq_core::{
 };
 use jaq_json::{Val, read};
 use overslash_core::types::{FilterErrorKind, FilteredBody};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const FILTER_LANG_JQ: &str = "jq";
 
@@ -24,7 +24,7 @@ const MAX_FILTER_OUTPUT_VALUES: usize = 10_000;
 
 /// Tagged wire form of a response filter. Future languages add new
 /// variants; the discriminant is `lang`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "lang", rename_all = "lowercase")]
 pub enum ResponseFilter {
     Jq { expr: String },
@@ -198,13 +198,18 @@ async fn apply_jq(expr: String, body: String, timeout: Duration) -> FilteredBody
 
 /// Internal error variants for the blocking jq task. Distinct from the
 /// public `FilterErrorKind` so we can carry messages through the boundary.
-enum JqErr {
+/// Exposed to sibling modules (e.g. `services::disclosure`) so they can
+/// reuse `run_jq_blocking` without duplicating the jaq compile plumbing.
+pub(crate) enum JqErr {
     BodyNotJson(String),
     RuntimeError(String),
     OutputOverflow(usize),
 }
 
-fn run_jq_blocking(expr: &str, body: &str) -> Result<(Vec<serde_json::Value>, usize), JqErr> {
+pub(crate) fn run_jq_blocking(
+    expr: &str,
+    body: &str,
+) -> Result<(Vec<serde_json::Value>, usize), JqErr> {
     let input = read::parse_single(body.as_bytes())
         .map_err(|e| JqErr::BodyNotJson(format!("upstream body is not JSON: {e}")))?;
 
@@ -256,7 +261,7 @@ fn run_jq_blocking(expr: &str, body: &str) -> Result<(Vec<serde_json::Value>, us
     Ok((values, filtered_bytes))
 }
 
-fn cap_message(msg: String) -> String {
+pub(crate) fn cap_message(msg: String) -> String {
     // Char-based cap. `String::truncate` is byte-indexed and panics if the
     // boundary lands inside a multi-byte UTF-8 sequence — reachable any time
     // the upstream error message contains non-ASCII (provider error strings

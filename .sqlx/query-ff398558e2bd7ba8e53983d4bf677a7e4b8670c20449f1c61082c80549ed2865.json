@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_mcp_elicitations\n            SET status = $2, completed_at = now()\n          WHERE agent_identity_id = $1 AND status IN ($3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff398558e2bd7ba8e53983d4bf677a7e4b8670c20449f1c61082c80549ed2865"
+}

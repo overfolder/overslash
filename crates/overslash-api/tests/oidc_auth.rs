@@ -978,14 +978,16 @@ async fn login_with_db_creds_fails_when_disabled() {
 }
 
 // ---------------------------------------------------------------------------
-// Env var conflict in IdP config creation
+// Dedicated IdP config coexists with env-var Overslash-managed sign-in.
+// Login resolution prefers the dedicated config (see
+// `resolve_auth_credentials` in routes/auth.rs).
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn create_idp_config_rejects_env_var_conflict() {
+async fn create_idp_config_coexists_with_env_var_creds() {
     let pool = common::test_pool().await;
 
-    // Start with Google env creds
+    // Start with Google env creds set on the server
     let (base, client) = common::start_api_with_auth_providers(
         pool.clone(),
         Some(("env_google_id".into(), "env_google_secret".into())),
@@ -1005,7 +1007,9 @@ async fn create_idp_config_rejects_env_var_conflict() {
         .unwrap();
     let token = token_resp["token"].as_str().unwrap();
 
-    // Try to create DB config for google — should conflict with env vars
+    // Creating a dedicated DB config for google must now succeed —
+    // env-var creds are the Overslash-managed sign-in path, gated
+    // separately via `orgs.allow_overslash_managed_signin` + `org_invites`.
     let resp = client
         .post(format!("{base}/v1/org-idp-configs"))
         .header("cookie", format!("oss_session={token}"))
@@ -1018,15 +1022,20 @@ async fn create_idp_config_rejects_env_var_conflict() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 409, "should reject env-var conflict");
+    assert_eq!(
+        resp.status(),
+        200,
+        "dedicated config should be allowed alongside env-var creds"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// Update rejects env-var-configured providers
+// Updating a dedicated IdP is allowed even when the server has env-var
+// creds for the same provider — the two paths coexist.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn update_idp_config_rejects_env_configured_provider() {
+async fn update_idp_config_allowed_alongside_env_creds() {
     let pool = common::test_pool().await;
 
     // Create org with DB config first (no env creds)
@@ -1050,8 +1059,9 @@ async fn update_idp_config_rejects_env_configured_provider() {
         .unwrap();
     let config_id = create_resp["id"].as_str().unwrap();
 
-    // Now start API WITH google env creds — update should be rejected.
-    // Reuse the same pool so the config persists, and use the same API key.
+    // Restart the API with google env creds set. The persistent dedicated
+    // config from the first instance is still updatable — the env path is
+    // additive, not exclusive.
     let (base2, client2) = common::start_api_with_auth_providers(
         pool,
         Some(("env_id".into(), "env_secret".into())),
@@ -1070,8 +1080,8 @@ async fn update_idp_config_rejects_env_configured_provider() {
 
     assert_eq!(
         resp.status(),
-        409,
-        "should reject update of env-configured provider"
+        200,
+        "dedicated IdP should be updatable alongside env-var creds"
     );
 }
 
@@ -1212,13 +1222,30 @@ async fn list_providers_includes_db_configured_for_org() {
         .iter()
         .map(|p| p["key"].as_str().unwrap())
         .collect();
-    assert!(keys.contains(&"google"), "env Google: {keys:?}");
-    assert!(keys.contains(&"slack"), "DB Slack: {keys:?}");
-    assert!(keys.contains(&"dev"), "dev login: {keys:?}");
+    // Multi-org trust-domain rule (DECISIONS.md D12, 2026-05 amendment):
+    // when the caller is pointed at a corp org, `/auth/providers` lists
+    // that org's dedicated IdPs PLUS — when `allow_overslash_managed_signin`
+    // is on — any Overslash-managed env providers. `bootstrap_org_identity`
+    // creates the org via `POST /v1/orgs`, which defaults the flag to true,
+    // so Google appears alongside the dedicated Slack config. Admission is
+    // still invite-only on the env path (see `provision_org_subdomain`).
+    assert_eq!(resp["scope"], "org", "scope: {}", resp["scope"]);
+    assert!(
+        keys.contains(&"slack"),
+        "dedicated slack IdP must be listed; got {keys:?}"
+    );
+    assert!(
+        keys.contains(&"google"),
+        "managed-signin env provider must be listed when flag is on; got {keys:?}"
+    );
 
-    // Slack should be source: "db"
+    // Slack is the dedicated config (source: "db"), Google is the
+    // env-var managed-signin entry (source: "env", managed: true).
     let slack = providers.iter().find(|p| p["key"] == "slack").unwrap();
     assert_eq!(slack["source"], "db");
+    let google = providers.iter().find(|p| p["key"] == "google").unwrap();
+    assert_eq!(google["source"], "env");
+    assert_eq!(google["managed"], true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,10 +1289,14 @@ async fn list_idp_configs_shows_env_as_readonly() {
     let google = configs.iter().find(|c| c["provider_key"] == "google");
     assert!(google.is_some(), "Google should be listed");
     assert_eq!(google.unwrap()["source"], "env");
+    // env rows now carry an explicit `managed: true` marker so the
+    // dashboard can render the invite-gated copy.
+    assert_eq!(google.unwrap()["managed"], true);
 
     let github = configs.iter().find(|c| c["provider_key"] == "github");
     assert!(github.is_some(), "GitHub should be listed");
     assert_eq!(github.unwrap()["source"], "env");
+    assert_eq!(github.unwrap()["managed"], true);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oauth_preview_origins\n            (preview_id, origin, nonce, pkce_verifier, org_slug, next_path, expires_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "00af7f4b3954283e78ab64dcc8b07391baf6812e3312f943bdf1c299d3064f99"
+}

@@ -1,0 +1,213 @@
+{
+  "displayName": "${display_prefix} Business Metrics",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      { "xPos": 0, "yPos": 0, "width": 12, "height": 2, "widget": { "title": "Tenancy", "text": { "content": "---", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 2, "width": 4, "height": 4,
+        "widget": {
+          "title": "Total Orgs",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/orgs_total\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 4, "yPos": 2, "width": 4, "height": 4,
+        "widget": {
+          "title": "Total Users",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/users_total\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 8, "yPos": 2, "width": 4, "height": 4,
+        "widget": {
+          "title": "Active API Keys",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/api_keys_active\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 6, "width": 6, "height": 8,
+        "widget": {
+          "title": "Orgs by Tier",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/orgs_total\"",
+                  "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["metric.labels.tier"] }
+                }
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 6, "width": 6, "height": 8,
+        "widget": {
+          "title": "Identities by Kind (active 7d)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/identities_active_7d\"",
+                  "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["metric.labels.kind"] }
+                }
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      { "xPos": 0, "yPos": 14, "width": 12, "height": 2, "widget": { "title": "Approvals & Executions", "text": { "content": "---", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 16, "width": 4, "height": 4,
+        "widget": {
+          "title": "Approvals Pending",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/approvals_pending\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            },
+            "thresholds": [
+              { "value": 10, "color": "YELLOW", "direction": "ABOVE" },
+              { "value": 50, "color": "RED", "direction": "ABOVE" }
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 4, "yPos": 16, "width": 4, "height": 4,
+        "widget": {
+          "title": "Oldest Pending Approval (s)",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/approvals_pending_oldest_seconds\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 8, "yPos": 16, "width": 4, "height": 4,
+        "widget": {
+          "title": "Approvals Resolved 24h",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/approvals_resolved_24h\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 20, "width": 6, "height": 8,
+        "widget": {
+          "title": "Executions 24h by Status",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/executions_24h\"",
+                  "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["metric.labels.status"] }
+                }
+              },
+              "plotType": "STACKED_BAR"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 20, "width": 6, "height": 8,
+        "widget": {
+          "title": "Top Templates by Service Instances",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/service_instances_total\"",
+                  "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["metric.labels.template_key"] }
+                }
+              },
+              "plotType": "STACKED_BAR"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      { "xPos": 0, "yPos": 28, "width": 12, "height": 2, "widget": { "title": "Secrets & Connections", "text": { "content": "---", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 30, "width": 4, "height": 4,
+        "widget": {
+          "title": "Secrets",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/secrets_total\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 4, "yPos": 30, "width": 4, "height": 4,
+        "widget": {
+          "title": "Secret Versions",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/secret_versions_total\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+              }
+            }
+          }
+        }
+      },
+      {
+        "xPos": 8, "yPos": 30, "width": 4, "height": 4,
+        "widget": {
+          "title": "Active Connections",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/connections_active\"",
+                "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN", "crossSeriesReducer": "REDUCE_SUM" }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

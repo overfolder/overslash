@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE executions SET expires_at = now() - interval '1 second'\n         WHERE approval_id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "47a8f05c10c1bfc35f8c805f115514b6e93a5a74498458a1de615d657965c5b5"
+}

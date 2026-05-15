@@ -136,7 +136,12 @@ fn normalize(v: &mut [f32]) {
 /// reuse the cache.
 #[cfg(feature = "embeddings")]
 pub struct FastembedEmbedder {
-    inner: fastembed::TextEmbedding,
+    // fastembed 5.x changed `embed` to take `&mut self`, but the trait — and
+    // every caller via `Arc<dyn Embedder>` — holds a shared reference. Wrap
+    // the model so the lock lives entirely inside this impl. ONNX inference
+    // is the bottleneck and is already serialized internally, so the mutex
+    // adds no meaningful contention.
+    inner: std::sync::Mutex<fastembed::TextEmbedding>,
 }
 
 #[cfg(feature = "embeddings")]
@@ -151,7 +156,9 @@ impl FastembedEmbedder {
         }
         let inner = fastembed::TextEmbedding::try_new(opts)
             .map_err(|e| EmbedError::Backend(format!("fastembed init failed: {e}")))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner: std::sync::Mutex::new(inner),
+        })
     }
 }
 
@@ -162,7 +169,11 @@ impl Embedder for FastembedEmbedder {
             return Ok(Vec::new());
         }
         let owned: Vec<String> = texts.iter().map(|s| (*s).to_string()).collect();
-        self.inner
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|e| EmbedError::Backend(format!("fastembed mutex poisoned: {e}")))?;
+        guard
             .embed(owned, None)
             .map_err(|e| EmbedError::Backend(format!("fastembed embed failed: {e}")))
     }

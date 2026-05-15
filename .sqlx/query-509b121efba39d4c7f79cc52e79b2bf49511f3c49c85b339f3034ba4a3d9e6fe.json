@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_checkouts SET fulfilled_org_id = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "509b121efba39d4c7f79cc52e79b2bf49511f3c49c85b339f3034ba4a3d9e6fe"
+}

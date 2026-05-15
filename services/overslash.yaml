@@ -1,4 +1,5 @@
 openapi: 3.1.0
+x-overslash-runtime: platform
 info:
   title: Overslash Platform
   description: Administrative access to the Overslash platform
@@ -17,8 +18,11 @@ platform_actions:
   delete_secrets:
     description: "Delete secrets permanently"
     risk: delete
-  manage_templates:
-    description: "Create and manage service templates"
+  manage_templates_own:
+    description: "Author and manage service templates under your own scope"
+    risk: write
+  manage_templates_publish:
+    description: "Publish service templates org-wide or globally (dashboard only)"
     risk: delete
   manage_webhooks:
     description: "Create, update, and delete webhooks"
@@ -32,8 +36,8 @@ platform_actions:
   create_users:
     description: "Create user identities"
     risk: delete
-  manage_connections:
-    description: "Create and delete OAuth connections"
+  manage_connections_own:
+    description: "Create and delete OAuth connections the caller owns"
     risk: write
   manage_byoc:
     description: "Manage bring-your-own-credential configurations"
@@ -41,8 +45,17 @@ platform_actions:
   resolve_approvals:
     description: "Resolve pending approval requests"
     risk: write
-  manage_services:
-    description: "Create service instances"
+  manage_services_own:
+    description: "Create and update service instances the caller owns"
+    risk: write
+  manage_services_share:
+    description: "Grant service instances to non-Myself groups (org-wide sharing)"
+    risk: write
+  request_secrets_own:
+    description: "Mint a signed provide URL to request a secret value for the caller's own identity (or a descendant)"
+    risk: write
+  request_secrets_share:
+    description: "Mint a signed provide URL targeting another identity in the org (admin-only — never auto-grantable to agents)"
     risk: write
   delete_services:
     description: "Delete and manage service instance lifecycle"
@@ -53,3 +66,146 @@ platform_actions:
   manage_api_keys:
     description: "Create API keys"
     risk: delete
+  list_pending:
+    description: >
+      List approved actions with a pending execution, ready to dispatch or
+      cancel. Scoped to the caller's own requests. Returns an array of approval
+      objects; each includes a nested execution with status, expires_at, and
+      result.
+    risk: read
+  call_pending:
+    description: >
+      Dispatch a previously-approved action. Requires params.approval_id
+      (string). The execution must still be in pending state — it expires 15
+      minutes after the approval was granted.
+    risk: write
+  cancel_pending:
+    description: >
+      Cancel a pending execution. Requires params.approval_id (string). The
+      requesting agent or any resolver with write access may cancel.
+    risk: write
+
+  ping:
+    description: "Ping the platform runtime (no-op health check)"
+    risk: read
+
+  list_templates:
+    description: "List all service templates visible to the caller"
+    risk: read
+    permission: manage_templates_own
+
+  get_template:
+    description: "Get a service template by key"
+    risk: read
+    permission: manage_templates_own
+    params:
+      key: { type: string, required: true }
+
+  create_template:
+    description: "Create a new service template (atomic — succeeds or returns validation errors)"
+    risk: write
+    permission: manage_templates_own
+    params:
+      openapi: { type: string, required: true }
+      user_level: { type: boolean, required: false }
+
+  import_template:
+    description: "Import an OpenAPI spec as a draft template (lenient — surfaces validation issues without rejecting)"
+    risk: write
+    permission: manage_templates_own
+    params:
+      openapi: { type: string, required: true }
+      user_level: { type: boolean, required: false }
+      include_operations: { type: array, required: false }
+      key: { type: string, required: false }
+      display_name: { type: string, required: false }
+      draft_id: { type: string, required: false }
+
+  delete_template:
+    # `risk: write` (not `delete`) so a caller with the standard
+    # Everyone-group `write` ceiling on `overslash` can delete templates they
+    # own. The destructive case — deleting an org-tier template — is gated
+    # inside the kernel via an admin-access check (and ownership for user-tier
+    # rows), so the runtime `risk` reflects the user-tier path the agent
+    # surface is designed for.
+    description: "Delete an active service template by key (user-tier; org-tier requires admin access)"
+    risk: write
+    permission: manage_templates_own
+    params:
+      key: { type: string, required: true }
+
+  list_services:
+    description: "List service instances visible to the caller"
+    risk: read
+    permission: manage_services_own
+
+  get_service:
+    description: "Get a service instance by name or id"
+    risk: read
+    permission: manage_services_own
+    params:
+      name: { type: string, required: true }
+      include_inactive: { type: boolean, required: false }
+
+  create_service:
+    description: >
+      Create a service instance from a template. The instance is auto-granted to
+      the owner's Myself group with admin access and auto_approve_reads. For
+      OAuth-backed templates the new row carries credentials_status =
+      "needs_authentication" — start the OAuth flow before calling actions.
+    risk: write
+    permission: manage_services_own
+    params:
+      template_key: { type: string, required: true }
+      name: { type: string, required: false }
+      connection_id: { type: string, required: false }
+      secret_name: { type: string, required: false }
+      url: { type: string, required: false }
+      status: { type: string, required: false }
+      user_level: { type: boolean, required: false }
+      on_behalf_of: { type: string, required: false }
+
+  update_service:
+    description: "Update mutable fields on a service instance (name, connection, secret, url)"
+    risk: write
+    permission: manage_services_own
+    params:
+      id: { type: string, required: true }
+      name: { type: string, required: false }
+      connection_id: { type: string, required: false }
+      secret_name: { type: string, required: false }
+      url: { type: string, required: false }
+
+  create_connection:
+    description: >
+      Start the OAuth dance for a provider. Returns an `auth_url` pointing
+      at Overslash's `/connect-authorize` gate (and an optional shortened
+      form). Hand that URL to the user — the gate fail-fasts on session
+      mismatch before redirecting to the provider, mitigating the chat-
+      delivery pitfalls catalogued in the Obsidian "MCP meets OAuth"
+      writeup. The raw provider URL is intentionally not surfaced over MCP;
+      REST callers can opt-in via `include_raw` for white-label
+      integrations. The actual connection row is minted in the OAuth
+      callback after the user clicks; poll `overslash_auth(action:
+      "service_status")` to see it land.
+    risk: write
+    permission: manage_connections_own
+    params:
+      provider: { type: string, required: true }
+      scopes: { type: array, required: false }
+      byoc_credential_id: { type: string, required: false }
+      on_behalf_of: { type: string, required: false }
+
+  request_secret:
+    description: >
+      Mint a signed, single-use URL the user can open to provide a secret
+      value (e.g. an API key). The agent never sees the value — only the URL.
+      Returns request_id, provide_url, optional short_url, and expires_at.
+      Defaults to the caller's own identity; targeting another identity
+      requires `request_secrets_share`.
+    risk: write
+    permission: request_secrets_own
+    params:
+      secret_name: { type: string, required: true }
+      identity_id: { type: string, required: false }
+      purpose: { type: string, required: false }

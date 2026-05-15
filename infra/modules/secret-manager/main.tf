@@ -146,8 +146,121 @@ resource "google_secret_manager_secret_version" "google_services_client_secret" 
   }
 }
 
+# --- oversla.sh shortener API key. Clients (overslash-api) and the shortener
+#     service both read this secret. Value populated manually via
+#     `gcloud secrets versions add` (random 32+ byte base64). ---
+
+resource "google_secret_manager_secret" "shortener_api_key" {
+  secret_id = "${var.base_prefix}-shortener-api-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "shortener_api_key" {
+  secret      = google_secret_manager_secret.shortener_api_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# --- Stripe billing secrets (only populated when cloud_billing=true).
+#     Values populated manually via `gcloud secrets versions add` after apply.
+
+resource "google_secret_manager_secret" "stripe_secret_key" {
+  secret_id = "${var.base_prefix}-stripe-secret-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "stripe_secret_key" {
+  secret      = google_secret_manager_secret.stripe_secret_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret" "stripe_webhook_secret" {
+  secret_id = "${var.base_prefix}-stripe-webhook-secret"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "stripe_webhook_secret" {
+  secret      = google_secret_manager_secret.stripe_webhook_secret.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# --- PagerDuty integration key (only used when `pagerduty_enabled=true` on the
+#     monitoring module). Populated manually via:
+#       gcloud secrets versions add overslash-prod-pagerduty-integration-key \
+#         --data-file=- < /path/to/integration-key
+
+resource "google_secret_manager_secret" "pagerduty_integration_key" {
+  secret_id = "${var.base_prefix}-pagerduty-integration-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "pagerduty_integration_key" {
+  secret      = google_secret_manager_secret.pagerduty_integration_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# --- Transactional-email provider API key (only consumed when
+#     email_provider != "" on the cloud-run module). Populated manually via:
+#       echo -n "re_…" | gcloud secrets versions add <base_prefix>-email-api-key --data-file=-
+
+resource "google_secret_manager_secret" "email_api_key" {
+  secret_id = "${var.base_prefix}-email-api-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "email_api_key" {
+  secret      = google_secret_manager_secret.email_api_key.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+output "stripe_secret_key_secret_id" {
+  value = google_secret_manager_secret.stripe_secret_key.secret_id
+}
+
+output "stripe_webhook_secret_secret_id" {
+  value = google_secret_manager_secret.stripe_webhook_secret.secret_id
+}
+
 output "db_password_secret_id" {
   value = google_secret_manager_secret.db_password.secret_id
+}
+
+output "shortener_api_key_secret_id" {
+  value = google_secret_manager_secret.shortener_api_key.secret_id
 }
 
 output "db_password_value" {
@@ -177,4 +290,12 @@ output "google_services_client_id_secret_id" {
 
 output "google_services_client_secret_secret_id" {
   value = google_secret_manager_secret.google_services_client_secret.secret_id
+}
+
+output "pagerduty_integration_key_secret_id" {
+  value = google_secret_manager_secret.pagerduty_integration_key.secret_id
+}
+
+output "email_api_key_secret_id" {
+  value = google_secret_manager_secret.email_api_key.secret_id
 }

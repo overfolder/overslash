@@ -23,9 +23,8 @@ impl OrgScope {
         &self,
         name: &str,
         description: &str,
-        allow_raw_http: bool,
     ) -> Result<GroupRow, sqlx::Error> {
-        group::create(self.db(), self.org_id(), name, description, allow_raw_http).await
+        group::create(self.db(), self.org_id(), name, description).await
     }
 
     /// Look up a group by id, scoped to this org. Returns `None` if the id
@@ -45,17 +44,8 @@ impl OrgScope {
         id: Uuid,
         name: &str,
         description: &str,
-        allow_raw_http: bool,
     ) -> Result<Option<GroupRow>, sqlx::Error> {
-        group::update(
-            self.db(),
-            id,
-            self.org_id(),
-            name,
-            description,
-            allow_raw_http,
-        )
-        .await
+        group::update(self.db(), id, self.org_id(), name, description).await
     }
 
     /// Delete a group, scoped to this org.
@@ -71,6 +61,42 @@ impl OrgScope {
     /// Whether an identity is a member of the system "Admins" group of this org.
     pub async fn is_identity_in_admins(&self, identity_id: Uuid) -> Result<bool, sqlx::Error> {
         group::is_identity_in_admins(self.db(), self.org_id(), identity_id).await
+    }
+
+    /// Find the Myself group for a user-identity in this org, if one exists.
+    pub async fn find_self_group(
+        &self,
+        identity_id: Uuid,
+    ) -> Result<Option<GroupRow>, sqlx::Error> {
+        group::find_self_group(self.db(), self.org_id(), identity_id).await
+    }
+
+    /// Ensure a Myself group exists for a user-identity in this org. Creates it
+    /// (and adds the identity as the sole member) if missing. Returns the group id.
+    pub async fn ensure_self_group(
+        &self,
+        identity_id: Uuid,
+        label: &str,
+    ) -> Result<Uuid, sqlx::Error> {
+        group::ensure_self_group(self.db(), self.org_id(), identity_id, label).await
+    }
+
+    /// Auto-grant a service instance to its owner's Myself group with admin
+    /// access and `auto_approve_reads = true`. Idempotent.
+    pub async fn grant_service_to_self_group(
+        &self,
+        owner_identity_id: Uuid,
+        service_instance_id: Uuid,
+        owner_label: &str,
+    ) -> Result<(), sqlx::Error> {
+        group::grant_to_self_group(
+            self.db(),
+            self.org_id(),
+            owner_identity_id,
+            service_instance_id,
+            owner_label,
+        )
+        .await
     }
 
     // ── Grants ───────────────────────────────────────────────────────
@@ -110,6 +136,27 @@ impl OrgScope {
         group_id: Uuid,
     ) -> Result<bool, sqlx::Error> {
         group::remove_grant(self.db(), self.org_id(), grant_id, group_id).await
+    }
+
+    /// Partial-update a grant on a group, scoped to this org. Each field is
+    /// optional; `None` means "leave that column untouched". Returns `None`
+    /// when the grant id doesn't belong to a group in this org.
+    pub async fn update_group_grant(
+        &self,
+        grant_id: Uuid,
+        group_id: Uuid,
+        access_level: Option<&str>,
+        auto_approve_reads: Option<bool>,
+    ) -> Result<Option<GroupGrantRow>, sqlx::Error> {
+        group::update_grant(
+            self.db(),
+            self.org_id(),
+            grant_id,
+            group_id,
+            access_level,
+            auto_approve_reads,
+        )
+        .await
     }
 
     /// List the groups that grant access to a single service instance. The
@@ -174,11 +221,12 @@ impl OrgScope {
 
     // ── Ceiling queries (hot auth path) ──────────────────────────────
 
-    /// Aggregate the user's group ceiling (grants + `allow_raw_http`) within
-    /// this org. The user identity, the groups, and the granted service
-    /// instances must all live in `self.org_id()` — cross-tenant rows are
-    /// excluded at the SQL boundary, which is what makes this safe to call
-    /// from the auth-time `OrgAcl` extractor.
+    /// Aggregate the user's group ceiling (grants) within this org. The user
+    /// identity, the groups, and the granted service instances must all live
+    /// in `self.org_id()` — cross-tenant rows are excluded at the SQL
+    /// boundary, which is what makes this safe to call from the auth-time
+    /// `OrgAcl` extractor. Raw HTTP access is just another grant in the
+    /// returned set (on the system-managed `http` instance).
     pub async fn get_ceiling_for_user(
         &self,
         user_identity_id: Uuid,

@@ -1,10 +1,10 @@
 # Overslash — Specification
 
-A standalone, multi-tenant **identity and authentication gateway** for AI agents. Overslash handles everything between "an agent wants to call an external API" and "the API call executes with the right credentials."
+A standalone, multi-tenant **identity and authentication gateway** for AI agents. Overslash handles everything between "an agent wants to call an external API" and "the API call runs with the right credentials."
 
-Overslash is **purely an auth and identity layer**. It does not orchestrate agents, manage compute, track which nodes are connected, schedule work, or know anything about the runtime environment agents live in. It answers one question: "is this identity allowed to do this action with these credentials?" — and if yes, executes the authenticated HTTP request.
+Overslash is **purely an auth and identity layer**. It does not orchestrate agents, manage compute, track which nodes are connected, schedule work, or know anything about the runtime environment agents live in. It answers one question: "is this identity allowed to do this action with these credentials?" — and if yes, calls the authenticated HTTP request.
 
-It owns: identity hierarchy, secret management, OAuth flows, permission rules, human approval workflows, action execution, service registry, and audit trail.
+It owns: identity hierarchy, secret management, OAuth flows, permission rules, human approval workflows, action calls, service registry, and audit trail.
 
 The name: it slashes through doors and auth for the user.
 
@@ -41,7 +41,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 9. Service registry — YAML-defined services (global + org-extensible) with human-readable action descriptions
 10. Audit everything — every action, approval, secret access, connection change
 11. Three integration surfaces over one backend — REST API, CLI (`overslash`), and MCP server, so any HTTP client, shell-capable agent, or MCP-aware editor can use Overslash without rebuilding the same plumbing
-12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_execute`, `overslash_auth`, `overslash_approve`) available across REST, CLI, and MCP surfaces
+12. Meta tools — minimal tool interface for LLM agents (`overslash_search`, `overslash_call`, `overslash_auth`, `overslash_approve`) available across REST, CLI, and MCP surfaces
 13. Web UI — for org admins and users to manage everything visually, served by Vercel in cloud mode and embedded same-origin in self-hosted mode (`overslash web`)
 14. Single-binary self-hosting — `overslash` ships everything (API, dashboard, MCP server) so an org can run the entire product from one executable
 
@@ -51,7 +51,7 @@ Overslash extracts all of this into a single service with a clean REST API that 
 2. **Orchestrating agents** — Overslash does not schedule, dispatch, or coordinate agent work. It has no concept of tasks, queues, or workflows.
 3. **Managing compute or infrastructure** — no awareness of nodes, containers, runtimes, or where agents run. Overslash doesn't know or care what machine an agent lives on.
 4. **Tracking agent connectivity** — Overslash does not monitor which agents are online, healthy, or reachable. It authenticates requests when they arrive.
-5. **Executing code or managing VMs** — Overslash executes HTTP requests, not arbitrary programs
+5. **Executing code or managing VMs** — Overslash calls HTTP requests, not arbitrary programs
 6. **Channel-specific UIs** (Telegram bots, WhatsApp) — callers build their own; Overslash provides approval URLs
 7. **Being a general-purpose API gateway** — no rate limiting of upstream APIs, no caching, no transformation
 
@@ -151,6 +151,15 @@ The stdio shim requires `overslash mcp login` once (runs the same OAuth flow int
 
 `serve` and `web` share the same `create_app` router and config — `web` only adds a static-file fallback and same-origin defaults. The `mcp` shim carries no Postgres or Axum dependency; it is a tiny stdio↔HTTP pipe.
 
+### Multi-Org Deployment Model
+
+- **Cloud** serves orgs off a single wildcard origin `app.overslash.com`. `*.app.overslash.com` resolves to the same instance; subdomain middleware maps the `Host` header to an `org_id`. `app.overslash.com` (the root) hosts Overslash-level login and the `/account` page; `<slug>.app.overslash.com` hosts an individual corp org.
+- **Self-hosted** runs the same binary and code path. Two env flags scope it down:
+  - `ALLOW_ORG_CREATION=false` — disables `POST /v1/orgs` and the dashboard's "Create org" CTAs. Existing orgs keep working.
+  - `SINGLE_ORG_MODE=<slug>` — disables subdomain middleware; every request is scoped to the named org, the root-domain login lands directly in that org with no personal-org auto-creation, and the org switcher is hidden.
+
+Self-hosted operators who want the "old" single-org experience set `SINGLE_ORG_MODE=<their-org-slug>`. Self-hosted operators who want full multi-org (e.g., an internal PaaS) leave both flags unset. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
+
 ---
 
 ## 4. Identity Hierarchy
@@ -173,7 +182,17 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
 
 **Per-org IdP configuration:** Each org configures its own IdPs. An org can enable multiple IdPs simultaneously (e.g., Google for convenience + corporate Okta for SSO).
 
-**User provisioning:** On first login via an IdP, Overslash creates the user identity in the org (matched by email domain or explicit org assignment). Subsequent logins update the user's profile (name, avatar) from the IdP's claims.
+**User provisioning.** Overslash separates "the human" (`users` table) from "the actor in an org" (existing `identities` table linked via `user_id`). A `users` row is either **Overslash-backed** (bound to a root-level IdP in `overslash_idp_provider`/`overslash_idp_subject`, owns a personal org) or **org-only** (bound only through `identities` in corp orgs). Lookups at login are always by `(provider, subject)`; email is informational and is never used to merge users across IdPs or grant memberships.
+
+**How humans end up in orgs.**
+
+- *Personal org* — auto-created the first time a human signs in at the root domain via an Overslash-level IdP. Exactly one member, always the owner. Personal orgs cannot configure per-org IdPs and have no subdomain.
+- *Corp org, as creator* — an Overslash-backed user creates a corp org via `POST /v1/orgs`; they receive a regular `admin` membership + an admin `identities` row in the new org. An org may stay on the Overslash-level IdP indefinitely (creator is its sole admin) or later configure its own IdP to onboard more humans. The creator's Overslash-level login continues to reach the org in either case — they're just an admin, no special flag.
+- *Corp org, as member* — sign in through any IdP the org has enabled on `<slug>.app.overslash.com` (per-org `org_idp_configs` row, or Overslash's shared OAuth app when the org opts in). Two admission paths, picked by the org admin:
+  - **Domain-whitelist path** (default for pre-2026-05 orgs): auto-provisioning is gated by `org_idp_configs.allowed_email_domains` (empty list = trust the IdP entirely).
+  - **Invite-gated path** (`orgs.allow_overslash_managed_signin = true`, default for orgs created after migration 066): every new member must have a pending `org_invites(email, role)` row — regardless of which IdP authenticates them. Authentication is decoupled from membership: the IdP proves who you are, the invite list proves you belong. Membership crossing trust domains is still blocked unless the admin explicitly invites the email.
+
+**No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
 
 ### Hierarchy
 
@@ -185,7 +204,7 @@ Org (acme)
             └── SubAgent (emailer)      depth=2, parent=henry
 ```
 
-- **Users** created by org-admins (or auto-provisioned on first IdP login)
+- **Users** auto-provisioned on first IdP login — at the root domain for personal orgs, at the org subdomain for corp org members, or via `POST /v1/orgs` for corp org creators (who become regular admins)
 - **Agents** created by users
 - **Sub-agents** created by agents — no user intervention needed
 - **UI equivalence**: the UI does not distinguish between Agents and Sub-agents — they are all presented as "Agents" in the tree. The `sub_agent` kind remains an API/backend distinction (for idle cleanup and depth tracking), but the UI treats them identically. The only difference visible to users is who the parent is.
@@ -194,25 +213,13 @@ Org (acme)
 
 ### Agent Enrollment
 
-Two enrollment flows connect agents to the identity hierarchy:
+Enrollment is **MCP OAuth 2.1** (MCP spec 2025-06-18 — RFC 8414 + RFC 7591 + PKCE). There is one path: an MCP client (Claude Code, Cursor, Windsurf, an `overslash mcp login` CLI run for editors that only take a static Bearer header, …) connects to `/mcp`, discovers the Authorization Server at `/.well-known/oauth-authorization-server`, registers itself via `POST /oauth/register`, and drives the user through a browser-hosted Authorization Code + PKCE flow at `/oauth/authorize`. A short instruction page for agents lives at `/SKILL.md` (served by the API, see the repo-root `SKILL.md`).
 
-**User-initiated enrollment**: A user creates the agent identity in the dashboard or via API, providing a name, parent placement, and optional `inherit_permissions` flag. Overslash returns a single-use enrollment token. The user pastes the enrollment snippet (containing the Overslash URL, token, and a link to `overslash.dev/enrollment/SKILL.md`) into the agent's conversation. The agent exchanges the single-use token for a permanent API key. Simple, controlled — the user decides when and where the agent exists.
+**Consent.** After the user signs in at `/oauth/authorize`, the server pauses the authorize request and redirects the browser to the dashboard at `/oauth/consent?request_id=…`. The dashboard renders the enrollment card (design-system styled) and calls a small JSON API (`GET /v1/oauth/consent/{request_id}`, `POST /v1/oauth/consent/{request_id}/finish`). In **new** mode the user picks a parent (defaults to themselves), toggles `inherit_permissions` (off by default — users opt in rather than out), and optionally attaches the agent to groups (search-and-create, with `everyone` implicit and never shown). In **reauth** mode — recognised when a DCR re-registration produces a new `client_id` but the previously-enrolled `client_name` + `software_id` still match an unrevoked binding for the same user — the card skips the form and simply rebinds the new `client_id` to the existing agent, preserving that agent's rules and groups.
 
-The enrollment token has a **fixed 15-minute TTL**. The agent identity appears in the hierarchy immediately in a **pending enrollment** state (inactive until token exchange). If the token expires unused, the pending identity is cleaned up automatically.
+**Binding.** On submission, the server persists a `(user_identity_id, client_id) → agent_identity_id` row and the dashboard follows the returned `redirect_uri` back to the MCP client with an auth code bound to the agent. Subsequent authorizations from the same `(user, client_id)` reuse the binding and skip the prompt. The issued access token's `sub` is the agent; `/mcp` refuses any token whose `sub` points at a user-kind identity so a pre-binding or CSRF-stolen token can't slip through. The consent screen is hosted inline in the OAuth flow — there is no separate "consent URL" sent out-of-band.
 
-**Agent-initiated enrollment**: The agent discovers Overslash (e.g., via `overslash.dev/SKILL.md` → `overslash.dev/enrollment/SKILL.md` or environment hints) and requests an enrollment token, proposing a name and optional metadata about itself. This token only grants the ability to generate a consent URL. The agent presents this URL to a user (in chat, email, etc.). The authenticated user visits the consent URL, where they can:
-
-- **Edit the agent's proposed name** (pre-filled but fully editable)
-- **Choose placement** in the hierarchy (defaults to directly under the approving user)
-- **Review default settings** (inherit_permissions, etc.)
-
-The consent URL is scoped to the org. Any authenticated user in the org with agent-creation permissions can approve — not just one specific user. After approval, the agent's token is exchanged for a permanent API key server-side. The agent, polling or via webhook, picks up the key.
-
-**Picking up the key.** The agent retrieves its permanent API key from `GET /v1/enrollment/{token}` (the same single-use token from the original request). Until consent, this returns `{ status: "awaiting_consent" }`. After consent it returns `{ status: "ready", api_key: "..." }` exactly once and invalidates the token. The approved-but-unclaimed state has its own **15-minute TTL** (separate from the 15-minute pre-approval TTL); if unclaimed, the enrolled identity is rolled back. Agents can use polling, SSE (§10 *Async event delivery*), or webhooks for the transition.
-
-Note: `inherit_permissions` is not offered during agent-initiated enrollment — the user configures this after enrollment if desired.
-
-**MCP OAuth enrollment.** A third enrollment path, used when an MCP client (Claude Code, Cursor, Windsurf, …) connects over OAuth 2.1 for the first time. After the user signs in at `/oauth/authorize`, the server pauses the authorize request and redirects the browser to the dashboard at `/oauth/consent?request_id=…`. The dashboard renders the enrollment card (design-system styled) and calls a small JSON API (`GET /v1/oauth/consent/{request_id}`, `POST /v1/oauth/consent/{request_id}/finish`). In **new** mode the user picks a parent (defaults to themselves), toggles `inherit_permissions` (off by default — users opt in rather than out), and optionally attaches the agent to groups (search-and-create, with `everyone` implicit and never shown). In **reauth** mode — recognised when a DCR re-registration produces a new `client_id` but the previously-enrolled `client_name` + `software_id` still match an unrevoked binding for the same user — the card skips the form and simply rebinds the new `client_id` to the existing agent, preserving that agent's rules and groups. On submission, the server persists a `(user_identity_id, client_id) → agent_identity_id` binding and the dashboard follows the returned `redirect_uri` to complete the OAuth redirect back to the MCP client with an auth code bound to the agent. Subsequent authorizations from the same `(user, client_id)` reuse the binding and skip the prompt entirely. The issued access token's `sub` is the agent; `/mcp` refuses any token whose `sub` points at a user-kind identity so a pre-binding or CSRF-stolen token can't slip through. Unlike agent-initiated enrollment, there is no separate "consent URL" sent out-of-band — the consent screen is hosted inline in the OAuth flow.
+**Headless / long-lived credentials.** Static `osk_…` API keys minted via `POST /v1/api-keys` remain the credential for non-interactive callers (CI, batch jobs) — see §Authentication. Device-flow OAuth for headless clients is a future add.
 
 ### Identity Reconfiguration
 
@@ -279,32 +286,120 @@ Access levels map to the `Risk` enum:
 - **write** — read + mutating actions (`risk: write`, + POST/PUT/PATCH)
 - **admin** — full access including destructive actions (`risk: delete`, + DELETE)
 
-Raw HTTP access (Mode A) is gated by a separate `allow_raw_http` boolean on the group — it is not a service instance.
+Raw HTTP access goes through the system-managed `http` service instance (one per org, created at bootstrap). Group access is granted via the standard `group_grants` mechanism, with the same access-level → risk mapping as any other service: `read` covers GET/HEAD/OPTIONS, `write` adds POST/PUT/PATCH, `admin` adds DELETE. There is no `allow_raw_http` boolean — raw HTTP is just another service from the ceiling's point of view, and most orgs leave it un-granted on `Everyone`.
 
-User-owned service instances bypass the group ceiling for the creator (they own the instance), but their agents still need permission keys via approvals.
+**Myself groups.** Every user identity has an automatically-managed "Myself" group (`system_kind = 'self'`, exactly one member: the user). When a user creates a service — or an agent creates one `on_behalf_of` its owner-user, which is the default for any identity-bound service create — the service is owned by the user and auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`. The owner can downgrade these grants (cap at `read`, disable auto-approve) or fully remove them; ownership lives on `service_instances.owner_identity_id` independently of the grant, so a removed grant can be re-added by the owner from the dashboard at any time.
 
-When a user has no group assignments, no ceiling is enforced (permissive). Orgs opt into enforcement by creating groups and assigning users.
+**Myself group constraints.** Myself groups carry tighter invariants than user-created groups, enforced at the API:
+- *Membership is fixed.* The owner-user is the only member; backend rejects add/remove on `system_kind = 'self'`.
+- *Grants are owner-scoped.* `POST /v1/groups/{id}/grants` rejects any `service_instance_id` whose `owner_identity_id` does not match the group's `owner_identity_id`. A user manages their own Myself, but can only attach services they themselves own — admins cannot smuggle another user's service into someone else's Myself.
+- *System metadata is immutable.* Rename, description edit, and delete are rejected for system groups (Everyone, Admins, and any Myself).
+- *Default listing visibility.* `GET /v1/groups` returns the caller's own Myself plus all non-self groups they can see; other users' Myself groups are filtered out so an admin's group list doesn't get one row per user. `?include_self=true` (admin opt-in) returns every Myself group in the org for cross-user audit.
+- *Display name.* The DB-stored name `Myself: <label> (<uuid8>)` is an internal disambiguator for the `(org_id, name)` unique constraint (two users may share an email per migration 043). Clients render the group as **"Myself"** in the caller's own context. Admin audit views may disambiguate as **"Myself (email)"**, falling back to **"Myself (email, id8)"** only on email collision. API consumers detect Myself via `system_kind === 'self'`, never by parsing the name.
 
-**Auto-approve reads:** Each service grant in a group can optionally enable `auto_approve_reads`. When set, non-mutating requests (actions where `risk: read`, or GET/HEAD/OPTIONS for raw HTTP) from agents automatically create permission keys without requiring user approval. Mutating requests (`risk: write` or `delete`) still go through normal approval flow. This is configured per-service per-group — org-admins decide which services have sensitive read operations (financial data, PII) vs ones where reads are safe (listing PRs, checking calendar events).
+There is no separate "user-level service" tier in the permission model. `owner_identity_id` survives as a namespace marker (so alice's `github` shadows the org `github` in her own resolution — see §9 *Services (Instances)*) and as a provenance bit, but every permission decision flows through the same `group_grants` ceiling. Org admins can additionally grant any service — including ones owned by individual users — to other groups, making admin-driven sharing first-class.
+
+There is no permissive default. After the Myself migration, every bootstrapped user identity belongs to at least the Everyone and Myself system groups, and Everyone always carries the `overslash:write` grant from org bootstrap, so `ceiling.grants` is never empty in practice and the ceiling is always enforced. The `NoGroups` permissive branch survives only as a safety net for org-level keys with no identity at all.
+
+**Auto-approve reads:** Each service grant can enable `auto_approve_reads`. When the matching grant has the flag set and the action is non-mutating (`risk: read`, or GET/HEAD/OPTIONS for raw HTTP), **Layer 2 is bypassed entirely**: the agent's call runs immediately, no permission rule is created, no approval is filed. Mutating requests (`risk: write` or `delete`) always go through normal approval flow. The Myself grant defaults to `auto_approve_reads = true`, so an agent reading from one of its owner-user's own services skips approval without polluting the agent's permission-rule list. Org admins can also enable the flag on shared org grants for services where reads are safe (listing PRs, checking calendar events).
 
 **Layer 2: Permission keys (fine-grained, user-managed, agent-specific)**
 
 Within the group ceiling, agents require specific permission keys for each action. Keys are created when a user clicks "Allow & Remember" on an approval — they are never written by hand. Permission keys build up organically as agents are used and users approve their actions. Users acting through the dashboard or API Explorer are gated by groups only — they are their own approvers.
 
+### Action authorization flow
+
+Where grants come from for a given caller:
+
+```
+                       ┌─────────────────────────────┐
+                       │   ceiling_user_id (owner)   │
+                       │ user → self ; agent → owner │
+                       └──────────────┬──────────────┘
+                                      │ identity_groups
+                          ┌───────────┼─────────────────────┐
+                          ▼           ▼                     ▼
+                  ┌───────────┐  ┌────────────┐    ┌─────────────────┐
+                  │  Myself   │  │  Everyone  │    │   any number    │
+                  │  (system) │  │  (system)  │    │   of admin-     │
+                  │ owner=me  │  │ allow_raw  │    │   created       │
+                  │           │  │   _http    │    │   groups        │
+                  └─────┬─────┘  └─────┬──────┘    └────────┬────────┘
+                        │              │                     │
+                        │  group_grants (access_level + auto_approve_reads)
+                        ▼              ▼                     ▼
+                       ┌───────────────────────────────────────┐
+                       │  Union: CeilingGrant per service      │
+                       │  (most-permissive grant wins per svc) │
+                       └───────────────────────────────────────┘
+```
+
+How a single action call is authorized end-to-end:
+
+```
+   Action invoked
+        │
+        ▼
+   Resolve ceiling_user_id (user → self ; agent → owner)
+        │
+        ▼
+   load_ceiling(user)  ──►  union of grants from Myself + Everyone +
+        │                   any admin-created groups the user is in
+        ▼
+   check_ceiling(service, risk) → { result, read_bypass }
+        │
+        ├── ExceedsCeiling ───────────► [DENY]  (not approvable)
+        │
+        └── WithinCeiling
+                │
+                ▼
+        identity.kind == user ?
+                │
+        ┌───────┴────────┐
+        │                │
+       yes               no (agent)
+        │                │
+        ▼                ▼
+    [CALL now]     read_bypass ?
+                   (auto_approve_reads=true AND non-mutating risk)
+                        │
+                ┌───────┴────────┐
+                │                │
+               yes               no
+                │                │
+                ▼                ▼
+            [CALL now]     Layer 2: walk permission chain
+            (no rule        (sub-agent → agent → user)
+             written)              │
+                          ┌────────┴─────────┐
+                          │                  │
+                    all keys present       gap
+                          │                  │
+                          ▼                  ▼
+                      [CALL now]      Create approval at gap level
+                                       (resolver = first ancestor
+                                        with the keys, else the user)
+```
+
+The win this delivers compared to the previous "user-owned service bypass": an agent reading from one of its owner-user's services no longer has to wait for a human approval on the first call. The Myself grant's `auto_approve_reads = true` short-circuits Layer 2 for reads — no popup, no permission-rule clutter — while writes still flow through approval.
+
 ### Resolution Flow
 
+The flow above expanded as discrete steps:
+
 1. Agent makes a request → system derives permission keys from the request
-2. **Group check**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
-3. **Permission key check**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
-4. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
+2. **Group check (Layer 1)**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
+3. **Read bypass**: if the matching grant has `auto_approve_reads = true` and the action is non-mutating, skip Layer 2 and call immediately
+4. **Permission key check (Layer 2)**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
+5. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
 
 ### Hierarchical Resolution
 
-When a sub-agent executes an action, every level in the ancestor chain must authorize:
+When a sub-agent calls an action, every level in the ancestor chain must authorize:
 
 1. Check sub-agent → has matching key or `inherit_permissions`? Pass, continue up.
 2. Check agent → has matching key? Pass, continue up.
-3. Check user → within group ceiling? Pass. All levels authorized → **execute**.
+3. Check user → within group ceiling? Pass. All levels authorized → **call**.
 4. First level without a matching key and without `inherit_permissions` → **gap**. Create an approval (see below).
 
 ### Approval Bubbling
@@ -319,10 +414,10 @@ The approval has a **current resolver**: the closest ancestor that can act on it
 
 The current resolver receives the approval (via webhook or polling) and chooses one of:
 
-- **Approve** — one-time, no rule stored.
-- **Approve & Remember** — store a permission rule (see "Rule placement" below).
+- **Approve (Allow Once)** — the approval transitions to `allowed` and an `executions` row (`status='pending'`, 15-minute lifetime) is created. By default (per-agent `auto_call_on_approve = true`, the universal post-resolve setting), the gateway spawns a background replay immediately after `/resolve` returns — agents and white-label platforms don't have to round-trip a manual call. The execution still goes through the same atomic claim guard, so a manual `POST /v1/approvals/{id}/call` from the requesting agent or the resolver's "Execute Now" button cleanly loses with a 409 if it lands during an in-flight auto-call. Org admins can flip `orgs.default_deferred_execution = true` to seed *new* agents into "deferred execution" mode (existing agents are not touched), or per-agent owners can flip `identities.auto_call_on_approve = false` to require an explicit `/call` for every approve. If neither auto-call nor a manual `/call` finalizes within 15 minutes the pending execution expires and no action runs. The resolver may also `POST /v1/approvals/{id}/cancel` to invalidate the pending execution; on Allow Once this is terminal for the agent — it must request a fresh approval to try again.
+- **Approve & Remember** — as above, and on **successful `/call`** a permission rule is stored (see "Rule placement" below). Cancel, expire, or replay failure ⇒ no rule is persisted; the reviewer can retry after addressing the underlying cause.
 - **Bubble up** — defer to the next ancestor that can resolve, or the user if none.
-- **Reject** — denied.
+- **Reject** — denied. No execution row is created; the stored `action_detail` remains for audit.
 
 **Rule placement on Approve & Remember**: the new permission rule is added to the **closest non-`inherit_permissions` ancestor of the requester** (inclusive of the requester). Identities with `inherit_permissions=true` are skipped because their permissions are dynamic — putting a rule there would be silently overridden by parent walks. This is the requester's "permission-owning" identity.
 
@@ -375,11 +470,17 @@ The core trust assumption: **agents are not trusted to approve their own actions
 
 **How approvals flow through the platform:**
 
-1. Agent calls `overslash_execute` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`
+1. Agent calls `overslash_call` via the platform → gets `{ "status": "pending_approval", "approval_id": "apr_abc123" }`.
 2. The agent cannot resolve this. The platform receives the approval event (via webhook or polling on the user's behalf).
 3. The platform surfaces the approval to the user in its own UX (Telegram buttons, Slack message, CLI prompt, etc.) including the `suggested_tiers` and `description` from the approval payload.
-4. The user makes a decision. The platform calls `POST /v1/approvals/{id}/resolve` using the **user's** Overslash credentials — not the agent's API key.
-5. The agent's pending request completes (via polling or webhook to the platform).
+4. The user makes a decision. The platform calls `POST /v1/approvals/{id}/resolve` using the **user's** Overslash credentials — not the agent's API key. Resolve **does not run the action**; on `allow`/`allow_remember` it moves the approval to `allowed` and creates a pending `executions` row.
+5. Replay is then triggered explicitly by one of:
+   - **Agent** — `POST /v1/approvals/{id}/call` (sync; returns the replayed result).
+   - **User** — "Call Now" in the dashboard, which calls the same endpoint.
+   An atomic `pending → executing` transition plus a unique index on `(approval_id)` guarantees at-most-one replay even under user+agent races.
+6. Pending executions expire after **15 minutes**. The resolver may also `POST /v1/approvals/{id}/call`.
+
+The agent observes the outcome by polling `GET /v1/approvals/{id}` (the nested `execution` object transitions with the row) or by listening for the `approval.executed` / `approval.execution_failed` / `approval.execution_cancelled` webhooks. A dedicated `GET /v1/approvals/{id}/execution` endpoint returns the execution summary directly. **For auto-fired executions** (`triggered_by="auto"`) the `approval.executed` webhook payload also carries the full action `result` so a white-label platform can render the outcome from a single delivery without a follow-up GET. Manual `/call` paths omit `result` because the caller already received it inline on the response.
 
 **There is no self-authenticating approval URL.** Approval resolution always requires credentials of an identity with authority over the requesting identity. This prevents an agent from obtaining and resolving its own approval link.
 
@@ -399,9 +500,22 @@ Approval and secret requests are **not notified immediately**. Only requests tha
 
 "Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Permission rules and remembered approvals are the same concept — "permission rules" is the storage format, "remembered approvals" is the user-facing term. Users can view and revoke them per identity via the dashboard.
 
+The rule is stored **only after a successful `POST /v1/approvals/{id}/call`** — a cancelled, expired, or failed replay leaves no rule behind. This prevents a reviewer from being silently committed to auto-approving an action they never saw succeed.
+
+### Replay Semantics
+
+Approval and action execution are decoupled into two stages. `POST /v1/approvals/{id}/resolve` records a decision (and, on `allow`/`allow_remember`, creates a pending `executions` row with a 15-minute lifetime); the action itself only runs when something explicitly calls `POST /v1/approvals/{id}/call`.
+
+- **Stored payload.** At approval creation, Overslash serialises the resolved `ActionRequest` plus the original caller's `filter` and `prefer_stream` flags into `approvals.action_detail`. Secret values are never stored — only `SecretRef` (name + injection metadata), resolved fresh at replay time. A rotated secret is used in its current form.
+- **At-most-once.** `executions.approval_id` is uniquely indexed and the `pending → executing` transition is an atomic SQL UPDATE guarded by `status='pending' AND expires_at > now()`. User and agent can race `/execute`; exactly one wins, the other receives 409. Any terminal state (executed / failed / cancelled / expired) is sticky.
+- **Identity & audit.** Replay always uses the **requester's** identity for audit and rate limiting, regardless of whether the agent or the resolver pressed the button. The `audit_logs` row for `action.executed` carries `detail.replayed_from_approval` and `detail.execution_id`; a separate `approval.executed` entry records the button press.
+- **Streaming.** Originally-streaming requests are replayed as buffered requests (bounded by `MAX_RESPONSE_BODY_BYTES`) — there is no agent connection to stream to. The stored result flags `streamed_originally: true` so callers can tell.
+- **Timeouts & orphans.** The `/call` handler bounds the upstream call with `EXECUTION_REPLAY_TIMEOUT_SECS` (default 30). If the API crashes while `status='executing'`, a sweeper transitions the row to `failed` with `error='orphaned'` after the timeout plus a minute of slack.
+- **Ceilings.** The group-ceiling check is not re-run at `/call` — the resolver's allow is authoritative, and the ceiling was enforced at approval creation.
+
 ### User Identities Skip Layer 2
 
-Permission keys (Layer 2) are an **agent-only** concept. When a request is authenticated as a **user identity** — not an agent — only Layer 1 (group ceiling) applies. There is no approval flow, no permission key resolution, no "Allow & Remember" prompt: the user is their own approver, and any action within their group ceiling executes immediately.
+Permission keys (Layer 2) are an **agent-only** concept. When a request is authenticated as a **user identity** — not an agent — only Layer 1 (group ceiling) applies. There is no approval flow, no permission key resolution, no "Allow & Remember" prompt: the user is their own approver, and any action within their group ceiling is called immediately.
 
 This rule is transport-agnostic. It holds for the dashboard, the API Explorer, an MCP session logged in as a user, a CLI calling the REST API directly with user credentials, or any other surface. **What matters is the identity type on the credential, not the channel.**
 
@@ -508,16 +622,18 @@ Secrets belong to the identity that created them. When agents set up integration
 
 Secret values are encrypted at rest. Access to values depends on the actor:
 
-| Actor | Own secrets | Child identity secrets | Other user secrets |
-|-------|-----------|----------------------|------------------|
-| **User** (dashboard) | read/write | read/write | — |
-| **Agent** (API) | — | — | — |
-| **Org admin** (User with `is_org_admin = true`) | read/write | read/write | read/write (all org) |
+| Actor | List names | Read values | Write |
+|-------|------------|-------------|-------|
+| **User** (dashboard) | own subtree | own subtree | own subtree |
+| **Agent** (API) | own subtree (names only, via bearer GET `/v1/secrets`) | — | own subtree |
+| **Org admin** (User with `is_org_admin = true`) | all org | all org | all org |
+
+Each secret carries an explicit `owner_identity_id` (the identity that wrote v1, or `on_behalf_of` target). Visibility for non-admin callers is "the owner is the caller, or any descendant of the caller via `identities.parent_id`". The namespace is org-wide — `(org_id, name)` is unique — so two agents under the same user cannot mint the same name.
 
 > **Org admin** is an attribute on a User identity, not a separate principal. There is no standalone "org" identity that can authenticate or hold API keys — every authenticated caller is a User or an Agent. Agents earn admin authority the same way they earn any other permission: by being placed in a group with `admin` access on the **`overslash`** meta service (a system-managed `service_instance` that represents Overslash itself within each org). The `is_org_admin` flag is the fast path for Users and is kept in sync with membership of the system **Admins** group.
 
 - **Users** can view and manage secret values for all secrets in their subtree (their own + their agents' secrets) via the dashboard.
-- **Agents** have **no read access to the secret vault via API key** — not even names or version numbers. Secret values are only injected at action execution time, gated by the permission chain. Listing and inspection of secrets is dashboard-only (JWT session auth), so the secret namespace is never exposed to a compromised agent token. Agents that need to confirm a rotation must rely on the audit trail or on a successful action execution.
+- **Agents** can list the *names* of secrets in their own subtree via bearer-authenticated `GET /v1/secrets` — the response is a narrow `{name, version_count, last_rotated_at}` shape with no values, no owner identity, and no creation timestamps. Reveal/restore/detail remain dashboard-only. Secret values are only injected at action execution time, gated by the permission chain.
 - **Org admins** can view and manage all secrets across the org. This follows the standard model for org-managed credential stores (same as 1Password Teams, AWS Secrets Manager, etc.) and is required for compliance, debugging, and offboarding scenarios.
 
 ---
@@ -548,7 +664,7 @@ When a user creates a service from a template that uses OAuth, the connect flow 
 
 ## 8. Action Execution
 
-### `POST /v1/actions/execute`
+### `POST /v1/actions/call`
 
 All action execution goes through a single endpoint. The caller specifies a service instance and action — the level of abstraction is determined by what they choose:
 
@@ -560,6 +676,8 @@ All action execution goes through a single endpoint. The caller specifies a serv
 
 These are a spectrum of abstraction over the same execution pipeline and permission key format (`{service}:{action}:{arg}`).
 
+Direct `connection: <uuid>` requests (a previously-shipped implementation deviation that paired a stored OAuth connection with an arbitrary URL) are **not supported**. Free-form authed calls go through "Service + HTTP verb" — naming the service instance is what bounds where the bearer can land via the template's `hosts[]`. See DECISIONS.md D14.
+
 ### Gating
 
 Every request derives permission keys. Resolution follows the two-layer model (§5):
@@ -570,7 +688,7 @@ Every request derives permission keys. Resolution follows the two-layer model (�
 
 ### Approval URLs
 
-When `execute_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approvals/<id>`"). The URL points at the dashboard deep-link page (`/approvals/{id}`), which renders as a modal overlay on top of `/agents` after login. The host portion is resolved from the deployment-level **`DASHBOARD_URL`** envvar (served by `overslash serve`; `overslash web` uses the same-origin dashboard host) — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
+When `call_action` returns `pending_approval`, the response includes a user-facing URL the agent surfaces to its owner (e.g., "please approve here: `https://<dashboard>/approvals/<id>`"). The URL points at the dashboard deep-link page (`/approvals/{id}`), which renders as a modal overlay on top of `/agents` after login. The host portion is resolved from the deployment-level **`DASHBOARD_URL`** envvar (served by `overslash serve`; `overslash web` uses the same-origin dashboard host) — **never** from the API's own `Host` header and never hardcoded. Agent-facing responses must not leak internal API hostnames or placeholder domains (`overslash.example`, `api.*`) to downstream LLM output. Self-hosted deployments set the envvar; cloud deployments pick it up from the Cloud Run/Vercel config.
 
 ### Secret Injection (`http` service only)
 
@@ -749,8 +867,9 @@ Service: "client-calendar"          (OAuth token for alice@bigclient.org — use
 ```
 
 **Service ownership:**
-- **Org services** — created by org-admins, assigned to groups. All users in those groups can use them. Example: `github` (org's GitHub OAuth app, per-user tokens).
-- **User services** — created by users, private to the creator and their agents. Example: `my-scraper`.
+- Services have an optional `owner_identity_id` used purely as a namespace and provenance marker. `NULL` means the service lives in the org namespace (e.g., `github`); a non-null value puts the service in that user's private namespace (e.g., alice's `my-scraper`).
+- Permission and visibility flow through `group_grants` uniformly regardless of `owner_identity_id`. An owner-created service is auto-granted to that user's Myself group with `access_level = 'admin'` and `auto_approve_reads = true`, which is what makes it reachable. Org admins can additionally grant any service — owner-namespaced or not — to other groups for sharing.
+- Agents that create services with the default `user_level: true` create them under their owner-user's namespace (matching the SPEC rule that agents create resources at owner-user level so all sibling agents share them). Pass `user_level: false` to create an org-namespaced service or `on_behalf_of: <user>` to target a specific owner.
 
 **Naming and resolution:**
 
@@ -777,10 +896,10 @@ This lets users override org defaults with their own credentials (e.g., personal
 - `github:create_pull_request:overfolder/*` — resolves through the user's `github` if it shadows, else the org's
 - `google-calendar:list_events:*`
 
-**Groups grant access to org services (instances)**:
+**Groups grant access to service instances** (any service in the org, regardless of `owner_identity_id`):
 - Engineering group gets: github (write), slack (write)
-- Service discovery is group-gated: `GET /v1/services` returns org-level services only if the calling user (or agent's owner-user) belongs to a group that grants access to that service.
-- User-owned services are always visible to their creator and bypass the group ceiling, but their agents still need permission keys via approvals.
+- Service discovery is group-gated: `GET /v1/services` returns the union of services the caller's ceiling user has grants on — across the Myself group (owner-namespaced services), the Everyone group, and any admin-created groups they belong to.
+- Owner-created services are reachable through the owner's Myself grant. Org admins can layer additional grants on top to share an owner-namespaced service with other groups.
 
 **Service lifecycle:** see *Service Lifecycle States* below.
 
@@ -795,13 +914,13 @@ A service instance moves through a small state machine. The same machine applies
 | **`error`** | OAuth denied, scopes insufficient, secret rejected, or credential verification failed in a non-recoverable way | **No** | TTL: **24 hours** for forensic visibility, then deleted |
 | **`archived`** | Soft-deleted, hidden from discovery; audit log + remembered approvals preserved | No | Manual restore or hard-delete by owner |
 
-There is intentionally **no `Draft` state**. A service is either configured-and-active or it is not. To test an active service before exposing it to agents, set the per-service flag `exposed_to_agents: false` — `overslash_search` filters it out for agent identities but the API Explorer can still execute against it as the owner-user.
+There is intentionally **no `Draft` state**. A service is either configured-and-active or it is not. To test an active service before exposing it to agents, set the per-service flag `exposed_to_agents: false` — `overslash_search` filters it out for agent identities but the API Explorer can still call against it as the owner-user.
 
 **`pending_credentials` is a single state with a `flow_kind: "oauth" | "secret"` discriminator** on the row. The lifecycle code has one path; only the credential-redemption surfaces (OAuth callback handler vs `/secrets/provide/...` page) differ.
 
 **Pending visibility:** the owner-user sees pending services in the dashboard with a "Connecting…" badge and a "Cancel" button (manual delete before TTL). The creating agent sees its own pending services via `overslash_auth(action="status")`. No other identity in the org sees them.
 
-**Executing against a pending service** returns `service_not_ready`, distinct from `not_authorized`. Agents should poll `status` (or subscribe via SSE) instead of retry-spamming `execute`.
+**Executing against a pending service** returns `service_not_ready`, distinct from `not_authorized`. Agents should poll `status` (or subscribe via SSE) instead of retry-spamming `call`.
 
 **Retrying a failed credential flow:** `overslash_auth(action="retry_credentials", service=...)` works on rows in `pending_credentials` (extends TTL, mints a fresh URL, invalidates the previous one) or `error` (flips back to `pending_credentials`, mints a fresh URL). The service ID and name are preserved across retries — the dashboard's "Connecting…" view stays continuous.
 
@@ -835,7 +954,7 @@ The creation call returns one of:
 - **Secret-based template** (API key, bearer token) → a signed secret-provide URL the user must visit. The service is created in a pending state pending secret provisioning. (See §11 *Standalone Pages*.)
 - **Shared/no-credential template** → the service is created `Active` immediately.
 
-Once the user has supplied credentials at the returned URL, the service flips to `Active` and the agent learns about it via polling, SSE (§10 *Async event delivery*), or webhook. From the agent's perspective, the entire onboarding of a new integration is: search → auth.create → surface URL to user → poll for active → execute. **No dashboard required.**
+Once the user has supplied credentials at the returned URL, the service flips to `Active` and the agent learns about it via polling, SSE (§10 *Async event delivery*), or webhook. From the agent's perspective, the entire onboarding of a new integration is: search → auth.create → surface URL to user → poll for active → call. **No dashboard required.**
 
 ### OpenAPI Import
 
@@ -970,37 +1089,91 @@ A small tool set that lets any LLM agent use Overslash. These are the underlying
 | Tool | Purpose | Credential | Surfaces |
 |------|---------|------------|----------|
 | `overslash_search` | Discover services and actions. Returns schemas + auth status. | agent (or user) | REST, CLI, MCP |
-| `overslash_execute` | Execute any action (all three modes). Returns result or pending approval. | agent (or user) | REST, CLI, MCP |
+| `overslash_call` | Call any action (all three modes). Returns result or `pending_approval`. Called with `{approval_id}` to resume a previously-approved action and receive the replay result — see §5 *Replay Semantics*. | agent (or user) | REST, CLI, MCP |
 | `overslash_auth` | Check/initiate auth, store/request secrets, create sub-identities, instantiate templates. | agent (or user) | REST, CLI, MCP |
 | `overslash_approve` | Resolve a pending approval (one-time, "Allow & Remember", bubble, or reject). See §5 *Approval Bubbling*. | **user** (an agent cannot approve its own requests) | REST, CLI, MCP |
 
-When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is skipped entirely, so `overslash_execute` returns results directly without ever producing a `pending_approval` for `overslash_approve` to resolve. The tool exists for the inverse direction — a user surface (dashboard, CLI, or an MCP session in user mode) resolving approvals raised by an *agent* identity elsewhere in the org. Platforms that wrap the agent surface handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`).
+When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is skipped entirely, so `overslash_call` returns results directly without ever producing a `pending_approval` for `overslash_approve` to resolve. The tool exists for the inverse direction — a user surface (dashboard, CLI, or an MCP session in user mode) resolving approvals raised by an *agent* identity elsewhere in the org. Platforms that wrap the agent surface handle approval plumbing themselves (webhook/polling/SSE → their own user UX → REST `POST /v1/approvals/{id}/resolve`).
 
 ### `overslash_search`
 
-Discovery returns a structured payload with two distinct kinds of hits:
+Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list of rows where **each row corresponds to one configured instance**: the top-level `service` field is always the instance name to pass back as `overslash_call.service`. When a template has multiple connected instances (e.g. two Gmail accounts), it fans out into one row per instance so the agent picks the callable identifier directly without nested lookups.
+
+**Inputs**
+
+| Field | Type | Default | Behavior |
+|---|---|---|---|
+| `query` | string | — | Free-text query. Empty string triggers browse mode (instances-only, no actions). |
+| `include_catalog` | bool | `false` | Default: only configured instances bound to the caller are returned. Set `true` to also surface un-connected templates as `setup_required: true` rows (handy when an agent is exploring what *could* be set up). |
+
+**Default scope is connected-only.** This applies to both browse (`query=""`) and keyword queries. The motivation is that an agent is much more often trying to use what it already has than browse a catalog it hasn't been authorized for. `setup_required: true` rows only ever appear under `include_catalog=true`.
+
+**Response shape**
 
 ```json
 {
-  "services": [
-    { "name": "google-calendar", "scope": "user", "status": "active",
-      "template_key": "google-calendar",
+  "query": "send email",
+  "results": [
+    {
+      "service": "gmail_work",
+      "template": "gmail",
+      "service_display_name": "Gmail",
+      "account_email": "alice@example.com",
+      "action": "send_message",
+      "description": "Send email as {userId}",
+      "risk": "write",
+      "tier": "global",
       "auth": { "type": "oauth", "provider": "google", "connected": true },
-      "actions": [ { "key": "list_events", "risk": "read", "params": { ... } }, ... ] }
-  ],
-  "templates": [
-    { "key": "linear", "tier": "global", "display_name": "Linear",
-      "auth": { "type": "api_key" },
-      "actions_summary": ["list_issues", "create_issue", ...],
-      "instantiable": true }
+      "score": 0.78
+    },
+    {
+      "service": "gmail_personal",
+      "template": "gmail",
+      "service_display_name": "Gmail",
+      "account_email": "alice@gmail.com",
+      "action": "send_message",
+      "description": "Send email as {userId}",
+      "risk": "write",
+      "tier": "global",
+      "auth": { "type": "oauth", "provider": "google", "connected": true },
+      "score": 0.78
+    },
+    {
+      "service": "resend_prod",
+      "template": "resend",
+      "service_display_name": "Resend",
+      "secret_name": "resend_prod",
+      "action": "send_email",
+      "description": "Send email '{subject}' to {to}",
+      "risk": "write",
+      "tier": "global",
+      "auth": { "type": "api_key", "connected": true },
+      "score": 0.74
+    }
   ]
 }
 ```
 
-- **`services`** — service instances the calling identity can already use (gated by Layer 1 group ceiling and tier visibility).
-- **`templates`** — blueprints visible to the caller that have **no** corresponding instance yet, with `instantiable: true` if the caller has authority to create one (typically via `on_behalf_of` for an agent's owner-user). Templates are filtered by tier visibility (global / org / user with `allow_user_templates`).
+In browse mode (`query=""`), each row omits `action`, `description`, `risk`, and `score` — the response is an instance-level directory.
 
-Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g., after `create_service_from_template` returns active).
+**Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: they omit `service` and `account_email`/`secret_name`, set `auth.connected: false`, and carry `"setup_required": true`. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
+
+**Per-row disambiguation**
+
+Each callable row carries everything an agent needs to pick the right instance:
+
+- **`service`** — the instance's runtime name (e.g. `gmail_work`). Unique per `(org, owner, name)`. Pass it verbatim as `overslash_call.service`.
+- **`template`** — the underlying template key (e.g. `gmail`). Lets the agent recognise that `gmail_work` and `gmail_personal` are siblings.
+- **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for api-key services.
+- **`secret_name`** — for api-key-backed instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
+
+When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the row.
+
+**Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
+
+**Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user with `allow_user_templates`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
+
+Search is **cheap and idempotent** by design. Agents are expected to re-query rather than maintain client-side state. There is no subscribe API for service catalog changes — re-call search after any state-changing operation (e.g. after `create_service_from_template` returns active).
 
 ### `overslash_auth`
 
@@ -1019,15 +1192,28 @@ Sub-actions, by category:
 
 ### Async Event Delivery
 
-Many flows are asynchronous from the agent's perspective: enrollment consent, OAuth callback, secret provisioning, approval resolution. Overslash supports **three transports** for the same underlying events. Callers pick whichever fits their environment:
+Many flows are asynchronous from the agent's perspective: OAuth callback, secret provisioning, approval resolution. Overslash supports **three transports** for the same underlying events. Callers pick whichever fits their environment:
 
 | Transport | Best for | Mechanism |
 |---|---|---|
-| **Polling** | Simple agents, no infra | Re-call the relevant `GET` endpoint (`/v1/enrollment/{token}`, `/v1/services/{id}`, `/v1/approvals/{id}`). Idempotent. |
-| **SSE** | Agents that can hold an HTTP connection | `GET /v1/events/stream?topics=...` opens a Server-Sent Events stream. Connection has a fixed **30-second timeout** — clients reconnect with `Last-Event-ID` to resume. The 30s ceiling keeps idle connections cheap, plays nicely with proxies, and forces clients to handle reconnection cleanly. Topics are scoped to the authenticated identity (e.g., `approvals`, `services`, `enrollment`). |
+| **Polling** | Simple agents, no infra | Re-call the relevant `GET` endpoint (`/v1/services/{id}`, `/v1/approvals/{id}`). Idempotent. |
+| **SSE** | Agents that can hold an HTTP connection | `GET /v1/events/stream?topics=...` opens a Server-Sent Events stream. Connection has a fixed **30-second timeout** — clients reconnect with `Last-Event-ID` to resume. The 30s ceiling keeps idle connections cheap, plays nicely with proxies, and forces clients to handle reconnection cleanly. Topics are scoped to the authenticated identity (e.g., `approvals`, `services`). |
 | **Webhooks** | Platform integrations with their own infra | Configure a webhook endpoint per identity or per org; Overslash POSTs events with HMAC signature. |
 
 The same event payload is delivered regardless of transport. Agents may use any combination — e.g., SSE for liveness during a foreground task, webhooks for background events, polling as a fallback.
+
+**Webhook envelope.** Webhook bodies are always wrapped in a stable envelope so receivers can deserialize uniformly:
+
+```json
+{
+  "id": "<delivery uuid>",
+  "type": "approval.resolved",
+  "created_at": "2026-05-05T12:34:56.789Z",
+  "data": { /* per-event payload */ }
+}
+```
+
+The `id` and `created_at` are stable across retries, so receivers can dedupe by `id` and reject stale replays by `created_at`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id). `X-Overslash-Signature: sha256=<hex>` is HMAC-SHA256 over the raw body bytes (the envelope JSON), keyed with the subscription secret.
 
 When `notifications.managed_by_platform` is set (§5), Overslash's user-facing notifications (bell, email, 1-minute delayed webhook) are suppressed — but the event-stream transports above still fire normally, because the platform is the consumer.
 
@@ -1037,14 +1223,14 @@ When `notifications.managed_by_platform` is set (§5), Overslash's user-facing n
 
 Web UI for non-API interactions. Built with SvelteKit + TypeScript.
 
-**Two delivery modes.** In **cloud mode** the dashboard is hosted on Vercel with full SvelteKit (SSR allowed) and proxies API/auth/health/enroll/public paths back to the API origin via `vercel.json` rewrites. In **self-hosted mode** the operator runs `overslash web`, which boots the same Axum app *and* serves the dashboard same-origin from embedded static assets (built with `@sveltejs/adapter-static`, embedded into the binary at compile time behind the `embed-dashboard` Cargo feature). Same-origin removes the cross-origin cookie and CORS complexity that Vercel rewrites paper over in cloud mode — the same router serves `/v1/*`, `/auth/*`, `/health/*`, `/enroll/*`, `/public/*`, and falls back to the SPA for everything else (with `index.html` for unknown paths to support client-side routing). Cloud and self-hosted ship from the same codebase; the only difference is which Cargo feature is enabled and which subcommand is invoked.
+**Two delivery modes.** In **cloud mode** the dashboard is hosted on Vercel with full SvelteKit (SSR allowed) and proxies API/auth/health/public/SKILL.md paths back to the API origin via `vercel.json` rewrites. In **self-hosted mode** the operator runs `overslash web`, which boots the same Axum app *and* serves the dashboard same-origin from embedded static assets (built with `@sveltejs/adapter-static`, embedded into the binary at compile time behind the `embed-dashboard` Cargo feature). Same-origin removes the cross-origin cookie and CORS complexity that Vercel rewrites paper over in cloud mode — the same router serves `/v1/*`, `/auth/*`, `/health/*`, `/public/*`, `/SKILL.md`, and falls back to the SPA for everything else (with `index.html` for unknown paths to support client-side routing). Cloud and self-hosted ship from the same codebase; the only difference is which Cargo feature is enabled and which subcommand is invoked.
 
 ### Core Views
 
-- **Agents** (default landing view) — tree view of the identity hierarchy rooted at the logged-in user. The user node is immutable (cannot be deleted, renamed, or reparented). Agent creation does not offer a Kind selector — all created identities are agents, and parentage determines hierarchy position. Inline management: create, edit, delete agents, enrollment tokens.
+- **Agents** (default landing view) — tree view of the identity hierarchy rooted at the logged-in user. The user node is immutable (cannot be deleted, renamed, or reparented). Agent creation does not offer a Kind selector — all created identities are agents, and parentage determines hierarchy position. Inline management: create, edit, delete agents.
 - **User profile** — authenticated user info, API keys, settings
 - **Services** — browse templates, create/manage service instances, connect credentials
-- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and execute. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always executes as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
+- **Developer connection tool (API Explorer)** — interactive API explorer for connected services. Select a service, pick a defined action or make a custom request, fill in parameters, and call. Similar to Swagger UI or Postman but integrated with Overslash auth. Available actions adapt to the user's group grants (defined actions, HTTP verbs, or raw HTTP). Always calls as the logged-in user's own identity — no agent impersonation. Actions are logged in the audit trail under the user. Can be hidden via org setting.
 - **Audit log** — searchable, filterable log of all actions, approvals, and secret accesses. Filterable by identity, service, time range, event type.
 
 ### Org-Admin Views
@@ -1059,7 +1245,7 @@ My Services (instances + credentials), My Secrets (names + versions), Approvals 
 
 Overslash provides built-in standalone pages for common user interactions. These serve two purposes: (1) direct use by unplatformed agents (e.g., agents connecting to Overslash without a platform intermediary), and (2) a zero-effort integration path for platforms that don't want to build their own UI for these flows.
 
-Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, enrollment consent payloads. The built-in pages are a convenience, not a requirement.
+Platforms can always build fully white-label equivalents using the same REST API these pages consume. The API exposes all the data needed: approval details with suggested tiers, secret request metadata, OAuth consent payloads. The built-in pages are a convenience, not a requirement.
 
 - **Approval resolution** (`/approvals/apr_...`) — requires login. Shows approval details and specificity picker. See §5 Trust Model.
 - **Secret request** (`/secrets/provide/req_...?token=jwt`) — no login required *by default* for the user landing on the page (signed URL). Secure input field for secret provisioning. Safe because providing a secret doesn't grant the agent authority. **One page, two contexts:** this URL is used both for (a) mid-execution secret requests when an agent calls `overslash_auth.request_secret` and (b) initial bootstrap of a secret-based service when an agent calls `create_service_from_template` against an API-key template (§9 *Programmatic Service Creation*). Both contexts share the same security properties — the signed token scopes the page to a single secret slot on a single identity.
@@ -1075,13 +1261,82 @@ Platforms can always build fully white-label equivalents using the same REST API
   2. **Required user session (org setting).** Org admins can set `allow_unsigned_secret_provide = false` via `PATCH /v1/orgs/{id}/secret-request-settings`. New secret requests minted while the toggle is off are stamped `require_user_session = true` at mint time and **must** be redeemed by a visitor with a same-org session — anonymous submission is rejected with `401 user_session_required`. The toggle is forward-only: outstanding URLs minted before the flip continue to honor the policy they were issued under, so flipping the toggle never breaks in-flight requests.
 
   **Cross-tenant sessions are ignored** (treated as anonymous). A session in org A cannot be used to provision a secret in org B, regardless of token validity — the standalone page silently drops the cookie in that case.
-- **Enrollment consent** (`/enroll/consent/...`) — requires login. Agent-initiated enrollment approval with name editing and parent placement.
+- **OAuth consent** (`/oauth/consent?request_id=...`) — requires login. MCP-client enrollment approval with name editing, parent placement, and `inherit_permissions`/group toggles. See §4 *Agent Enrollment*.
+- **SKILL.md** (`/SKILL.md`) — unauthenticated. Agent-facing enrollment instructions, served from the repo-root `SKILL.md` file.
 
 ---
 
 ## 12. Audit Trail
 
 Every action execution, approval resolution, secret access, and connection change is logged with the full identity chain. Queryable by identity, service, time range, and event type.
+
+---
+
+## 12a. Configurable Detail Disclosure
+
+For approvals and audit rows to be useful for human review, resolvers need to know *what* an action is about to do — not just that an HTTP request is pending. Templates can declare two opt-in extensions on any HTTP action to control how a resolved request is surfaced:
+
+- **`x-overslash-disclose`** — a labeled list of jq filters. Each filter runs at approval-create time (and again at call-success audit-write time) against a structured projection of the resolved request. Results land on `approvals.disclosed_fields` and on `audit_log.detail.disclosed`, rendered in the dashboard as a prominent "Summary" block *above* the raw-payload disclosure.
+- **`x-overslash-redact`** — a list of dotted paths into the same projection. Matched values are replaced with the sentinel `"[REDACTED]"` **before** the projection is persisted as `approvals.action_detail`. Redaction defends the raw-payload blob from leaking template-declared sensitive fields; it does *not* affect disclosure extraction (which runs first).
+
+### jq input shape
+
+Each disclose filter runs against this projection of the resolved request:
+
+```json
+{
+  "method": "POST",
+  "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+  "params": { "userId": "me" },
+  "body": { "raw": "VG86IGFsaWNlQGV4YW1wbGUuY29tCg..." }
+}
+```
+
+- `body` is parsed as JSON when the outbound request's `Content-Type` is a JSON media type (`application/json`, `application/*+json`); otherwise it's carried as the raw string.
+- `params` is the post-resolution parameter map — every arg the agent passed, regardless of whether it was bound to the URL path, the query string, or the body.
+
+### Declaration
+
+```yaml
+paths:
+  /gmail/v1/users/{userId}/messages/send:
+    post:
+      operationId: send_message
+      disclose:
+        - label: To
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | @base64d | capture("(?im)^To:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Subject
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | @base64d | capture("(?im)^Subject:\\s*(?<v>[^\\r\\n]+)").v'
+        - label: Body
+          filter: '.body.raw | gsub("-"; "+") | gsub("_"; "/") | @base64d | split("\r\n\r\n")[1:] | join("\r\n\r\n")'
+          max_chars: 2000
+      redact:
+        - body.raw
+```
+
+Unprefixed `disclose:` / `redact:` aliases normalize to `x-overslash-disclose` / `x-overslash-redact` like the other operation-level extensions. jq syntax is validated at template register / promote time; a malformed filter rejects the template with a `disclose_invalid_jq` issue.
+
+### Wire shape of a disclosed field
+
+```json
+{ "label": "To", "value": "alice@example.com", "error": null, "truncated": false }
+```
+
+`error` carries a per-filter runtime error (jq type mismatch, missing field, etc.) — one filter's failure never poisons the rest of the summary. `truncated` is set when the value hit the per-field `max_chars` clamp or the 10 KB hard ceiling.
+
+### Sandbox guarantees
+
+All of an action's filters run in one `spawn_blocking` task with these limits:
+
+- **Per-filter timeout** — `filter_timeout_ms` (same setting that gates response filters).
+- **Batch timeout** — `n × filter_timeout_ms`, capped at an absolute **30 s** wall-clock ceiling. Scales linearly with field count so legitimate multi-field templates aren't silently degraded, while the absolute ceiling defends against pathological templates.
+- **Output values cap** — 10 000 per filter (matches `response_filter`). Disclosure expects exactly one; excess values set `truncated: true` on the field and take the first.
+- **Per-value size cap** — 10 KB, applied on top of `max_chars`.
+- **Projection size cap** — 1 MB (safety ceiling, one order of magnitude above the `action_detail` product limit).
+
+### Trust boundary
+
+Templates are authored by org ops (three-tier registry: global / org / user). A template author who chooses not to redact a sensitive path takes responsibility for that call — redaction is declarative, not heuristic. The `disclose` jq engine can read redacted-target paths (extraction runs on the un-redacted projection); if an author surfaces a token via a filter, they're doing so deliberately.
 
 ---
 

@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -15,8 +15,9 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp},
+    extractors::{AdminAcl, ClientIp, OrgAcl},
 };
+use overslash_core::permissions::AccessLevel;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -26,7 +27,10 @@ pub fn router() -> Router<AppState> {
             get(get_group).put(update_group).delete(delete_group),
         )
         .route("/v1/groups/{id}/grants", post(add_grant).get(list_grants))
-        .route("/v1/groups/{id}/grants/{grant_id}", delete(remove_grant))
+        .route(
+            "/v1/groups/{id}/grants/{grant_id}",
+            delete(remove_grant).patch(update_grant),
+        )
         .route(
             "/v1/groups/{id}/members",
             post(assign_identity).get(list_members),
@@ -44,8 +48,6 @@ struct CreateGroupRequest {
     name: String,
     #[serde(default)]
     description: String,
-    #[serde(default)]
-    allow_raw_http: bool,
 }
 
 #[derive(Deserialize)]
@@ -53,8 +55,6 @@ struct UpdateGroupRequest {
     name: String,
     #[serde(default)]
     description: String,
-    #[serde(default)]
-    allow_raw_http: bool,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +63,14 @@ struct AddGrantRequest {
     access_level: String,
     #[serde(default)]
     auto_approve_reads: bool,
+}
+
+#[derive(Deserialize)]
+struct PatchGrantRequest {
+    #[serde(default)]
+    access_level: Option<String>,
+    #[serde(default)]
+    auto_approve_reads: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -78,8 +86,13 @@ struct GroupResponse {
     org_id: Uuid,
     name: String,
     description: String,
-    allow_raw_http: bool,
     is_system: bool,
+    /// `'everyone'`, `'admins'`, or `'self'` for system groups; `null` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_kind: Option<String>,
+    /// Set iff `system_kind == 'self'` — the user-identity this Myself group is for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_identity_id: Option<Uuid>,
     created_at: String,
     updated_at: String,
 }
@@ -91,8 +104,9 @@ impl From<GroupRow> for GroupResponse {
             org_id: r.org_id,
             name: r.name,
             description: r.description,
-            allow_raw_http: r.allow_raw_http,
             is_system: r.is_system,
+            system_kind: r.system_kind,
+            owner_identity_id: r.owner_identity_id,
             created_at: fmt_time(r.created_at),
             updated_at: fmt_time(r.updated_at),
         }
@@ -128,7 +142,7 @@ async fn create_group(
 ) -> Result<Json<GroupResponse>> {
     let auth = acl;
     let row = scope
-        .create_group(&req.name, &req.description, req.allow_raw_http)
+        .create_group(&req.name, &req.description)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db_err)
@@ -148,7 +162,6 @@ async fn create_group(
             resource_id: Some(row.id),
             detail: serde_json::json!({
                 "name": &row.name,
-                "allow_raw_http": row.allow_raw_http,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -158,9 +171,38 @@ async fn create_group(
     Ok(Json(GroupResponse::from(row)))
 }
 
-async fn list_groups(scope: OrgScope) -> Result<Json<Vec<GroupResponse>>> {
+#[derive(Deserialize)]
+struct ListGroupsQuery {
+    /// Include other users' Myself groups (`system_kind = 'self'`) in the listing.
+    /// Default `false` because they'd flood an admin's group list with one row
+    /// per user; the caller's own Myself is always included so a regular user
+    /// can manage it from the Groups page.
+    #[serde(default)]
+    include_self: bool,
+}
+
+async fn list_groups(
+    OrgAcl {
+        identity_id: caller_identity,
+        ..
+    }: OrgAcl,
+    scope: OrgScope,
+    Query(q): Query<ListGroupsQuery>,
+) -> Result<Json<Vec<GroupResponse>>> {
     let rows = scope.list_groups().await?;
-    Ok(Json(rows.into_iter().map(GroupResponse::from).collect()))
+    let filtered: Vec<_> = rows
+        .into_iter()
+        .filter(|r| {
+            // Always show non-self groups. For self groups, always show the
+            // caller's own Myself; show others' only when the caller opts in
+            // via `?include_self=true` (admin audit view).
+            r.system_kind.as_deref() != Some("self")
+                || q.include_self
+                || (caller_identity.is_some() && r.owner_identity_id == caller_identity)
+        })
+        .map(GroupResponse::from)
+        .collect();
+    Ok(Json(filtered))
 }
 
 async fn get_group(scope: OrgScope, Path(id): Path<Uuid>) -> Result<Json<GroupResponse>> {
@@ -192,7 +234,7 @@ async fn update_group(
     }
 
     let row = scope
-        .update_group(id, &req.name, &req.description, req.allow_raw_http)
+        .update_group(id, &req.name, &req.description)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db_err)
@@ -213,7 +255,6 @@ async fn update_group(
             resource_id: Some(row.id),
             detail: serde_json::json!({
                 "name": &row.name,
-                "allow_raw_http": row.allow_raw_http,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -264,13 +305,16 @@ async fn delete_group(
 
 async fn add_grant(
     State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    OrgAcl {
+        org_id: caller_org,
+        identity_id: caller_identity,
+        access_level: caller_level,
+    }: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(group_id): Path<Uuid>,
     Json(req): Json<AddGrantRequest>,
 ) -> Result<Json<GroupGrantResponse>> {
-    let auth = acl;
     // Validate access_level
     if !matches!(req.access_level.as_str(), "read" | "write" | "admin") {
         return Err(AppError::BadRequest(format!(
@@ -280,20 +324,46 @@ async fn add_grant(
     }
 
     // Verify group exists and belongs to org
-    scope
+    let group = scope
         .get_group(group_id)
         .await?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    // Verify service instance exists, belongs to org, and is org-level.
-    // Org-scoped lookup — a foreign id returns None at the SQL boundary.
+    // Authority gate: org admins can grant on any group; the owner of a Myself
+    // group can manage their own. Everything else (regular org-level groups for
+    // a non-admin) requires admin.
+    //
+    // Permission split (see docs/design/agent-self-management.md §1): granting a
+    // service to a non-Myself group is the *social* half of service management
+    // and lives under `manage_services_share`. Adding a grant on the caller's
+    // own Myself group is the local half — `manage_services_own` (e.g. via the
+    // auto-grant in `kernel_create_service`) is sufficient. An agent holding
+    // only `overslash:manage_services_own:*` lands here without admin and is
+    // refused — exactly the boundary the split exists to draw.
+    let owner_managing_self =
+        group.system_kind.as_deref() == Some("self") && group.owner_identity_id == caller_identity;
+    if !owner_managing_self && caller_level < AccessLevel::Admin {
+        return Err(AppError::Forbidden("admin access required".into()));
+    }
+
+    // Verify service instance exists and belongs to org.
+    // Services owned by individual users are now grantable too — owner access
+    // flows through Myself grants, and admins can layer additional groups on
+    // top to share a personal service org-wide.
     let svc = scope
         .get_service_instance(req.service_instance_id)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    if svc.owner_identity_id.is_some() {
+
+    // Self-group guard: a `system_kind = 'self'` group can only carry grants
+    // for services owned by its target user. Without this, an admin could
+    // smuggle alice's service into bob's Myself group, giving bob silent
+    // access via his own permission surface.
+    if group.system_kind.as_deref() == Some("self")
+        && svc.owner_identity_id != group.owner_identity_id
+    {
         return Err(AppError::BadRequest(
-            "only org-level service instances can be granted to groups".into(),
+            "Myself groups can only grant their owner's services".into(),
         ));
     }
 
@@ -315,10 +385,10 @@ async fn add_grant(
         })?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(caller_org, state.db.clone())
         .log_audit(AuditEntry {
-            org_id: auth.org_id,
-            identity_id: auth.identity_id,
+            org_id: caller_org,
+            identity_id: caller_identity,
             action: "group_grant.created",
             resource_type: Some("group_grant"),
             resource_id: Some(grant_row.id),
@@ -373,33 +443,54 @@ async fn list_grants(
 
 async fn remove_grant(
     State(state): State<AppState>,
-    AdminAcl(acl): AdminAcl,
+    OrgAcl {
+        org_id: caller_org,
+        identity_id: caller_identity,
+        access_level: caller_level,
+    }: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path((group_id, grant_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>> {
-    let auth = acl;
     // Verify group belongs to org
     let grp = scope
         .get_group(group_id)
         .await?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    // Prevent removing grants from system groups — would break ACL enforcement
-    // (e.g., removing the Admins → overslash grant locks out all admins)
-    if grp.is_system {
+    // Authority gate: owner can manage their own Myself; org admins can
+    // manage any non-self group, including Everyone (so an org can lock
+    // down the bootstrapped `overslash` / `http` defaults). Admins stays
+    // locked: an admin who removed `overslash:admin` from Admins would
+    // lose the recovery surface that lets them re-grant it.
+    //
+    // Auth runs before the Admins-lock so a non-admin caller sees a 403
+    // (consistent with `add_grant` / `update_grant`) instead of leaking
+    // the system-lock as a 400 — the response shouldn't tell unauthorized
+    // callers anything about which groups are locked.
+    let owner_managing_self =
+        grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
+    let is_admins = grp.system_kind.as_deref() == Some("admins");
+    if owner_managing_self {
+        // Owner-managed Myself group: allow.
+    } else if is_admins {
+        if caller_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
         return Err(AppError::BadRequest(
-            "cannot remove grants from system groups".into(),
+            "cannot remove grants from the Admins group".into(),
         ));
+    } else if caller_level < AccessLevel::Admin {
+        return Err(AppError::Forbidden("admin access required".into()));
     }
 
     let deleted = scope.remove_group_grant(grant_id, group_id).await?;
 
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(caller_org, state.db.clone())
             .log_audit(AuditEntry {
-                org_id: auth.org_id,
-                identity_id: auth.identity_id,
+                org_id: caller_org,
+                identity_id: caller_identity,
                 action: "group_grant.deleted",
                 resource_type: Some("group_grant"),
                 resource_id: Some(grant_id),
@@ -411,6 +502,113 @@ async fn remove_grant(
     }
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+async fn update_grant(
+    State(state): State<AppState>,
+    OrgAcl {
+        org_id: caller_org,
+        identity_id: caller_identity,
+        access_level: caller_level,
+    }: OrgAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path((group_id, grant_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<PatchGrantRequest>,
+) -> Result<Json<GroupGrantResponse>> {
+    // Reject no-op patches outright. PATCH semantics make this ambiguous —
+    // either "leave everything alone" (succeed but do nothing) or "you forgot
+    // a field" (400). Picking 400 keeps the dashboard's error path honest.
+    if req.access_level.is_none() && req.auto_approve_reads.is_none() {
+        return Err(AppError::BadRequest("no fields to update".into()));
+    }
+
+    // Verify group belongs to org and apply the same auth gate as add_grant /
+    // remove_grant. Admins keeps `access_level` immutable so the recovery
+    // surface (admin-grade `overslash` / `http` grants) can't be downgraded
+    // out from under the admins themselves. Everyone is fully editable by
+    // an org admin — removing or downgrading the bootstrapped defaults is
+    // the whole point of letting orgs lock the metaservice down.
+    //
+    // Auth runs before any field-shape validation so unauthorized callers
+    // can't probe what `access_level` values are syntactically valid by
+    // watching 400-vs-other responses.
+    let grp = scope
+        .get_group(group_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+
+    let owner_managing_self =
+        grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == caller_identity;
+    let is_admins = grp.system_kind.as_deref() == Some("admins");
+    if owner_managing_self {
+        // Owner-managed Myself group: allow.
+    } else if is_admins {
+        if caller_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden("admin access required".into()));
+        }
+        if req.access_level.is_some() {
+            return Err(AppError::BadRequest(
+                "cannot change access_level on the Admins group".into(),
+            ));
+        }
+    } else if caller_level < AccessLevel::Admin {
+        return Err(AppError::Forbidden("admin access required".into()));
+    }
+
+    if let Some(level) = req.access_level.as_deref()
+        && !matches!(level, "read" | "write" | "admin")
+    {
+        return Err(AppError::BadRequest(format!(
+            "invalid access_level '{level}': must be read, write, or admin"
+        )));
+    }
+
+    let grant_row = scope
+        .update_group_grant(
+            grant_id,
+            group_id,
+            req.access_level.as_deref(),
+            req.auto_approve_reads,
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound("grant not found".into()))?;
+
+    // Resolve the service name for the response — update_group_grant returns
+    // the bare row, not the joined detail shape.
+    let svc = scope
+        .get_service_instance(grant_row.service_instance_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+
+    let _ = OrgScope::new(caller_org, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: caller_org,
+            identity_id: caller_identity,
+            action: "group_grant.updated",
+            resource_type: Some("group_grant"),
+            resource_id: Some(grant_row.id),
+            detail: serde_json::json!({
+                "group_id": group_id,
+                "service_instance_id": grant_row.service_instance_id,
+                "service_name": &svc.name,
+                "access_level": req.access_level,
+                "auto_approve_reads": req.auto_approve_reads,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(GroupGrantResponse {
+        id: grant_row.id,
+        group_id: grant_row.group_id,
+        service_instance_id: grant_row.service_instance_id,
+        service_name: svc.name,
+        access_level: grant_row.access_level,
+        auto_approve_reads: grant_row.auto_approve_reads,
+        created_at: fmt_time(grant_row.created_at),
+    }))
 }
 
 // ── Member handlers ──────────────────────────────────────────────────
@@ -438,6 +636,19 @@ async fn assign_identity(
     if identity.kind != "user" {
         return Err(AppError::BadRequest(
             "only users can be assigned to groups (agents inherit via owner)".into(),
+        ));
+    }
+
+    // Self-group guard (mirror of the cross-owner check in `add_grant`):
+    // a `system_kind = 'self'` group can only have its owner as a member.
+    // Without this, an admin could add bob to alice's Myself group, and
+    // since the ceiling query unions grants across all the user's groups,
+    // bob would silently inherit every grant alice has via Myself —
+    // including admin + auto_approve_reads on every service alice owns.
+    if grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id != Some(req.identity_id)
+    {
+        return Err(AppError::BadRequest(
+            "Myself groups can only contain their owner".into(),
         ));
     }
 
@@ -504,14 +715,27 @@ async fn unassign_identity(
         .await?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    // Prevent removing the last member from the Admins system group
-    if grp.is_system && grp.name == "Admins" {
+    // Prevent removing the last member from the Admins system group.
+    // Keyed on `system_kind` rather than the brittle `name == "Admins"`
+    // literal that the rest of this PR migrated away from.
+    if grp.system_kind.as_deref() == Some("admins") {
         let count = scope.count_members_in_group(group_id).await?;
         if count <= 1 {
             return Err(AppError::BadRequest(
                 "cannot remove the last member from the Admins group".into(),
             ));
         }
+    }
+
+    // A Myself group always has exactly one member: its owner. Removing
+    // that member would silently sever every grant the owner has on their
+    // own services until someone re-adds them — pure availability vector,
+    // no good reason to allow it. The owner can adjust their grants via
+    // `/v1/groups/{self_id}/grants` if they need to revoke access.
+    if grp.system_kind.as_deref() == Some("self") && grp.owner_identity_id == Some(identity_id) {
+        return Err(AppError::BadRequest(
+            "cannot remove a user from their own Myself group".into(),
+        ));
     }
 
     let deleted = scope

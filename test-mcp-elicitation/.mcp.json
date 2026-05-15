@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "test-elicit": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/home/arturo/code/overslash/test-mcp-elicitation",
+        "run",
+        "python",
+        "server.py",
+        "--use-tasks",
+        "--force",
+        "--task-resolve-after-ms", "500"
+      ]
+    }
+  }
+}

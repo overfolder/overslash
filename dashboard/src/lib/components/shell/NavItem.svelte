@@ -6,10 +6,23 @@
 		href,
 		label,
 		icon,
-		collapsed = false
-	}: { href: string; label: string; icon: string; collapsed?: boolean } = $props();
+		collapsed = false,
+		activeHref = null
+	}: {
+		href: string;
+		label: string;
+		icon: string;
+		collapsed?: boolean;
+		// When the parent renders multiple NavItems whose hrefs are prefixes
+		// of one another (e.g. /org and /org/groups), pass the parent's
+		// `pickActiveHref(...)` result so only the longest match lights up.
+		// Falling back to per-item isActive() preserves prior behavior.
+		activeHref?: string | null;
+	} = $props();
 
-	const active = $derived(isActive($page.url.pathname, href));
+	const active = $derived(
+		activeHref !== null ? href === activeHref : isActive($page.url.pathname, href)
+	);
 </script>
 
 <a {href} class="nav-item" class:active class:collapsed title={collapsed ? label : undefined}>

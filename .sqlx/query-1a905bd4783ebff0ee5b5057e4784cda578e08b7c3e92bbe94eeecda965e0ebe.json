@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT template_key AS \"template!\", COUNT(*)::bigint AS \"count!\"\n        FROM service_instances\n        WHERE status = 'active'\n        GROUP BY template_key\n        ORDER BY COUNT(*) DESC\n        LIMIT 20\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "template!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "1a905bd4783ebff0ee5b5057e4784cda578e08b7c3e92bbe94eeecda965e0ebe"
+}

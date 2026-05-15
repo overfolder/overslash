@@ -10,14 +10,20 @@ use uuid::Uuid;
 
 use overslash_core::openapi::{
     self,
-    import::{ImportOptions, ImportWarning, OperationInfo, prepare_from_value, prepare_import},
+    import::{ImportOptions, ImportWarning, OperationInfo, prepare_from_value},
 };
 use overslash_core::permissions::AccessLevel;
 use overslash_core::template_validation::{
-    ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
+    ValidationIssue, ValidationReport, parse_normalize_compile_yaml, prepare_draft_from_value,
     validate_template_yaml,
 };
 use overslash_core::types::{ActionParam, Risk, ServiceDefinition};
+
+use crate::services::platform_templates::{
+    self, MAX_TEMPLATE_YAML_BYTES, delete_active_template_inner, kernel_import_template,
+    load_draft_for_write_inner,
+};
+use crate::services::response_filter;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::service_template::{self, CreateServiceTemplate, UpdateServiceTemplate};
 use overslash_db::repos::{enabled_global_template, org as org_repo};
@@ -28,11 +34,41 @@ use crate::{
     extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
 };
 
-/// Max body size accepted by `POST /v1/templates/validate`. 512 KiB is roughly
-/// 4x the largest shipped template and several orders of magnitude above any
-/// plausible hand-authored one — enough headroom for auto-generated specs
-/// without leaving a DoS-friendly validation endpoint wide open.
-const MAX_TEMPLATE_YAML_BYTES: usize = 512 * 1024;
+/// Run `parse_normalize_compile_yaml` and then validate that every
+/// `x-overslash-disclose` filter is a syntactically valid jq expression. jq
+/// syntax validation lives in `overslash-api` (jq isn't compiled into
+/// `overslash-core` to keep it WASM-friendly), so this is the single gate
+/// any register / update / import / promote path must go through.
+fn parse_normalize_compile_and_check_disclose(
+    yaml: &str,
+) -> std::result::Result<(serde_json::Value, ServiceDefinition), ValidationReport> {
+    let (doc, def) = parse_normalize_compile_yaml(yaml)?;
+    let mut extra = Vec::new();
+    for (action_key, action) in &def.actions {
+        for (i, f) in action.disclose.iter().enumerate() {
+            if let Err(msg) =
+                response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+                    expr: f.filter.clone(),
+                })
+            {
+                extra.push(ValidationIssue::new(
+                    "disclose_invalid_jq",
+                    format!("filter is not a valid jq expression: {msg}"),
+                    format!("actions.{action_key}.disclose[{i}].filter"),
+                ));
+            }
+        }
+    }
+    if extra.is_empty() {
+        Ok((doc, def))
+    } else {
+        Err(ValidationReport {
+            valid: false,
+            errors: extra,
+            warnings: Vec::new(),
+        })
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -66,6 +102,7 @@ pub fn router() -> Router<AppState> {
             "/v1/templates/{id}/manage",
             put(update_template).delete(delete_template),
         )
+        .route("/v1/templates/{key}/mcp/resync", post(resync_mcp_tools))
 }
 
 // -- Response types --
@@ -101,6 +138,29 @@ struct TemplateDetail {
     /// DB id for org/user templates; None for global.
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Uuid>,
+    /// "http" (default) or "mcp". Dashboard uses this to switch the actions
+    /// tab column layout and to reveal the MCP-only "Resync tools" button.
+    runtime: String,
+    /// Summary of the MCP block when `runtime == "mcp"`. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp: Option<McpDetail>,
+}
+
+#[derive(Serialize)]
+struct McpDetail {
+    /// The template's default MCP server URL. `null` means the service instance
+    /// must supply a URL at creation time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    /// `none` or `bearer`. The dashboard uses this to gate the secret-name UI.
+    auth_kind: String,
+    /// `true` when the template has a hard-coded `secret_name`; `false` when
+    /// the operator must supply one at instance creation time.
+    has_default_secret_name: bool,
+    autodiscover: bool,
+    /// ISO-8601 timestamp of the most recent tools/list sync. `None` if never.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovered_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -128,6 +188,18 @@ pub(crate) struct ActionSummary {
     path: String,
     description: String,
     risk: Risk,
+    /// MCP tool name when the owning service has `runtime: mcp`; None for HTTP.
+    /// The dashboard switches its column layout on this field's presence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_tool: Option<String>,
+    /// MCP outputSchema (JSON Schema). Present for MCP tools declaring one;
+    /// callers may render it as a typed shape hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_schema: Option<serde_json::Value>,
+    /// Admin-hidden tool. Dashboard shows these with a "hidden" pill and
+    /// `/v1/actions/call` rejects invocation at resolve time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disabled: bool,
 }
 
 /// Full action details including the parameter schema — used by the API
@@ -208,6 +280,9 @@ fn actions_from_definition(def: &ServiceDefinition) -> Vec<ActionSummary> {
             path: a.path.clone(),
             description: a.description.clone(),
             risk: a.risk,
+            mcp_tool: a.mcp_tool.clone(),
+            output_schema: a.output_schema.clone(),
+            disabled: a.disabled,
         })
         .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));
@@ -224,6 +299,8 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
+    let runtime = runtime_string(&def);
+    let mcp = mcp_detail_from(&def, &t.openapi);
     Ok(TemplateDetail {
         key: t.key,
         display_name: t.display_name,
@@ -235,7 +312,64 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         actions: actions_from_definition(&def),
         tier: tier.into(),
         id: Some(t.id),
+        runtime,
+        mcp,
     })
+}
+
+fn runtime_string(def: &ServiceDefinition) -> String {
+    use overslash_core::types::Runtime;
+    match def.runtime {
+        Runtime::Http => "http".into(),
+        Runtime::Mcp => "mcp".into(),
+        Runtime::Platform => "platform".into(),
+    }
+}
+
+fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
+    use overslash_core::types::McpAuth;
+    let spec = def.mcp.as_ref()?;
+    let (auth_kind, has_default_secret_name) = match &spec.auth {
+        McpAuth::None => ("none".to_string(), false),
+        McpAuth::Bearer { secret_name } => ("bearer".to_string(), secret_name.is_some()),
+    };
+    let discovered_at = openapi
+        .get("x-overslash-mcp")
+        .and_then(|v| v.get("discovered_at"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some(McpDetail {
+        url: spec.url.clone(),
+        auth_kind,
+        has_default_secret_name,
+        autodiscover: spec.autodiscover,
+        discovered_at,
+    })
+}
+
+/// Carry the system-managed MCP discovery fields (`discovered_tools`,
+/// `discovered_at`) from `old` forward onto `new` when `new` does not
+/// already declare them. The admin-facing update path accepts the same
+/// template editor YAML that created the row, which doesn't round-trip
+/// through the discovery blob — without this carry-over, each edit
+/// would silently wipe the last resync.
+fn preserve_mcp_discovered_fields(old: &serde_json::Value, new: &mut serde_json::Value) {
+    let Some(old_mcp) = old.get("x-overslash-mcp").and_then(|v| v.as_object()) else {
+        return;
+    };
+    let Some(new_mcp) = new
+        .get_mut("x-overslash-mcp")
+        .and_then(|v| v.as_object_mut())
+    else {
+        return;
+    };
+    for field in ["discovered_tools", "discovered_at"] {
+        if !new_mcp.contains_key(field) {
+            if let Some(v) = old_mcp.get(field) {
+                new_mcp.insert(field.into(), v.clone());
+            }
+        }
+    }
 }
 
 fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefinition> {
@@ -412,6 +546,10 @@ async fn get_template(
         .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
+    let runtime = runtime_string(svc);
+    // Globals ship their tool list in the YAML on disk; discovered_at is
+    // never populated on a global (resync is not available).
+    let mcp = mcp_detail_from(svc, &serde_json::Value::Null);
     Ok(Json(TemplateDetail {
         key: svc.key.clone(),
         display_name: svc.display_name.clone(),
@@ -423,6 +561,8 @@ async fn get_template(
         actions: actions_from_definition(svc),
         tier: "global".into(),
         id: None,
+        runtime,
+        mcp,
     }))
 }
 
@@ -484,6 +624,9 @@ async fn list_template_actions(
         org_id: auth.org_id,
         identity_id: effective_identity,
         key_id: auth.key_id,
+        user_id: auth.user_id,
+        impersonated_by: auth.impersonated_by,
+        mcp_client_id: auth.mcp_client_id.clone(),
     };
     let actions = resolve_template_actions(&state, &effective_auth, &key).await?;
     Ok(Json(actions))
@@ -577,7 +720,7 @@ async fn create_template(
         None
     };
 
-    let (doc, def) = parse_normalize_compile_yaml(&req.openapi)
+    let (doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
@@ -689,7 +832,7 @@ async fn update_template(
         }
     }
 
-    let (doc, def) = parse_normalize_compile_yaml(&req.openapi)
+    let (mut doc, def) = parse_normalize_compile_and_check_disclose(&req.openapi)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     // Template key cannot change via update — the unique index pins it.
@@ -699,6 +842,13 @@ async fn update_template(
             existing.key, def.key
         )));
     }
+
+    // Preserve system-managed MCP discovery state across YAML edits.
+    // Admins authoring the template in the editor don't hand-edit
+    // x-overslash-mcp.discovered_tools / discovered_at — those are owned
+    // by the resync flow. Wiping them on update would silently invalidate
+    // every discovered-only tool until the admin hits resync again.
+    preserve_mcp_discovered_fields(&existing.openapi, &mut doc);
 
     let input = UpdateServiceTemplate {
         display_name: Some(&def.display_name),
@@ -761,7 +911,7 @@ async fn delete_template(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    // Multi-tenancy guard + ownership check. Status filter pushes draft rows
+    // Multi-tenancy guard + status filter. Status filter pushes draft rows
     // to the dedicated endpoint so a caller who knows a draft's UUID can't
     // destroy it through here (and bypass the draft-audit action label).
     let existing = service_template::get_by_id(&state.db, id)
@@ -769,33 +919,12 @@ async fn delete_template(
         .filter(|r| r.org_id == acl.org_id && r.status == "active")
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
 
-    if existing.owner_identity_id.is_some() {
-        // User-level: caller must own it or be admin
-        if existing.owner_identity_id != acl.identity_id && acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "you can only delete your own templates".into(),
-            ));
-        }
-    } else {
-        // Org-level: admin required
-        if acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "admin access required for org-level templates".into(),
-            ));
-        }
-    }
-
-    let tier = if existing.owner_identity_id.is_some() {
-        "user"
-    } else {
-        "org"
-    };
-    let key = existing.key.clone();
-
-    let deleted = service_template::delete(&state.db, id).await?;
-    if !deleted {
-        return Err(AppError::NotFound("template not found".into()));
-    }
+    let owner_identity_id = existing.owner_identity_id;
+    // Ownership check + delete live in `platform_templates` so the MCP
+    // `delete_template` kernel and this HTTP handler stay in sync.
+    let (key, tier, _) =
+        delete_active_template_inner(&state.db, existing, acl.identity_id, acl.access_level)
+            .await?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {
@@ -817,7 +946,7 @@ async fn delete_template(
         &state.db,
         tier,
         Some(acl.org_id),
-        existing.owner_identity_id,
+        owner_identity_id,
         &key,
     )
     .await;
@@ -1057,20 +1186,24 @@ struct DraftTemplateDetail {
 /// POST /v1/templates/import
 ///
 /// Fetch or accept an OpenAPI 3.x spec and persist it as a draft template.
-/// Returns a `DraftTemplateDetail` with the canonicalized YAML, a compile
-/// preview, validation report, import warnings, and the full list of
-/// operations from the source (with `included` reflecting the filter).
+/// Returns a [`platform_templates::DraftDetail`] with the canonicalized YAML,
+/// a compile preview, validation report, import warnings, and the full list
+/// of operations from the source (with `included` reflecting the filter).
 ///
 /// The draft lives in `service_templates` with `status='draft'` and is
 /// invisible to runtime lookups. Promote via
 /// `POST /v1/templates/drafts/{id}/promote`.
+///
+/// The actual import pipeline lives in
+/// [`platform_templates::kernel_import_template`] — this handler only
+/// resolves the source (URL fetch or inline body) and writes the audit row.
 async fn import_template(
     State(state): State<AppState>,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Json(req): Json<ImportTemplateRequest>,
-) -> Result<Json<DraftTemplateDetail>> {
-    let (bytes, content_type_hint, mut import_warnings) = match req.source {
+) -> Result<Json<platform_templates::DraftDetail>> {
+    let (bytes, content_type_hint, fetch_warnings) = match req.source {
         ImportSource::Url { url } => fetch_openapi_url(&url).await?,
         ImportSource::Body { content_type, body } => {
             if body.len() > MAX_TEMPLATE_YAML_BYTES {
@@ -1083,67 +1216,39 @@ async fn import_template(
         }
     };
 
+    let include_operations = req
+        .include_operations
+        .clone()
+        .map(|v| v.into_iter().collect::<HashSet<_>>());
+    let operations_selected = include_operations.as_ref().map(|s| s.len());
     let opts = ImportOptions {
-        include_operations: req.include_operations.map(|v| v.into_iter().collect()),
+        include_operations,
         key: req.key,
         display_name: req.display_name,
     };
 
-    let prepared = prepare_import(&bytes, content_type_hint.as_deref(), &opts).map_err(|i| {
-        let report = ValidationReport {
-            valid: false,
-            errors: vec![i],
-            warnings: Vec::new(),
-        };
-        AppError::TemplateValidationFailed { report }
-    })?;
-
-    import_warnings.extend(prepared.warnings);
-    let operations = prepared.operations;
-
-    // Lenient validation: we persist drafts even when they don't yet compile
-    // cleanly, so the editor has something to show while the user fixes it.
-    let (canonical_doc, compiled, validation) = prepare_draft_from_value(prepared.doc);
-    let canonical_yaml = openapi::to_yaml_string(&canonical_doc).unwrap_or_default();
-    let scalars = scalars_from_compiled(compiled.as_ref());
-
-    let row = if let Some(draft_id) = req.draft_id {
-        let existing = load_draft_for_write(&state, &acl, draft_id).await?;
-        let update = UpdateServiceTemplate {
-            display_name: Some(&scalars.display_name),
-            description: Some(&scalars.description),
-            category: Some(&scalars.category),
-            hosts: Some(&scalars.hosts),
-            openapi: Some(canonical_doc.clone()),
-            key: Some(&scalars.key),
-        };
-        service_template::update(&state.db, existing.id, &update)
-            .await?
-            .ok_or_else(|| AppError::NotFound("draft not found".into()))?
-    } else {
-        // Tier rules (admin-only for org, allow_user_templates for user) only
-        // apply when creating a new row. When updating an existing draft,
-        // authorization is handled above via `load_draft_for_write` and the
-        // request's `user_level` field is not meaningful — the draft's tier
-        // is already fixed.
-        let owner_identity_id = resolve_draft_owner(&state, &acl, req.user_level).await?;
-        let input = CreateServiceTemplate {
-            org_id: acl.org_id,
-            owner_identity_id,
-            key: &scalars.key,
-            display_name: &scalars.display_name,
-            description: &scalars.description,
-            category: &scalars.category,
-            hosts: &scalars.hosts,
-            openapi: canonical_doc.clone(),
-            status: "draft",
-        };
-        service_template::create(&state.db, &input)
-            .await
-            .map_err(AppError::Database)?
+    let ctx = crate::services::platform_caller::PlatformCallContext {
+        org_id: acl.org_id,
+        // Pass the Option through so the kernel can enforce
+        // "user-level requires identity-bound key" with a clean 400 instead
+        // of a 500 from a nil-uuid FK violation.
+        identity_id: acl.identity_id,
+        access_level: acl.access_level,
+        db: state.db.clone(),
+        registry: std::sync::Arc::clone(&state.registry),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
     };
-
-    let tier = tier_of(&row);
+    let detail = kernel_import_template(
+        ctx,
+        bytes,
+        content_type_hint,
+        opts,
+        req.user_level,
+        req.draft_id,
+        fetch_warnings,
+    )
+    .await?;
 
     let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
         .log_audit(AuditEntry {
@@ -1151,27 +1256,19 @@ async fn import_template(
             identity_id: acl.identity_id,
             action: "template.draft.imported",
             resource_type: Some("template"),
-            resource_id: Some(row.id),
+            resource_id: Some(detail.id),
             detail: serde_json::json!({
-                "key": &row.key,
-                "tier": tier,
-                "owner_identity_id": row.owner_identity_id,
-                "operations_selected": opts.include_operations.as_ref().map(|s| s.len()),
+                "key": &detail.key,
+                "tier": &detail.tier,
+                "owner_identity_id": detail.owner_identity_id,
+                "operations_selected": operations_selected,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
         .await;
 
-    Ok(Json(DraftTemplateDetail {
-        id: row.id,
-        tier: tier.into(),
-        openapi: canonical_yaml,
-        preview: compiled.as_ref().map(preview_from_compiled),
-        validation,
-        import_warnings,
-        operations,
-    }))
+    Ok(Json(detail))
 }
 
 /// GET /v1/templates/drafts
@@ -1328,7 +1425,7 @@ async fn promote_draft(
     let yaml_source = openapi::to_yaml_string(&existing.openapi).map_err(|i| {
         AppError::Internal(format!("stored draft serializer failed: {}", i.message))
     })?;
-    let (_doc, def) = parse_normalize_compile_yaml(&yaml_source)
+    let (_doc, def) = parse_normalize_compile_and_check_disclose(&yaml_source)
         .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
     if def.key.is_empty() {
@@ -1433,59 +1530,14 @@ async fn discard_draft(
 
 // -- Import helpers --
 
-/// Decide which tier a new draft should live in and enforce the same rules
-/// `create_template` uses. Returns the `owner_identity_id` to write.
-async fn resolve_draft_owner(
-    state: &AppState,
-    acl: &crate::extractors::OrgAcl,
-    user_level: bool,
-) -> Result<Option<Uuid>> {
-    if user_level {
-        let identity_id = acl.identity_id.ok_or_else(|| {
-            AppError::BadRequest("user-level drafts require an identity-bound API key".into())
-        })?;
-        let allowed = org_repo::get_allow_user_templates(&state.db, acl.org_id)
-            .await?
-            .unwrap_or(false);
-        if !allowed {
-            return Err(AppError::Forbidden(
-                "user templates are not enabled for this org".into(),
-            ));
-        }
-        Ok(Some(identity_id))
-    } else {
-        if acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "admin access required to create org-level templates".into(),
-            ));
-        }
-        Ok(None)
-    }
-}
-
 /// Load a draft for a mutating operation, enforcing tenancy + ownership.
+/// Thin wrapper around [`load_draft_for_write_inner`].
 async fn load_draft_for_write(
     state: &AppState,
     acl: &crate::extractors::OrgAcl,
     id: Uuid,
 ) -> Result<service_template::ServiceTemplateRow> {
-    let existing = service_template::get_by_id(&state.db, id)
-        .await?
-        .filter(|r| r.org_id == acl.org_id && r.status == "draft")
-        .ok_or_else(|| AppError::NotFound("draft not found".into()))?;
-
-    if existing.owner_identity_id.is_some() {
-        if existing.owner_identity_id != acl.identity_id && acl.access_level < AccessLevel::Admin {
-            return Err(AppError::Forbidden(
-                "you can only modify your own drafts".into(),
-            ));
-        }
-    } else if acl.access_level < AccessLevel::Admin {
-        return Err(AppError::Forbidden(
-            "admin access required to modify org-level drafts".into(),
-        ));
-    }
-    Ok(existing)
+    load_draft_for_write_inner(&state.db, acl.org_id, acl.identity_id, acl.access_level, id).await
 }
 
 fn row_to_draft_detail(row: service_template::ServiceTemplateRow) -> DraftTemplateDetail {
@@ -1581,100 +1633,53 @@ fn scalars_from_compiled(compiled: Option<&ServiceDefinition>) -> DraftScalars {
 ///
 /// Returns `(body_bytes, content_type_hint, warnings)`.
 async fn fetch_openapi_url(url: &str) -> Result<(Vec<u8>, Option<String>, Vec<ImportWarning>)> {
-    fetch_openapi_url_with_policy(url, is_disallowed_ip).await
+    fetch_openapi_url_with_policy(url, crate::services::ssrf_guard::is_disallowed_ip).await
 }
 
 /// Inner implementation of [`fetch_openapi_url`] parameterized on the IP
-/// policy. Production uses [`is_disallowed_ip`]; tests inject a permissive
-/// policy so they can point at a loopback mock server without tripping the
-/// real SSRF guard. Keeping the split internal (not `pub`) means no caller
-/// outside this module can accidentally bypass the guard.
+/// policy. Production uses [`crate::services::ssrf_guard::is_disallowed_ip`];
+/// tests inject a permissive policy so they can point at a loopback mock
+/// server without tripping the real SSRF guard. Keeping the split internal
+/// (not `pub`) means no caller outside this module can accidentally
+/// bypass the guard.
 async fn fetch_openapi_url_with_policy<F>(
     url: &str,
     is_blocked: F,
 ) -> Result<(Vec<u8>, Option<String>, Vec<ImportWarning>)>
 where
-    F: Fn(&std::net::IpAddr) -> bool,
+    F: Fn(&std::net::IpAddr) -> bool + Clone,
 {
-    use std::net::{IpAddr, ToSocketAddrs};
     use std::time::Duration;
 
     let mut warnings = Vec::new();
     let mut current = url.to_string();
 
     for _hop in 0..=3 {
-        let parsed = ::url::Url::parse(&current)
-            .map_err(|e| AppError::BadRequest(format!("invalid source URL {current:?}: {e}")))?;
+        // Delegate URL parsing, DNS resolution, IP policy check, and
+        // reqwest client pinning to the shared SSRF guard. The hop loop
+        // still lives here because the guard doesn't know about http→http
+        // redirect following; each hop runs its own resolve+pin.
+        let (fetch_client, parsed) = crate::services::ssrf_guard::build_pinned_client_with_policy(
+            &current,
+            Duration::from_secs(10),
+            is_blocked.clone(),
+        )
+        .await?;
 
-        let scheme = parsed.scheme();
-        match scheme {
-            "https" => {}
-            "http" => {
-                if !warnings
-                    .iter()
-                    .any(|w: &ImportWarning| w.code == "http_insecure")
-                {
-                    warnings.push(ImportWarning {
-                        code: "http_insecure".into(),
-                        message: "source fetched over plain HTTP; prefer https://".into(),
-                        path: "source.url".into(),
-                    });
-                }
-            }
-            other => {
-                return Err(AppError::BadRequest(format!(
-                    "unsupported URL scheme {other:?}; only http(s) are allowed"
-                )));
-            }
+        // Emit the plain-HTTP warning once per import (mirrors the original
+        // behavior — the guard itself is scheme-agnostic beyond accepting
+        // http/https).
+        if parsed.scheme() == "http"
+            && !warnings
+                .iter()
+                .any(|w: &ImportWarning| w.code == "http_insecure")
+        {
+            warnings.push(ImportWarning {
+                code: "http_insecure".into(),
+                message: "source fetched over plain HTTP; prefer https://".into(),
+                path: "source.url".into(),
+            });
         }
-
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| AppError::BadRequest("source URL has no host".into()))?
-            .to_string();
-        let port = parsed
-            .port_or_known_default()
-            .ok_or_else(|| AppError::BadRequest("source URL has no port".into()))?;
-
-        // Resolve + validate IPs. Use a blocking resolver on the tokio
-        // blocking pool so we don't stall the runtime.
-        let host_for_resolve = host.clone();
-        let addrs: Vec<IpAddr> = tokio::task::spawn_blocking(move || {
-            (host_for_resolve.as_str(), port)
-                .to_socket_addrs()
-                .map(|iter| iter.map(|a| a.ip()).collect::<Vec<_>>())
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("dns resolver join error: {e}")))?
-        .map_err(|e| AppError::BadRequest(format!("could not resolve host {host:?}: {e}")))?;
-
-        if addrs.is_empty() {
-            return Err(AppError::BadRequest(format!(
-                "host {host:?} resolved to no addresses"
-            )));
-        }
-        for ip in &addrs {
-            if is_blocked(ip) {
-                return Err(AppError::BadRequest(format!(
-                    "refusing to fetch from {ip}: private / loopback / link-local addresses are blocked"
-                )));
-            }
-        }
-
-        // Pin the hostname to the first validated IP via reqwest's `resolve`
-        // override. Without this, reqwest would perform its own DNS lookup
-        // inside `.send()` and a TOCTOU-friendly resolver could return a
-        // different (internal) address than the one we just validated. This is
-        // the actual DNS-rebinding mitigation.
-        let pinned_ip = addrs[0];
-        let pinned_sock = std::net::SocketAddr::new(pinned_ip, port);
-        let fetch_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(10))
-            .resolve(&host, pinned_sock)
-            .build()
-            .map_err(|e| AppError::Internal(format!("could not build fetch client: {e}")))?;
 
         let resp = fetch_client
             .get(&current)
@@ -1734,37 +1739,6 @@ where
     Err(AppError::BadRequest(
         "too many redirects fetching source URL (max 3)".into(),
     ))
-}
-
-fn is_disallowed_ip(ip: &std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_unspecified()
-                || v4.is_documentation()
-                // carrier-grade NAT 100.64.0.0/10
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_multicast()
-                || v6.is_unspecified()
-                // unique local fc00::/7
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                // link-local fe80::/10
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-                // IPv4-mapped (::ffff:x.x.x.x) — re-check as v4
-                || v6.to_ipv4_mapped().map(|m| {
-                    let as_ipaddr = IpAddr::V4(m);
-                    is_disallowed_ip(&as_ipaddr)
-                }).unwrap_or(false)
-        }
-    }
 }
 
 // -- Shared helpers (used by services routes too) --
@@ -1832,6 +1806,194 @@ pub(crate) async fn resolve_template_definition(
         .ok_or_else(|| AppError::NotFound(format!("template '{key}' not found")))
 }
 
+// ── MCP discovery (resync tools) ─────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct McpResyncResponse {
+    key: String,
+    tool_count: usize,
+    discovered_at: String,
+}
+
+/// POST /v1/templates/:key/mcp/resync — refresh discovered_tools on an
+/// MCP-runtime template by calling tools/list on the upstream server.
+///
+/// The template's openapi JSON is updated in place under
+/// `x-overslash-mcp.discovered_tools` and `.discovered_at`; authored
+/// `tools:` overrides are left untouched — the compile step merges them at
+/// read time. Access control: a user-tier template can be resynced by its
+/// owner; an org-tier template requires admin.
+async fn resync_mcp_tools(
+    State(state): State<AppState>,
+    WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
+    Path(key): Path<String>,
+) -> Result<Json<McpResyncResponse>> {
+    use overslash_core::types::{McpAuth, Runtime};
+    use overslash_db::OrgScope;
+
+    // Try user tier first (a resync of another user's private template is
+    // not reachable by key — the lookup filters on owner_identity_id), then
+    // org tier. Globals cannot be resynced; they ship their tool list in-repo.
+    let row = if let Some(identity_id) = acl.identity_id {
+        if let Some(r) =
+            service_template::get_by_key(&state.db, acl.org_id, Some(identity_id), &key).await?
+        {
+            r
+        } else if let Some(r) =
+            service_template::get_by_key(&state.db, acl.org_id, None, &key).await?
+        {
+            if acl.access_level < AccessLevel::Admin {
+                return Err(AppError::Forbidden(
+                    "admin access required for org-level templates".into(),
+                ));
+            }
+            r
+        } else {
+            return Err(AppError::NotFound(format!("template '{key}' not found")));
+        }
+    } else if let Some(r) = service_template::get_by_key(&state.db, acl.org_id, None, &key).await? {
+        if acl.access_level < AccessLevel::Admin {
+            return Err(AppError::Forbidden(
+                "admin access required for org-level templates".into(),
+            ));
+        }
+        r
+    } else {
+        return Err(AppError::NotFound(format!("template '{key}' not found")));
+    };
+
+    let def = compile_row(&row)?;
+    if def.runtime != Runtime::Mcp {
+        return Err(AppError::BadRequest(format!(
+            "template '{key}' is not an MCP-runtime template"
+        )));
+    }
+    let mcp = def
+        .mcp
+        .clone()
+        .ok_or_else(|| AppError::Internal("mcp runtime without mcp block".into()))?;
+    if !mcp.autodiscover {
+        return Err(AppError::BadRequest(
+            "autodiscover=false on this template — resync disabled".into(),
+        ));
+    }
+
+    // URL check before auth: gives the caller a clear 400 instead of a
+    // potential 500 from resolving a missing bearer secret_name.
+    let resync_url = mcp.url.as_deref().ok_or_else(|| {
+        AppError::BadRequest(
+            "template has no default MCP URL; resync requires a URL in the template".into(),
+        )
+    })?;
+
+    // Guard: bearer with no secret_name → 400 before any network call.
+    if let McpAuth::Bearer { secret_name: None } = &mcp.auth {
+        return Err(AppError::BadRequest(
+            "template has no default MCP secret_name; resync requires a secret_name in the template".into(),
+        ));
+    }
+
+    // Resolve auth and call tools/list against the upstream.
+    let scope = OrgScope::new(acl.org_id, state.db.clone());
+    let headers = match &mcp.auth {
+        McpAuth::None => reqwest::header::HeaderMap::new(),
+        McpAuth::Bearer { .. } => {
+            crate::services::mcp_auth::resolve_headers(&state, &scope, &mcp.auth).await?
+        }
+    };
+
+    // SSRF guard: resolve-once and pin the validated IP on the outbound
+    // reqwest client. See services::ssrf_guard for the full rationale.
+    let (http, base) = crate::services::ssrf_guard::build_pinned_client(
+        resync_url,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    let client = crate::services::mcp_client::McpClient::with_client_and_base(
+        http,
+        base,
+        crate::services::mcp_client::DEFAULT_MAX_BODY_BYTES,
+    );
+    let tools = client
+        .tools_list(&headers)
+        .await
+        .map_err(|e| AppError::BadGateway(format!("mcp tools/list failed: {e}")))?;
+
+    // Rewrite x-overslash-mcp.discovered_tools + discovered_at on the row JSON.
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let discovered_json: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            let mut m = serde_json::Map::new();
+            m.insert("name".into(), serde_json::Value::String(t.name.clone()));
+            if let Some(d) = &t.description {
+                m.insert("description".into(), serde_json::Value::String(d.clone()));
+            }
+            if let Some(s) = &t.input_schema {
+                m.insert("input_schema".into(), s.clone());
+            }
+            if let Some(s) = &t.output_schema {
+                m.insert("output_schema".into(), s.clone());
+            }
+            serde_json::Value::Object(m)
+        })
+        .collect();
+
+    let mut openapi = row.openapi.clone();
+    let mcp_obj = openapi
+        .get_mut("x-overslash-mcp")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| AppError::Internal("template missing x-overslash-mcp block".into()))?;
+    mcp_obj.insert(
+        "discovered_tools".into(),
+        serde_json::Value::Array(discovered_json),
+    );
+    mcp_obj.insert(
+        "discovered_at".into(),
+        serde_json::Value::String(now.clone()),
+    );
+
+    service_template::update(
+        &state.db,
+        row.id,
+        &UpdateServiceTemplate {
+            display_name: None,
+            description: None,
+            category: None,
+            hosts: None,
+            openapi: Some(openapi),
+            key: None,
+        },
+    )
+    .await?;
+
+    let _ = OrgScope::new(acl.org_id, state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "template.mcp_resync",
+            resource_type: Some("template"),
+            resource_id: Some(row.id),
+            detail: serde_json::json!({
+                "key": key,
+                "tool_count": tools.len(),
+                "url": mcp.url,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(McpResyncResponse {
+        key,
+        tool_count: tools.len(),
+        discovered_at: now,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1840,18 +2002,22 @@ mod tests {
     use tokio::net::TcpListener;
 
     // ── is_disallowed_ip: every branch in the SSRF guard ─────────────
+    // (policy lives in crate::services::ssrf_guard; tests retained here to
+    // keep coverage attached to the surface that actually consumes it).
+
+    use crate::services::ssrf_guard::is_disallowed_ip as ssrf_is_disallowed;
 
     fn assert_blocked(ip: &str) {
         let parsed: IpAddr = ip.parse().unwrap();
         assert!(
-            is_disallowed_ip(&parsed),
+            ssrf_is_disallowed(&parsed),
             "expected {ip} to be blocked, but the SSRF guard allowed it"
         );
     }
     fn assert_allowed(ip: &str) {
         let parsed: IpAddr = ip.parse().unwrap();
         assert!(
-            !is_disallowed_ip(&parsed),
+            !ssrf_is_disallowed(&parsed),
             "expected {ip} to be allowed, but the SSRF guard blocked it"
         );
     }
@@ -1945,9 +2111,9 @@ mod tests {
         // Sanity check that the helpers we exercise compile + construct
         // identical addresses via the typed constructors too.
         let loop_v4 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert!(is_disallowed_ip(&loop_v4));
+        assert!(ssrf_is_disallowed(&loop_v4));
         let unspec_v6 = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
-        assert!(is_disallowed_ip(&unspec_v6));
+        assert!(ssrf_is_disallowed(&unspec_v6));
     }
 
     // ── fetch_openapi_url_with_policy: end-to-end against a loopback mock ─
@@ -1973,7 +2139,7 @@ mod tests {
         if ip.is_loopback() {
             false
         } else {
-            is_disallowed_ip(ip)
+            ssrf_is_disallowed(ip)
         }
     }
 
@@ -2103,7 +2269,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            AppError::BadRequest(msg) => assert!(msg.contains("invalid source URL"), "got: {msg}"),
+            AppError::BadRequest(msg) => assert!(msg.contains("invalid URL"), "got: {msg}"),
             other => panic!("expected BadRequest, got {other:?}"),
         }
     }
@@ -2130,12 +2296,15 @@ mod tests {
         let (addr, _h) = spawn_mock(app).await;
         let url = format!("http://{addr}/spec");
 
-        let err = fetch_openapi_url_with_policy(&url, is_disallowed_ip)
+        let err = fetch_openapi_url_with_policy(&url, ssrf_is_disallowed)
             .await
             .unwrap_err();
         match err {
             AppError::BadRequest(msg) => {
-                assert!(msg.contains("refusing to fetch from"), "got: {msg}");
+                assert!(
+                    msg.contains("private / loopback / link-local"),
+                    "got: {msg}"
+                );
             }
             other => panic!("expected BadRequest, got {other:?}"),
         }

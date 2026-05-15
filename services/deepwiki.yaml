@@ -1,0 +1,57 @@
+openapi: 3.1.0
+info:
+  title: DeepWiki
+  key: deepwiki
+  category: Documentation
+  description: >
+    DeepWiki exposes documentation search and Q&A over public GitHub
+    repositories as an MCP server. No authentication required. Used as a
+    reference example of an external-MCP-runtime service in Overslash.
+x-overslash-runtime: mcp
+servers: []
+paths: {}
+x-overslash-mcp:
+  url: https://mcp.deepwiki.com/mcp
+  auth:
+    kind: none
+  # The tool list below is authored; run `POST /v1/templates/deepwiki/mcp/resync`
+  # to populate x-overslash-mcp.discovered_tools with the live tools/list response
+  # and have it merged on top of these entries.
+  autodiscover: true
+  tools:
+    - name: read_wiki_structure
+      risk: read
+      scope_param: repoName
+      description: "List the table of contents for {repoName}'s wiki"
+      input_schema:
+        type: object
+        properties:
+          repoName:
+            type: string
+            description: "owner/repo slug (e.g. `vercel/next.js`)"
+        required: [repoName]
+    - name: read_wiki_contents
+      risk: read
+      scope_param: repoName
+      description: "Read the full wiki for {repoName}"
+      input_schema:
+        type: object
+        properties:
+          repoName:
+            type: string
+            description: "owner/repo slug"
+        required: [repoName]
+    - name: ask_question
+      risk: read
+      scope_param: repoName
+      description: "Ask a natural-language {question} about {repoName}"
+      input_schema:
+        type: object
+        properties:
+          repoName:
+            type: string
+            description: "owner/repo slug"
+          question:
+            type: string
+            description: "Natural-language question"
+        required: [repoName, question]

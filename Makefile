@@ -1,8 +1,11 @@
 .PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
-       dashboard-static web-build web \
-       logs logs-deploy
+       dashboard-static web-build web build install \
+       logs logs-deploy \
+       shortener-dev shortener-down shortener-deploy \
+       deploy db-shell \
+       e2e e2e-up e2e-down
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
@@ -16,6 +19,9 @@ TF_VAR_FILE := $(TOFU_DIR)/env/$(ENV).tfvars
 # where the file is created by bin/worktree-env.sh just before being read.
 -include .env.local
 export
+
+# Install prefix (default: ~/.local). Override: PREFIX=/usr/local make install
+PREFIX ?= $(HOME)/.local
 
 # Colors
 GREEN := \033[0;32m
@@ -55,18 +61,130 @@ dev-dashboard:
 dashboard-static:
 	cd dashboard && npm install && npm run build:static
 
-# Build the self-hosted single-binary release with the embedded dashboard.
+# Build the self-hosted single-binary release with embedded dashboard and MCP.
 # Produces target/release/overslash. Run `overslash web` to start it.
+build: dashboard-static
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+
+# Alias kept for backward compatibility.
 web-build: dashboard-static
-	cargo build --release -p overslash-cli --features embed-dashboard
+	SQLX_OFFLINE=1 cargo build --release -p overslash-cli --features embed-dashboard
+
+# Install overslash to $(PREFIX)/bin (default: ~/.local/bin).
+# Override: PREFIX=/usr/local make install
+install: build
+	install -d $(PREFIX)/bin
+	install -m 755 target/release/overslash $(PREFIX)/bin/overslash
+	@echo -e "$(GREEN)Installed:$(NC) $(PREFIX)/bin/overslash"
+	@echo "Make sure $(PREFIX)/bin is in your PATH, then run: overslash web"
 
 # Build + run the self-hosted binary directly (foreground).
-web: web-build
+web: build
 	./target/release/overslash web
 
 # Stop services
 down:
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans
+
+# Bring up the full e2e stack: Postgres → overslash-fakes → API → dashboard
+# preview, all on dynamic ports written into a per-worktree .e2e/ state dir.
+# Multiple worktrees can run concurrently without colliding.
+e2e-up:
+	@bash scripts/e2e-up.sh
+
+# Tear down the e2e stack started by `make e2e-up`. Postgres is left running;
+# use `make worktree-clean` for a full teardown.
+e2e-down:
+	@bash scripts/e2e-down.sh
+
+# Boot the e2e stack, run Playwright, then tear down regardless of result.
+# The env file the harness writes (API_URL, DASHBOARD_URL, ...) is sourced
+# into the playwright invocation so worker subprocesses see them — setting
+# them only inside playwright.config.ts isn't enough.
+e2e:
+	@bash scripts/e2e-up.sh
+	@STATE_DIR="$${WORKTREE_STATE_DIR:-$$(pwd)}/.e2e"; \
+	  status=0; ( cd dashboard && set -a && . "$$STATE_DIR/dashboard.env" && set +a && npx playwright test ) || status=$$?; \
+	  bash scripts/e2e-down.sh; \
+	  exit $$status
+
+# Start the oversla.sh shortener dev stack (valkey + shortener on :8081)
+shortener-dev:
+	$(COMPOSE) -f docker/docker-compose.shortener.yml up --build
+
+# Stop the shortener dev stack
+shortener-down:
+	$(COMPOSE) -f docker/docker-compose.shortener.yml down --remove-orphans
+
+# Build, push, and deploy the oversla.sh shortener from local.
+# Mirrors the cloud-build-shortener pipeline: builds crates/oversla-sh/Dockerfile,
+# pushes :$(SHA) + :latest to Artifact Registry, then `gcloud run deploy`s.
+# Usage:
+#   make shortener-deploy ENV=prod               # prod with current HEAD sha
+#   make shortener-deploy ENV=prod SHA=v0.1.0    # override tag
+#   DEPLOY_AUTO_APPROVE=1 make shortener-deploy ENV=prod  # skip prod confirm
+shortener-deploy:
+	@test -f $(TF_VAR_FILE) || (echo -e "$(RED)Var file $(TF_VAR_FILE) not found. Use ENV=dev or ENV=prod.$(NC)" && exit 1)
+	@command -v gcloud >/dev/null || (echo -e "$(RED)gcloud CLI not found.$(NC)" && exit 1)
+	@command -v docker >/dev/null || (echo -e "$(RED)docker CLI not found.$(NC)" && exit 1)
+	@test -n "$(GCP_PROJECT)" || (echo -e "$(RED)Could not read project_id from $(TF_VAR_FILE)$(NC)" && exit 1)
+	$(eval BASE_PREFIX := overslash-$(ENV))
+	$(eval REPO := $(BASE_PREFIX)-registry)
+	$(eval SERVICE := $(BASE_PREFIX)-shortener)
+	$(eval AR_HOST := $(REGION)-docker.pkg.dev)
+	$(eval IMAGE := $(AR_HOST)/$(GCP_PROJECT)/$(REPO)/oversla-sh)
+	$(eval SHA ?= $(shell git rev-parse --short HEAD))
+	@if [ "$(ENV)" = "prod" ] && [ "$(DEPLOY_AUTO_APPROVE)" != "1" ]; then \
+		echo -e "$(RED)About to deploy $(SERVICE) ($(IMAGE):$(SHA)) to PRODUCTION ($(GCP_PROJECT))$(NC)"; \
+		echo -n "Type 'prod' to confirm: "; \
+		read confirm && [ "$$confirm" = "prod" ] || (echo "Aborted." && exit 1); \
+	fi
+	@echo -e "$(GREEN)[1/3] docker build -> $(IMAGE):$(SHA)$(NC)"
+	docker build \
+		-f crates/oversla-sh/Dockerfile \
+		-t $(IMAGE):$(SHA) \
+		-t $(IMAGE):latest \
+		.
+	@echo -e "$(GREEN)[2/3] docker push (tags: $(SHA), latest)$(NC)"
+	docker push $(IMAGE):$(SHA)
+	docker push $(IMAGE):latest
+	@echo -e "$(GREEN)[3/3] gcloud run deploy $(SERVICE) --image $(IMAGE):$(SHA)$(NC)"
+	gcloud run deploy $(SERVICE) \
+		--image $(IMAGE):$(SHA) \
+		--region $(REGION) \
+		--project $(GCP_PROJECT) \
+		--quiet
+	@echo -e "$(GREEN)Deployed $(SERVICE) at $(IMAGE):$(SHA)$(NC)"
+
+# Build, push, and deploy a Cloud Run service or Job from local — bypasses
+# Cloud Build entirely. Useful when CB is degraded (incidents, weekends) or
+# when you want to skip the GitHub-trigger round-trip. Wakes Cloud SQL first
+# so it works after the night scheduler has paused the dev instance.
+#
+# Usage:
+#   make deploy SVC=api                       # api → dev
+#   make deploy SVC=metrics-exporter ENV=dev  # exporter Cloud Run Job
+#   make deploy SVC=shortener ENV=prod        # prod (asks for confirmation)
+#   make deploy SVC=api SHA=v1.2.3            # override image tag
+#   DEPLOY_AUTO_APPROVE=1 make deploy SVC=api ENV=prod
+#   CONTAINER_RUNTIME=podman make deploy SVC=api
+deploy:
+ifndef SVC
+	@echo -e "$(RED)SVC is required. Usage: make deploy SVC=api|metrics-exporter|shortener [ENV=dev|prod]$(NC)"
+	@exit 1
+endif
+	@bin/deploy-cloudrun.sh $(SVC) $(ENV)
+
+# Open a psql shell against the Cloud SQL instance via the Auth Proxy.
+# No public IP whitelisting needed — the proxy authenticates as your gcloud
+# identity. Wakes the instance first if the night scheduler has paused it.
+#
+# Usage:
+#   make db-shell                     # dev
+#   make db-shell ENV=prod            # prod (asks for confirmation)
+#   READONLY=1 make db-shell ENV=prod # read-only session
+db-shell:
+	@bin/db-shell.sh $(ENV)
 
 # Remove worktree containers and volumes
 worktree-clean:
@@ -97,12 +215,12 @@ clippy:
 
 # Run migrations
 migrate:
-	cd crates/overslash-db && sqlx migrate run
+	cd crates/overslash-db && cargo sqlx migrate run
 
 # Create new migration
 new-migration:
 	@read -p "Migration name: " name; \
-	cd crates/overslash-db && sqlx migrate add -r "$$name"
+	cd crates/overslash-db && cargo sqlx migrate add -r "$$name"
 
 # Regenerate SCHEMA.sql
 schema:
@@ -203,19 +321,22 @@ SVC ?= api
 logs:
 	@SVC_FILTER=$$(echo "$(SVC)" | sed 's/[^,]\+/resource.labels.service_name="overslash-$(ENV)-&"/g; s/,/ OR /g'); \
 	FILTER="resource.type=\"cloud_run_revision\" AND ($$SVC_FILTER) AND logName:\"stdout\""; \
+	STRIP_ANSI='s/\x1B\[[0-9;]*[A-Za-z]//g'; \
+	FMT='value(timestamp.date("%Y-%m-%d %H:%M:%S"), severity, resource.labels.service_name, jsonPayload.level, jsonPayload.target, jsonPayload.span.name, jsonPayload.message, jsonPayload.fields, textPayload)'; \
 	if [ -n "$(SINCE)" ]; then \
 		echo -e "$(GREEN)Reading Cloud Run logs: $(SVC) ($(ENV)) — last $(SINCE), then tailing$(NC)"; \
 		( set -x; \
 		  gcloud logging read "$$FILTER" \
 			--project=$(GCP_PROJECT) --freshness=$(SINCE) --limit=10000 \
-			--format='value(jsonPayload.timestamp.date("%Y-%m-%d %H:%M:%S"), jsonPayload.level, jsonPayload.target, jsonPayload.fields)' \
-		) | tac; \
+			--format="$$FMT" \
+		) | tac | sed -E "$$STRIP_ANSI"; \
 	fi; \
 	echo -e "$(GREEN)Tailing Cloud Run logs: $(SVC) ($(ENV))$(NC)"; \
 	set -x; \
 	gcloud beta logging tail "$$FILTER" \
 		--project=$(GCP_PROJECT) --buffer-window=3s \
-		--format='value(jsonPayload.timestamp.date("%H:%M:%S"), jsonPayload.level, jsonPayload.target, jsonPayload.fields)'
+		--format="$$FMT" \
+		| sed -uE "$$STRIP_ANSI"
 
 # View Cloud Build deploy logs (last build per service)
 # Usage: make logs-deploy                          (api only)

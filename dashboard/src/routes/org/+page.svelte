@@ -1,16 +1,21 @@
 <script lang="ts">
 	import { ApiError, session } from '$lib/session';
 	import type {
+		ExecutionSettings,
 		IdpConfig,
+		ManagedSigninSettings,
 		McpClient,
 		OAuthCredential,
 		OrgInfo,
+		OrgInvite,
 		SecretRequestSettings,
+		ServiceKeyCreated,
+		ServiceKeySummary,
 		Webhook,
 		WebhookCreated,
 		WebhookDelivery
 	} from '$lib/types';
-	import type { OrgPageData } from './+page';
+	import type { OrgPageData, OrgSubscription } from './+page';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import { absoluteTime } from '$lib/utils/time';
@@ -24,18 +29,51 @@
 	// client_ids currently fading out after a local revoke. Entries auto-
 	// expire from the visible list 3 s after revocation.
 	let revokingIds = $state<Set<string>>(new Set());
+	let serviceKeys = $state<ServiceKeySummary[]>([]);
 	let webhooks = $state<Webhook[]>([]);
 	let secretRequestSettings = $state<SecretRequestSettings | null>(null);
 	let secretRequestSaving = $state(false);
 	let secretRequestError = $state<string | null>(null);
+	let executionSettings = $state<ExecutionSettings | null>(null);
+	let executionSaving = $state(false);
+	let executionError = $state<string | null>(null);
+	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
+	let managedSigninSaving = $state(false);
+	let managedSigninError = $state<string | null>(null);
+	let invites = $state<OrgInvite[]>([]);
+	let showInviteForm = $state(false);
+	let inviteEmail = $state('');
+	let inviteRole = $state<'member' | 'admin'>('member');
+	let inviteError = $state<string | null>(null);
+	let inviteSubmitting = $state(false);
+	let subscription = $state<OrgSubscription | null>(null);
 	$effect(() => {
 		org = data.org;
 		idpConfigs = data.idpConfigs;
 		oauthCredentials = data.oauthCredentials;
 		mcpClients = data.mcpClients;
+		serviceKeys = data.serviceKeys;
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
+		executionSettings = data.executionSettings;
+		managedSigninSettings = data.managedSigninSettings;
+		invites = data.invites;
+		subscription = data.subscription;
 	});
+
+	// Personal orgs are single-member and always authenticate via the
+	// Overslash-level IdP on the root domain — no per-org IdP or OAuth App
+	// Credentials make sense there. See docs/design/multi_org_auth.md.
+	const isPersonalOrg = $derived(org?.is_personal === true);
+	// Free-unlimited courtesy tier — granted out-of-band by an operator
+	// (`UPDATE orgs SET plan='free_unlimited'`). No Stripe involvement, no
+	// rate limits. Renders a "Courtesy plan" badge in place of billing
+	// controls.
+	const isFreeUnlimited = $derived(subscription?.plan === 'free_unlimited');
+	// Corp orgs need at least one enabled IdP before anyone besides the
+	// creator can sign in (via their Overslash-level login). Banner nudges
+	// them to add one so their team can sign in via the corp IdP.
+	const hasEnabledIdp = $derived(idpConfigs.some((c) => c.enabled !== false));
 
 	// Confirmation modal state
 	let confirmOpen = $state(false);
@@ -118,6 +156,96 @@
 		idpUseOrgCreds = hasOrgCredFor(idpType) && !idpOverrideOrgCreds;
 	});
 
+	// Service keys (Org Settings → Service keys)
+	let showServiceKeyForm = $state(false);
+	let svcKeyName = $state('');
+	let svcKeyAllowImpersonate = $state(false);
+	let svcKeyError = $state<string | null>(null);
+	let svcKeySubmitting = $state(false);
+	let createdServiceKey = $state<ServiceKeyCreated | null>(null);
+	let svcKeyCopied = $state(false);
+
+	async function refetchServiceKeys() {
+		serviceKeys = await session.get<ServiceKeySummary[]>('/v1/org-service-keys');
+	}
+
+	async function performCreateServiceKey() {
+		if (!org) return;
+		svcKeyError = null;
+		svcKeySubmitting = true;
+		try {
+			const created = await session.post<ServiceKeyCreated>('/v1/org-service-keys', {
+				org_id: org.id,
+				name: svcKeyName.trim(),
+				allow_impersonate: svcKeyAllowImpersonate
+			});
+			createdServiceKey = created;
+			showServiceKeyForm = false;
+			svcKeyName = '';
+			svcKeyAllowImpersonate = false;
+			await refetchServiceKeys();
+		} catch (err) {
+			svcKeyError = asMessage(err);
+			throw err;
+		} finally {
+			svcKeySubmitting = false;
+		}
+	}
+
+	function submitServiceKey(e: Event) {
+		e.preventDefault();
+		if (!svcKeyName.trim()) {
+			svcKeyError = 'Name is required.';
+			return;
+		}
+		// Danger gate: impersonation-capable creation goes through ConfirmModal.
+		// Plain keys submit directly — they're still bound to the shared
+		// org-service identity but cannot pretend to be a user.
+		if (svcKeyAllowImpersonate) {
+			openConfirm(
+				'Create impersonation-capable key?',
+				`This key will be able to act as any member of "${org?.name ?? 'this org'}". It authenticates as the shared org-service identity — anyone holding it can read and act on any user's data, including other admins. Audit logs will record your identity as the minter. Continue?`,
+				'Create key',
+				performCreateServiceKey
+			);
+		} else {
+			performCreateServiceKey().catch(() => {
+				// error already surfaced via svcKeyError
+			});
+		}
+	}
+
+	async function copyServiceKey() {
+		if (!createdServiceKey?.key) return;
+		try {
+			await navigator.clipboard?.writeText(createdServiceKey.key);
+			svcKeyCopied = true;
+			setTimeout(() => (svcKeyCopied = false), 1400);
+		} catch {
+			// clipboard write can fail in non-secure contexts; ignore silently
+		}
+	}
+
+	function dismissCreatedServiceKey() {
+		createdServiceKey = null;
+		svcKeyCopied = false;
+	}
+
+	function revokeServiceKey(k: ServiceKeySummary) {
+		openConfirm(
+			'Revoke service key?',
+			`"${k.name}" (${k.key_prefix}…) will stop working immediately. This cannot be undone.`,
+			'Revoke',
+			async () => {
+				await session.post(
+					`/v1/org-service-keys/${encodeURIComponent(k.id)}/revoke`,
+					{}
+				);
+				await refetchServiceKeys();
+			}
+		);
+	}
+
 	// Webhook form
 	let showWebhookForm = $state(false);
 	let whUrl = $state('');
@@ -162,9 +290,9 @@
 
 	function revokeMcpClient(c: McpClient) {
 		openConfirm(
-			'Revoke MCP client?',
+			'Disconnect MCP client?',
 			`"${c.client_name ?? c.client_id}" will stop being able to complete OAuth on this deployment. Any outstanding refresh tokens bound to it will be revoked. This cannot be undone.`,
-			'Revoke',
+			'Disconnect',
 			async () => {
 				try {
 					await session.post(`/v1/oauth/mcp-clients/${encodeURIComponent(c.client_id)}/revoke`, {});
@@ -308,6 +436,48 @@
 		}
 	}
 
+	// "Default for sign-in" — the org's chosen IdP for the OAuth authorize
+	// bounce. Setting one here clears the previous default in the same
+	// transaction. MCP clients on `<slug>.api.overslash.com` and human users
+	// on `<slug>.app.overslash.com` both follow this default.
+	async function setDefaultIdp(cfg: IdpConfig) {
+		if (!cfg.id || cfg.is_default) return;
+		try {
+			await session.put(`/v1/org-idp-configs/${cfg.id}`, { is_default: true });
+			await refetchIdp();
+		} catch (err) {
+			alert(asMessage(err));
+		}
+	}
+
+	async function clearDefaultIdp(cfg: IdpConfig) {
+		if (!cfg.id || !cfg.is_default) return;
+		try {
+			await session.put(`/v1/org-idp-configs/${cfg.id}`, { is_default: false });
+			await refetchIdp();
+		} catch (err) {
+			alert(asMessage(err));
+		}
+	}
+
+	async function toggleDefaultDeferredExecution(nextValue?: boolean) {
+		if (!org || !executionSettings) return;
+		const next = nextValue ?? !executionSettings.default_deferred_execution;
+		executionSaving = true;
+		executionError = null;
+		try {
+			const updated = await session.patch<ExecutionSettings>(
+				`/v1/orgs/${org.id}/execution-settings`,
+				{ default_deferred_execution: next }
+			);
+			executionSettings = updated;
+		} catch (err) {
+			executionError = asMessage(err);
+		} finally {
+			executionSaving = false;
+		}
+	}
+
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
 		if (!org || !secretRequestSettings) return;
 		const next = nextValue ?? !secretRequestSettings.allow_unsigned_secret_provide;
@@ -324,6 +494,67 @@
 		} finally {
 			secretRequestSaving = false;
 		}
+	}
+
+	async function refetchInvites() {
+		invites = await session.get<OrgInvite[]>('/v1/org-invites');
+	}
+
+	async function toggleManagedSignin(nextValue?: boolean) {
+		if (!org || !managedSigninSettings) return;
+		const next = nextValue ?? !managedSigninSettings.allow_overslash_managed_signin;
+		managedSigninSaving = true;
+		managedSigninError = null;
+		try {
+			const updated = await session.patch<ManagedSigninSettings>(
+				`/v1/orgs/${org.id}/managed-signin`,
+				{ allow_overslash_managed_signin: next }
+			);
+			managedSigninSettings = updated;
+			// Managed-provider rows in /v1/org-idp-configs are gated on the
+			// flag — refetch so they appear/disappear immediately.
+			await refetchIdp();
+		} catch (err) {
+			managedSigninError = asMessage(err);
+		} finally {
+			managedSigninSaving = false;
+		}
+	}
+
+	async function submitInvite(e: Event) {
+		e.preventDefault();
+		inviteError = null;
+		inviteSubmitting = true;
+		try {
+			await session.post<OrgInvite>('/v1/org-invites', {
+				email: inviteEmail.trim(),
+				role: inviteRole
+			});
+			showInviteForm = false;
+			inviteEmail = '';
+			inviteRole = 'member';
+			await refetchInvites();
+		} catch (err) {
+			inviteError = asMessage(err);
+		} finally {
+			inviteSubmitting = false;
+		}
+	}
+
+	function revokeInvite(invite: OrgInvite) {
+		openConfirm(
+			`Revoke invite for ${invite.email}?`,
+			'They will no longer be able to sign in to this org. Accepted invites are kept for the audit trail.',
+			'Revoke',
+			async () => {
+				try {
+					await session.delete(`/v1/org-invites/${invite.id}`);
+					await refetchInvites();
+				} catch (err) {
+					alert(asMessage(err));
+				}
+			}
+		);
 	}
 
 	function deleteIdp(cfg: IdpConfig) {
@@ -451,6 +682,42 @@
 			{/if}
 		</section>
 
+		<!-- Execution defaults (deferred-execution policy) -->
+		<section class="card">
+			<h2>Approval execution</h2>
+			<p class="section-desc">
+				Default behavior when an approval is allowed. Existing agents are not
+				touched when this flips — they keep their per-agent override on the
+				agent detail page.
+			</p>
+			{#if executionSettings}
+				<div class="toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Deferred execution by default for new agents</div>
+						<div class="toggle-help">
+							When off (default), newly-created agents auto-execute the call as
+							soon as a reviewer hits Allow — the result lands on the
+							execution record and any subscribed webhook receives it. When on,
+							new agents are seeded in "deferred execution" mode: the
+							resolver or the agent must call
+							<code>POST /v1/approvals/&#123;id&#125;/call</code> explicitly
+							after Allow. Useful for white-label embeddings that want full
+							control over when the upstream call fires.
+						</div>
+					</div>
+					<ToggleSwitch
+						checked={executionSettings.default_deferred_execution}
+						onchange={toggleDefaultDeferredExecution}
+						disabled={executionSaving}
+						label="Deferred execution by default for new agents"
+					/>
+				</div>
+				{#if executionError}
+					<div class="form-error">{executionError}</div>
+				{/if}
+			{/if}
+		</section>
+
 		<!-- Secret requests (User Signed Mode) -->
 		<section class="card">
 			<h2>Secret requests</h2>
@@ -483,6 +750,146 @@
 			{/if}
 		</section>
 
+		{#if !isPersonalOrg && !hasEnabledIdp && managedSigninSettings?.allow_overslash_managed_signin !== true}
+			<div class="idp-warning-banner">
+				<strong>No sign-in configured.</strong> Right now only you — the org's admin —
+				can reach this org, via your Overslash-level login. Add an Identity Provider
+				below, or enable Overslash-managed sign-in and invite your team by email.
+				You'll keep your own access either way.
+			</div>
+		{/if}
+
+		{#if !isPersonalOrg && managedSigninSettings}
+		<!-- Sign-in & members (Overslash-managed sign-in toggle + invites) -->
+		<section class="card">
+			<h2>Sign-in &amp; members</h2>
+			<p class="section-desc">
+				Decouple authentication from membership. When this is on, every
+				new sign-in to this org — through Overslash's managed OAuth apps
+				(Google, GitHub) <em>or</em> through an Identity Provider you
+				configured below — only admits the user if their verified email
+				is on the invite list. Authentication is separated from
+				membership: the IdP proves who you are, the invite list proves
+				you belong.
+			</p>
+
+			<div class="toggle-row">
+				<div class="toggle-body">
+					<div class="toggle-label">Invite-only admission</div>
+					<div class="toggle-help">
+						When on, every new member must have a pending invite below
+						before they can sign in — regardless of which IdP they
+						authenticate with. When off, the per-IdP
+						<code>allowed_email_domains</code> whitelist is the only
+						gate.
+					</div>
+				</div>
+				<ToggleSwitch
+					checked={managedSigninSettings.allow_overslash_managed_signin}
+					onchange={toggleManagedSignin}
+					disabled={managedSigninSaving}
+					label="Allow Overslash-managed sign-in"
+				/>
+			</div>
+			{#if managedSigninError}
+				<div class="form-error">{managedSigninError}</div>
+			{/if}
+
+			{#if managedSigninSettings.allow_overslash_managed_signin}
+				<div class="card-head invites-head">
+					<h3>Invites</h3>
+					<button
+						type="button"
+						class="btn btn-primary"
+						onclick={() => {
+							showInviteForm = !showInviteForm;
+							if (!showInviteForm) {
+								inviteEmail = '';
+								inviteRole = 'member';
+								inviteError = null;
+							}
+						}}
+					>
+						{showInviteForm ? 'Cancel' : 'Invite member'}
+					</button>
+				</div>
+
+				{#if showInviteForm}
+					<form class="inline-form" onsubmit={submitInvite}>
+						<label>
+							Email
+							<input
+								type="email"
+								bind:value={inviteEmail}
+								placeholder="alice@example.com"
+								required
+							/>
+						</label>
+						<label>
+							Role
+							<select bind:value={inviteRole}>
+								<option value="member">Member</option>
+								<option value="admin">Admin</option>
+							</select>
+						</label>
+						{#if inviteError}
+							<div class="form-error">{inviteError}</div>
+						{/if}
+						<button type="submit" class="btn btn-primary" disabled={inviteSubmitting}>
+							{inviteSubmitting ? 'Sending…' : 'Send invite'}
+						</button>
+					</form>
+				{/if}
+
+				{#if invites.length === 0}
+					<p class="muted">No invites yet. Add one above to let your team in.</p>
+				{:else}
+					<table>
+						<thead>
+							<tr>
+								<th>Email</th>
+								<th>Role</th>
+								<th>Status</th>
+								<th>Created</th>
+								<th class="actions-col">Actions</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each invites as invite (invite.id)}
+								<tr>
+									<td class="mono">{invite.email}</td>
+									<td>{invite.role}</td>
+									<td>
+										{#if invite.status === 'accepted'}
+											<span class="badge badge-on">accepted</span>
+										{:else}
+											<span class="badge badge-off">pending</span>
+										{/if}
+									</td>
+									<td>{absoluteTime(invite.created_at)}</td>
+									<td class="actions-col">
+										{#if invite.status === 'pending'}
+											<button
+												type="button"
+												class="btn-link danger"
+												onclick={() => revokeInvite(invite)}
+											>
+												Revoke
+											</button>
+										{:else}
+											<span class="muted small">—</span>
+										{/if}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+			{/if}
+		</section>
+		{/if}
+
+		{#if !isPersonalOrg}
 		<!-- IdP -->
 		<section class="card">
 			<div class="card-head">
@@ -524,6 +931,7 @@
 							<th>Provider</th>
 							<th>Type</th>
 							<th>Status</th>
+							<th>Default</th>
 							<th class="actions-col">Actions</th>
 						</tr>
 					</thead>
@@ -544,11 +952,27 @@
 										<span class="badge badge-on">enabled</span>
 									{/if}
 								</td>
+								<td>
+									{#if cfg.is_default}
+										<span class="badge badge-on">default</span>
+									{:else}
+										<span class="muted small">—</span>
+									{/if}
+								</td>
 								<td class="actions-col">
 									{#if cfg.source === 'db'}
 										<button type="button" class="btn-link" onclick={() => toggleIdp(cfg)}>
 											{cfg.enabled ? 'Disable' : 'Enable'}
 										</button>
+										{#if cfg.is_default}
+											<button type="button" class="btn-link" onclick={() => clearDefaultIdp(cfg)}>
+												Unset default
+											</button>
+										{:else if cfg.enabled !== false}
+											<button type="button" class="btn-link" onclick={() => setDefaultIdp(cfg)}>
+												Set default
+											</button>
+										{/if}
 										<button type="button" class="btn-link danger" onclick={() => deleteIdp(cfg)}>
 											Delete
 										</button>
@@ -746,6 +1170,7 @@
 				</form>
 			{/if}
 		</section>
+		{/if}
 
 		<!-- MCP Clients -->
 		<section class="card">
@@ -755,7 +1180,7 @@
 			<p class="muted small">
 				Editors and agents that have authenticated to this deployment via
 				<code>overslash mcp login</code>. Clients self-register via OAuth 2.1 Dynamic
-				Client Registration — revoke any you no longer want to accept.
+				Client Registration — disconnect any you no longer want to accept.
 			</p>
 
 			{#if visibleMcpClients.length === 0}
@@ -781,7 +1206,7 @@
 								<td class="small">{fmtDate(c.last_seen_at)}</td>
 								<td>
 									{#if c.is_revoked}
-										<span class="badge badge-off">revoked</span>
+										<span class="badge badge-off">disconnected</span>
 									{:else}
 										<span class="badge badge-on">active</span>
 									{/if}
@@ -793,7 +1218,7 @@
 											class="btn-link danger"
 											onclick={() => revokeMcpClient(c)}
 										>
-											Revoke
+											Disconnect
 										</button>
 									{:else}
 										<span class="muted small">—</span>
@@ -803,6 +1228,131 @@
 						{/each}
 					</tbody>
 				</table>
+			{/if}
+		</section>
+
+		<!-- Service keys -->
+		<section class="card">
+			<div class="card-head">
+				<h2>Service keys</h2>
+				<button
+					type="button"
+					class="btn btn-primary"
+					onclick={() => {
+						showServiceKeyForm = !showServiceKeyForm;
+						svcKeyError = null;
+						if (!showServiceKeyForm) {
+							svcKeyName = '';
+							svcKeyAllowImpersonate = false;
+						}
+					}}
+				>
+					{showServiceKeyForm ? 'Cancel' : 'Add service key'}
+				</button>
+			</div>
+			<p class="section-desc">
+				Long-lived <code>osk_…</code> API keys for org automation (CI, cron jobs,
+				server-side integrations). All service keys share the org's
+				<strong>org-service</strong> identity — audit logs record which admin minted
+				each key, and impersonated actions record both the org-service identity
+				and the user the action was directed at.
+			</p>
+
+			{#if createdServiceKey}
+				<div class="secret-banner">
+					<div>
+						<strong>Service key created.</strong> Copy the key now — it won't be shown again.
+					</div>
+					<div class="secret-row">
+						<code>{createdServiceKey.key}</code>
+						<button type="button" class="btn-link" onclick={copyServiceKey}>
+							{svcKeyCopied ? '✓ Copied' : 'Copy'}
+						</button>
+						<button type="button" class="btn-link" onclick={dismissCreatedServiceKey}>
+							Dismiss
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if serviceKeys.length === 0}
+				<p class="muted">No service keys yet.</p>
+			{:else}
+				<table>
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Prefix</th>
+							<th>Scopes</th>
+							<th>Created</th>
+							<th>Last used</th>
+							<th class="actions-col">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each serviceKeys as k (k.id)}
+							<tr>
+								<td>{k.name}</td>
+								<td class="mono small">{k.key_prefix}…</td>
+								<td>
+									{#if k.scopes.includes('impersonate')}
+										<span class="badge badge-imp">impersonate</span>
+									{:else}
+										<span class="badge badge-svc">service</span>
+									{/if}
+								</td>
+								<td class="small">{fmtDate(k.created_at)}</td>
+								<td class="small">{fmtDate(k.last_used_at)}</td>
+								<td class="actions-col">
+									<button
+										type="button"
+										class="btn-link danger"
+										onclick={() => revokeServiceKey(k)}
+									>
+										Revoke
+									</button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+
+			{#if showServiceKeyForm}
+				<form class="inline-form" onsubmit={submitServiceKey}>
+					<label>
+						Name
+						<input
+							type="text"
+							bind:value={svcKeyName}
+							placeholder="ci-deploy"
+							required
+						/>
+					</label>
+					{#if !isPersonalOrg}
+						<label class="checkbox-row">
+							<input type="checkbox" bind:checked={svcKeyAllowImpersonate} />
+							<span class="checkbox-body">
+								<span class="checkbox-label">Allow impersonation</span>
+								<span class="checkbox-help">
+									⚠ Lets this key act as <strong>any user in your org</strong> via
+									the <code>X-Overslash-As</code> header. The key authenticates
+									as the shared org-service identity — audit logs are the only
+									way to trace use back to a person, so treat this as sensitive
+									as a root credential.
+								</span>
+							</span>
+						</label>
+					{/if}
+					{#if svcKeyError}
+						<p class="form-error">{svcKeyError}</p>
+					{/if}
+					<div class="form-actions">
+						<button type="submit" class="btn btn-primary" disabled={svcKeySubmitting}>
+							{svcKeySubmitting ? 'Creating…' : 'Create service key'}
+						</button>
+					</div>
+				</form>
 			{/if}
 		</section>
 
@@ -927,7 +1477,7 @@
 						<input
 							type="text"
 							bind:value={whEvents}
-							placeholder="approval.resolved, secret.created"
+							placeholder="connection.created, approval.resolved"
 							required
 						/>
 					</label>
@@ -940,6 +1490,60 @@
 						</button>
 					</div>
 				</form>
+			{/if}
+		</section>
+	{/if}
+
+	{#if !isPersonalOrg && subscription}
+		<section class="card" id="billing">
+			<h2>Billing</h2>
+			<div class="billing-row">
+				<div class="billing-info">
+					<div class="billing-stat">
+						<span class="billing-label">Plan</span>
+						<span class="billing-value">
+							{isFreeUnlimited ? 'Free Unlimited' : subscription.plan.charAt(0).toUpperCase() + subscription.plan.slice(1)}
+						</span>
+					</div>
+					{#if !isFreeUnlimited}
+						<div class="billing-stat">
+							<span class="billing-label">Seats</span>
+							<span class="billing-value">{subscription.seats}</span>
+						</div>
+					{/if}
+					<div class="billing-stat">
+						<span class="billing-label">Status</span>
+						<span class="billing-value billing-status" class:ok={subscription.status === 'active' || subscription.status === 'trialing'} class:warn={subscription.status === 'past_due'} class:muted={subscription.status === 'canceled'}>
+							{subscription.status}
+						</span>
+					</div>
+					{#if !isFreeUnlimited && subscription.current_period_end}
+						<div class="billing-stat">
+							<span class="billing-label">{subscription.cancel_at_period_end ? 'Cancels' : 'Renews'}</span>
+							<span class="billing-value">
+								{new Date(subscription.current_period_end * 1000).toLocaleDateString()}
+							</span>
+						</div>
+					{/if}
+				</div>
+				{#if !isFreeUnlimited}
+					<a
+						href={`/billing/portal?org_id=${org?.id}`}
+						class="btn btn-secondary"
+					>
+						Manage subscription
+					</a>
+				{/if}
+			</div>
+			{#if isFreeUnlimited}
+				<p class="billing-courtesy-notice">
+					Courtesy plan — no billing, no rate limits.
+				</p>
+			{:else if subscription.cancel_at_period_end}
+				<p class="billing-cancel-notice">
+					⚠ This subscription will cancel at the end of the current period.
+					<a href={`/billing/portal?org_id=${org?.id}`}>Reactivate</a> to keep access.
+				</p>
 			{/if}
 		</section>
 	{/if}
@@ -971,6 +1575,15 @@
 		padding: 1.5rem;
 		margin-bottom: 1.25rem;
 	}
+	.idp-warning-banner {
+		background: var(--color-warning-soft, #fff3cd);
+		color: var(--color-warning, #8a6d3b);
+		border: 1px solid var(--color-warning-border, #ffeeba);
+		border-radius: 6px;
+		padding: 0.75rem 1rem;
+		margin-bottom: 1rem;
+		font-size: 0.9rem;
+	}
 	.card h2 {
 		font-size: 1rem;
 		font-weight: 600;
@@ -987,6 +1600,14 @@
 	}
 	.card-head h2 {
 		margin-bottom: 0;
+	}
+	.card-head h3 {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+	}
+	.invites-head {
+		margin-top: 1.5rem;
 	}
 	.field-list {
 		display: flex;
@@ -1073,6 +1694,49 @@
 	.badge-off {
 		background: #fbe9e9;
 		color: #b42318;
+	}
+	.badge-svc {
+		background: #eef0ff;
+		color: #3949ab;
+	}
+	.badge-imp {
+		background: #fbe9e9;
+		color: #b42318;
+		border: 1px solid #f1a6a0;
+	}
+
+	.checkbox-row {
+		display: flex !important;
+		flex-direction: row !important;
+		align-items: flex-start;
+		gap: 0.55rem;
+	}
+	.checkbox-row input[type='checkbox'] {
+		margin-top: 0.2rem;
+	}
+	.checkbox-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		flex: 1;
+		min-width: 0;
+	}
+	.checkbox-label {
+		font-weight: 600;
+		color: var(--color-text);
+		font-size: 0.9rem;
+	}
+	.checkbox-help {
+		color: var(--color-text-muted);
+		font-size: 0.82rem;
+		line-height: 1.45;
+	}
+	.checkbox-help code {
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		padding: 0.05rem 0.25rem;
+		border-radius: 3px;
+		background: var(--color-bg);
 	}
 
 	tr.revoking {
@@ -1243,5 +1907,59 @@
 		color: var(--color-text-muted);
 		font-size: 0.82rem;
 		line-height: 1.45;
+	}
+
+	.billing-row {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1.5rem;
+		flex-wrap: wrap;
+	}
+
+	.billing-info {
+		display: flex;
+		gap: 2rem;
+		flex-wrap: wrap;
+	}
+
+	.billing-stat {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+
+	.billing-label {
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--color-text-muted);
+	}
+
+	.billing-value {
+		font-size: 0.95rem;
+		font-weight: 500;
+	}
+
+	.billing-status.ok { color: var(--color-success, #1b8a3a); }
+	.billing-status.warn { color: var(--color-warning, #b45309); }
+	.billing-status.muted { color: var(--color-text-muted); }
+
+	.billing-cancel-notice {
+		margin: 0.75rem 0 0;
+		font-size: 0.85rem;
+		color: var(--color-warning, #b45309);
+	}
+
+	.billing-cancel-notice a {
+		color: inherit;
+		text-decoration: underline;
+	}
+
+	.billing-courtesy-notice {
+		margin: 0.75rem 0 0;
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
 	}
 </style>

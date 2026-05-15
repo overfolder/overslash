@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT preview_id, origin, expires_at, nonce, pkce_verifier, org_slug, next_path\n         FROM oauth_preview_origins\n         WHERE preview_id = $1 AND expires_at > now()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "preview_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "origin",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "nonce",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "pkce_verifier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "org_slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "next_path",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "e3095bea3fa5a867165f751d72059355dcad0d3330a436137321d4b38cfaa4af"
+}

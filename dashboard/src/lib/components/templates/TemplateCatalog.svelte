@@ -294,6 +294,16 @@
 							<td class="muted">{t.category || '—'}</td>
 							<td>{t.action_count}</td>
 							<td class="actions-col">
+								<button
+									type="button"
+									class="btn small primary"
+									onclick={() =>
+										goto(
+											`/services/new?template=${encodeURIComponent(t.key)}`
+										)}
+								>
+									+ New
+								</button>
 								{#if canEdit(t)}
 									<button
 										type="button"

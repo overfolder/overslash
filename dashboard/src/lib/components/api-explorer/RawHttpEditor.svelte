@@ -72,7 +72,7 @@
 	{/if}
 </div>
 
-<p class="hint">💡 Use <code>{'{{SECRET_NAME}}'}</code> in a header value to inject a secret at execute time.</p>
+<p class="hint">💡 Use <code>{'{{SECRET_NAME}}'}</code> in a header value to inject a secret at call time.</p>
 
 <style>
 	.row {

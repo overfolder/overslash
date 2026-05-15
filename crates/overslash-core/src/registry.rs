@@ -2,7 +2,7 @@ use std::collections::HashMap;
 #[cfg(feature = "yaml")]
 use std::path::Path;
 
-use crate::types::ServiceDefinition;
+use crate::types::{Runtime, ServiceDefinition};
 
 /// In-memory service registry loaded from OpenAPI 3.1 YAML files with
 /// `x-overslash-*` vendor extensions. See `crates/overslash-core/src/openapi.rs`
@@ -10,6 +10,27 @@ use crate::types::ServiceDefinition;
 #[derive(Debug, Clone, Default)]
 pub struct ServiceRegistry {
     services: HashMap<String, ServiceDefinition>,
+}
+
+/// The synthetic `http` pseudo-service template — Mode A's resolution path
+/// runs through the standard Service+HTTP-verb code as `service: "http"`.
+/// `hosts: []` is the signal that the caller supplies the full URL (no
+/// host binding); `auth: []` means there's no template-bound credential
+/// (only per-call `secrets[]`).
+fn http_pseudo_service() -> ServiceDefinition {
+    ServiceDefinition {
+        key: "http".to_string(),
+        display_name: "Raw HTTP".to_string(),
+        description: Some(
+            "Raw HTTP — caller supplies the full URL. Per-call secrets injection only.".to_string(),
+        ),
+        hosts: Vec::new(),
+        category: Some("Platform".to_string()),
+        auth: Vec::new(),
+        actions: HashMap::new(),
+        runtime: Runtime::Http,
+        mcp: None,
+    }
 }
 
 impl ServiceRegistry {
@@ -93,7 +114,23 @@ impl ServiceRegistry {
             services.insert(def.key.clone(), def);
         }
 
+        // Inject the synthetic `http` pseudo-service so Mode A's resolution
+        // path can flow through the same Service+HTTP-verb code as real
+        // services. Only injected if no shipped YAML claimed the key.
+        services
+            .entry("http".to_string())
+            .or_insert_with(http_pseudo_service);
+
         Ok(Self { services })
+    }
+
+    /// Build a registry that contains only the synthetic `http` pseudo-service.
+    /// Used by tests / contexts that don't load shipped templates from disk.
+    pub fn with_builtins() -> Self {
+        let mut services = HashMap::new();
+        let def = http_pseudo_service();
+        services.insert(def.key.clone(), def);
+        Self { services }
     }
 
     /// Get a service definition by key.
@@ -199,11 +236,35 @@ paths:
         );
 
         let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
-        assert_eq!(reg.len(), 1);
+        // 1 from YAML + 1 synthetic `http` pseudo-service.
+        assert_eq!(reg.len(), 2);
         let gh = reg.get("github").unwrap();
         assert_eq!(gh.display_name, "GitHub");
         assert_eq!(gh.hosts, vec!["api.github.com"]);
         assert!(gh.actions.contains_key("list_repos"));
+    }
+
+    #[test]
+    fn synthetic_http_pseudo_service_is_registered() {
+        // `load_from_dir` always injects `http` when no shipped YAML claims
+        // the key, so the actions handler can resolve `service: "http"`
+        // through the standard registry path.
+        let dir = TempDir::new().unwrap();
+        let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        let http = reg
+            .get("http")
+            .expect("synthetic `http` pseudo-service missing");
+        assert_eq!(http.display_name, "Raw HTTP");
+        assert!(http.hosts.is_empty());
+        assert!(http.auth.is_empty());
+        assert!(http.actions.is_empty());
+    }
+
+    #[test]
+    fn with_builtins_contains_only_http() {
+        let reg = ServiceRegistry::with_builtins();
+        assert_eq!(reg.len(), 1);
+        assert!(reg.get("http").is_some());
     }
 
     #[test]
@@ -223,6 +284,8 @@ servers:
         );
 
         let reg = ServiceRegistry::load_from_dir(dir.path()).unwrap();
+        // The synthetic `http` pseudo-service has no hosts so it never
+        // matches `find_by_host` — counts stay focused on real services.
         assert_eq!(reg.find_by_host("api.github.com").len(), 1);
         assert_eq!(reg.find_by_host("api.stripe.com").len(), 0);
     }

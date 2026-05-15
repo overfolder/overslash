@@ -162,10 +162,14 @@ async fn test_oauth_x_token_refresh() {
         .unwrap();
 
     let enc_key_hex = "ab".repeat(32);
-    let enc_key = overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::single(
+        1,
+        overslash_core::crypto::parse_hex_key(&enc_key_hex).unwrap(),
+    )
+    .unwrap();
 
     // Create org + identity directly
-    let org = overslash_db::repos::org::create(&pool, "XRefreshOrg", "x-refresh-test")
+    let org = overslash_db::repos::org::create(&pool, "XRefreshOrg", "x-refresh-test", "standard")
         .await
         .unwrap();
     let ident = overslash_db::repos::identity::create(&pool, org.id, "agent", "agent", None)
@@ -234,6 +238,9 @@ async fn test_oauth_x_pkce_in_auth_url() {
         .json(&json!({
             "provider": "x",
             "scopes": ["tweet.read", "users.read", "offline.access"],
+            // White-label REST opt-in: surface the raw provider URL so we
+            // can assert PKCE params landed on the upstream redirect.
+            "include_raw": true,
         }))
         .send()
         .await
@@ -242,22 +249,22 @@ async fn test_oauth_x_pkce_in_auth_url() {
         .await
         .unwrap();
 
-    let auth_url = resp["auth_url"].as_str().unwrap();
+    let raw = resp["raw"].as_str().unwrap();
     let state = resp["state"].as_str().unwrap();
 
-    // Auth URL must contain PKCE parameters
+    // Raw provider URL must contain PKCE parameters
     assert!(
-        auth_url.contains("code_challenge="),
-        "auth_url missing code_challenge: {auth_url}"
+        raw.contains("code_challenge="),
+        "raw missing code_challenge: {raw}"
     );
     assert!(
-        auth_url.contains("code_challenge_method=S256"),
-        "auth_url missing code_challenge_method: {auth_url}"
+        raw.contains("code_challenge_method=S256"),
+        "raw missing code_challenge_method: {raw}"
     );
 
-    // State must have 5 segments (org:ident:provider:byoc:verifier)
-    let segments: Vec<&str> = state.splitn(5, ':').collect();
-    assert_eq!(segments.len(), 5, "state should have 5 segments: {state}");
+    // State has 7 segments (org:ident:provider:byoc:verifier:actor:upgrade).
+    let segments: Vec<&str> = state.splitn(7, ':').collect();
+    assert_eq!(segments.len(), 7, "state should have 7 segments: {state}");
     assert_eq!(segments[2], "x");
     // The verifier segment must not be "_" (it should be an actual verifier)
     assert_ne!(segments[4], "_", "code_verifier should not be empty");
@@ -341,7 +348,7 @@ async fn test_x_real_e2e() {
     }
 
     // Insert connection in DB
-    let enc_key = overslash_core::crypto::parse_hex_key(&"ab".repeat(32)).unwrap();
+    let enc_key = overslash_core::crypto::Keyring::test();
     let encrypted_access =
         overslash_core::crypto::encrypt(&enc_key, access_token.as_bytes()).unwrap();
     let encrypted_refresh =
@@ -382,7 +389,7 @@ async fn test_x_real_e2e() {
     // ===== TEST 1: get_me (Mode C) =====
     eprintln!("  [1/4] get_me ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -394,7 +401,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let me: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert!(
         me["data"]["username"].is_string(),
@@ -413,7 +420,7 @@ async fn test_x_real_e2e() {
         time::OffsetDateTime::now_utc().unix_timestamp()
     );
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -427,7 +434,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let tweet_resp: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     let tweet_id = tweet_resp["data"]["id"]
         .as_str()
@@ -437,7 +444,7 @@ async fn test_x_real_e2e() {
     // ===== TEST 3: delete_tweet (Mode C) — path param substitution =====
     eprintln!("  [3/4] delete_tweet ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -451,7 +458,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let del_resp: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(del_resp["data"]["deleted"], true, "tweet should be deleted");
     eprintln!("  delete_tweet: deleted {tweet_id}");
@@ -459,7 +466,7 @@ async fn test_x_real_e2e() {
     // ===== TEST 4: get_user_tweets (Mode C) — path param + query string =====
     eprintln!("  [4/4] get_user_tweets ...");
     let resp = client
-        .post(format!("{base}/v1/actions/execute"))
+        .post(format!("{base}/v1/actions/call"))
         .header(common::auth(&key).0, common::auth(&key).1)
         .json(&json!({
             "service": "x",
@@ -474,7 +481,7 @@ async fn test_x_real_e2e() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "executed");
+    assert_eq!(body["status"], "called");
     let tweets_resp: Value =
         serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     // data may be absent if the test account has no tweets — that's fine,
@@ -506,6 +513,7 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         .json(&json!({
             "provider": "github",
             "scopes": ["repo"],
+            "include_raw": true,
         }))
         .send()
         .await
@@ -514,18 +522,19 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         .await
         .unwrap();
 
-    let auth_url = resp["auth_url"].as_str().unwrap();
+    let raw = resp["raw"].as_str().unwrap();
     let state = resp["state"].as_str().unwrap();
 
     // Non-PKCE provider should NOT have code_challenge
     assert!(
-        !auth_url.contains("code_challenge="),
-        "github auth_url should not have code_challenge: {auth_url}"
+        !raw.contains("code_challenge="),
+        "github raw should not have code_challenge: {raw}"
     );
 
-    // State verifier segment should be "_"
-    let segments: Vec<&str> = state.splitn(6, ':').collect();
-    assert_eq!(segments.len(), 6);
+    // State verifier segment should be "_". Layout is now 7 segments
+    // (org:ident:provider:byoc:verifier:actor:upgrade).
+    let segments: Vec<&str> = state.splitn(7, ':').collect();
+    assert_eq!(segments.len(), 7);
     assert_eq!(
         segments[4], "_",
         "github should have '_' as verifier segment"

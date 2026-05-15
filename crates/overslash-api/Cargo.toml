@@ -14,6 +14,8 @@ embeddings = ["overslash-core/embeddings"]
 [dependencies]
 overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }
 overslash-db = { path = "../overslash-db" }
+overslash-metrics = { path = "../overslash-metrics" }
+metrics = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true }
@@ -26,6 +28,7 @@ time = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 rand = { workspace = true }
@@ -33,8 +36,10 @@ argon2 = "0.5"
 hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
+subtle = { workspace = true }
 url = { workspace = true }
 urlencoding = "2"
+regex = { workspace = true }
 base64 = "0.22"
 jsonwebtoken = { workspace = true }
 futures-util = "0.3"
@@ -45,6 +50,7 @@ jaq-std = "=3.0.0"
 jaq-json = { version = "=2.0.0", features = ["serde"] }
 
 [dev-dependencies]
+overslash-fakes = { path = "../overslash-fakes" }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }

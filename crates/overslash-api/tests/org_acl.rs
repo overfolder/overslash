@@ -416,16 +416,19 @@ async fn test_read_only_user_forbidden_on_writes() {
     let pool = common::test_pool().await;
     let (base, client, _, _, ro_key, _, _) = bootstrap_acl(pool).await;
 
-    // GET /v1/secrets is dashboard-only (JWT). API keys — even an
-    // org-admin read-only key — are rejected so the secret namespace
-    // never leaks to an agent token.
+    // GET /v1/secrets accepts bearer auth (since the identity-owned
+    // secrets slice). The read-only user owns no secrets in this
+    // fixture, so they see an empty list — the namespace doesn't leak
+    // and no value field appears.
     let resp = client
         .get(format!("{base}/v1/secrets"))
         .header(auth(&ro_key).0, auth(&ro_key).1)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401);
+    assert_eq!(resp.status(), 200);
+    let body: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(body, Vec::<Value>::new());
 
     // Read-only user cannot write secrets
     let resp = client

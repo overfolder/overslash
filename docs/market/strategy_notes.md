@@ -59,7 +59,7 @@ If OpenClaw, Overfolder, and other platforms integrate Overslash as their auth l
 Making Overslash trivial to use with OpenClaw (and similar platforms) is the highest-leverage growth strategy:
 
 1. **Enrollment SKILL.md** — agents on OpenClaw discover and enroll with Overslash via the SKILL.md convention. This should be a copy-paste, zero-config experience.
-2. **Three meta tools** — `overslash_search`, `overslash_execute`, `overslash_auth` should map cleanly to OpenClaw's tool-use patterns.
+2. **Three meta tools** — `overslash_search`, `overslash_call`, `overslash_auth` should map cleanly to OpenClaw's tool-use patterns.
 3. **MCP server** — ship an official Overslash MCP server so any MCP-compatible agent (Claude, Cursor, etc.) can use Overslash natively.
 4. **Approval routing** — OpenClaw surfaces Overslash approvals in its native UX. The approval webhook + resolution API makes this straightforward.
 5. **Hosted quickstart** — "Connect your OpenClaw agent to overslash.dev in 2 minutes" tutorial.

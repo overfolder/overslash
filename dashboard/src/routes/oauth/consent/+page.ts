@@ -8,6 +8,7 @@ export interface ConsentClientInfo {
 	client_name: string | null;
 	software_id: string | null;
 	software_version: string | null;
+	elicitation_supported: boolean;
 }
 
 export interface ConsentConnectionInfo {
@@ -33,6 +34,7 @@ export interface ConsentReauthTarget {
 	parent_id: string | null;
 	parent_name: string | null;
 	last_seen_at: string | null;
+	elicitation_enabled: boolean;
 }
 
 export interface ConsentContext {

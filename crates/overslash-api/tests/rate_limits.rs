@@ -3,7 +3,6 @@
 
 mod common;
 
-use rand::RngExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -339,8 +338,13 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -352,9 +356,32 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -562,8 +589,13 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -575,9 +607,32 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -603,8 +658,13 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -616,9 +676,32 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 1000,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
     overslash_api::AppState {
         db: pool,
@@ -629,10 +712,17 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         rate_limit_cache: Arc::new(
             overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
         ),
+        free_unlimited_cache: Arc::new(
+            overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_secs(30)),
+        ),
         auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
         pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
         embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
         embeddings_available: false,
+        platform_registry: std::sync::Arc::new(
+            overslash_api::services::platform_registry::build_registry(),
+        ),
+        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
     }
 }
 
@@ -658,61 +748,10 @@ async fn spawn_middleware_app(state: overslash_api::AppState) -> SocketAddr {
 }
 
 /// Create an org + user identity + user-bound API key directly in the DB.
-/// Returns (org_id, user_id, raw_api_key).
+/// Returns (org_id, user_id, raw_api_key). Thin wrapper over the shared
+/// `common::seed_org_user_key` so the middleware tests stay readable.
 async fn make_org_user_key(pool: &PgPool) -> (Uuid, Uuid, String) {
-    let org_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orgs (id, name, slug) VALUES ($1, $2, $3)")
-        .bind(org_id)
-        .bind("test-org")
-        .bind(format!("test-{}", Uuid::new_v4()))
-        .execute(pool)
-        .await
-        .unwrap();
-
-    let user_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, 'user')")
-        .bind(user_id)
-        .bind(org_id)
-        .bind("test-user")
-        .execute(pool)
-        .await
-        .unwrap();
-
-    // Generate an API key. Format must be osk_<random>. The prefix (12 chars) is what
-    // the middleware uses for the lookup; we hash the full key with argon2.
-    let suffix: String = (0..32)
-        .map(|_| {
-            let chars = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-            chars[rand::rng().random_range(0..chars.len())] as char
-        })
-        .collect();
-    let raw_key = format!("osk_{suffix}");
-    let prefix = raw_key[..12].to_string();
-
-    use argon2::{
-        Argon2,
-        password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-    };
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default()
-        .hash_password(raw_key.as_bytes(), &salt)
-        .unwrap()
-        .to_string();
-
-    sqlx::query(
-        "INSERT INTO api_keys (org_id, identity_id, name, key_hash, key_prefix, scopes)
-         VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[])",
-    )
-    .bind(org_id)
-    .bind(user_id)
-    .bind("test-key")
-    .bind(&hash)
-    .bind(&prefix)
-    .execute(pool)
-    .await
-    .unwrap();
-
-    (org_id, user_id, raw_key)
+    common::seed_org_user_key(pool, common::SeedOptions::default()).await
 }
 
 #[tokio::test]
@@ -1008,8 +1047,13 @@ async fn test_cache_invalidation_user_budget() {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1021,9 +1065,32 @@ async fn test_cache_invalidation_user_budget() {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     // Prime the cache
@@ -1146,8 +1213,13 @@ async fn test_cache_invalidation_org_flushes_all() {
         port: 0,
         database_url: String::new(),
         secrets_encryption_key: "ab".repeat(32),
+        secrets_encryption_key_previous: None,
+        secrets_encryption_key_active_id: 1,
+        secrets_encryption_key_previous_id: 0,
         signing_key: "cd".repeat(32),
         approval_expiry_secs: 1800,
+        execution_pending_ttl_secs: 900,
+        execution_replay_timeout_secs: 30,
         services_dir: "services".into(),
         google_auth_client_id: None,
         google_auth_client_secret: None,
@@ -1159,9 +1231,32 @@ async fn test_cache_invalidation_org_flushes_all() {
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
+        mcp_extra_origins: String::new(),
         redis_url: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        allow_org_creation: true,
+        single_org_mode: None,
+        app_host_suffix: None,
+        api_host_suffix: None,
+        session_cookie_domain: None,
+        cloud_billing: false,
+        stripe_secret_key: None,
+        stripe_webhook_secret: None,
+        stripe_eur_price_id: None,
+        stripe_usd_price_id: None,
+        stripe_eur_lookup_key: "overslash_seat_eur".into(),
+        stripe_usd_lookup_key: "overslash_seat_usd".into(),
+        stripe_api_base: "https://api.stripe.com/v1".into(),
+        service_base_overrides: std::collections::HashMap::new(),
+        oversla_sh_base_url: None,
+        oversla_sh_api_key: None,
+        email_provider: None,
+        email_from: None,
+        email_reply_to: None,
+        email_api_key: None,
+        preview_origin_allowlist: None,
+        overslash_env: None,
     };
 
     let r1 = cache

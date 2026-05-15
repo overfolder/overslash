@@ -29,24 +29,15 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="backdrop" onclick={handleBackdrop} onkeydown={handleKey}>
 		<div
-			class="card"
+			class="frame"
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="approval-modal-title"
 			tabindex="-1"
 		>
-			<div class="header">
-				<h2 id="approval-modal-title">Approval Request</h2>
-				<button class="close" aria-label="Close" onclick={onClose}>×</button>
-			</div>
-			<p class="summary">{approval.action_summary}</p>
-			<ApprovalResolver
-				{approval}
-				compact
-				onResolved={(updated) => {
-					onResolved?.(updated);
-				}}
-			/>
+			<button class="close" aria-label="Close" onclick={onClose}>×</button>
+			<h2 id="approval-modal-title" class="sr-only">Approval Request</h2>
+			<ApprovalResolver {approval} {onResolved} />
 		</div>
 	</div>
 {/if}
@@ -60,50 +51,91 @@
 		align-items: center;
 		justify-content: center;
 		z-index: 1000;
-		padding: var(--space-4, 16px);
+		padding: 16px;
 	}
-	.card {
-		background: var(--color-surface, #fff);
-		border: 1px solid var(--color-border);
-		border-radius: 16px;
-		padding: 24px 28px;
-		max-width: 560px;
+	.frame {
+		position: relative;
 		width: 100%;
-		max-height: calc(100vh - 64px);
+		max-width: 480px;
+		max-height: calc(100vh - 32px);
 		overflow-y: auto;
+		border-radius: 12px;
 		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
 	}
-	.header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-	}
-	h2 {
-		margin: 0;
-		font-weight: 700;
-		font-size: 16px;
-		line-height: 1.25;
-		color: var(--color-text-heading, var(--color-text));
+	/* The ApprovalResolver provides its own card surface (border + bg);
+	   the modal frame just sizes/positions it. We mask the corner radius
+	   so the resolver's risk top bar doesn't overflow the frame. */
+	.frame :global(.card) {
+		border-radius: 12px;
 	}
 	.close {
-		background: none;
-		border: none;
-		font-size: 22px;
-		line-height: 1;
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		width: 32px;
+		height: 32px;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: 50%;
 		color: var(--color-text-muted);
+		font-size: 18px;
+		line-height: 1;
 		cursor: pointer;
-		padding: 0 4px;
+		z-index: 2;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		box-shadow: var(--shadow-sm);
+	}
+	/* Reserve a gutter on the risk bar's right edge so the close button
+	   never clips the "expires in …" timestamp. The bar is the first child
+	   of the resolver card and uses :global(.bar) — keep this in sync with
+	   the bar selector in RiskBar.svelte. */
+	.frame :global(.card .bar) {
+		padding-right: 52px;
+	}
+	:global([data-theme='dark']) .close {
+		background: rgba(26, 27, 30, 0.85);
 	}
 	.close:hover {
 		color: var(--color-text);
+		background: var(--color-surface);
 	}
-	.summary {
-		margin: 0;
-		font-size: 0.9rem;
-		color: var(--color-text);
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	@media (max-width: 640px) {
+		.backdrop {
+			background: var(--color-bg);
+			padding: 0;
+		}
+		.frame {
+			max-width: none;
+			max-height: 100vh;
+			height: 100vh;
+			border-radius: 0;
+			box-shadow: none;
+			overflow-y: auto;
+		}
+		.frame :global(.card) {
+			max-width: none;
+			border-radius: 0;
+			border-left: 0;
+			border-right: 0;
+			min-height: 100vh;
+		}
+		.close {
+			top: 12px;
+			right: 12px;
+		}
 	}
 </style>

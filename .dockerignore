@@ -8,6 +8,7 @@ tests/mock-target/src/
 crates/overslash-api/tests/
 *.md
 !crates/**/README.md
+!SKILL.md
 .env
 .env.*
 docker-compose*.yml

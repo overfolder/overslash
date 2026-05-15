@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_upstream_flows\n            SET consumed_at = now()\n          WHERE id = $1\n            AND consumed_at IS NULL\n            AND expires_at > now()\n          RETURNING id, identity_id, org_id, upstream_resource, upstream_client_id,\n                    upstream_as_issuer, upstream_token_endpoint,\n                    upstream_authorize_url, pkce_code_verifier, expires_at,\n                    consumed_at, created_at, created_ip, created_user_agent",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "upstream_resource",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "upstream_client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "upstream_as_issuer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "upstream_token_endpoint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "upstream_authorize_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "pkce_code_verifier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "consumed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_ip",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_user_agent",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "57b8dfe66bfc08b4edb0b0136bbbf0403ac5bec3d22426bc40f07d69f277a5a0"
+}

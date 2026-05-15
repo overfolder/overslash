@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
+\restrict UUcxcMBG21C30WsecwEbdo0btK54DwUWSiKupwGhFbfzzXFtuX2bqN3ea0LmpQP
 
--- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
+-- Dumped from database version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
@@ -76,6 +76,8 @@ CREATE TABLE public.approvals (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     current_resolver_identity_id uuid NOT NULL,
     resolver_assigned_at timestamp with time zone DEFAULT now() NOT NULL,
+    disclosed_fields jsonb,
+    replay_payload jsonb,
     CONSTRAINT approvals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'allowed'::text, 'denied'::text, 'expired'::text])))
 );
 
@@ -94,7 +96,8 @@ CREATE TABLE public.audit_log (
     detail jsonb DEFAULT '{}'::jsonb NOT NULL,
     ip_address text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    description text
+    description text,
+    impersonated_by_identity_id uuid
 );
 
 
@@ -136,6 +139,21 @@ CREATE TABLE public.connections (
 
 
 --
+-- Name: email_unsubscribe_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_unsubscribe_tokens (
+    token uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    purpose text DEFAULT 'welcome'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    redeemed_at timestamp with time zone,
+    CONSTRAINT email_unsubscribe_tokens_purpose_check CHECK ((purpose = ANY (ARRAY['welcome'::text, 'webhook_digest'::text])))
+);
+
+
+--
 -- Name: enabled_global_templates; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -148,19 +166,26 @@ CREATE TABLE public.enabled_global_templates (
 
 
 --
--- Name: enrollment_tokens; Type: TABLE; Schema: public; Owner: -
+-- Name: executions; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.enrollment_tokens (
+CREATE TABLE public.executions (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
+    approval_id uuid NOT NULL,
     org_id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    token_hash text NOT NULL,
-    token_prefix character varying(16) NOT NULL,
+    status text NOT NULL,
+    remember boolean DEFAULT false NOT NULL,
+    remember_keys text[],
+    remember_rule_ttl timestamp with time zone,
+    result jsonb,
+    error text,
+    triggered_by text,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
     expires_at timestamp with time zone NOT NULL,
-    used_at timestamp with time zone,
-    created_by uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    result_viewed_at timestamp with time zone,
+    CONSTRAINT executions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executing'::text, 'executed'::text, 'failed'::text, 'cancelled'::text, 'expired'::text])))
 );
 
 
@@ -188,10 +213,13 @@ CREATE TABLE public.groups (
     org_id uuid NOT NULL,
     name text NOT NULL,
     description text DEFAULT ''::text NOT NULL,
-    allow_raw_http boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    is_system boolean DEFAULT false NOT NULL
+    is_system boolean DEFAULT false NOT NULL,
+    system_kind text,
+    owner_identity_id uuid,
+    CONSTRAINT groups_owner_only_for_self CHECK (((system_kind = 'self'::text) = (owner_identity_id IS NOT NULL))),
+    CONSTRAINT groups_system_kind_check CHECK ((system_kind = ANY (ARRAY['everyone'::text, 'admins'::text, 'self'::text])))
 );
 
 
@@ -218,6 +246,8 @@ CREATE TABLE public.identities (
     archived_reason text,
     preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
     is_org_admin boolean DEFAULT false NOT NULL,
+    user_id uuid,
+    auto_call_on_approve boolean DEFAULT true NOT NULL,
     CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
 );
@@ -245,7 +275,9 @@ CREATE TABLE public.mcp_client_agent_bindings (
     client_id text NOT NULL,
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    elicitation_enabled boolean DEFAULT false NOT NULL,
+    self_approve_enabled boolean DEFAULT false NOT NULL
 );
 
 
@@ -267,6 +299,98 @@ CREATE TABLE public.mcp_refresh_tokens (
 
 
 --
+-- Name: mcp_upstream_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_upstream_connections (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    upstream_resource text NOT NULL,
+    upstream_client_id text NOT NULL,
+    status text DEFAULT 'pending_auth'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_refreshed_at timestamp with time zone,
+    CONSTRAINT mcp_upstream_connections_status_check CHECK ((status = ANY (ARRAY['pending_auth'::text, 'ready'::text, 'revoked'::text, 'error'::text])))
+);
+
+
+--
+-- Name: mcp_upstream_flows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_upstream_flows (
+    id text NOT NULL,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    upstream_resource text NOT NULL,
+    upstream_client_id text NOT NULL,
+    upstream_as_issuer text NOT NULL,
+    upstream_token_endpoint text NOT NULL,
+    upstream_authorize_url text NOT NULL,
+    pkce_code_verifier text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_ip text,
+    created_user_agent text
+);
+
+
+--
+-- Name: mcp_upstream_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_upstream_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    connection_id uuid NOT NULL,
+    access_token_ciphertext bytea NOT NULL,
+    refresh_token_ciphertext bytea,
+    access_token_expires_at timestamp with time zone,
+    scope text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    superseded_at timestamp with time zone
+);
+
+
+--
+-- Name: oauth_connection_flows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_connection_flows (
+    id text NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    actor_identity_id uuid NOT NULL,
+    provider_key text NOT NULL,
+    byoc_credential_id uuid,
+    scopes text[] DEFAULT '{}'::text[] NOT NULL,
+    pkce_code_verifier text,
+    upstream_authorize_url text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_ip text,
+    created_user_agent text
+);
+
+
+--
+-- Name: oauth_handoff_codes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_handoff_codes (
+    code text NOT NULL,
+    jwt text NOT NULL,
+    origin text NOT NULL,
+    next_path text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    consumed_at timestamp with time zone
+);
+
+
+--
 -- Name: oauth_mcp_clients; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -281,7 +405,27 @@ CREATE TABLE public.oauth_mcp_clients (
     last_seen_at timestamp with time zone,
     created_ip text,
     created_user_agent text,
-    is_revoked boolean DEFAULT false NOT NULL
+    is_revoked boolean DEFAULT false NOT NULL,
+    capabilities jsonb,
+    client_info jsonb,
+    protocol_version text,
+    last_session_id uuid
+);
+
+
+--
+-- Name: oauth_preview_origins; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.oauth_preview_origins (
+    preview_id uuid NOT NULL,
+    origin text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    nonce text DEFAULT ''::text NOT NULL,
+    pkce_verifier text,
+    org_slug text,
+    next_path text
 );
 
 
@@ -322,7 +466,46 @@ CREATE TABLE public.org_idp_configs (
     allowed_email_domains text[] DEFAULT '{}'::text[] NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
     CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
+);
+
+
+--
+-- Name: org_invites; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_invites (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    email text NOT NULL,
+    role text NOT NULL,
+    invited_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    accepted_at timestamp with time zone,
+    accepted_by_user_id uuid,
+    CONSTRAINT org_invites_email_lower CHECK ((email = lower(email))),
+    CONSTRAINT org_invites_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
+);
+
+
+--
+-- Name: org_subscriptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_subscriptions (
+    org_id uuid NOT NULL,
+    stripe_subscription_id text NOT NULL,
+    stripe_customer_id text NOT NULL,
+    plan text DEFAULT 'team'::text NOT NULL,
+    seats integer DEFAULT 2 NOT NULL,
+    status text NOT NULL,
+    currency text NOT NULL,
+    current_period_start timestamp with time zone,
+    current_period_end timestamp with time zone,
+    cancel_at_period_end boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -342,34 +525,46 @@ CREATE TABLE public.orgs (
     allow_user_templates boolean DEFAULT false NOT NULL,
     global_templates_enabled boolean DEFAULT true NOT NULL,
     allow_unsigned_secret_provide boolean DEFAULT true NOT NULL,
-    CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0))
+    is_personal boolean DEFAULT false NOT NULL,
+    plan text DEFAULT 'standard'::text NOT NULL,
+    default_deferred_execution boolean DEFAULT false NOT NULL,
+    allow_overslash_managed_signin boolean DEFAULT false NOT NULL,
+    creator_user_id uuid,
+    CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
+    CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
 
 
 --
--- Name: pending_enrollments; Type: TABLE; Schema: public; Owner: -
+-- Name: pending_checkouts; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.pending_enrollments (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    suggested_name text NOT NULL,
-    platform text,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    approval_token text NOT NULL,
-    poll_token_hash text NOT NULL,
-    poll_token_prefix character varying(16) NOT NULL,
-    org_id uuid,
-    identity_id uuid,
-    api_key_hash text,
-    api_key_prefix character varying(16),
-    approved_by uuid,
-    final_name text,
-    expires_at timestamp with time zone NOT NULL,
+CREATE TABLE public.pending_checkouts (
+    id text NOT NULL,
+    user_id uuid NOT NULL,
+    org_name text NOT NULL,
+    org_slug text NOT NULL,
+    seats integer NOT NULL,
+    currency text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    resolved_at timestamp with time zone,
-    requester_ip text,
-    CONSTRAINT pending_enrollments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'denied'::text, 'expired'::text])))
+    expires_at timestamp with time zone DEFAULT (now() + '02:00:00'::interval) NOT NULL,
+    fulfilled_org_id uuid
+);
+
+
+--
+-- Name: pending_mcp_elicitations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.pending_mcp_elicitations (
+    elicit_id text NOT NULL,
+    session_id uuid NOT NULL,
+    agent_identity_id uuid NOT NULL,
+    approval_id uuid NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    final_response jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone
 );
 
 
@@ -452,7 +647,8 @@ CREATE TABLE public.secrets (
     current_version integer DEFAULT 1 NOT NULL,
     deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    owner_identity_id uuid
 );
 
 
@@ -492,6 +688,7 @@ CREATE TABLE public.service_instances (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_system boolean DEFAULT false NOT NULL,
+    url text,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
@@ -519,6 +716,41 @@ CREATE TABLE public.service_templates (
 
 
 --
+-- Name: user_org_memberships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_org_memberships (
+    user_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    role text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT user_org_memberships_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
+);
+
+
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.users (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    email text,
+    display_name text,
+    overslash_idp_provider text,
+    overslash_idp_subject text,
+    personal_org_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    stripe_customer_id text,
+    is_instance_admin boolean DEFAULT false NOT NULL,
+    welcome_email_sent_at timestamp with time zone,
+    welcome_emails_unsubscribed_at timestamp with time zone,
+    webhook_digest_unsubscribed_at timestamp with time zone,
+    CONSTRAINT users_instance_admin_requires_overslash_idp CHECK (((NOT is_instance_admin) OR (overslash_idp_provider IS NOT NULL)))
+);
+
+
+--
 -- Name: webhook_deliveries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -533,6 +765,17 @@ CREATE TABLE public.webhook_deliveries (
     next_retry_at timestamp with time zone,
     delivered_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: webhook_digest_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.webhook_digest_runs (
+    org_id uuid NOT NULL,
+    run_date date NOT NULL,
+    sent_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -608,6 +851,14 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: email_unsubscribe_tokens email_unsubscribe_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_unsubscribe_tokens
+    ADD CONSTRAINT email_unsubscribe_tokens_pkey PRIMARY KEY (token);
+
+
+--
 -- Name: enabled_global_templates enabled_global_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -616,11 +867,11 @@ ALTER TABLE ONLY public.enabled_global_templates
 
 
 --
--- Name: enrollment_tokens enrollment_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: executions executions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_pkey PRIMARY KEY (id);
 
 
 --
@@ -704,6 +955,54 @@ ALTER TABLE ONLY public.mcp_refresh_tokens
 
 
 --
+-- Name: mcp_upstream_connections mcp_upstream_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_upstream_connections mcp_upstream_connections_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_unique UNIQUE (identity_id, upstream_resource);
+
+
+--
+-- Name: mcp_upstream_flows mcp_upstream_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_flows
+    ADD CONSTRAINT mcp_upstream_flows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mcp_upstream_tokens mcp_upstream_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_tokens
+    ADD CONSTRAINT mcp_upstream_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_connection_flows oauth_connection_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_handoff_codes oauth_handoff_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_handoff_codes
+    ADD CONSTRAINT oauth_handoff_codes_pkey PRIMARY KEY (code);
+
+
+--
 -- Name: oauth_mcp_clients oauth_mcp_clients_client_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -717,6 +1016,14 @@ ALTER TABLE ONLY public.oauth_mcp_clients
 
 ALTER TABLE ONLY public.oauth_mcp_clients
     ADD CONSTRAINT oauth_mcp_clients_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_preview_origins oauth_preview_origins_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_preview_origins
+    ADD CONSTRAINT oauth_preview_origins_pkey PRIMARY KEY (preview_id);
 
 
 --
@@ -744,6 +1051,30 @@ ALTER TABLE ONLY public.org_idp_configs
 
 
 --
+-- Name: org_invites org_invites_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: org_subscriptions org_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_subscriptions
+    ADD CONSTRAINT org_subscriptions_pkey PRIMARY KEY (org_id);
+
+
+--
+-- Name: org_subscriptions org_subscriptions_stripe_subscription_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_subscriptions
+    ADD CONSTRAINT org_subscriptions_stripe_subscription_id_key UNIQUE (stripe_subscription_id);
+
+
+--
 -- Name: orgs orgs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -760,19 +1091,19 @@ ALTER TABLE ONLY public.orgs
 
 
 --
--- Name: pending_enrollments pending_enrollments_approval_token_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: pending_checkouts pending_checkouts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_approval_token_key UNIQUE (approval_token);
+ALTER TABLE ONLY public.pending_checkouts
+    ADD CONSTRAINT pending_checkouts_pkey PRIMARY KEY (id);
 
 
 --
--- Name: pending_enrollments pending_enrollments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: pending_mcp_elicitations pending_mcp_elicitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.pending_mcp_elicitations
+    ADD CONSTRAINT pending_mcp_elicitations_pkey PRIMARY KEY (elicit_id);
 
 
 --
@@ -856,6 +1187,22 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: user_org_memberships user_org_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_org_memberships
+    ADD CONSTRAINT user_org_memberships_pkey PRIMARY KEY (user_id, org_id);
+
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: webhook_deliveries webhook_deliveries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -864,11 +1211,26 @@ ALTER TABLE ONLY public.webhook_deliveries
 
 
 --
+-- Name: webhook_digest_runs webhook_digest_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webhook_digest_runs
+    ADD CONSTRAINT webhook_digest_runs_pkey PRIMARY KEY (org_id, run_date);
+
+
+--
 -- Name: webhook_subscriptions webhook_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.webhook_subscriptions
     ADD CONSTRAINT webhook_subscriptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_unsubscribe_tokens_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX email_unsubscribe_tokens_user_id ON public.email_unsubscribe_tokens USING btree (user_id);
 
 
 --
@@ -921,6 +1283,13 @@ CREATE INDEX idx_audit_log_identity ON public.audit_log USING btree (identity_id
 
 
 --
+-- Name: idx_audit_log_impersonated_by; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_audit_log_impersonated_by ON public.audit_log USING btree (org_id, impersonated_by_identity_id) WHERE (impersonated_by_identity_id IS NOT NULL);
+
+
+--
 -- Name: idx_audit_log_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -942,10 +1311,31 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
--- Name: idx_enrollment_tokens_prefix; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_executions_approval_id; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_enrollment_tokens_prefix ON public.enrollment_tokens USING btree (token_prefix);
+CREATE UNIQUE INDEX idx_executions_approval_id ON public.executions USING btree (approval_id);
+
+
+--
+-- Name: idx_executions_org_status_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_org_status_expires ON public.executions USING btree (org_id, status, expires_at);
+
+
+--
+-- Name: idx_executions_pending_expiry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_pending_expiry ON public.executions USING btree (expires_at) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: idx_executions_unread; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_executions_unread ON public.executions USING btree (org_id, completed_at) WHERE ((status = ANY (ARRAY['executed'::text, 'failed'::text])) AND (result_viewed_at IS NULL));
 
 
 --
@@ -970,6 +1360,13 @@ CREATE INDEX idx_groups_org ON public.groups USING btree (org_id);
 
 
 --
+-- Name: idx_groups_self_per_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_groups_self_per_user ON public.groups USING btree (org_id, owner_identity_id) WHERE (system_kind = 'self'::text);
+
+
+--
 -- Name: idx_identities_archived; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -981,6 +1378,13 @@ CREATE INDEX idx_identities_archived ON public.identities USING btree (archived_
 --
 
 CREATE INDEX idx_identities_email ON public.identities USING btree (email) WHERE (email IS NOT NULL);
+
+
+--
+-- Name: idx_identities_email_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identities_email_lookup ON public.identities USING btree (email) WHERE (email IS NOT NULL);
 
 
 --
@@ -1012,10 +1416,10 @@ CREATE INDEX idx_identities_parent ON public.identities USING btree (parent_id) 
 
 
 --
--- Name: idx_identities_user_email; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_identities_user; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_identities_user_email ON public.identities USING btree (email) WHERE ((kind = 'user'::text) AND (email IS NOT NULL));
+CREATE INDEX idx_identities_user ON public.identities USING btree (user_id);
 
 
 --
@@ -1068,10 +1472,73 @@ CREATE UNIQUE INDEX idx_mcp_refresh_tokens_hash ON public.mcp_refresh_tokens USI
 
 
 --
+-- Name: idx_mcp_upstream_connections_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_upstream_connections_org ON public.mcp_upstream_connections USING btree (org_id);
+
+
+--
+-- Name: idx_mcp_upstream_flows_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_upstream_flows_expires_at ON public.mcp_upstream_flows USING btree (expires_at) WHERE (consumed_at IS NULL);
+
+
+--
+-- Name: idx_mcp_upstream_flows_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_upstream_flows_identity ON public.mcp_upstream_flows USING btree (identity_id, created_at DESC);
+
+
+--
+-- Name: idx_mcp_upstream_tokens_current; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_mcp_upstream_tokens_current ON public.mcp_upstream_tokens USING btree (connection_id) WHERE (superseded_at IS NULL);
+
+
+--
+-- Name: idx_memberships_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_memberships_org ON public.user_org_memberships USING btree (org_id);
+
+
+--
+-- Name: idx_oauth_connection_flows_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_connection_flows_expires_at ON public.oauth_connection_flows USING btree (expires_at) WHERE (consumed_at IS NULL);
+
+
+--
+-- Name: idx_oauth_connection_flows_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_connection_flows_identity ON public.oauth_connection_flows USING btree (identity_id, created_at DESC);
+
+
+--
+-- Name: idx_oauth_handoff_codes_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_handoff_codes_expires ON public.oauth_handoff_codes USING btree (expires_at);
+
+
+--
 -- Name: idx_oauth_mcp_clients_active; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_oauth_mcp_clients_active ON public.oauth_mcp_clients USING btree (created_at DESC) WHERE (is_revoked = false);
+
+
+--
+-- Name: idx_oauth_preview_origins_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oauth_preview_origins_expires ON public.oauth_preview_origins USING btree (expires_at);
 
 
 --
@@ -1089,17 +1556,31 @@ CREATE INDEX idx_org_idp_configs_org ON public.org_idp_configs USING btree (org_
 
 
 --
--- Name: idx_pending_enrollments_poll_prefix; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_orgs_plan; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_pending_enrollments_poll_prefix ON public.pending_enrollments USING btree (poll_token_prefix);
+CREATE INDEX idx_orgs_plan ON public.orgs USING btree (plan) WHERE (plan <> 'standard'::text);
 
 
 --
--- Name: idx_pending_enrollments_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_pending_checkouts_user; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_pending_enrollments_status ON public.pending_enrollments USING btree (status) WHERE (status = 'pending'::text);
+CREATE INDEX idx_pending_checkouts_user ON public.pending_checkouts USING btree (user_id);
+
+
+--
+-- Name: idx_pending_mcp_elicit_session; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_mcp_elicit_session ON public.pending_mcp_elicitations USING btree (session_id);
+
+
+--
+-- Name: idx_pending_mcp_elicit_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_mcp_elicit_status ON public.pending_mcp_elicitations USING btree (status, created_at);
 
 
 --
@@ -1173,6 +1654,13 @@ CREATE INDEX idx_secret_versions_secret ON public.secret_versions USING btree (s
 
 
 --
+-- Name: idx_secrets_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secrets_owner ON public.secrets USING btree (owner_identity_id) WHERE (owner_identity_id IS NOT NULL);
+
+
+--
 -- Name: idx_service_instances_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1229,10 +1717,52 @@ CREATE UNIQUE INDEX idx_service_templates_user_key ON public.service_templates U
 
 
 --
+-- Name: idx_users_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_email ON public.users USING btree (email);
+
+
+--
+-- Name: idx_users_is_instance_admin; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_is_instance_admin ON public.users USING btree (is_instance_admin) WHERE is_instance_admin;
+
+
+--
+-- Name: idx_users_personal_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_personal_org ON public.users USING btree (personal_org_id);
+
+
+--
 -- Name: idx_webhook_deliveries_retry; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_webhook_deliveries_retry ON public.webhook_deliveries USING btree (next_retry_at) WHERE ((delivered_at IS NULL) AND (attempts < 5));
+
+
+--
+-- Name: org_idp_configs_one_default_per_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_idp_configs_one_default_per_org ON public.org_idp_configs USING btree (org_id) WHERE is_default;
+
+
+--
+-- Name: org_invites_by_org_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX org_invites_by_org_email ON public.org_invites USING btree (org_id, email);
+
+
+--
+-- Name: org_invites_one_pending_per_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_invites_one_pending_per_email ON public.org_invites USING btree (org_id, email) WHERE (accepted_at IS NULL);
 
 
 --
@@ -1261,6 +1791,27 @@ CREATE UNIQUE INDEX service_action_embeddings_org_unique ON public.service_actio
 --
 
 CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_action_embeddings USING btree (org_id, owner_identity_id, template_key, action_key) WHERE (tier = 'user'::text);
+
+
+--
+-- Name: users_overslash_idp_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX users_overslash_idp_unique ON public.users USING btree (overslash_idp_provider, overslash_idp_subject) WHERE ((overslash_idp_provider IS NOT NULL) AND (overslash_idp_subject IS NOT NULL));
+
+
+--
+-- Name: users_stripe_customer; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX users_stripe_customer ON public.users USING btree (stripe_customer_id) WHERE (stripe_customer_id IS NOT NULL);
+
+
+--
+-- Name: webhook_digest_runs_run_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX webhook_digest_runs_run_date ON public.webhook_digest_runs USING btree (run_date);
 
 
 --
@@ -1309,6 +1860,14 @@ ALTER TABLE ONLY public.approvals
 
 ALTER TABLE ONLY public.audit_log
     ADD CONSTRAINT audit_log_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: audit_log audit_log_impersonated_by_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.audit_log
+    ADD CONSTRAINT audit_log_impersonated_by_identity_id_fkey FOREIGN KEY (impersonated_by_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
 
 
 --
@@ -1376,6 +1935,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: email_unsubscribe_tokens email_unsubscribe_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_unsubscribe_tokens
+    ADD CONSTRAINT email_unsubscribe_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: email_unsubscribe_tokens email_unsubscribe_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_unsubscribe_tokens
+    ADD CONSTRAINT email_unsubscribe_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: enabled_global_templates enabled_global_templates_enabled_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1392,27 +1967,19 @@ ALTER TABLE ONLY public.enabled_global_templates
 
 
 --
--- Name: enrollment_tokens enrollment_tokens_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: executions executions_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.identities(id);
-
-
---
--- Name: enrollment_tokens enrollment_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id) ON DELETE CASCADE;
 
 
 --
--- Name: enrollment_tokens enrollment_tokens_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: executions executions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.enrollment_tokens
-    ADD CONSTRAINT enrollment_tokens_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.executions
+    ADD CONSTRAINT executions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --
@@ -1440,6 +2007,14 @@ ALTER TABLE ONLY public.groups
 
 
 --
+-- Name: groups groups_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.groups
+    ADD CONSTRAINT groups_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: identities identities_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1461,6 +2036,14 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identities identities_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identities
+    ADD CONSTRAINT identities_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -1544,6 +2127,70 @@ ALTER TABLE ONLY public.mcp_refresh_tokens
 
 
 --
+-- Name: mcp_upstream_connections mcp_upstream_connections_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_connections mcp_upstream_connections_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_connections
+    ADD CONSTRAINT mcp_upstream_connections_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_flows mcp_upstream_flows_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_flows
+    ADD CONSTRAINT mcp_upstream_flows_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_flows mcp_upstream_flows_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_flows
+    ADD CONSTRAINT mcp_upstream_flows_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: mcp_upstream_tokens mcp_upstream_tokens_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_upstream_tokens
+    ADD CONSTRAINT mcp_upstream_tokens_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.mcp_upstream_connections(id) ON DELETE CASCADE;
+
+
+--
+-- Name: oauth_connection_flows oauth_connection_flows_actor_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_actor_identity_id_fkey FOREIGN KEY (actor_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: oauth_connection_flows oauth_connection_flows_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: oauth_connection_flows oauth_connection_flows_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1560,27 +2207,67 @@ ALTER TABLE ONLY public.org_idp_configs
 
 
 --
--- Name: pending_enrollments pending_enrollments_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: org_invites org_invites_accepted_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.identities(id);
-
-
---
--- Name: pending_enrollments pending_enrollments_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id);
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_accepted_by_user_id_fkey FOREIGN KEY (accepted_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
--- Name: pending_enrollments pending_enrollments_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: org_invites org_invites_invited_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.pending_enrollments
-    ADD CONSTRAINT pending_enrollments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id);
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_invited_by_fkey FOREIGN KEY (invited_by) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_invites org_invites_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invites
+    ADD CONSTRAINT org_invites_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_subscriptions org_subscriptions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_subscriptions
+    ADD CONSTRAINT org_subscriptions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: orgs orgs_creator_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.orgs
+    ADD CONSTRAINT orgs_creator_user_id_fkey FOREIGN KEY (creator_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: pending_checkouts pending_checkouts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_checkouts
+    ADD CONSTRAINT pending_checkouts_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: pending_mcp_elicitations pending_mcp_elicitations_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_mcp_elicitations
+    ADD CONSTRAINT pending_mcp_elicitations_agent_identity_id_fkey FOREIGN KEY (agent_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: pending_mcp_elicitations pending_mcp_elicitations_approval_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.pending_mcp_elicitations
+    ADD CONSTRAINT pending_mcp_elicitations_approval_id_fkey FOREIGN KEY (approval_id) REFERENCES public.approvals(id) ON DELETE CASCADE;
 
 
 --
@@ -1680,6 +2367,14 @@ ALTER TABLE ONLY public.secrets
 
 
 --
+-- Name: secrets secrets_owner_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.secrets
+    ADD CONSTRAINT secrets_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
 -- Name: service_action_embeddings service_action_embeddings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1744,11 +2439,43 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: user_org_memberships user_org_memberships_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_org_memberships
+    ADD CONSTRAINT user_org_memberships_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_org_memberships user_org_memberships_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_org_memberships
+    ADD CONSTRAINT user_org_memberships_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: users users_personal_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_personal_org_id_fkey FOREIGN KEY (personal_org_id) REFERENCES public.orgs(id) ON DELETE SET NULL;
+
+
+--
 -- Name: webhook_deliveries webhook_deliveries_subscription_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.webhook_deliveries
     ADD CONSTRAINT webhook_deliveries_subscription_id_fkey FOREIGN KEY (subscription_id) REFERENCES public.webhook_subscriptions(id) ON DELETE CASCADE;
+
+
+--
+-- Name: webhook_digest_runs webhook_digest_runs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webhook_digest_runs
+    ADD CONSTRAINT webhook_digest_runs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --
@@ -1763,5 +2490,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict zFOwuNU0eksMBVSTN3HaFx1FLdXMiHhH2HPXnueVdQcT7DUOpCqbRJGozcLET11
+\unrestrict UUcxcMBG21C30WsecwEbdo0btK54DwUWSiKupwGhFbfzzXFtuX2bqN3ea0LmpQP
 

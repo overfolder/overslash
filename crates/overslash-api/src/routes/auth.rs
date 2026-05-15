@@ -15,8 +15,18 @@ use crate::{
     services::{jwt, oauth},
 };
 use overslash_core::crypto;
-use overslash_db::repos::{oauth_provider, org};
+use overslash_db::repos::audit::AuditEntry;
+use overslash_db::repos::{membership, oauth_provider, org, user as user_repo};
 use overslash_db::{OrgScope, SystemScope};
+
+/// How long a `oauth_preview_origins` row lives — must comfortably exceed
+/// the slowest realistic IdP round-trip (Google login can take 30 s if MFA
+/// is involved, plus an unhurried human picking an account).
+const PREVIEW_ORIGIN_TTL_SECS: i64 = 600;
+/// One-time handoff codes are exchanged for a session cookie within seconds
+/// of the OAuth callback. A short TTL keeps the redemption window tight if
+/// the redirect URL is ever logged or intercepted.
+const PREVIEW_HANDOFF_CODE_TTL_SECS: i64 = 60;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -24,6 +34,11 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login/{provider_key}", get(provider_login))
         .route("/auth/callback/{provider_key}", get(provider_callback))
         .route("/auth/providers", get(list_auth_providers))
+        // Vercel preview-deployment handoff. 404s unless the feature is
+        // explicitly enabled (OVERSLASH_ENV=dev + PREVIEW_ORIGIN_ALLOWLIST).
+        // Production must never serve this — the response sets a session
+        // cookie keyed to a one-time code minted in the OAuth callback.
+        .route("/auth/handoff", get(handoff_consume))
         // Backward compat — Google callback must remain a real handler (not redirect)
         // because existing Google OAuth apps have this URL registered as redirect_uri
         .route("/auth/google/login", get(google_login_compat))
@@ -33,10 +48,27 @@ pub fn router() -> Router<AppState> {
         .route("/auth/me/identity", get(me_identity))
         .route("/auth/dev/token", get(dev_token))
         .route("/auth/logout", post(logout))
+        // Multi-org switching + account surface. See docs/design/multi_org_auth.md.
+        .route("/auth/switch-org", post(switch_org))
+        .route("/v1/account/memberships", get(list_account_memberships))
+        .route(
+            "/v1/account/memberships/{org_id}",
+            axum::routing::delete(drop_account_membership),
+        )
+        .route(
+            "/v1/account/email-preferences",
+            get(get_email_preferences).put(put_email_preferences),
+        )
 }
 
-async fn logout() -> impl IntoResponse {
-    let clear = "oss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+async fn logout(State(state): State<AppState>) -> impl IntoResponse {
+    // Clear on the same Domain the session was set with so browsers actually
+    // drop the cookie (missing-Domain clear won't match a Domain-scoped
+    // cookie and the session persists visually).
+    let mut clear = String::from("oss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
+        clear.push_str(&format!("; Domain={domain}"));
+    }
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, clear.parse().unwrap());
     (headers, axum::Json(json!({ "status": "logged_out" })))
@@ -54,6 +86,19 @@ struct LoginQuery {
     /// (path-only redirect). Used by `/oauth/authorize` to resume after the
     /// IdP bounce.
     next: Option<String>,
+    /// Vercel preview-deployment OAuth handoff. Set by the dashboard when
+    /// running on a preview host so the API can route the user back to the
+    /// preview after the OAuth round-trip instead of landing them on the
+    /// configured `dashboard_url`. Honored only when
+    /// `Config::is_preview_handoff_enabled()` AND the value matches
+    /// `PREVIEW_ORIGIN_ALLOWLIST`. Silently ignored otherwise — the feature
+    /// must remain invisible on prod.
+    preview_origin: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HandoffQuery {
+    code: String,
 }
 
 #[derive(Deserialize)]
@@ -86,14 +131,40 @@ struct NormalizedUserInfo {
 async fn provider_login(
     State(state): State<AppState>,
     Path(provider_key): Path<String>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, AppError> {
     let provider = oauth_provider::get_by_key(&state.db, &provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
+    // Subdomain context is authoritative for which IdP to use. If the
+    // caller hits `<slug>.app.overslash.com/auth/login/google` we MUST
+    // resolve credentials against that org's `org_idp_configs` — using
+    // env-var Overslash-level creds would let a corp-subdomain login
+    // provision a personal-org account, bypassing the corp org's IdP.
+    // `?org=` is still accepted on the root apex (legacy dashboards pass
+    // it); when set, it must match the subdomain if we're on one.
+    let ctx = ctx
+        .map(|axum::extract::Extension(c)| c)
+        .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
+    let effective_org_slug: Option<String> = match (&ctx, query.org.as_deref()) {
+        (crate::middleware::subdomain::RequestOrgContext::Org { slug, .. }, Some(q_slug))
+            if q_slug != slug =>
+        {
+            return Err(AppError::BadRequest(
+                "org param does not match subdomain".into(),
+            ));
+        }
+        (crate::middleware::subdomain::RequestOrgContext::Org { slug, .. }, _) => {
+            Some(slug.clone())
+        }
+        (crate::middleware::subdomain::RequestOrgContext::Root, Some(q)) => Some(q.to_string()),
+        (crate::middleware::subdomain::RequestOrgContext::Root, None) => None,
+    };
+
     let (client_id, _client_secret) =
-        resolve_auth_credentials(&state, &provider_key, query.org.as_deref()).await?;
+        resolve_auth_credentials(&state, &provider_key, effective_org_slug.as_deref()).await?;
 
     let pkce = if provider.supports_pkce {
         Some(oauth::generate_pkce())
@@ -102,7 +173,59 @@ async fn provider_login(
     };
 
     let nonce = Uuid::new_v4().to_string();
-    let state_param = format!("login:{provider_key}:{nonce}");
+
+    // Sanitized org slug to persist across the IdP round-trip so the
+    // callback can resolve DB-stored credentials. Value is "none" when
+    // there's no org context (env-var social providers). Sanitization
+    // doubles as header-injection protection for the cookie path.
+    let org_slug_value = effective_org_slug
+        .as_deref()
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+        .unwrap_or("none");
+    let sanitized_next = query.next.as_deref().and_then(sanitize_next);
+
+    // Optionally append a preview-handoff id to the OAuth `state` so the
+    // callback can route the user back to a Vercel preview origin instead
+    // of `dashboard_url`. Gated by `is_preview_handoff_enabled()` AND the
+    // origin matching `PREVIEW_ORIGIN_ALLOWLIST` — when off, the
+    // `preview_origin` query param is silently ignored. The id is opaque
+    // (random UUID); the actual origin lives server-side in
+    // `oauth_preview_origins` so we don't leak the URL into IdP logs.
+    //
+    // We also stash the nonce / PKCE verifier / org slug / next path on
+    // the row. The cookie-domain gap between `*.vercel.app` and the API
+    // means the browser rejects the `oss_auth_*` cookies on previews; the
+    // callback reads these values from the row instead when `preview_id`
+    // is present in `state`.
+    let preview_id = match query.preview_origin.as_deref() {
+        Some(origin) if state.config.preview_origin_allowed(origin) => {
+            let id = Uuid::new_v4();
+            let verifier_for_row = pkce.as_ref().map(|p| p.verifier.as_str());
+            let org_slug_for_row = effective_org_slug.as_deref().filter(|s| !s.is_empty());
+            overslash_db::repos::oauth_preview_handoff::insert_preview_origin(
+                &state.db,
+                id,
+                origin,
+                &nonce,
+                verifier_for_row,
+                org_slug_for_row,
+                sanitized_next.as_deref(),
+                PREVIEW_ORIGIN_TTL_SECS,
+            )
+            .await?;
+            Some(id)
+        }
+        _ => None,
+    };
+
+    let state_param = match preview_id {
+        Some(id) => format!("login:{provider_key}:{nonce}:{id}"),
+        None => format!("login:{provider_key}:{nonce}"),
+    };
 
     let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
 
@@ -117,50 +240,63 @@ async fn provider_login(
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
-    let nonce_cookie = format!(
-        "oss_auth_nonce={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        nonce
-    );
-    let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
-    let verifier_cookie = format!(
-        "oss_auth_verifier={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        verifier_value
-    );
-    // Persist org slug across the OAuth redirect so the callback can resolve
-    // DB-stored credentials. Value is "none" when org context isn't needed
-    // (env-var social providers). Sanitize to prevent header injection.
-    let org_slug_value = query
-        .org
-        .as_deref()
-        .filter(|s| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        })
-        .unwrap_or("none");
-    let org_cookie = format!(
-        "oss_auth_org={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-        org_slug_value
-    );
-
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
-    headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
-    headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
 
-    // Persist `next` across the IdP round-trip so the callback can resume
-    // wherever the caller wanted (used by `/oauth/authorize` to bounce
-    // through login). Only accept path-only targets to keep this from
-    // turning into an open redirect.
-    if let Some(next) = query.next.as_deref().and_then(sanitize_next) {
-        let next_cookie = format!(
-            "oss_auth_next={}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600",
-            next
-        );
-        headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+    // Auth-state cookies are only meaningful on the non-preview path: when
+    // login starts on a Vercel preview, the response's effective host is
+    // `*.vercel.app` and the browser would reject any `Set-Cookie` with
+    // `Domain=.app.<apex>`. The preview branch reads its state from the
+    // `oauth_preview_origins` row instead — set above.
+    if preview_id.is_none() {
+        // The OAuth callback always lands on `public_url/auth/callback/<provider>`
+        // (typically the root apex), so when login kicks off from a corp
+        // subdomain the auth-state cookies MUST be set on the shared parent
+        // domain (`session_cookie_domain`, e.g. `.app.overslash.com`) or the
+        // browser won't send them to the callback host. Without this, login
+        // from a subdomain silently fails with "missing auth nonce cookie".
+        let nonce_cookie = auth_cookie(&state, "oss_auth_nonce", &nonce);
+        let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
+        let verifier_cookie = auth_cookie(&state, "oss_auth_verifier", verifier_value);
+        let org_cookie = auth_cookie(&state, "oss_auth_org", org_slug_value);
+
+        headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
+        headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
+        headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
+
+        // Persist `next` across the IdP round-trip so the callback can resume
+        // wherever the caller wanted (used by `/oauth/authorize` to bounce
+        // through login). Only accept path-only targets to keep this from
+        // turning into an open redirect.
+        if let Some(next) = sanitized_next.as_deref() {
+            let next_cookie = auth_cookie(&state, "oss_auth_next", next);
+            headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+        }
     }
 
     Ok((headers, Redirect::to(&auth_url)).into_response())
+}
+
+/// Build a Set-Cookie for the short-lived OAuth auth-state cookies (nonce,
+/// PKCE verifier, org slug, `next`). Scoped to `Path=/auth` so they only
+/// hitch along to auth endpoints. Domain comes from the same config knob
+/// as the session cookie — when set, both the login kickoff host and the
+/// callback host share the cookie.
+fn auth_cookie(state: &AppState, name: &str, value: &str) -> String {
+    let mut out = format!("{name}={value}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600");
+    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
+        out.push_str(&format!("; Domain={domain}"));
+    }
+    out
+}
+
+/// Matching clear for the auth-state cookies. Must emit the same `Domain`
+/// attribute, or the browser keeps a cross-subdomain copy around.
+fn clear_auth_cookie(state: &AppState, name: &str) -> String {
+    let mut out = format!("{name}=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0");
+    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
+        out.push_str(&format!("; Domain={domain}"));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -170,25 +306,85 @@ async fn provider_login(
 async fn provider_callback(
     State(state): State<AppState>,
     Path(provider_key): Path<String>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    // Parse state: "login:<provider_key>:<nonce>"
-    let state_parts: Vec<&str> = params.state.splitn(3, ':').collect();
-    if state_parts.len() != 3 || state_parts[0] != "login" {
+    // Parse state: "login:<provider_key>:<nonce>" or, for the Vercel
+    // preview-deployment handoff, "login:<provider_key>:<nonce>:<preview_id>".
+    // The 4-segment form is only honored when the feature is enabled — a
+    // non-dev deployment that somehow receives a 4-segment state must
+    // reject it (defense in depth: don't let a logged URL be replayed
+    // into a prod environment).
+    let state_parts: Vec<&str> = params.state.splitn(4, ':').collect();
+    if state_parts.len() < 3 || state_parts[0] != "login" {
         return Err(AppError::BadRequest("invalid state parameter".into()));
     }
     let state_provider = state_parts[1];
     let nonce = state_parts[2];
+    let preview_id_str = state_parts.get(3).copied();
+
+    if preview_id_str.is_some() && !state.config.is_preview_handoff_enabled() {
+        return Err(AppError::BadRequest("invalid state parameter".into()));
+    }
 
     if state_provider != provider_key {
         return Err(AppError::BadRequest("provider mismatch in state".into()));
     }
 
-    // Verify CSRF nonce
-    let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
-        .ok_or_else(|| AppError::BadRequest("missing auth nonce cookie".into()))?;
-    if cookie_nonce != nonce {
+    let preview_id = match preview_id_str {
+        Some(s) => Some(
+            Uuid::parse_str(s)
+                .map_err(|_| AppError::BadRequest("invalid state parameter".into()))?,
+        ),
+        None => None,
+    };
+
+    // Source the auth-state. On the non-preview path it lives in cookies
+    // set during `provider_login`. On the preview path the cookies don't
+    // survive the cookie-domain gap (`*.vercel.app` ↔ `api.<apex>`), so the
+    // values were stashed on the `oauth_preview_origins` row instead. We
+    // load them here before any cookie checks so the preview branch never
+    // 400s with "missing auth nonce cookie".
+    let (
+        state_nonce_expected,
+        code_verifier,
+        slug_from_state,
+        next_from_state,
+        preview_origin_for_handoff,
+    ) = if let Some(pid) = preview_id {
+        let row = overslash_db::repos::oauth_preview_handoff::get_preview_origin(&state.db, pid)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("preview origin expired or unknown".into()))?;
+        // Re-check against the live allowlist so a tightened policy
+        // takes effect even on in-flight logins minted under the old
+        // rules.
+        if !state.config.preview_origin_allowed(&row.origin) {
+            return Err(AppError::Forbidden(
+                "preview origin not in allowlist".into(),
+            ));
+        }
+        (
+            row.nonce.clone(),
+            row.pkce_verifier.clone(),
+            row.org_slug.clone(),
+            row.next_path.clone(),
+            Some(row.origin),
+        )
+    } else {
+        // CSRF anti-replay: the nonce in `state` must match the cookie
+        // we set during login. The preview branch substitutes a
+        // server-side row for this cookie because it can't be set
+        // cross-domain.
+        let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
+            .ok_or_else(|| AppError::BadRequest("missing auth nonce cookie".into()))?;
+        let verifier = extract_cookie(&headers, "oss_auth_verifier").filter(|v| v != "none");
+        let slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
+        let next = extract_cookie(&headers, "oss_auth_next").and_then(|v| sanitize_next(&v));
+        (cookie_nonce, verifier, slug, next, None)
+    };
+
+    if state_nonce_expected != nonce {
         return Err(AppError::BadRequest("nonce mismatch".into()));
     }
 
@@ -196,15 +392,22 @@ async fn provider_callback(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
-    // Recover org slug from cookie (set during provider_login)
-    let org_slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
+    // Subdomain context is authoritative — even if the stored slug says
+    // otherwise, a callback hitting `<slug>.app.overslash.com` must be
+    // treated as that org's login path.
+    let ctx = ctx
+        .map(|axum::extract::Extension(c)| c)
+        .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
+    let org_slug = match ctx {
+        crate::middleware::subdomain::RequestOrgContext::Org { slug, .. } => Some(slug),
+        crate::middleware::subdomain::RequestOrgContext::Root => slug_from_state,
+    };
 
     let (client_id, client_secret) =
         resolve_auth_credentials(&state, &provider_key, org_slug.as_deref()).await?;
 
-    // PKCE verifier (may be "none" if provider doesn't support PKCE)
-    let code_verifier = extract_cookie(&headers, "oss_auth_verifier");
-    let verifier_ref = code_verifier.as_deref().filter(|v| *v != "none");
+    // PKCE verifier (None if provider doesn't support PKCE).
+    let verifier_ref = code_verifier.as_deref();
 
     let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
 
@@ -229,8 +432,12 @@ async fn provider_callback(
     )
     .await?;
 
-    // Find or provision user + update profile
-    let (org_id, identity_id, email) = find_or_provision_user(&state, &userinfo).await?;
+    // Find or provision user + update profile. Passes the org slug context
+    // so the provisioner can tell a root-domain login (→ Overslash-backed
+    // user + personal org) apart from an org-subdomain login (→ org-only
+    // user, gated by `allowed_email_domains`).
+    let (org_id, identity_id, resolved_user_id, email) =
+        find_or_provision_user(&state, &userinfo, org_slug.as_deref()).await?;
 
     // Mint JWT
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
@@ -242,31 +449,208 @@ async fn provider_callback(
         aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
+        user_id: Some(resolved_user_id),
+        mcp_client_id: None,
     };
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
 
-    // Set session cookie + clear auth cookies
-    let session_cookie = format!(
-        "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800",
-        token
-    );
-    let clear_nonce = "oss_auth_nonce=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
-    let clear_verifier = "oss_auth_verifier=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
-    let clear_org = "oss_auth_org=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
-    let clear_next = "oss_auth_next=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0";
+    // Vercel preview-deployment handoff branch. The session cookie can't
+    // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`
+    // (no shared parent domain), so we mint a one-time code, hand it to
+    // the preview, and let the preview adopt the JWT via a host-only
+    // cookie set on the proxied response. The `preview_id` carried in
+    // `state` is the tamper-resistant binding to the preview origin we
+    // stashed server-side at login time.
+    if let Some(origin) = preview_origin_for_handoff {
+        let handoff_code = preview_handoff_code();
+        // `next_from_state` was already sanitized at login time; re-check
+        // it defensively in case anyone hand-edits the row. No fallback to
+        // `dashboard_url` — that points at the corp host, not the preview
+        // origin. Missing → handoff endpoint defaults to `/` on the
+        // preview, which is the correct landing for someone whose login
+        // had no specific intent.
+        let safe_next = next_from_state.as_deref().and_then(sanitize_next);
+        overslash_db::repos::oauth_preview_handoff::insert_handoff_code(
+            &state.db,
+            &handoff_code,
+            &token,
+            &origin,
+            safe_next.as_deref(),
+            PREVIEW_HANDOFF_CODE_TTL_SECS,
+        )
+        .await?;
+        let target = format!(
+            "{}/auth/handoff?code={}",
+            origin.trim_end_matches('/'),
+            urlencoding::encode(&handoff_code),
+        );
+        // No clear-cookie headers: the preview path never set the
+        // `oss_auth_*` cookies (browser would have rejected them anyway),
+        // so there's nothing to clear.
+        return Ok(Redirect::to(&target).into_response());
+    }
 
+    // Non-preview path: set the session cookie on the API origin and bounce
+    // to the dashboard / org subdomain as before. Always clear the auth-state
+    // cookies we set during login — same Domain attribute, otherwise the
+    // browser keeps a stale copy.
+    let clear_nonce = clear_auth_cookie(&state, "oss_auth_nonce");
+    let clear_verifier = clear_auth_cookie(&state, "oss_auth_verifier");
+    let clear_org = clear_auth_cookie(&state, "oss_auth_org");
+    let clear_next = clear_auth_cookie(&state, "oss_auth_next");
+
+    let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
+    resp_headers.insert(header::SET_COOKIE, session_cookie);
     resp_headers.append(header::SET_COOKIE, clear_nonce.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
 
-    let redirect_target = extract_cookie(&headers, "oss_auth_next")
-        .and_then(|v| sanitize_next(&v))
-        .unwrap_or_else(|| state.config.dashboard_url.clone());
+    // Non-preview path: fall back to the configured dashboard URL when the
+    // caller had no explicit `next`. (The preview branch above handles its
+    // own fallback because `dashboard_url` is the wrong host for a preview.)
+    let next_path = next_from_state.unwrap_or_else(|| state.config.dashboard_url.clone());
+
+    // When login kicks off on `<slug>.<apex>` but the OAuth callback lands
+    // at `state.config.public_url/auth/callback/<provider>` (typical: a
+    // single Google OAuth app's redirect_uri is the API apex), a path-only
+    // redirect resolves against the apex and leaves the user stranded
+    // outside the org subdomain. The `oss_auth_org` cookie was carried
+    // across the bounce on the shared `session_cookie_domain`; combine it
+    // with `app_host_suffix` to reconstruct the original origin and turn
+    // the redirect absolute.
+    let redirect_target = absolute_redirect_for_org(&state, &headers, &next_path);
     Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
+}
+
+/// If login originated on a corp subdomain, build an absolute redirect to
+/// `<scheme>://<slug>.<app-apex><path>` so the user lands back where they
+/// started. Returns `path` unchanged when there's no subdomain context.
+///
+/// Mirrors `public_url`'s port suffix when present so the e2e harness
+/// (which boots the API on a random loopback port) lands on the right
+/// listener. In prod `public_url` has no port (default 443/80) so this is
+/// a no-op.
+fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) -> String {
+    let Some(slug) = extract_cookie(headers, "oss_auth_org").filter(|s| s != "none") else {
+        return path.to_string();
+    };
+    let Some(apex) = state.config.app_host_suffix.as_deref() else {
+        return path.to_string();
+    };
+    let scheme = if state.config.public_url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    let port_suffix = state
+        .config
+        .public_url
+        .rsplit_once('/')
+        .map(|(_, host)| host)
+        .unwrap_or(state.config.public_url.as_str())
+        .rsplit_once(':')
+        .map(|(_, port)| format!(":{port}"))
+        .unwrap_or_default();
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("{scheme}://{slug}.{apex}{port_suffix}{path}")
+}
+
+// ---------------------------------------------------------------------------
+// Vercel preview-deployment OAuth handoff
+// ---------------------------------------------------------------------------
+
+/// Random 32-byte handoff token, hex-encoded. Used as the one-time code
+/// the preview presents at `/auth/handoff?code=` to swap for a session.
+fn preview_handoff_code() -> String {
+    let buf: [u8; 32] = rand::random();
+    hex::encode(buf)
+}
+
+/// `GET /auth/handoff?code=<token>` — the redemption side of the Vercel
+/// preview handoff. Hits the API via the preview's Vercel proxy: Vercel
+/// forwards `X-Forwarded-Host: <preview>.vercel.app` and the API's response
+/// (with a `Domain`-less `Set-Cookie`) is pasted back through, scoping the
+/// cookie to the preview origin the browser sees.
+///
+/// 404 unless the feature is on. Otherwise: peek at the row, run host +
+/// allowlist validations, *then* atomically consume — only after we know
+/// the request is legitimate. Reverse order would let a probe (crawler,
+/// retry, misconfigured proxy) burn a code with the wrong host header
+/// and force a real user to restart their OAuth round-trip.
+async fn handoff_consume(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HandoffQuery>,
+) -> Result<Response, AppError> {
+    if !state.config.is_preview_handoff_enabled() {
+        return Err(AppError::NotFound("not found".into()));
+    }
+
+    // Peek first so failed validations leave the row consumable by a
+    // retry that gets the host right.
+    let row = overslash_db::repos::oauth_preview_handoff::peek_handoff_code(&state.db, &q.code)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
+
+    // Bind redemption to the original preview origin so a leaked code
+    // can't be redeemed against a different host.
+    let actual_host = crate::middleware::subdomain::effective_host(&headers).unwrap_or_default();
+    let origin_url = url::Url::parse(&row.origin)
+        .map_err(|e| AppError::Internal(format!("stored origin not parseable: {e}")))?;
+    let origin_host = origin_url
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if actual_host != origin_host {
+        return Err(AppError::BadRequest("handoff origin mismatch".into()));
+    }
+
+    // Live allowlist re-check — if `PREVIEW_ORIGIN_ALLOWLIST` got
+    // tightened between mint and redeem, honor the new policy.
+    if !state.config.preview_origin_allowed(&row.origin) {
+        return Err(AppError::Forbidden(
+            "preview origin not in allowlist".into(),
+        ));
+    }
+
+    // Now consume. Race-with-self window: another concurrent request
+    // that also passed validation could win the UPDATE, in which case
+    // this caller sees `None` and gets a 400 — same outcome as a
+    // replay, which is correct.
+    let consumed =
+        overslash_db::repos::oauth_preview_handoff::consume_handoff_code(&state.db, &q.code)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
+
+    // Host-only session cookie: no `Domain` so the browser scopes it to
+    // the preview origin. `.vercel.app` is shared across tenants — sharing
+    // a cookie there would be a cross-tenant data leak.
+    let cookie = format!(
+        "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Secure; Max-Age=604800",
+        consumed.jwt
+    );
+
+    let next = consumed
+        .next_path
+        .as_deref()
+        .and_then(sanitize_next)
+        .unwrap_or_else(|| "/".to_string());
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert(
+        header::SET_COOKIE,
+        cookie
+            .parse()
+            .map_err(|e| AppError::Internal(format!("build session cookie: {e}")))?,
+    );
+    Ok((resp_headers, Redirect::to(&next)).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -275,13 +659,15 @@ async fn provider_callback(
 
 async fn google_login_compat(
     state: State<AppState>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     query: Query<LoginQuery>,
 ) -> Result<Response, AppError> {
-    provider_login(state, Path("google".to_string()), query).await
+    provider_login(state, Path("google".to_string()), ctx, query).await
 }
 
 async fn google_callback_compat(
     state: State<AppState>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(mut params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -293,7 +679,14 @@ async fn google_callback_compat(
             params.state = format!("login:google:{}", parts[1]);
         }
     }
-    provider_callback(state, Path("google".to_string()), Query(params), headers).await
+    provider_callback(
+        state,
+        Path("google".to_string()),
+        ctx,
+        Query(params),
+        headers,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -302,11 +695,91 @@ async fn google_callback_compat(
 
 async fn list_auth_providers(
     State(state): State<AppState>,
+    ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(query): Query<ProvidersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Older test harnesses mount the router without the subdomain
+    // middleware; treat the missing extension as Root so those paths still
+    // list providers correctly.
+    let ctx = ctx
+        .map(|axum::extract::Extension(c)| c)
+        .unwrap_or(crate::middleware::subdomain::RequestOrgContext::Root);
+    // Trust-domain rule (docs/design/multi_org_auth.md §Flow 2):
+    //   - On a corp-org subdomain, list ONLY that org's IdPs — Overslash-
+    //     level IdPs cannot grant membership to a corp org, so offering them
+    //     would be misleading.
+    //   - On the root apex, list ONLY env-configured Overslash-level IdPs.
+    //   - Back-compat: if the caller passed `?org=<slug>` on the root apex
+    //     (pre-multi-org dashboards still do), honor it and list that org's
+    //     IdPs — equivalent to hitting the subdomain.
     let mut providers = Vec::new();
 
-    // Always include env-var-configured social providers
+    let resolved_org_id = match &ctx {
+        crate::middleware::subdomain::RequestOrgContext::Org { org_id, .. } => Some(*org_id),
+        crate::middleware::subdomain::RequestOrgContext::Root => {
+            if let Some(slug) = &query.org {
+                org::get_by_slug(&state.db, slug).await?.map(|o| o.id)
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(org_id) = resolved_org_id {
+        let bootstrap_scope = overslash_db::OrgScope::new(org_id, state.db.clone());
+        let configs = bootstrap_scope.list_enabled_org_idp_configs().await?;
+        let dedicated_keys: std::collections::HashSet<String> =
+            configs.iter().map(|c| c.provider_key.clone()).collect();
+        for config in configs {
+            let display_name = oauth_provider::get_by_key(&state.db, &config.provider_key)
+                .await?
+                .map(|p| p.display_name)
+                .unwrap_or_else(|| config.provider_key.clone());
+            providers.push(json!({
+                "key": config.provider_key,
+                "display_name": display_name,
+                "source": "db",
+                "is_default": config.is_default,
+            }));
+        }
+
+        // Overslash-managed sign-in (migration 066): when the org has opted
+        // in via `allow_overslash_managed_signin`, surface env-var providers
+        // alongside any dedicated configs. Admission is still gated by
+        // `org_invites` in `provision_org_subdomain`, so listing them here
+        // doesn't weaken D12 — without an invite, the IdP authenticates but
+        // membership creation fails with `not_invited`. Dedup against
+        // dedicated configs since those win at credential resolution.
+        let managed_on =
+            overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, org_id)
+                .await?
+                .unwrap_or(false);
+        if managed_on {
+            for (key, display) in [("google", "Google"), ("github", "GitHub")] {
+                if dedicated_keys.contains(key) {
+                    continue;
+                }
+                if state.config.env_auth_credentials(key).is_some() {
+                    providers.push(json!({
+                        "key": key,
+                        "display_name": display,
+                        "source": "env",
+                        "managed": true,
+                    }));
+                }
+            }
+        }
+
+        // `scope = "org"` tells the dashboard to render the corp-org empty
+        // state ("contact the org creator") when the org hasn't configured
+        // an IdP yet. Root-level empty states read differently.
+        return Ok(axum::Json(json!({
+            "providers": providers,
+            "scope": "org",
+        })));
+    }
+
+    // Root apex — Overslash-level providers only.
     if state.config.google_auth_client_id.is_some()
         && state.config.google_auth_client_secret.is_some()
     {
@@ -325,34 +798,7 @@ async fn list_auth_providers(
             "source": "env",
         }));
     }
-
-    // If org slug provided, also include DB-configured IdPs for that org
-    if let Some(slug) = &query.org {
-        if let Some(org_row) = org::get_by_slug(&state.db, slug).await? {
-            // Login bootstrap: the user has not authenticated yet, but the
-            // org has been resolved from a public slug. Mint an OrgScope to
-            // use the scope-bound enabled-IdP listing helper.
-            let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
-            let configs = bootstrap_scope.list_enabled_org_idp_configs().await?;
-            for config in configs {
-                // Skip if already added from env vars
-                if providers.iter().any(|p| p["key"] == config.provider_key) {
-                    continue;
-                }
-                let display_name = oauth_provider::get_by_key(&state.db, &config.provider_key)
-                    .await?
-                    .map(|p| p.display_name)
-                    .unwrap_or_else(|| config.provider_key.clone());
-                providers.push(json!({
-                    "key": config.provider_key,
-                    "display_name": display_name,
-                    "source": "db",
-                }));
-            }
-        }
-    }
-
-    // Dev login indicator
+    // Dev login indicator — only surfaces on root, not on corp subdomains.
     if state.config.dev_auth_enabled {
         providers.push(json!({
             "key": "dev",
@@ -361,7 +807,9 @@ async fn list_auth_providers(
         }));
     }
 
-    Ok(axum::Json(json!({ "providers": providers })))
+    Ok(axum::Json(
+        json!({ "providers": providers, "scope": "root" }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -402,18 +850,17 @@ async fn me(
 
 async fn me_identity(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: crate::extractors::SessionAuth,
 ) -> Result<impl IntoResponse, AppError> {
-    let token = extract_cookie(&headers, "oss_session")
-        .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
-
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let claims = jwt::verify(&jwt_secret, &token, jwt::AUD_SESSION)
-        .map_err(|_| AppError::Unauthorized("invalid or expired session".into()))?;
-
-    let scope = OrgScope::new(claims.org, state.db.clone());
+    // Was: manual cookie + jwt::verify without the RequestOrgContext cross-
+    // check, so a session scoped to the caller's personal org still
+    // answered `/auth/me/identity` when the request came in on a corp
+    // subdomain — leaking personal-org profile data across trust domains.
+    // `SessionAuth` enforces `jwt.org == subdomain.org` via
+    // `check_subdomain_matches_jwt`.
+    let scope = OrgScope::new(session.org_id, state.db.clone());
     let ident = scope
-        .get_identity(claims.sub)
+        .get_identity(session.identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
@@ -425,18 +872,482 @@ async fn me_identity(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Multi-org surface: memberships + personal-org pointer live on the
+    // `users` row. Legacy tokens (no `user_id` claim) fall back to the
+    // identity's FK. Fetch the user once and reuse for instance-admin too.
+    let user_id = session.user_id.or(ident.user_id);
+    let (memberships, personal_org_id, is_instance_admin) = if let Some(uid) = user_id {
+        let user = user_repo::get_by_id(&state.db, uid).await?;
+        (
+            list_membership_summaries(&state, uid).await?,
+            user.as_ref().and_then(|u| u.personal_org_id),
+            user.as_ref().map(|u| u.is_instance_admin).unwrap_or(false),
+        )
+    } else {
+        (Vec::new(), None, false)
+    };
+
+    let email = ident.email.clone().unwrap_or_default();
+
     Ok(axum::Json(json!({
         "identity_id": ident.id,
         "org_id": ident.org_id,
         "org_name": org_row.as_ref().map(|o| o.name.clone()),
         "org_slug": org_row.as_ref().map(|o| o.slug.clone()),
-        "email": claims.email,
+        "email": email,
         "name": ident.name,
         "kind": ident.kind,
         "external_id": ident.external_id,
         "is_org_admin": is_org_admin,
+        "is_instance_admin": is_instance_admin,
         "picture": picture,
+        "user_id": user_id,
+        "personal_org_id": personal_org_id,
+        "memberships": memberships,
     })))
+}
+
+/// Shape returned by `/auth/me/identity.memberships[]` and `/v1/account/memberships`.
+#[derive(Debug, serde::Serialize)]
+struct MembershipSummary {
+    org_id: Uuid,
+    slug: String,
+    name: String,
+    role: String,
+    is_personal: bool,
+}
+
+async fn list_membership_summaries(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Vec<MembershipSummary>, AppError> {
+    let memberships = membership::list_for_user(&state.db, user_id).await?;
+    let mut out = Vec::with_capacity(memberships.len());
+    for m in memberships {
+        let Some(o) = org::get_by_id(&state.db, m.org_id).await? else {
+            continue; // Org was deleted; stale membership — CASCADE will sweep it.
+        };
+        out.push(MembershipSummary {
+            org_id: o.id,
+            slug: o.slug,
+            name: o.name,
+            role: m.role,
+            is_personal: o.is_personal,
+        });
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Multi-org account routes
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SwitchOrgRequest {
+    org_id: Uuid,
+}
+
+/// POST /auth/switch-org — mint a new session JWT scoped to `org_id` after
+/// verifying the caller has a membership there. Returns `{ redirect_to }`
+/// so the dashboard can hard-reload onto the target subdomain (or the root
+/// apex for personal orgs). Uses `SessionAuth` so the cross-subdomain guard
+/// runs — switch-org must be called from the caller's *current* subdomain
+/// (or root), not from the target.
+async fn switch_org(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+    axum::Json(req): axum::Json<SwitchOrgRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let jwt_secret = signing_key_bytes(&state.config.signing_key);
+
+    let current_scope = OrgScope::new(session.org_id, state.db.clone());
+    let current_ident = current_scope
+        .get_identity(session.identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("current identity not found".into()))?;
+    let user_id = match session.user_id {
+        Some(uid) => uid,
+        None => current_ident.user_id.ok_or_else(|| {
+            AppError::Unauthorized("session has no resolvable user; sign in again".into())
+        })?,
+    };
+
+    // Membership guard.
+    let target_membership = membership::find(&state.db, user_id, req.org_id)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("not a member of that org".into()))?;
+    let target_org = org::get_by_id(&state.db, req.org_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+
+    // Resolve the target identity — there is at most one user-kind identity
+    // per (org_id, user_id) (enforced by the partial UNIQUE in migration 040).
+    let target_identity =
+        overslash_db::repos::identity::find_by_org_and_user(&state.db, req.org_id, user_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "membership exists but no user identity in target org (invariant violation)"
+                        .into(),
+                )
+            })?;
+    let target_identity_id = target_identity.id;
+
+    // Prefer the target identity's email so the new JWT reflects how the
+    // target org sees this human; fall back to the current identity's email
+    // for users who had no email on the target side.
+    let claim_email = target_identity
+        .email
+        .clone()
+        .or(current_ident.email.clone())
+        .unwrap_or_default();
+
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let new_claims = jwt::Claims {
+        sub: target_identity_id,
+        org: req.org_id,
+        email: claim_email,
+        aud: jwt::AUD_SESSION.into(),
+        iat: now,
+        exp: now + 7 * 24 * 3600,
+        user_id: Some(user_id),
+        mcp_client_id: None,
+    };
+    let new_token = jwt::mint(&jwt_secret, &new_claims)
+        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+
+    let redirect_to = build_org_redirect(&state, &target_org);
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert(header::SET_COOKIE, session_cookie(&state, &new_token)?);
+    Ok((
+        resp_headers,
+        axum::Json(json!({
+            "org_id": target_org.id,
+            "slug": target_org.slug,
+            "is_personal": target_org.is_personal,
+            "role": target_membership.role,
+            "redirect_to": redirect_to,
+        })),
+    ))
+}
+
+/// GET /v1/account/memberships — list the caller's memberships, same shape
+/// as `/auth/me/identity.memberships[]` but reachable as a discrete endpoint
+/// so the dashboard can refresh the switcher without re-loading identity.
+async fn list_account_memberships(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+) -> Result<impl IntoResponse, AppError> {
+    let user_id = resolve_session_user_id(&state, &session).await?;
+    let summaries = list_membership_summaries(&state, user_id).await?;
+    Ok(axum::Json(json!({ "memberships": summaries })))
+}
+
+/// DELETE /v1/account/memberships/{org_id} — drop the caller's own
+/// membership. Refuses to drop a personal-org membership (that'd orphan
+/// the account) or the last admin of a non-personal org.
+///
+/// The "last admin" check and the delete run in a single transaction. A
+/// naive two-step lock (caller's row, then all admin rows) can deadlock
+/// when two admins drop concurrently — each acquires their own row lock
+/// first, then blocks waiting for the other's. We avoid that by issuing
+/// a single `SELECT ... FOR UPDATE ORDER BY user_id`, which locks every
+/// admin row of the org in a deterministic order. Both concurrent txs
+/// contend for the same ordered lock set; the second waits for the
+/// first to commit and then reads the post-delete world.
+async fn drop_account_membership(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+    ip: crate::extractors::ClientIp,
+    Path(org_id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let user_id = resolve_session_user_id(&state, &session).await?;
+
+    let org_row = org::get_by_id(&state.db, org_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+
+    if org_row.is_personal {
+        return Err(AppError::BadRequest(
+            "cannot drop membership of your own personal org".into(),
+        ));
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    // Lock every admin row of the org in user_id order. This includes the
+    // caller's row if (and only if) they are an admin — which is the only
+    // case where we care about the count guard. Deterministic order across
+    // concurrent txs rules out deadlock; both serialize on the same lock
+    // set instead of each grabbing a different row first.
+    #[allow(clippy::disallowed_methods)]
+    let admin_user_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM user_org_memberships
+         WHERE org_id = $1 AND role = 'admin'
+         ORDER BY user_id FOR UPDATE",
+    )
+    .bind(org_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let caller_is_admin = admin_user_ids.contains(&user_id);
+
+    // Separately lock the caller's row so a NOT-FOUND ("already left")
+    // check and the subsequent DELETE can proceed even when the caller
+    // is a regular member (not in admin_user_ids).
+    #[allow(clippy::disallowed_methods)]
+    let existing_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM user_org_memberships
+         WHERE user_id = $1 AND org_id = $2 FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    existing_role.ok_or_else(|| AppError::NotFound("no such membership".into()))?;
+
+    if caller_is_admin {
+        let admin_count = admin_user_ids.len();
+        if admin_count <= 1 {
+            return Err(AppError::BadRequest(
+                "cannot drop the last admin of a non-personal org".into(),
+            ));
+        }
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    sqlx::query("DELETE FROM user_org_memberships WHERE user_id = $1 AND org_id = $2")
+        .bind(user_id)
+        .bind(org_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    // Audit the departure after the commit — the membership drop is the
+    // authoritative side-effect, and a failing audit insert shouldn't
+    // resurrect it. `was_original_creator` flags founder departures (a
+    // notable state change worth pulling out of the broader membership
+    // event stream).
+    let was_original_creator = org_row.creator_user_id == Some(user_id);
+    let scope = OrgScope::new(org_id, state.db.clone());
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(session.identity_id),
+            action: "membership.removed",
+            resource_type: Some("membership"),
+            resource_id: Some(org_id),
+            detail: json!({
+                "user_id": user_id,
+                "was_original_creator": was_original_creator,
+                "was_admin": caller_is_admin,
+            }),
+            description: Some(if was_original_creator {
+                "Original creator left the org"
+            } else {
+                "Member left the org"
+            }),
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(axum::Json(json!({ "status": "dropped", "org_id": org_id })))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct EmailPreferences {
+    /// `true` = subscribed to non-transactional welcome / product email
+    /// (default for new users); `false` = unsubscribed via `/account` toggle
+    /// or one-click link. Billing receipts and other transactional email
+    /// ignore this flag by policy. Optional on PUT so the client can update
+    /// `webhook_digest_emails` in isolation; always present on GET.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    welcome_emails: Option<bool>,
+    /// `true` = subscribed to the daily webhook DLQ digest (default);
+    /// `false` = opted out via one-click link or this toggle. Independent
+    /// from `welcome_emails` — silencing one does not silence the other.
+    /// Optional on PUT for the same reason as `welcome_emails`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    webhook_digest_emails: Option<bool>,
+}
+
+fn prefs_from_user(user: &overslash_db::repos::user::UserRow) -> EmailPreferences {
+    EmailPreferences {
+        welcome_emails: Some(user.welcome_emails_unsubscribed_at.is_none()),
+        webhook_digest_emails: Some(user.webhook_digest_unsubscribed_at.is_none()),
+    }
+}
+
+/// GET /v1/account/email-preferences — return the caller's non-transactional
+/// email preferences. Per-user (not per-identity), so the same value is
+/// returned regardless of which org subdomain the session is currently in.
+async fn get_email_preferences(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+) -> Result<axum::Json<EmailPreferences>, AppError> {
+    let user_id = resolve_session_user_id(&state, &session).await?;
+    let user = overslash_db::repos::user::get_by_id(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+    Ok(axum::Json(prefs_from_user(&user)))
+}
+
+/// PUT /v1/account/email-preferences — update the caller's non-transactional
+/// email preferences. Per-category and idempotent: only fields present in
+/// the body are applied; unchanged fields neither hit the DB nor write an
+/// audit row, so UIs that re-submit on every toggle flip-flop don't spam
+/// the audit log with non-events.
+async fn put_email_preferences(
+    State(state): State<AppState>,
+    session: crate::extractors::SessionAuth,
+    axum::Json(prefs): axum::Json<EmailPreferences>,
+) -> Result<axum::Json<EmailPreferences>, AppError> {
+    let user_id = resolve_session_user_id(&state, &session).await?;
+    let mut current = overslash_db::repos::user::get_by_id(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+
+    let scope = OrgScope::new(session.org_id, state.db.clone());
+
+    if let Some(want) = prefs.welcome_emails {
+        let was = current.welcome_emails_unsubscribed_at.is_none();
+        if was != want {
+            let unsubscribed_at = (!want).then(time::OffsetDateTime::now_utc);
+            current = overslash_db::repos::user::set_welcome_unsubscribed(
+                &state.db,
+                user_id,
+                unsubscribed_at,
+            )
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+            let action = if want {
+                "email.resubscribed"
+            } else {
+                "email.unsubscribed"
+            };
+            if let Err(e) = scope
+                .log_audit(overslash_db::repos::audit::AuditEntry {
+                    org_id: session.org_id,
+                    identity_id: Some(session.identity_id),
+                    action,
+                    resource_type: Some("user"),
+                    resource_id: Some(user_id),
+                    detail: json!({ "purpose": "welcome", "via": "account_toggle" }),
+                    description: Some(if want {
+                        "Welcome / product emails re-enabled from /account"
+                    } else {
+                        "Welcome / product emails unsubscribed from /account"
+                    }),
+                    ip_address: None,
+                })
+                .await
+            {
+                tracing::warn!(%user_id, error = %e, "email-preferences audit log failed (welcome)");
+            }
+        }
+    }
+
+    if let Some(want) = prefs.webhook_digest_emails {
+        let was = current.webhook_digest_unsubscribed_at.is_none();
+        if was != want {
+            let unsubscribed_at = (!want).then(time::OffsetDateTime::now_utc);
+            current = overslash_db::repos::user::set_webhook_digest_unsubscribed(
+                &state.db,
+                user_id,
+                unsubscribed_at,
+            )
+            .await?
+            .ok_or_else(|| AppError::NotFound("user not found".into()))?;
+            let action = if want {
+                "email.resubscribed"
+            } else {
+                "email.unsubscribed"
+            };
+            if let Err(e) = scope
+                .log_audit(overslash_db::repos::audit::AuditEntry {
+                    org_id: session.org_id,
+                    identity_id: Some(session.identity_id),
+                    action,
+                    resource_type: Some("user"),
+                    resource_id: Some(user_id),
+                    detail: json!({ "purpose": "webhook_digest", "via": "account_toggle" }),
+                    description: Some(if want {
+                        "Webhook DLQ digest re-enabled from /account"
+                    } else {
+                        "Webhook DLQ digest unsubscribed from /account"
+                    }),
+                    ip_address: None,
+                })
+                .await
+            {
+                tracing::warn!(%user_id, error = %e, "email-preferences audit log failed (webhook_digest)");
+            }
+        }
+    }
+
+    Ok(axum::Json(prefs_from_user(&current)))
+}
+
+/// Resolve the human behind a `SessionAuth`. Prefers the JWT's `user_id`
+/// claim (hot path); falls back to the identity's FK for legacy tokens.
+async fn resolve_session_user_id(
+    state: &AppState,
+    session: &crate::extractors::SessionAuth,
+) -> Result<Uuid, AppError> {
+    if let Some(uid) = session.user_id {
+        return Ok(uid);
+    }
+    let scope = OrgScope::new(session.org_id, state.db.clone());
+    let ident = scope
+        .get_identity(session.identity_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    ident.user_id.ok_or_else(|| {
+        AppError::Unauthorized("session has no resolvable user; sign in again".into())
+    })
+}
+
+/// Build the absolute URL the dashboard should hard-reload to after a
+/// successful switch. Personal orgs live at the apex; corp orgs live at
+/// `<slug>.<apex>`. When no apex is configured (self-hosted single-host),
+/// fall back to `dashboard_url` so the caller stays on the current origin.
+pub(crate) fn build_org_redirect(
+    state: &AppState,
+    org: &overslash_db::repos::org::OrgRow,
+) -> String {
+    let scheme = if state.config.public_url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    if let Some(apex) = state.config.app_host_suffix.as_deref() {
+        if org.is_personal {
+            format!("{scheme}://{apex}/")
+        } else {
+            format!("{scheme}://{}.{apex}/", org.slug)
+        }
+    } else {
+        // No subdomain deployment — keep the caller on the configured
+        // dashboard URL, same as logout/redirect elsewhere.
+        state.config.dashboard_url_for("/")
+    }
+}
+
+/// Construct the `Set-Cookie` value for the session token, honoring the
+/// configured cookie Domain for cross-subdomain sessions.
+pub(crate) fn session_cookie(
+    state: &AppState,
+    token: &str,
+) -> Result<header::HeaderValue, AppError> {
+    let mut value = format!("oss_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800");
+    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
+        value.push_str(&format!("; Domain={domain}"));
+    }
+    value
+        .parse()
+        .map_err(|e| AppError::Internal(format!("build session cookie: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +1357,48 @@ async fn me_identity(
 #[derive(Deserialize, Default)]
 struct DevTokenQuery {
     next: Option<String>,
+    /// `admin` (default), `member`, or `readonly`. Each maps to a deterministic
+    /// dev identity inside Dev Org so e2e fixtures can sign in as different
+    /// roles. Unknown values fall back to `admin` for forward compatibility.
+    profile: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum DevProfile {
+    Admin,
+    Member,
+    Readonly,
+}
+
+impl DevProfile {
+    fn parse(s: Option<&str>) -> Self {
+        match s.unwrap_or("admin") {
+            "member" => Self::Member,
+            "readonly" => Self::Readonly,
+            _ => Self::Admin,
+        }
+    }
+    fn email(self) -> &'static str {
+        match self {
+            Self::Admin => "dev@overslash.local",
+            Self::Member => "member@overslash.local",
+            Self::Readonly => "readonly@overslash.local",
+        }
+    }
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Admin => "Dev User",
+            Self::Member => "Dev Member",
+            Self::Readonly => "Dev Readonly",
+        }
+    }
+    fn external_id(self) -> &'static str {
+        match self {
+            Self::Admin => "dev-local",
+            Self::Member => "dev-local-member",
+            Self::Readonly => "dev-local-readonly",
+        }
+    }
 }
 
 async fn dev_token(
@@ -456,58 +1409,129 @@ async fn dev_token(
         return Err(AppError::NotFound("not found".into()));
     }
 
-    let dev_email = "dev@overslash.local";
+    let profile = DevProfile::parse(query.profile.as_deref());
+    let admin_email = DevProfile::Admin.email();
     let system = SystemScope::new_internal(state.db.clone());
-    let (org_id, identity_id) =
-        if let Some(existing) = system.find_user_identity_by_email(dev_email).await? {
-            // Re-run bootstrap so the dev user is always an org admin, even if it
-            // pre-existed the bootstrap logic or was created before joining Admins.
-            // bootstrap_org is idempotent.
-            overslash_db::repos::org_bootstrap::bootstrap_org(
+
+    // Step 1: ensure Dev Org exists. Look up the admin identity to find the
+    // org or create one. We always run org_bootstrap (idempotent) so
+    // Everyone/Admins groups + the overslash service instance exist.
+    let admin_org_id = match system.find_user_identity_by_email(admin_email).await? {
+        Some(existing) => existing.org_id,
+        None => match org::create(&state.db, "Dev Org", "dev-org", "standard").await {
+            Ok(new_org) => new_org.id,
+            Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
+                org::get_by_slug(&state.db, "dev-org")
+                    .await?
+                    .ok_or_else(|| AppError::Internal("dev race: dev-org missing".into()))?
+                    .id
+            }
+            Err(e) => return Err(e.into()),
+        },
+    };
+    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, admin_org_id, None).await?;
+    // Match the public `POST /v1/orgs` corp-org default — dev orgs ship
+    // with the Overslash-managed sign-in flag on so e2e flows and dashboard
+    // screenshots exercise the same shape as production cloud orgs.
+    let _ =
+        overslash_db::repos::org::set_allow_overslash_managed_signin(&state.db, admin_org_id, true)
+            .await;
+
+    // Step 2: resolve (or lazily create) the requested profile's identity
+    // inside Dev Org. Every profile gets the same provisioning the
+    // production OIDC callback applies — `users` row, `user_id` on the
+    // identity, Everyone + Myself groups, membership row — so `/account`,
+    // the org switcher, group ceilings, and is_admin all behave. Admin
+    // additionally joins the Admins group via `bootstrap_org(.., Some(id))`.
+    let profile_email = profile.email();
+    let identity_id =
+        if let Some(existing) = system.find_user_identity_by_email(profile_email).await? {
+            // Re-assert admin group membership on every admin login. Without
+            // this, an admin removed from the Admins group manually (or by a
+            // test that toggled it off) silently loses admin powers on the
+            // next sign-in. bootstrap_org is idempotent, so this is cheap.
+            if matches!(profile, DevProfile::Admin) {
+                overslash_db::repos::org_bootstrap::bootstrap_org(
+                    &state.db,
+                    admin_org_id,
+                    Some(existing.id),
+                )
+                .await?;
+            }
+            existing.id
+        } else {
+            let scope = OrgScope::new(admin_org_id, state.db.clone());
+            let new_identity = scope
+                .create_identity_with_email(
+                    profile.display_name(),
+                    "user",
+                    Some(profile.external_id()),
+                    Some(profile_email),
+                    json!({"dev": true, "profile": match profile {
+                        DevProfile::Admin => "admin",
+                        DevProfile::Member => "member",
+                        DevProfile::Readonly => "readonly",
+                    }}),
+                )
+                .await?;
+
+            let user = user_repo::create_org_only(
                 &state.db,
-                existing.org_id,
-                Some(existing.id),
+                Some(profile_email),
+                Some(profile.display_name()),
             )
             .await?;
-            (existing.org_id, existing.id)
-        } else {
-            match org::create(&state.db, "Dev Org", "dev-org").await {
-                Ok(new_org) => {
-                    let new_scope = OrgScope::new(new_org.id, state.db.clone());
-                    let new_identity = new_scope
-                        .create_identity_with_email(
-                            "Dev User",
-                            "user",
-                            Some("dev-local"),
-                            Some(dev_email),
-                            json!({"dev": true}),
-                        )
-                        .await?;
-                    // Bootstrap system assets and add dev user as admin
-                    overslash_db::repos::org_bootstrap::bootstrap_org(
-                        &state.db,
-                        new_org.id,
-                        Some(new_identity.id),
-                    )
-                    .await?;
-                    (new_org.id, new_identity.id)
-                }
-                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                    let existing = system
-                        .find_user_identity_by_email(dev_email)
-                        .await?
-                        .ok_or_else(|| AppError::Internal("dev race: identity missing".into()))?;
-                    overslash_db::repos::org_bootstrap::bootstrap_org(
-                        &state.db,
-                        existing.org_id,
-                        Some(existing.id),
-                    )
-                    .await?;
-                    (existing.org_id, existing.id)
-                }
+            overslash_db::repos::identity::set_user_id(
+                &state.db,
+                admin_org_id,
+                new_identity.id,
+                Some(user.id),
+            )
+            .await?;
+
+            let role = if matches!(profile, DevProfile::Admin) {
+                // Admins join the Admins group AND get an admin membership row,
+                // matching what POST /v1/orgs and the org-creator IdP path do.
+                overslash_db::repos::org_bootstrap::bootstrap_org(
+                    &state.db,
+                    admin_org_id,
+                    Some(new_identity.id),
+                )
+                .await?;
+                membership::ROLE_ADMIN
+            } else {
+                overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+                    &state.db,
+                    admin_org_id,
+                    new_identity.id,
+                )
+                .await?;
+                membership::ROLE_MEMBER
+            };
+
+            match membership::create(&state.db, user.id, admin_org_id, role).await {
+                Ok(_) => {}
+                Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
                 Err(e) => return Err(e.into()),
             }
+
+            new_identity.id
         };
+    let org_id = admin_org_id;
+    let dev_email = profile_email;
+
+    // Dev login was single-org pre-multi-org. Post-040 we still back every
+    // `kind='user'` identity with a `users` row; resolve it here so the dev
+    // session participates in the multi-org surface (`/account`, switcher,
+    // `POST /v1/orgs` bootstrap admin).
+    let dev_user_id = overslash_db::repos::identity::get_by_id(&state.db, org_id, identity_id)
+        .await?
+        .and_then(|row| row.user_id);
+    if dev_user_id.is_none() {
+        tracing::warn!(
+            "dev identity {identity_id} has no user_id; /account and switch-org will be limited"
+        );
+    }
 
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
@@ -518,17 +1542,16 @@ async fn dev_token(
         aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + 7 * 24 * 3600,
+        user_id: dev_user_id,
+        mcp_client_id: None,
     };
     let token = jwt::mint(&jwt_secret, &claims)
         .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
 
-    let session_cookie = format!(
-        "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800",
-        token
-    );
+    let session_cookie = session_cookie(&state, &token)?;
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, session_cookie.parse().unwrap());
+    headers.insert(header::SET_COOKIE, session_cookie);
 
     // When `?next=` is set (e.g. by /oauth/authorize bouncing through dev
     // login), redirect instead of returning JSON so the OAuth flow resumes.
@@ -553,22 +1576,41 @@ async fn dev_token(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve auth credentials for a provider. Precedence:
-/// 1. Environment variables (e.g. GOOGLE_AUTH_CLIENT_ID)
-/// 2. DB-stored org_idp_config (requires org context via slug). When the
-///    config has NULL `encrypted_client_*` fields, it defers to the org's
-///    OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
+/// Resolve auth credentials for a provider. Trust-domain rule
+/// (DECISIONS.md D12, docs/design/multi_org_auth.md): when an org is in
+/// scope (corp subdomain or legacy `?org=<slug>` on the apex), only the
+/// org's own `org_idp_configs` row may grant admission — Overslash-managed
+/// env-var creds are root-apex-only. When no org is in scope, env vars are
+/// the only path (root sign-up / personal-org creation).
+///
+/// Exception (migration 066): when `orgs.allow_overslash_managed_signin`
+/// is true AND the org has no dedicated `org_idp_configs` row for the
+/// provider, fall through to the server's env-var creds. A dedicated
+/// config always wins — it's an explicit admin setup. Admission is
+/// gated separately in `provision_org_subdomain` via `org_invites`, so
+/// the IdP's email claim alone cannot admit a stranger.
+///
+/// When the IdP config has NULL `encrypted_client_*` fields, it defers to
+/// the org's OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
 async fn resolve_auth_credentials(
     state: &AppState,
     provider_key: &str,
     org_slug: Option<&str>,
 ) -> Result<(String, String), AppError> {
-    // 1. Env vars take precedence
-    if let Some(creds) = state.config.env_auth_credentials(provider_key) {
-        return Ok(creds);
+    // No org in scope → env-only path. This is the apex (root) login surface
+    // for personal orgs / org-creator bootstrap.
+    if org_slug.is_none() {
+        return state
+            .config
+            .env_auth_credentials(provider_key)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "provider {provider_key} is not configured at the root level"
+                ))
+            });
     }
 
-    // 2. DB config — need org context
+    // Org in scope → DB-config-only. Strict isolation.
     if let Some(slug) = org_slug {
         let org_row = org::get_by_slug(&state.db, slug)
             .await?
@@ -576,14 +1618,27 @@ async fn resolve_auth_credentials(
 
         // Login bootstrap: org resolved from a public slug, no scope yet.
         let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
-        let config = bootstrap_scope
+        let config_opt = bootstrap_scope
             .get_org_idp_config_by_provider(provider_key)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "provider {provider_key} not configured for org {slug}"
-                ))
-            })?;
+            .await?;
+
+        // Opt-in env-var path. Only used when the org has no dedicated IdP
+        // row for this provider — a dedicated config is an explicit admin
+        // choice and must win over the operator-shared env creds. When the
+        // flag is on but env creds aren't configured server-side, fall
+        // through to the dedicated-IdP path (returns the same helpful 404
+        // as before if absent).
+        if org_row.allow_overslash_managed_signin && config_opt.is_none() {
+            if let Some(creds) = state.config.env_auth_credentials(provider_key) {
+                return Ok(creds);
+            }
+        }
+
+        let config = config_opt.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "provider {provider_key} not configured for org {slug}"
+            ))
+        })?;
 
         if !config.enabled {
             return Err(AppError::NotFound(format!(
@@ -591,7 +1646,9 @@ async fn resolve_auth_credentials(
             )));
         }
 
-        let enc_key = crypto::parse_hex_key(&state.config.secrets_encryption_key)
+        let enc_key = state
+            .config
+            .keyring()
             .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
 
         // IdP uses its own dedicated credentials — decrypt them directly.
@@ -747,106 +1804,106 @@ async fn fetch_oidc_userinfo(
     })
 }
 
-/// Find an existing user or provision a new one. On subsequent logins, updates
-/// the user's profile (name, avatar) from IdP claims.
+/// Find or provision a user across two distinct trust domains. See
+/// `docs/design/multi_org_auth.md` §Authentication Flows.
+///
+/// - `org_slug = None` — **root login**: the caller hit `app.overslash.com`
+///   and signed in via an Overslash-level IdP (env-var-configured Google /
+///   GitHub). Lookup keys `(users.overslash_idp_provider, subject)`. If
+///   missing, provision an Overslash-backed `users` row + personal org +
+///   admin membership + identity.
+/// - `org_slug = Some(slug)` — **org-subdomain login**: the caller hit
+///   `<slug>.app.overslash.com` and signed in via that org's IdP (or, if
+///   the org has opted into `allow_overslash_managed_signin`, via the
+///   Overslash-managed env-var OAuth app). Lookup keys
+///   `(identities.org_id, external_id)`. If missing, admission is gated by
+///   the org-level flag — independent of which IdP authenticated:
+///   * `allow_overslash_managed_signin = true`: a pending `org_invites(email)`
+///     row is required regardless of IdP; the invite's role is honored.
+///     Reject with `not_invited` on miss.
+///   * Flag off (legacy): gate on the per-org
+///     `org_idp_configs.allowed_email_domains`. Reject with
+///     `not_permitted_by_org_idp` on miss.
+///
+/// In either case we return `(org_id, identity_id, user_id, email)`, which
+/// callers shape into session claims.
 async fn find_or_provision_user(
     state: &AppState,
     userinfo: &NormalizedUserInfo,
-) -> Result<(Uuid, Uuid, String), AppError> {
-    let system = SystemScope::new_internal(state.db.clone());
-    // Check if identity already exists by email
-    if let Some(existing) = system.find_user_identity_by_email(&userinfo.email).await? {
-        // Update profile on subsequent login
-        let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
-        let metadata = json!({
-            "provider": userinfo.provider_key,
-            "external_id": userinfo.external_id,
-            "name": userinfo.name,
-            "picture": userinfo.picture,
-        });
-        let existing_scope = OrgScope::new(existing.org_id, state.db.clone());
-        if let Err(e) = existing_scope
-            .update_identity_profile(existing.id, display_name, metadata)
-            .await
-        {
-            tracing::warn!(identity_id = %existing.id, error = %e, "failed to update profile on login");
-        }
-        return Ok((existing.org_id, existing.id, userinfo.email.clone()));
+    org_slug: Option<&str>,
+) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
+    match org_slug {
+        None => provision_root(state, userinfo).await,
+        Some(slug) => provision_org_subdomain(state, userinfo, slug).await,
     }
+}
 
-    // New user — try to match by email domain to an existing org
-    let email_domain = userinfo
-        .email
-        .rsplit('@')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
-
+async fn provision_root(
+    state: &AppState,
+    userinfo: &NormalizedUserInfo,
+) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
-    let metadata = json!({
-        "provider": userinfo.provider_key,
-        "external_id": userinfo.external_id,
-        "name": userinfo.name,
-        "picture": userinfo.picture,
-    });
 
-    // Check if any org has this email domain configured for the same provider.
-    // This is a true cross-org lookup (no scope yet — we don't know which
-    // org the user belongs to), so it goes through SystemScope.
-    let system = overslash_db::SystemScope::new_internal(state.db.clone());
-    let domain_matches = system
-        .find_idp_configs_by_email_domain(&email_domain)
-        .await?;
-    let matched_config = domain_matches
-        .iter()
-        .find(|c| c.provider_key == userinfo.provider_key);
-    if let Some(matched_config) = matched_config {
-        // Provision user in the matched org
-        let matched_scope = OrgScope::new(matched_config.org_id, state.db.clone());
-        match matched_scope
-            .create_identity_with_email(
-                display_name,
-                "user",
-                Some(&userinfo.external_id),
-                Some(&userinfo.email),
-                metadata,
+    // Hot path: existing Overslash-backed user → refresh profile and return.
+    if let Some(user) =
+        user_repo::find_by_overslash_idp(&state.db, &userinfo.provider_key, &userinfo.external_id)
+            .await?
+    {
+        let _ = user_repo::refresh_profile(
+            &state.db,
+            user.id,
+            Some(&userinfo.email),
+            Some(display_name),
+        )
+        .await;
+        let personal_org_id = user.personal_org_id.ok_or_else(|| {
+            AppError::Internal(
+                "Overslash-backed user has no personal_org_id; backfill incomplete".into(),
             )
-            .await
-        {
-            Ok(new_identity) => {
-                // Auto-join the Everyone group
-                overslash_db::repos::org_bootstrap::add_to_everyone_group(
-                    &state.db,
-                    matched_config.org_id,
-                    new_identity.id,
-                )
-                .await?;
-                return Ok((
-                    matched_config.org_id,
-                    new_identity.id,
-                    userinfo.email.clone(),
-                ));
-            }
-            Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                // Race — another request created this identity
-                let existing = system
-                    .find_user_identity_by_email(&userinfo.email)
-                    .await?
-                    .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
-                return Ok((existing.org_id, existing.id, userinfo.email.clone()));
-            }
-            Err(e) => return Err(e.into()),
-        }
+        })?;
+        let identity = overslash_db::repos::identity::find_by_org_and_user(
+            &state.db,
+            personal_org_id,
+            user.id,
+        )
+        .await?
+        .ok_or_else(|| AppError::Internal("personal org exists but has no user identity".into()))?;
+        // Keep the identity's displayed email/name roughly current too.
+        let scope = OrgScope::new(personal_org_id, state.db.clone());
+        let metadata = userinfo_metadata(userinfo);
+        let _ = scope
+            .update_identity_profile(identity.id, display_name, metadata)
+            .await;
+        return Ok((
+            personal_org_id,
+            identity.id,
+            user.id,
+            userinfo.email.clone(),
+        ));
     }
 
-    // No domain match — create new org + identity (default behavior)
-    let new_org = {
-        let mut attempts = 0;
+    // First-time root login → provision personal org + Overslash-backed user.
+    let slug = generate_personal_slug();
+    let org = {
+        let mut attempts = 0u32;
         loop {
-            let slug = generate_slug(&userinfo.email);
-            match org::create(&state.db, display_name, &slug).await {
-                Ok(o) => break o,
-                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() && attempts < 3 => {
+            let candidate = if attempts == 0 {
+                slug.clone()
+            } else {
+                generate_personal_slug()
+            };
+            match org::create(&state.db, display_name, &candidate, "standard").await {
+                Ok(mut row) => {
+                    // Flip is_personal=true. The column was added in 040 with
+                    // DEFAULT false; personal orgs are marked explicitly so the
+                    // subdomain middleware refuses to route them.
+                    sqlx::query!("UPDATE orgs SET is_personal = true WHERE id = $1", row.id)
+                        .execute(&state.db)
+                        .await?;
+                    row.is_personal = true;
+                    break row;
+                }
+                Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() && attempts < 5 => {
                     attempts += 1;
                     continue;
                 }
@@ -855,8 +1912,125 @@ async fn find_or_provision_user(
         }
     };
 
-    let new_org_scope = OrgScope::new(new_org.id, state.db.clone());
-    match new_org_scope
+    // Everything from here on — user creation, identity, bootstrap,
+    // membership — runs inside `provision_root_contents`. Any error
+    // (other than the unique-violation race, which returns Ok(winner) after
+    // manually cleaning up the org) bubbles up here, and we compensate by
+    // deleting the personal-org shell to avoid leaking an empty row.
+    match provision_root_contents(state, userinfo, &org, display_name).await {
+        Ok(tuple) => Ok(tuple),
+        Err(e) => {
+            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                .execute(&state.db)
+                .await
+            {
+                tracing::error!(
+                    org_id = %org.id,
+                    error = %e,
+                    cleanup_error = %cleanup_err,
+                    "provision_root rollback failed; orphan personal org left in DB"
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn provision_root_contents(
+    state: &AppState,
+    userinfo: &NormalizedUserInfo,
+    org: &overslash_db::repos::org::OrgRow,
+    display_name: &str,
+) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
+    // Concurrent-first-login race: another request for the same
+    // (provider, subject) may have already created the users row + personal
+    // org + identity + membership. We detect the race via the partial
+    // UNIQUE on `users.(overslash_idp_provider, overslash_idp_subject)` and
+    // fall through to the winner's state. In that case we delete *our* org
+    // ourselves (the caller's outer cleanup won't run because we're
+    // returning Ok) and return the winner's (org, identity, user_id).
+    let new_user = match user_repo::create_overslash_backed(
+        &state.db,
+        Some(&userinfo.email),
+        Some(display_name),
+        &userinfo.provider_key,
+        &userinfo.external_id,
+    )
+    .await
+    {
+        Ok(u) => u,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            let _ = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
+                .execute(&state.db)
+                .await;
+            let winner = user_repo::find_by_overslash_idp(
+                &state.db,
+                &userinfo.provider_key,
+                &userinfo.external_id,
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "race: user row vanished between unique-violation and re-read".into(),
+                )
+            })?;
+            // personal_org_id is set by the winner after user insert, so it
+            // may be NULL if we read the row before the winner's transaction
+            // commits. Retry with exponential backoff (50ms → ~1.5s total).
+            let personal_org_id = {
+                let mut maybe = winner.personal_org_id;
+                let mut attempts = 0u32;
+                while maybe.is_none() && attempts < 5 {
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * 2u64.pow(attempts)))
+                        .await;
+                    attempts += 1;
+                    if let Ok(Some(refreshed)) = user_repo::find_by_overslash_idp(
+                        &state.db,
+                        &userinfo.provider_key,
+                        &userinfo.external_id,
+                    )
+                    .await
+                    {
+                        maybe = refreshed.personal_org_id;
+                    }
+                }
+                maybe.ok_or_else(|| {
+                    AppError::Internal(
+                        "race: winner's users row still has no personal_org_id after retries"
+                            .into(),
+                    )
+                })?
+            };
+            let identity = overslash_db::repos::identity::find_by_org_and_user(
+                &state.db,
+                personal_org_id,
+                winner.id,
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal("race: winner has no identity in their personal org yet".into())
+            })?;
+            let _ = user_repo::refresh_profile(
+                &state.db,
+                winner.id,
+                Some(&userinfo.email),
+                Some(display_name),
+            )
+            .await;
+            return Ok((
+                personal_org_id,
+                identity.id,
+                winner.id,
+                userinfo.email.clone(),
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    user_repo::set_personal_org(&state.db, new_user.id, org.id).await?;
+
+    let metadata = userinfo_metadata(userinfo);
+    let scope = OrgScope::new(org.id, state.db.clone());
+    let identity_row = scope
         .create_identity_with_email(
             display_name,
             "user",
@@ -864,27 +2038,324 @@ async fn find_or_provision_user(
             Some(&userinfo.email),
             metadata,
         )
-        .await
-    {
-        Ok(new_identity) => {
-            // Bootstrap system assets and add creator as admin
-            overslash_db::repos::org_bootstrap::bootstrap_org(
-                &state.db,
-                new_org.id,
-                Some(new_identity.id),
-            )
-            .await?;
-            Ok((new_org.id, new_identity.id, userinfo.email.clone()))
-        }
-        Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-            let existing = system
-                .find_user_identity_by_email(&userinfo.email)
-                .await?
-                .ok_or_else(|| AppError::Internal("race: identity vanished".into()))?;
-            Ok((existing.org_id, existing.id, userinfo.email.clone()))
-        }
-        Err(e) => Err(e.into()),
+        .await?;
+    overslash_db::repos::identity::set_user_id(
+        &state.db,
+        org.id,
+        identity_row.id,
+        Some(new_user.id),
+    )
+    .await?;
+
+    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, Some(identity_row.id))
+        .await?;
+
+    membership::create(&state.db, new_user.id, org.id, membership::ROLE_ADMIN).await?;
+
+    // Best-effort welcome email. Failures are logged and swallowed inside
+    // the service — a transient mailer hiccup must never block first-login.
+    let dashboard_url = build_org_redirect(state, org);
+    crate::services::welcome_email::send_if_due(state, new_user.id, org.id, dashboard_url).await;
+
+    Ok((org.id, identity_row.id, new_user.id, userinfo.email.clone()))
+}
+
+async fn provision_org_subdomain(
+    state: &AppState,
+    userinfo: &NormalizedUserInfo,
+    slug: &str,
+) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
+    let target_org = org::get_by_slug(&state.db, slug)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("org not found: {slug}")))?;
+    if target_org.is_personal {
+        return Err(AppError::BadRequest(
+            "personal orgs do not accept IdP logins".into(),
+        ));
     }
+
+    // Existing org-identity? refresh + return.
+    let scope = OrgScope::new(target_org.id, state.db.clone());
+    if let Some(existing) = overslash_db::repos::identity::find_user_by_external_id_in_org(
+        &state.db,
+        target_org.id,
+        &userinfo.external_id,
+    )
+    .await?
+    {
+        let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
+        let metadata = userinfo_metadata(userinfo);
+        let _ = scope
+            .update_identity_profile(existing.id, display_name, metadata)
+            .await;
+        let user_id = existing.user_id.ok_or_else(|| {
+            AppError::Internal(
+                "org-identity missing user_id; migration 040 backfill incomplete".into(),
+            )
+        })?;
+        let _ = user_repo::refresh_profile(
+            &state.db,
+            user_id,
+            Some(&userinfo.email),
+            Some(display_name),
+        )
+        .await;
+        return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
+    }
+
+    // First-time sign-in for this (org, IdP-subject). Two admission paths:
+    //
+    // 1. Overslash-managed sign-in (migration 066): when the org has opted
+    //    in via `allow_overslash_managed_signin`, the IdP authenticates but
+    //    cannot admit by itself — membership requires a pending
+    //    `org_invites(email)` row. The invite's `role` is honored when
+    //    creating the membership.
+    //
+    // 2. Legacy path: gate on the per-org `org_idp_configs.allowed_email_domains`.
+    //    Empty list = "trust the IdP entirely" (the admin already constrained
+    //    who can authenticate by provisioning the IdP's client_id / tenant).
+    //    A non-empty list is a whitelist. The IdP config itself must exist —
+    //    absence means this org hasn't enabled this provider, so we reject
+    //    with `not_permitted_by_org_idp`.
+    //
+    // SINGLE_ORG_MODE exception (applies to BOTH paths): self-hosted
+    // operators typically use the env-var Overslash-level IdPs
+    // (`GOOGLE_AUTH_CLIENT_ID`, etc.). In that mode the operator IS the org
+    // admin — the env creds they provisioned ARE the trust boundary, so
+    // every per-org gate is bypassed. Without this branch on the
+    // invite-gated path, a fresh self-hosted deployment defaults the org's
+    // `allow_overslash_managed_signin` flag to `true`, leaving the operator
+    // locked out (no invite exists yet and they can't sign in to create
+    // one).
+    let single_org_bypass = state
+        .config
+        .single_org_mode
+        .as_deref()
+        .map(|pinned| pinned == slug)
+        .unwrap_or(false);
+    // Existing-member short-circuit (only on the invite-gated path): when
+    // alice@acme.com already has a membership in this org and tries a
+    // different Overslash-managed IdP (Google→GitHub), the
+    // `(org_id, external_id)` lookup above misses (new IdP subject) and
+    // we fall through here. Her original invite is already accepted, so
+    // `find_pending` returns None and the gate would lock her out
+    // (`not_invited`). Recognise her via email-on-existing-membership and
+    // let the new identity attach to her existing user row — no fresh
+    // invite required. Safe because the trust-domain for managed-signin
+    // is the operator's env-creds and the same email already passed the
+    // admin's invite check at first sign-in.
+    let existing_member = if target_org.allow_overslash_managed_signin && !single_org_bypass {
+        user_repo::find_member_by_email_in_org(&state.db, target_org.id, &userinfo.email).await?
+    } else {
+        None
+    };
+    let membership_role = if single_org_bypass || existing_member.is_some() {
+        None
+    } else if target_org.allow_overslash_managed_signin {
+        let pending = overslash_db::repos::org_invite::find_pending(
+            &state.db,
+            target_org.id,
+            &userinfo.email,
+        )
+        .await?
+        .ok_or_else(|| AppError::Forbidden("not_invited".into()))?;
+        // Defer the `mark_accepted` write until after the membership row
+        // exists — if membership creation fails for any reason we don't
+        // want a consumed invite stranded with no member.
+        Some(pending)
+    } else {
+        let email_domain = userinfo
+            .email
+            .rsplit('@')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
+            &state.db,
+            target_org.id,
+            &userinfo.provider_key,
+        )
+        .await?
+        .ok_or_else(|| AppError::Forbidden("not_permitted_by_org_idp".into()))?;
+        if !idp_config.allowed_email_domains.is_empty()
+            && !idp_config
+                .allowed_email_domains
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(&email_domain))
+        {
+            return Err(AppError::Forbidden("not_permitted_by_org_idp".into()));
+        }
+        None
+    };
+
+    let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
+    let metadata = userinfo_metadata(userinfo);
+
+    // Decide which `users` row this new identity attaches to:
+    //   1. Existing-member short-circuit hit → attach to that user (a
+    //      second IdP for the same email in the same org).
+    //   2. The `(provider, subject)` already matches an Overslash-backed
+    //      user (SINGLE_ORG_MODE: env-var IdP is both the Overslash IdP
+    //      and the org IdP, so the same pair shows up on both paths) →
+    //      reuse that user.
+    //   3. Otherwise → first-time admission, fresh org-only user row.
+    let user_id = if let Some(ref u) = existing_member {
+        let _ =
+            user_repo::refresh_profile(&state.db, u.id, Some(&userinfo.email), Some(display_name))
+                .await;
+        u.id
+    } else {
+        match user_repo::find_by_overslash_idp(
+            &state.db,
+            &userinfo.provider_key,
+            &userinfo.external_id,
+        )
+        .await?
+        {
+            Some(u) => {
+                let _ = user_repo::refresh_profile(
+                    &state.db,
+                    u.id,
+                    Some(&userinfo.email),
+                    Some(display_name),
+                )
+                .await;
+                u.id
+            }
+            None => {
+                user_repo::create_org_only(&state.db, Some(&userinfo.email), Some(display_name))
+                    .await?
+                    .id
+            }
+        }
+    };
+
+    let identity_row = scope
+        .create_identity_with_email(
+            display_name,
+            "user",
+            Some(&userinfo.external_id),
+            Some(&userinfo.email),
+            metadata,
+        )
+        .await?;
+    overslash_db::repos::identity::set_user_id(
+        &state.db,
+        target_org.id,
+        identity_row.id,
+        Some(user_id),
+    )
+    .await?;
+    overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+        &state.db,
+        target_org.id,
+        identity_row.id,
+    )
+    .await?;
+
+    // Admin-propagation for existing-member second-IdP logins. The new
+    // identity row defaults to `is_org_admin = false` and is not in
+    // Admins, so the session JWT (keyed on the new identity) would
+    // silently downgrade an admin to a member until they re-signed-in
+    // with their original IdP. Look up the existing user-kind identity
+    // for this `(org, user)` and mirror its admin state onto the new row.
+    if let Some(ref existing) = existing_member {
+        if let Some(prior) = overslash_db::repos::identity::find_by_org_and_user(
+            &state.db,
+            target_org.id,
+            existing.id,
+        )
+        .await?
+        {
+            if prior.id != identity_row.id && prior.is_org_admin {
+                overslash_db::repos::identity::set_is_org_admin(
+                    &state.db,
+                    target_org.id,
+                    identity_row.id,
+                    true,
+                )
+                .await?;
+                overslash_db::repos::org_bootstrap::add_identity_to_admins(
+                    &state.db,
+                    target_org.id,
+                    identity_row.id,
+                )
+                .await?;
+            }
+        }
+    }
+
+    // The invite's role wins when present — admins explicitly invite people
+    // as `admin` or `member` and that choice should propagate. Without an
+    // invite (legacy path), default to member.
+    let role = membership_role
+        .as_ref()
+        .map(|inv| inv.role.as_str())
+        .unwrap_or(membership::ROLE_MEMBER);
+    // `membership::create` is idempotent-friendly-enough via the PK on
+    // (user_id, org_id) — but in the SINGLE_ORG_MODE reuse-user path, an
+    // earlier sign-in could have left the same `(user_id, org_id)` row
+    // already in place (e.g., bootstrap admin from POST /v1/orgs). Swallow
+    // the unique-violation so a repeat login doesn't fail. Track whether
+    // a brand-new membership row was created so we only consume an invite
+    // when admission actually happened — a second-IdP sign-in by an
+    // already-member must not eat the pending invite (audit-trail bug).
+    let membership_created = match membership::create(&state.db, user_id, target_org.id, role).await
+    {
+        Ok(_) => true,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => false,
+        Err(e) => return Err(e.into()),
+    };
+
+    // Best-effort: consume the invite, but ONLY when this sign-in actually
+    // produced a new membership. Otherwise the invite is preserved for the
+    // genuine first-time admission. `mark_accepted` is idempotent (guards
+    // on `accepted_at IS NULL`), so a concurrent login that already marked
+    // it returns `Ok(false)` and we don't propagate that as an error.
+    if membership_created && let Some(invite) = membership_role.as_ref() {
+        if let Err(e) =
+            overslash_db::repos::org_invite::mark_accepted(&state.db, invite.id, user_id).await
+        {
+            tracing::warn!(
+                org_id = %target_org.id,
+                invite_id = %invite.id,
+                error = %e,
+                "failed to mark org_invite accepted after successful membership creation"
+            );
+        }
+    }
+
+    // Best-effort welcome email for JIT-provisioned corp-org users. Service
+    // gates on `welcome_email_sent_at IS NULL`, so returning users (existing
+    // member adding a second IdP, SINGLE_ORG_MODE Overslash-backed reuse)
+    // are naturally no-ops without us having to thread a "was-created" bool.
+    let dashboard_url = build_org_redirect(state, &target_org);
+    crate::services::welcome_email::send_if_due(state, user_id, target_org.id, dashboard_url).await;
+
+    Ok((
+        target_org.id,
+        identity_row.id,
+        user_id,
+        userinfo.email.clone(),
+    ))
+}
+
+fn userinfo_metadata(userinfo: &NormalizedUserInfo) -> serde_json::Value {
+    json!({
+        "provider": userinfo.provider_key,
+        "external_id": userinfo.external_id,
+        "name": userinfo.name,
+        "picture": userinfo.picture,
+    })
+}
+
+fn generate_personal_slug() -> String {
+    // Personal orgs never surface publicly (the subdomain middleware refuses
+    // to route them), so the slug just needs to be unique across orgs.
+    // `rand::random::<u64>()` gives 64 bits of entropy — collision vanishingly
+    // unlikely even across millions of orgs.
+    let suffix = rand::random::<u64>();
+    format!("personal-{suffix:016x}")
 }
 
 /// Only allow same-origin path redirects to prevent open-redirect abuse
@@ -909,18 +2380,8 @@ fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
-fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
-    hex::decode(signing_key).unwrap_or_else(|_| signing_key.as_bytes().to_vec())
-}
-
-fn generate_slug(email: &str) -> String {
-    let local = email.split('@').next().unwrap_or("user");
-    let clean: String = local
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect();
-    let suffix: u32 = rand::random::<u32>() % 10000;
-    format!("{}-{:04}", clean.to_lowercase(), suffix)
+pub(crate) fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
+    crate::services::jwt::signing_key_bytes(signing_key)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT event AS \"event!\", COUNT(*)::bigint AS \"count!\"\n        FROM webhook_deliveries\n        WHERE delivered_at IS NULL\n          AND attempts >= 5\n          AND created_at > now() - INTERVAL '24 hours'\n        GROUP BY event\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "3de7711a435966ec15d801a732e1c04799c44361f2d80ebf17c7fe03c4c00f41"
+}

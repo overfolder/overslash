@@ -12,6 +12,10 @@ use uuid::Uuid;
 pub struct OrgScope {
     pub(crate) org_id: Uuid,
     pub(crate) db: PgPool,
+    /// Set when the request was made via `X-Overslash-As` impersonation.
+    /// Carried here so `log_audit` can inject it into every audit row without
+    /// touching individual handler call sites.
+    pub(crate) impersonated_by_identity_id: Option<Uuid>,
 }
 
 impl OrgScope {
@@ -19,7 +23,22 @@ impl OrgScope {
     /// and `#[cfg(test)]` code should call this; handlers must receive scopes
     /// through Axum's extractor mechanism. Enforced by code review.
     pub fn new(org_id: Uuid, db: PgPool) -> Self {
-        Self { org_id, db }
+        Self {
+            org_id,
+            db,
+            impersonated_by_identity_id: None,
+        }
+    }
+
+    /// Construct a scope for an impersonated request. The `impersonated_by`
+    /// identity is the service-account caller; audit rows produced via this
+    /// scope will record it automatically.
+    pub fn new_impersonated(org_id: Uuid, db: PgPool, impersonated_by: Uuid) -> Self {
+        Self {
+            org_id,
+            db,
+            impersonated_by_identity_id: Some(impersonated_by),
+        }
     }
 
     /// The org this scope is bound to. Exposed for logging / audit only —

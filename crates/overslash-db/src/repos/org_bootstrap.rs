@@ -1,10 +1,18 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Bootstrap system assets for a new org: overslash service instance, Everyone + Admins groups,
-/// and default group grants. Idempotent — safe to call if assets already exist.
+/// Bootstrap system assets for a new org: `overslash` and `http` system service
+/// instances, Everyone + Admins groups, and default group grants on both
+/// instances (Everyone gets `write` on `overslash` and `admin` on `http`;
+/// Admins gets `admin` on both). Idempotent — safe to call if assets already
+/// exist.
 ///
-/// If `creator_identity_id` is provided, that user is added to both Everyone and Admins groups.
+/// The `http` instance is the singleton anchor for raw HTTP access — granting
+/// `http` to a group is what permits raw HTTP for that group's members
+/// (replaces the old `allow_raw_http` boolean, see DECISIONS.md D15).
+///
+/// If `creator_identity_id` is provided, that user is added to both Everyone and Admins groups
+/// and gets a Myself group created.
 pub async fn bootstrap_org(
     pool: &PgPool,
     org_id: Uuid,
@@ -37,11 +45,12 @@ pub async fn bootstrap_org(
         }
     };
 
-    // 2. Create Everyone group (allow_raw_http = true for backward compat)
+    // 2. Create Everyone group. Tagged with system_kind = 'everyone' so
+    // lookups don't depend on the localized name.
     let everyone = sqlx::query!(
-        "INSERT INTO groups (org_id, name, description, is_system, allow_raw_http)
-         VALUES ($1, 'Everyone', 'All users in this organization', true, true)
-         ON CONFLICT (org_id, name) DO NOTHING
+        "INSERT INTO groups (org_id, name, description, is_system, system_kind)
+         VALUES ($1, 'Everyone', 'All users in this organization', true, 'everyone')
+         ON CONFLICT (org_id, name) DO UPDATE SET system_kind = 'everyone'
          RETURNING id",
         org_id,
     )
@@ -50,37 +59,40 @@ pub async fn bootstrap_org(
 
     let everyone_id = match everyone {
         Some(row) => row.id,
-        None => sqlx::query!(
-            "SELECT id FROM groups WHERE org_id = $1 AND name = 'Everyone' AND is_system = true",
-            org_id,
-        )
-        .fetch_one(&mut *tx)
-        .await?
-        .id,
+        None => {
+            sqlx::query!(
+                "SELECT id FROM groups WHERE org_id = $1 AND system_kind = 'everyone'",
+                org_id,
+            )
+            .fetch_one(&mut *tx)
+            .await?
+            .id
+        }
     };
 
     // 3. Create Admins group
     let admins = sqlx::query!(
-        "INSERT INTO groups (org_id, name, description, is_system, allow_raw_http)
-         VALUES ($1, 'Admins', 'Organization administrators', true, true)
-         ON CONFLICT (org_id, name) DO NOTHING
+        "INSERT INTO groups (org_id, name, description, is_system, system_kind)
+         VALUES ($1, 'Admins', 'Organization administrators', true, 'admins')
+         ON CONFLICT (org_id, name) DO UPDATE SET system_kind = 'admins'
          RETURNING id",
         org_id,
     )
     .fetch_optional(&mut *tx)
     .await?;
 
-    let admins_id =
-        match admins {
-            Some(row) => row.id,
-            None => sqlx::query!(
-                "SELECT id FROM groups WHERE org_id = $1 AND name = 'Admins' AND is_system = true",
+    let admins_id = match admins {
+        Some(row) => row.id,
+        None => {
+            sqlx::query!(
+                "SELECT id FROM groups WHERE org_id = $1 AND system_kind = 'admins'",
                 org_id,
             )
             .fetch_one(&mut *tx)
             .await?
-            .id,
-        };
+            .id
+        }
+    };
 
     // 4. Grant Everyone write access to overslash
     sqlx::query!(
@@ -104,7 +116,54 @@ pub async fn bootstrap_org(
     .execute(&mut *tx)
     .await?;
 
-    // 6. Add creator to both groups
+    // 6. Create the org-level `http` system instance (Mode A's pseudo-service).
+    // No credentials, no host binding — the caller supplies the full URL on
+    // each call. Group access flows through the standard grant mechanism.
+    let http_svc = sqlx::query!(
+        "INSERT INTO service_instances (org_id, name, template_source, template_key, status, is_system)
+         VALUES ($1, 'http', 'global', 'http', 'active', true)
+         ON CONFLICT (org_id, name) WHERE owner_identity_id IS NULL DO NOTHING
+         RETURNING id",
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let http_svc_id = match http_svc {
+        Some(row) => row.id,
+        None => sqlx::query!(
+            "SELECT id FROM service_instances WHERE org_id = $1 AND name = 'http' AND is_system = true",
+            org_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?
+        .id,
+    };
+
+    // 7. Grant Everyone admin on http (preserves the prior allow_raw_http=true
+    // default so the Mode A → http migration doesn't silently revoke access).
+    sqlx::query!(
+        "INSERT INTO group_grants (group_id, service_instance_id, access_level)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT (group_id, service_instance_id) DO NOTHING",
+        everyone_id,
+        http_svc_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 8. Grant Admins admin on http
+    sqlx::query!(
+        "INSERT INTO group_grants (group_id, service_instance_id, access_level)
+         VALUES ($1, $2, 'admin')
+         ON CONFLICT (group_id, service_instance_id) DO NOTHING",
+        admins_id,
+        http_svc_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // 9. Add creator to both groups + ensure their Myself group
     if let Some(user_id) = creator_identity_id {
         sqlx::query!(
             "INSERT INTO identity_groups (identity_id, group_id)
@@ -128,11 +187,23 @@ pub async fn bootstrap_org(
     }
 
     tx.commit().await?;
+
+    // Myself group runs in its own short transaction (post-commit) so a missing
+    // identity row (e.g. tests calling bootstrap_org with creator_identity_id=None
+    // expectations) doesn't roll back the org-level setup.
+    if let Some(user_id) = creator_identity_id {
+        ensure_myself_group_for_identity(pool, org_id, user_id).await?;
+    }
+
     Ok(())
 }
 
-/// Add a user to the Everyone group for their org. No-op if already a member.
-pub async fn add_to_everyone_group(
+/// Bootstrap a user's per-org membership: join the Everyone group and create
+/// their Myself group. Idempotent.
+///
+/// Replaces the previous narrower `add_to_everyone_group` — call this from any
+/// code path that creates a `kind = 'user'` identity in an org.
+pub async fn bootstrap_user_in_org(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Uuid,
@@ -140,12 +211,60 @@ pub async fn add_to_everyone_group(
     sqlx::query!(
         "INSERT INTO identity_groups (identity_id, group_id)
          SELECT $1, g.id FROM groups g
-         WHERE g.org_id = $2 AND g.name = 'Everyone' AND g.is_system = true
+         WHERE g.org_id = $2 AND g.system_kind = 'everyone'
          ON CONFLICT DO NOTHING",
         identity_id,
         org_id,
     )
     .execute(pool)
     .await?;
+
+    ensure_myself_group_for_identity(pool, org_id, identity_id).await?;
+    Ok(())
+}
+
+/// Add an identity to the org's Admins group. Idempotent. Used when an
+/// already-admin user signs in via a second IdP — the new identity row
+/// must inherit the admin's group membership, otherwise the session JWT
+/// (keyed on the new identity) would silently lose admin powers.
+pub async fn add_identity_to_admins(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "INSERT INTO identity_groups (identity_id, group_id)
+         SELECT $1, g.id FROM groups g
+         WHERE g.org_id = $2 AND g.system_kind = 'admins'
+         ON CONFLICT DO NOTHING",
+        identity_id,
+        org_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Look up the identity's `email`/`name` to label the Myself group, then
+/// delegate to `repos::group::ensure_self_group`.
+async fn ensure_myself_group_for_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT email, name FROM identities WHERE id = $1 AND org_id = $2 AND kind = 'user'",
+        identity_id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let label = row
+        .as_ref()
+        .and_then(|r| r.email.clone().or_else(|| Some(r.name.clone())))
+        .unwrap_or_else(|| identity_id.to_string());
+
+    crate::repos::group::ensure_self_group(pool, org_id, identity_id, &label).await?;
     Ok(())
 }

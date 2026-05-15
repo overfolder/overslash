@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             s.id AS \"subscription_id!\",\n             s.url AS \"url!\",\n             COUNT(*) AS \"attempt_count!\",\n             MIN(d.created_at) AS \"first_failure_at!\",\n             latest.status_code AS \"last_status_code?\",\n             latest.last_error_excerpt AS \"last_error_excerpt?\"\n           FROM webhook_deliveries d\n           JOIN webhook_subscriptions s ON d.subscription_id = s.id\n           LEFT JOIN LATERAL (\n               SELECT d2.status_code, LEFT(d2.response_body, 200) AS last_error_excerpt\n               FROM webhook_deliveries d2\n               WHERE d2.subscription_id = s.id\n                 AND d2.delivered_at IS NULL\n                 AND d2.attempts >= 5\n                 AND d2.created_at > $2\n               ORDER BY d2.created_at DESC, d2.id DESC\n               LIMIT 1\n           ) latest ON true\n           WHERE s.org_id = $1\n             AND s.active = true\n             AND d.delivered_at IS NULL\n             AND d.attempts >= 5\n             AND d.created_at > $2\n           GROUP BY s.id, s.url, latest.status_code, latest.last_error_excerpt\n           ORDER BY MIN(d.created_at)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subscription_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "url!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempt_count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "first_failure_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_status_code?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_error_excerpt?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "fa46761c167a71d95b940effcd4c6232fe1f83f005d6055d20dcdb5f1bee7317"
+}

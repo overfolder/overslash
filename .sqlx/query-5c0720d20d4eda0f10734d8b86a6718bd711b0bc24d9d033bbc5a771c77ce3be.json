@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 AS one\n         FROM identity_groups ig\n         JOIN groups g ON g.id = ig.group_id\n         WHERE ig.identity_id = $1\n           AND g.org_id = $2\n           AND g.system_kind = 'admins'\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "one",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5c0720d20d4eda0f10734d8b86a6718bd711b0bc24d9d033bbc5a771c77ce3be"
+}
