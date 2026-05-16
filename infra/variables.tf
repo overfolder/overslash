@@ -291,6 +291,12 @@ variable "pagerduty_enabled" {
   default     = false
 }
 
+variable "oauth_refresh_alert_enabled" {
+  description = "Enable the OAuth refresh failure rate P1 alert. Leave false until overslash_oauth_events_total has been emitted at least once (GMP rejects the policy if the metric descriptor does not exist)."
+  type        = bool
+  default     = false
+}
+
 variable "monthly_budget_usd" {
   description = "Monthly billing budget in USD. Triggers email alerts at 50%/80%/100%."
   type        = number

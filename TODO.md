@@ -18,27 +18,27 @@ A PR can ladder up to a block by tagging its first line `[launch]`, `[launch+1]`
 
 No mailer exists today. Billing has no receipts and new accounts get no welcome / verification touch. Approvals and secret-requests are explicitly **not** email-driven — email is the wrong channel for real-time decisions (latency, deliverability, off-device), and the dashboard + webhook + `oversla.sh` link is the path of record.
 
-- [ ] Pick a provider and wire it (likely Resend — we already template a service for it). Config: `EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_REPLY_TO`; secret via the existing vault.
-- [ ] Templated emails — store templates in `crates/overslash-core/templates/email/` with `{var}` interpolation matching the audit-description style.
-- [ ] **Billing**: receipt on `invoice.payment_succeeded`; dunning on `invoice.payment_failed`; subscription canceled / trial ending.
-- [ ] **Welcome / first login** for both root signups and corp-org JIT provisioning.
+- [x] Pick a provider and wire it (likely Resend — we already template a service for it). Config: `EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_REPLY_TO`; secret via the existing vault.
+- [x] Templated emails — store templates in `crates/overslash-core/templates/email/` with `{var}` interpolation matching the audit-description style.
+- [x] **Billing**: receipt on `invoice.payment_succeeded`; dunning on `invoice.payment_failed`; subscription canceled / trial ending.
+- [x] **Welcome / first login** for both root signups and corp-org JIT provisioning.
 - [x] **Webhook DLQ digest** → daily digest to org admins listing webhook endpoints with terminal failures.
-- [ ] Per-user unsubscribe state for non-transactional (welcome) emails only — billing emails are exempt by policy.
+- [x] Per-user unsubscribe state for non-transactional (welcome) emails only — billing emails are exempt by policy.
 - [ ] (Optional, post-MVP) User-level opt-in email for newly remembered permissions — informational only, not a control surface.
 
 ### 1.2 Onboarding & trust domains
 
 D12 keeps trust domains clean. Corp-org admins still need a way to onboard the *first* teammate before that teammate has logged in via the org's IdP. Slug squatting is intentionally **not** mitigated pre-launch — paid org creation is the natural gate; we'll deal with squatters reactively if any appear.
 
-- [ ] **Corp-org invite path** — email-gated against the org's `org_idp_configs.allowed_email_domains`. Invite resolves on first IdP login (binds the new identity to the invite's role). Does **not** bypass the IdP; only pre-authorizes the email.
-- [ ] Audit events on creator-admin add (`POST /v1/orgs`) and removal (`DELETE /v1/account/memberships/{org_id}` when the leaver is the original creator).
-- [ ] Login page on a corp subdomain renders a clear empty state when no IdP is configured + a "you've been invited, please log in via X" state when the visitor's email matches a pending invite.
+- [x] **Corp-org invite path** — email-gated against the org's `org_idp_configs.allowed_email_domains`. Invite resolves on first IdP login (binds the new identity to the invite's role). Does **not** bypass the IdP; only pre-authorizes the email.
+- [x] Audit events on creator-admin add (`POST /v1/orgs`) and removal (`DELETE /v1/account/memberships/{org_id}` when the leaver is the original creator).
+- [x] Login page on a corp subdomain renders a clear empty state when no IdP is configured + a "you've been invited, please log in via X" state when the visitor's email matches a pending invite.
 
 ### 1.3 Human-facing documentation site
 
 `SKILL.md` covers agents. Humans (the people swiping the credit card) have nothing past `www.overslash.com`. The single biggest sales blocker after email.
 
-- [ ] Docs site at `docs.overslash.com` (or `/docs` on the marketing site). MDX or VitePress; ship as static.
+- [-] Docs site at `docs.overslash.com` (or `/docs` on the marketing site). MDX or VitePress; ship as static.
 - [ ] Concepts: identity hierarchy, permissions/approvals, secrets, services, groups, rate limits.
 - [ ] Quickstart: 10-minute "first authed call" against Resend or GitHub.
 - [ ] Per-template setup guides for the 9 shipped services (Eventbrite, GitHub, Gmail, Google Calendar, Google Drive, Resend, Slack, Stripe, X).
@@ -50,18 +50,18 @@ D12 keeps trust domains clean. Corp-org admins still need a way to onboard the *
 
 Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
-- [ ] Bind `pagerduty_integration_key` in `infra/env/prod.tfvars` (or a Slack channel via a custom notification channel) so P0 alerts actually page someone.
+- [x] Bind `pagerduty_integration_key` in `infra/env/prod.tfvars` (or a Slack channel via a custom notification channel) so P0 alerts actually page someone.
 - [x] Public status page (Better Stack / Statuspage / Instatus) wired to the existing P0 uptime check + a manual override.
-- [ ] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
+- [x] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
 - [ ] **Postgres PITR restore drill** — document and execute a full restore-to-new-instance against the dev DB; record RTO/RPO observed.
 - [ ] On-call runbook: how to roll back a Cloud Run revision, how to disable a webhook target, how to revoke a leaked API key, how to suspend an org.
 
 ### 1.5 Legal / compliance
 
-- [ ] `security.txt` at `https://www.overslash.com/.well-known/security.txt` + vuln disclosure policy page.
-- [ ] DPA template + signing flow (DocuSign / PandaDoc / countersigned PDF). Procurement asks for this on every B2B deal.
-- [ ] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs).
-- [ ] **GDPR request handling** — document the manual process for data-export and hard-delete requests (intake → DPO ack → manual SQL → audit row). Automated endpoints are a post-launch backlog item; volume expected to be near zero at GA.
+- [ ] (later) `security.txt` at `https://www.overslash.com/.well-known/security.txt` + vuln disclosure policy page.
+- [ ] (later) DPA template + signing flow (DocuSign / PandaDoc / countersigned PDF). Procurement asks for this on every B2B deal.
+- [x] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs). On www.overslash.com/privacy
+- [ ] (later) **GDPR request handling** — document the manual process for data-export and hard-delete requests (intake → DPO ack → manual SQL → audit row). Automated endpoints are a post-launch backlog item; volume expected to be near zero at GA.
 
 ---
 

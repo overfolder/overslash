@@ -187,7 +187,7 @@ resource "google_monitoring_alert_policy" "background_task_stale" {
 # OAuth refresh failure rate > 10% over 15 min. Refresh failures are the most
 # common reason connections silently stop working.
 resource "google_monitoring_alert_policy" "oauth_refresh_failure_rate" {
-  count = local.alerts_enabled ? 1 : 0
+  count = local.alerts_enabled && var.oauth_refresh_alert_enabled ? 1 : 0
 
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} OAuth Refresh Failure Rate"

@@ -73,3 +73,6 @@ email_provider = "resend"
 email_from     = "no-reply@overslash.com"
 email_reply_to = "support@overslash.com"
 
+pagerduty_enabled = true
+alert_email       = "alert@overslash.com"
+
