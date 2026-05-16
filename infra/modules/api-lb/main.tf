@@ -119,6 +119,11 @@ resource "google_compute_backend_service" "api_backend" {
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
 
+  # Inject the client's ISO 3166-1 alpha-2 country code so the API can return
+  # EUR vs USD pricing without a separate GeoIP DB. GCLB overwrites any
+  # client-supplied header of the same name, so this cannot be spoofed.
+  custom_request_headers = ["X-Client-Geo-Country:{client_region}"]
+
   backend {
     group = google_compute_region_network_endpoint_group.api_neg.id
   }

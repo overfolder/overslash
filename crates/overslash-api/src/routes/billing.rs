@@ -71,11 +71,18 @@ struct GeoResponse {
     base_price: u32,
 }
 
-/// GET /v1/billing/geo — unauthenticated; returns EUR or USD pricing based on
-/// the `CF-IPCountry` header set by Cloudflare (falls back to USD).
+/// GET /v1/billing/geo — unauthenticated; returns EUR or USD pricing.
+///
+/// Country resolution priority:
+///   1. `CF-IPCountry` — set by Cloudflare when the API is fronted by CF.
+///   2. `X-Client-Geo-Country` — injected by the GCLB backend service via
+///      `custom_request_headers = ["X-Client-Geo-Country:{client_region}"]`.
+///   3. `X-Country-Code` — manual override (kept for direct-API consumers).
+///   4. Default: USD.
 async fn get_geo(headers: HeaderMap) -> Json<GeoResponse> {
     let country = headers
         .get("CF-IPCountry")
+        .or_else(|| headers.get("X-Client-Geo-Country"))
         .or_else(|| headers.get("X-Country-Code"))
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
