@@ -53,3 +53,9 @@ variable "billing_account_id" {
   description = "GCP billing account ID. Empty = skip the billing-budget alert (project must be linked to a billing account for it to work)."
 }
 
+variable "oauth_refresh_alert_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable the OAuth refresh failure rate alert. GMP rejects the alert policy if overslash_oauth_events_total has never been emitted (no metric descriptor yet). Set true once at least one OAuth token refresh has been observed."
+}
+

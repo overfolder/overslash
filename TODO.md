@@ -50,7 +50,7 @@ D12 keeps trust domains clean. Corp-org admins still need a way to onboard the *
 
 Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
-- [ ] Bind `pagerduty_integration_key` in `infra/env/prod.tfvars` (or a Slack channel via a custom notification channel) so P0 alerts actually page someone.
+- [x] Bind `pagerduty_integration_key` in `infra/env/prod.tfvars` (or a Slack channel via a custom notification channel) so P0 alerts actually page someone.
 - [x] Public status page (Better Stack / Statuspage / Instatus) wired to the existing P0 uptime check + a manual override.
 - [ ] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
 - [ ] **Postgres PITR restore drill** — document and execute a full restore-to-new-instance against the dev DB; record RTO/RPO observed.

@@ -40,10 +40,4 @@ resource "google_monitoring_notification_channel" "pagerduty" {
   labels = {
     url = "https://events.eu.pagerduty.com/integration/${local.pagerduty_integration_key}/enqueue"
   }
-
-  sensitive_labels {
-    # PD GCM integration authenticates via the key in the URL; the bearer
-    # header is ignored. webhook_tokenauth requires a non-empty token.
-    auth_token = local.pagerduty_integration_key
-  }
 }

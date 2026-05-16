@@ -172,14 +172,15 @@ module "monitoring" {
   project_id  = var.project_id
   base_prefix = local.base_prefix
 
-  alert_email             = var.alert_email
-  pagerduty_enabled       = var.pagerduty_enabled
-  pagerduty_secret_id     = module.secret_manager.pagerduty_integration_key_secret_id
-  api_domain              = var.domain
-  api_service_name        = module.cloud_run.service_name
-  cloud_sql_instance_name = module.cloud_sql.instance_name
-  monthly_budget_usd      = var.monthly_budget_usd
-  billing_account_id      = var.billing_account_id
+  alert_email                 = var.alert_email
+  pagerduty_enabled           = var.pagerduty_enabled
+  pagerduty_secret_id         = module.secret_manager.pagerduty_integration_key_secret_id
+  oauth_refresh_alert_enabled = var.oauth_refresh_alert_enabled
+  api_domain                  = var.domain
+  api_service_name            = module.cloud_run.service_name
+  cloud_sql_instance_name     = module.cloud_sql.instance_name
+  monthly_budget_usd          = var.monthly_budget_usd
+  billing_account_id          = var.billing_account_id
 
   depends_on = [
     google_project_service.apis,
