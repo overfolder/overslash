@@ -68,6 +68,14 @@ struct SearchQuery {
     /// + org catalog back into both browse and keyword modes. See SPEC §10.
     #[serde(default)]
     include_catalog: bool,
+    /// Comma-separated list of services to omit from results. Each entry is
+    /// matched against both the instance name (`service` in the response,
+    /// e.g. `gmail_work`) and the template key (e.g. `gmail`). Whitespace
+    /// around each entry is trimmed; empty entries are ignored. Applied
+    /// before scoring + truncation so excluded rows don't displace useful
+    /// ones inside the `limit` window.
+    #[serde(default)]
+    exclude: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -153,8 +161,31 @@ async fn search(
 ) -> Result<Json<SearchResponse>> {
     let q = params.q.trim();
 
-    let (templates, instances_by_template) =
+    let (templates, mut instances_by_template) =
         collect_visible_templates(&state, &auth, &scope).await?;
+
+    // Parse `exclude` once. Entries match against either template key or
+    // instance name (callers don't always know which level they want, and
+    // the two namespaces don't collide in practice).
+    let excluded: HashSet<String> = params
+        .exclude
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    // Drop excluded instances per-template; if a template ends up empty
+    // it'll be hidden by the connected-only filter below (or kept as a
+    // catalog row under `include_catalog`).
+    if !excluded.is_empty() {
+        for instances in instances_by_template.values_mut() {
+            instances.retain(|inst| !excluded.contains(&inst.name));
+        }
+        instances_by_template.retain(|_, v| !v.is_empty());
+    }
 
     // Default behavior: hide templates with no active instance bound to
     // the caller. `include_catalog=true` brings the global/org catalog
@@ -168,7 +199,9 @@ async fn search(
                 .filter(|t| instances_by_template.contains_key(&t.def.key)),
         )
     };
-    let visible_templates: Vec<&TemplateCandidate> = template_iter.collect();
+    let visible_templates: Vec<&TemplateCandidate> = template_iter
+        .filter(|t| !excluded.contains(&t.def.key))
+        .collect();
 
     if q.is_empty() {
         overslash_metrics::search::record_query("browse", "ok");

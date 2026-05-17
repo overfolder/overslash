@@ -419,7 +419,7 @@ async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) ->
         json!({
             "name": "overslash_search",
             "title": "Search Overslash services",
-            "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. An empty `query` lists every callable instance without actions (browse mode).",
+            "description": "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up with `overslash_auth.create_service_from_template` before calling. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every callable instance without actions (browse mode).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -431,6 +431,10 @@ async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) ->
                         "type": "boolean",
                         "default": false,
                         "description": "When true, also surface un-connected templates as `setup_required: true` rows. Default returns only configured instances the caller can call right now."
+                    },
+                    "exclude": {
+                        "type": "string",
+                        "description": "Comma-separated list of services to omit. Each entry matches against both the instance name (e.g. `gmail_work`) and the template key (e.g. `gmail`), so one entry can drop one instance or every instance of a template. Applied before scoring and `limit` truncation."
                     }
                 },
                 "additionalProperties": false
@@ -934,11 +938,16 @@ async fn dispatch_search(
         .get("include_catalog")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let path = format!(
+    let exclude = args.get("exclude").and_then(|v| v.as_str()).unwrap_or("");
+    let mut path = format!(
         "/v1/search?q={}&include_catalog={}",
         urlencoding::encode(q),
         include_catalog,
     );
+    if !exclude.is_empty() {
+        path.push_str("&exclude=");
+        path.push_str(&urlencoding::encode(exclude));
+    }
     forward(state, bearer, Method::GET, &path, None).await
 }
 

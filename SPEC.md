@@ -1105,6 +1105,7 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
 |---|---|---|---|
 | `query` | string | — | Free-text query. Empty string triggers browse mode (instances-only, no actions). |
 | `include_catalog` | bool | `false` | Default: only configured instances bound to the caller are returned. Set `true` to also surface un-connected templates as `setup_required: true` rows (handy when an agent is exploring what *could* be set up). |
+| `exclude` | string | — | Comma-separated list of services to omit. Each entry matches against **both** the instance name (e.g. `gmail_work`) and the template key (e.g. `gmail`); a single entry can drop one instance or every instance of a template. Whitespace around entries is trimmed. Applied before scoring + `limit` truncation so excluded rows never displace useful ones inside the response window. Equally honored in browse, keyword, and `include_catalog` modes. |
 
 **Default scope is connected-only.** This applies to both browse (`query=""`) and keyword queries. The motivation is that an agent is much more often trying to use what it already has than browse a catalog it hasn't been authorized for. `setup_required: true` rows only ever appear under `include_catalog=true`.
 
