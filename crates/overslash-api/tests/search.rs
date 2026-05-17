@@ -1659,3 +1659,48 @@ async fn exclude_param_strips_catalog_rows_under_include_catalog() {
         "stripe catalog row should be excluded: {results:?}"
     );
 }
+
+#[tokio::test]
+async fn exclude_param_hides_template_when_instance_exclude_empties_it_under_include_catalog() {
+    // Regression for the Seer-flagged edge case: excluding the ONLY
+    // connected instance of a template under `include_catalog=true` must
+    // hide the template entirely — not silently fall through to a
+    // `setup_required: true` catalog row. The user signaled "don't suggest
+    // this"; a setup-required suggestion contradicts that intent.
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-only",
+        conn,
+    )
+    .await;
+
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q=&include_catalog=true&exclude=gmail-only"
+        ))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.iter().any(|r| r["template"] == "gmail"),
+        "gmail template should disappear when its only instance is excluded — \
+         no setup_required fallback: {results:?}"
+    );
+}

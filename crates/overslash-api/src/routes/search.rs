@@ -177,12 +177,19 @@ async fn search(
         .map(str::to_string)
         .collect();
 
-    // Drop excluded instances per-template; if a template ends up empty
-    // it'll be hidden by the connected-only filter below (or kept as a
-    // catalog row under `include_catalog`).
+    // Drop excluded instances per-template. Track templates whose entire
+    // instance set was wiped by an instance-name exclusion — under
+    // `include_catalog=true` those would otherwise fall back to a
+    // `setup_required` catalog row, contradicting the user's intent to
+    // hide the service entirely.
+    let mut emptied_by_instance_exclude: HashSet<String> = HashSet::new();
     if !excluded.is_empty() {
-        for instances in instances_by_template.values_mut() {
+        for (template_key, instances) in instances_by_template.iter_mut() {
+            let had_instances = !instances.is_empty();
             instances.retain(|inst| !excluded.contains(&inst.name));
+            if had_instances && instances.is_empty() {
+                emptied_by_instance_exclude.insert(template_key.clone());
+            }
         }
         instances_by_template.retain(|_, v| !v.is_empty());
     }
@@ -201,6 +208,7 @@ async fn search(
     };
     let visible_templates: Vec<&TemplateCandidate> = template_iter
         .filter(|t| !excluded.contains(&t.def.key))
+        .filter(|t| !emptied_by_instance_exclude.contains(&t.def.key))
         .collect();
 
     if q.is_empty() {
