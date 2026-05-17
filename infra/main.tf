@@ -264,6 +264,9 @@ module "metrics_exporter_job" {
   db_name                   = module.cloud_sql.db_name
   db_password_secret_id     = module.secret_manager.db_password_secret_id
 
+  use_private_vpc  = var.use_private_vpc
+  vpc_connector_id = var.use_private_vpc ? module.networking[0].vpc_connector_id : ""
+
   depends_on = [
     module.cloud_sql,
     module.secret_manager,

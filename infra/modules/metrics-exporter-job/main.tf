@@ -76,6 +76,18 @@ variable "task_timeout" {
   description = "Per-execution timeout. Generous compared to the typical run (~1s) so a transient DB hiccup doesn't fail the job."
 }
 
+variable "use_private_vpc" {
+  type        = bool
+  default     = false
+  description = "When true, the job is attached to the VPC connector so it can reach Cloud SQL on a private IP."
+}
+
+variable "vpc_connector_id" {
+  type        = string
+  default     = ""
+  description = "Serverless VPC Access connector ID. Required when use_private_vpc = true."
+}
+
 resource "google_cloud_run_v2_job" "exporter" {
   name     = "${var.base_prefix}-metrics-exporter"
   location = var.region
@@ -87,6 +99,15 @@ resource "google_cloud_run_v2_job" "exporter" {
       timeout         = var.task_timeout
 
       max_retries = 1
+
+      # VPC access required when Cloud SQL has private IP only (use_private_vpc=true).
+      dynamic "vpc_access" {
+        for_each = var.use_private_vpc ? [1] : []
+        content {
+          connector = var.vpc_connector_id
+          egress    = "PRIVATE_RANGES_ONLY"
+        }
+      }
 
       volumes {
         name = "cloudsql"
