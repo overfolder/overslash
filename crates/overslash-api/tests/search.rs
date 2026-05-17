@@ -1365,3 +1365,342 @@ async fn call_with_template_name_returns_structured_error() {
         "hint missing from structured error: {body}"
     );
 }
+
+#[tokio::test]
+async fn exclude_param_drops_template_by_key() {
+    // `exclude=gmail` removes every Gmail row regardless of how many
+    // instances are connected. Other templates surface normally. Exercises
+    // the template-key match arm of the dual-namespace exclusion.
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-a",
+        conn,
+    )
+    .await;
+    create_api_key_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "resend",
+        "resend-a",
+        "resend_key",
+    )
+    .await;
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q=&exclude=gmail"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.iter().any(|r| r["template"] == "gmail"),
+        "gmail rows should be excluded: {results:?}"
+    );
+    assert!(
+        results.iter().any(|r| r["template"] == "resend"),
+        "non-excluded resend must still surface: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn exclude_param_drops_specific_instance() {
+    // `exclude=gmail-work` drops only that one instance; the sibling
+    // `gmail-personal` (same template) still surfaces. Exercises the
+    // instance-name match arm.
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn_work = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "work@example.com",
+    )
+    .await;
+    let conn_personal = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "personal@example.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-work",
+        conn_work,
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-personal",
+        conn_personal,
+    )
+    .await;
+
+    let body: Value = client
+        .get(format!("{base}/v1/search?q=&exclude=gmail-work"))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    let gmail_rows: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == "gmail")
+        .collect();
+    assert_eq!(
+        gmail_rows.len(),
+        1,
+        "exactly one gmail row should remain after excluding gmail-work: {gmail_rows:?}"
+    );
+    assert_eq!(
+        gmail_rows[0]["service"], "gmail-personal",
+        "surviving row should be gmail-personal: {}",
+        gmail_rows[0]
+    );
+}
+
+#[tokio::test]
+async fn exclude_param_accepts_comma_separated_list_and_trims_whitespace() {
+    // Multiple entries in a single param, with surrounding whitespace,
+    // should all be dropped. Mixes a template key (`gmail`) and an
+    // instance name (`resend-b`) to prove dual-namespace matching works
+    // in one list.
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-a",
+        conn,
+    )
+    .await;
+    create_api_key_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "resend",
+        "resend-a",
+        "secret_a",
+    )
+    .await;
+    create_api_key_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "resend",
+        "resend-b",
+        "secret_b",
+    )
+    .await;
+
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q=&exclude={}",
+            urlencoding::encode("gmail, resend-b")
+        ))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.iter().any(|r| r["template"] == "gmail"),
+        "gmail (template-level exclude) should be gone: {results:?}"
+    );
+    let resend_rows: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == "resend")
+        .collect();
+    assert_eq!(
+        resend_rows.len(),
+        1,
+        "only one resend instance should remain (resend-b excluded): {resend_rows:?}"
+    );
+    assert_eq!(
+        resend_rows[0]["service"], "resend-a",
+        "surviving resend row should be resend-a: {}",
+        resend_rows[0]
+    );
+}
+
+#[tokio::test]
+async fn exclude_param_applies_in_keyword_mode() {
+    // Keyword search must respect `exclude` too — otherwise excluded rows
+    // displace useful ones within the limit window, defeating the point.
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-a",
+        conn,
+    )
+    .await;
+    create_api_key_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "resend",
+        "resend-a",
+        "resend_key",
+    )
+    .await;
+
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q={}&include_catalog=true&exclude=gmail",
+            urlencoding::encode("send an email")
+        ))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.iter().any(|r| r["template"] == "gmail"),
+        "gmail rows should be absent from keyword results: {results:?}"
+    );
+    assert!(
+        results.iter().any(|r| r["template"] == "resend"),
+        "non-excluded resend must still appear in keyword results: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn exclude_param_strips_catalog_rows_under_include_catalog() {
+    // Under `include_catalog=true`, an excluded template should also have
+    // its setup_required catalog row removed (consistent semantics across
+    // both modes — `exclude` means "I don't want to see this at all").
+    let (base, client, _, admin_key, _) = bootstrap().await;
+
+    let baseline: Value = client
+        .get(format!("{base}/v1/search?q=&include_catalog=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        baseline["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["template"] == "stripe"),
+        "baseline must include stripe under include_catalog=true: {baseline}"
+    );
+
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q=&include_catalog=true&exclude=stripe"
+        ))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.iter().any(|r| r["template"] == "stripe"),
+        "stripe catalog row should be excluded: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn exclude_param_hides_template_when_instance_exclude_empties_it_under_include_catalog() {
+    // Regression for the Seer-flagged edge case: excluding the ONLY
+    // connected instance of a template under `include_catalog=true` must
+    // hide the template entirely — not silently fall through to a
+    // `setup_required: true` catalog row. The user signaled "don't suggest
+    // this"; a setup-required suggestion contradicts that intent.
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-only",
+        conn,
+    )
+    .await;
+
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q=&include_catalog=true&exclude=gmail-only"
+        ))
+        .header(auth(&fixtures.admin_key).0, auth(&fixtures.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.iter().any(|r| r["template"] == "gmail"),
+        "gmail template should disappear when its only instance is excluded — \
+         no setup_required fallback: {results:?}"
+    );
+}
