@@ -23,7 +23,9 @@ use crate::{
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, WriteAcl},
     services::action_caller::{self, AuditSource, CallContext, CallOutcome, ReplayPayload},
+    services::group_ceiling,
     services::mcp_caller,
+    services::platform_caller,
 };
 
 /// Maximum bytes of `action_detail` returned on approval responses. The raw
@@ -1141,17 +1143,16 @@ async fn execute_claimed_approval(
     }
 
     // Prefer the raw `replay_payload` column — it carries the full
-    // ActionRequest (HTTP) or full MCP call (url/auth/tool/arguments),
-    // unaffected by x-overslash-redact which only reshapes the UI-facing
-    // `action_detail`.
+    // ActionRequest (HTTP), full MCP call (url/auth/tool/arguments), or full
+    // platform call (action/params), unaffected by x-overslash-redact which
+    // only reshapes the UI-facing `action_detail`.
     //
-    // The `action_detail` fallback is for legacy HTTP rows (pre-feature,
-    // when replay_payload didn't exist and action_detail was the bare
-    // ActionRequest). Legacy MCP / platform approvals have an action_detail
-    // *projection* (`{ runtime, tool, arguments, ... }` or `{ runtime,
-    // action, params, ... }`) — not enough to actually replay, since
-    // url/auth were never persisted. For those we preserve the pre-feature
-    // 409 instead of attempting a doomed parse that would land as 500.
+    // The `action_detail` fallback is for legacy HTTP/platform rows
+    // (pre-`replay_payload`). Legacy platform projections (`{ runtime,
+    // action, params, service }`) are themselves valid `StoredPlatformCall`
+    // shapes and parse cleanly via the fallback. Legacy MCP rows are not
+    // replayable — only a UI-redacted projection was stored, missing the
+    // url/auth needed to actually replay.
     let replay_value = match approval.replay_payload.clone() {
         Some(v) => v,
         None => match approval.action_detail.clone() {
@@ -1166,17 +1167,6 @@ async fn execute_claimed_approval(
                             "replay of MCP-runtime approvals created before this feature \
                              is not supported"
                                 .into(),
-                        ),
-                    )
-                    .await;
-                }
-                if runtime == Some("platform") {
-                    return fail_and_return(
-                        scope,
-                        execution_id,
-                        "platform_replay_not_supported",
-                        AppError::Conflict(
-                            "replay of platform-runtime approvals is not yet supported".into(),
                         ),
                     )
                     .await;
@@ -1196,18 +1186,6 @@ async fn execute_claimed_approval(
             }
         },
     };
-    // Platform-runtime approvals (with replay_payload set) — still no
-    // replay path. The legacy fallback above handles the action_detail-only
-    // case; this guard catches future replay_payload variants if any.
-    if replay_value.get("runtime").and_then(|v| v.as_str()) == Some("platform") {
-        return fail_and_return(
-            scope,
-            execution_id,
-            "platform_replay_not_supported",
-            AppError::Conflict("replay of platform-runtime approvals is not yet supported".into()),
-        )
-        .await;
-    }
     let payload = match ReplayPayload::from_stored(&replay_value) {
         Ok(p) => p,
         Err(e) => {
@@ -1217,7 +1195,7 @@ async fn execute_claimed_approval(
                 execution_id,
                 &msg,
                 AppError::Internal(format!(
-                    "approval replay payload is not a valid HTTP/MCP request: {e}"
+                    "approval replay payload is not a valid HTTP/MCP/Platform request: {e}"
                 )),
             )
             .await;
@@ -1361,6 +1339,107 @@ async fn execute_claimed_approval(
                         "runtime": "mcp",
                         "tool": call.tool,
                         "duration_ms": result.duration_ms,
+                    });
+                    let finalised = scope
+                        .finalize_execution_executed(execution_id, &result_json)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, true, Some(summary))
+                }
+                Ok(Err(app_err)) => {
+                    let msg = app_err.to_string();
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, &msg)
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
+                }
+                Err(_elapsed) => {
+                    let finalised = scope
+                        .finalize_execution_failed(execution_id, "replay_timeout")
+                        .await?
+                        .unwrap_or(claimed);
+                    (finalised, false, None)
+                }
+            }
+        }
+        ReplayPayload::Platform(call) => {
+            // Platform replays re-dispatch via the shared
+            // `platform_caller::invoke` helper, mirroring the direct
+            // `/v1/actions/call` happy path. The requester's ceiling user
+            // (and thus their access level) is recomputed against current
+            // state — if they've been demoted between approval-creation and
+            // replay, the new ceiling applies.
+            //
+            // Ceiling-resolution failure (e.g. archived identity) falls
+            // through with `(finalised, false, None)` like the other error
+            // paths so the shared audit/webhook tail still emits
+            // `approval.execution_failed`.
+            let ceiling_outcome =
+                group_ceiling::resolve_ceiling_user_id(scope, approval.identity_id).await;
+            let outcome = match ceiling_outcome {
+                Ok(ceiling_user_id) => {
+                    let params: std::collections::HashMap<String, serde_json::Value> =
+                        call.params.clone().into_iter().collect();
+                    tokio::time::timeout(
+                        replay_timeout,
+                        platform_caller::invoke(
+                            state,
+                            scope,
+                            approval.identity_id,
+                            ceiling_user_id,
+                            &call.action,
+                            params,
+                        ),
+                    )
+                    .await
+                }
+                Err(e) => Ok(Err(e)),
+            };
+            match outcome {
+                Ok(Ok(value)) => {
+                    let result = overslash_core::types::ActionResult {
+                        status_code: 200,
+                        body: serde_json::to_string(&value).unwrap_or_default(),
+                        headers: std::collections::HashMap::new(),
+                        duration_ms: 0,
+                        filtered_body: None,
+                    };
+                    let mut result_json = serde_json::to_value(&result)
+                        .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
+                    // Stamp a top-level `runtime` so `extract_runtime` (which
+                    // probes the stored result for the `ExecutionSummary`
+                    // payload) classifies platform executions correctly
+                    // instead of falling through the `status_code` check and
+                    // misreporting them as HTTP to the dashboard.
+                    if let Some(obj) = result_json.as_object_mut() {
+                        obj.insert("runtime".into(), serde_json::json!("platform"));
+                    }
+                    // Mirror the MCP branch's `action.executed` audit, stamped
+                    // with replayed_from_approval / execution_id so reviewers
+                    // can trace platform replays in the audit log.
+                    let audit_detail = serde_json::json!({
+                        "runtime": "platform",
+                        "action": &call.action,
+                        "service": &call.service,
+                        "replayed_from_approval": id,
+                        "execution_id": execution_id,
+                    });
+                    let _ = scope
+                        .log_audit(AuditEntry {
+                            org_id: audit_org_id,
+                            identity_id: Some(approval.identity_id),
+                            action: "action.executed",
+                            resource_type: call.service.as_deref(),
+                            resource_id: None,
+                            detail: audit_detail,
+                            description: Some(approval.action_summary.as_str()),
+                            ip_address: ip,
+                        })
+                        .await;
+                    let summary = serde_json::json!({
+                        "runtime": "platform",
+                        "action": &call.action,
                     });
                     let finalised = scope
                         .finalize_execution_executed(execution_id, &result_json)
