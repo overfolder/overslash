@@ -88,22 +88,44 @@ pub struct StoredMcpCall {
     pub arguments: serde_json::Value,
 }
 
-/// Either runtime's replay payload, disambiguated by JSON shape rather than a
+/// Replay payload for a platform-runtime approval. Stored on
+/// `approvals.replay_payload` and read back by the Platform branch of the
+/// replay handler at `POST /v1/approvals/{id}/call`. The top-level
+/// `"runtime": "platform"` marker is what distinguishes this shape from
+/// `StoredCallRequest` and `StoredMcpCall` at parse time. The fields mirror
+/// the `action_detail` projection (`runtime`/`service`/`action`/`params`) so
+/// legacy rows whose `replay_payload` is NULL but whose `action_detail`
+/// carries the same shape can also be replayed via the existing fallback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPlatformCall {
+    pub runtime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub action: String,
+    #[serde(default)]
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Replay payload for any runtime, disambiguated by JSON shape rather than a
 /// serde tag — older HTTP rows on disk have no `runtime` field, so a tagged
-/// enum would break them. HTTP and MCP shapes have disjoint top-level keys
-/// (`action`/`method` vs `tool`), so detection is unambiguous.
+/// enum would break them. Detection order: platform (explicit
+/// `runtime: "platform"`), then MCP (`tool` key), then HTTP (everything
+/// else / pre-feature shape).
 pub enum ReplayPayload {
     Http(StoredCallRequest),
     Mcp(StoredMcpCall),
+    Platform(StoredPlatformCall),
 }
 
 impl ReplayPayload {
     pub fn from_stored(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
-        if value.get("tool").is_some() {
-            Ok(Self::Mcp(serde_json::from_value(value.clone())?))
-        } else {
-            Ok(Self::Http(StoredCallRequest::from_stored_detail(value)?))
+        if value.get("runtime").and_then(|v| v.as_str()) == Some("platform") {
+            return Ok(Self::Platform(serde_json::from_value(value.clone())?));
         }
+        if value.get("tool").is_some() {
+            return Ok(Self::Mcp(serde_json::from_value(value.clone())?));
+        }
+        Ok(Self::Http(StoredCallRequest::from_stored_detail(value)?))
     }
 }
 

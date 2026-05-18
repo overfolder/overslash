@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use overslash_core::permissions::AccessLevel;
 use overslash_core::registry::ServiceRegistry;
+use overslash_db::scopes::OrgScope;
 
+use crate::AppState;
 use crate::config::Config;
 use crate::error::AppError;
 
@@ -43,3 +45,49 @@ pub trait PlatformHandler: Send + Sync {
 }
 
 pub type PlatformRegistry = HashMap<String, Box<dyn PlatformHandler + Send + Sync>>;
+
+/// Look up and dispatch a platform-runtime handler. Shared by the direct
+/// `/v1/actions/call` dispatch path and the approval-replay path at
+/// `POST /v1/approvals/{id}/call`. Returns the raw `Value` the handler
+/// produced — caller wraps it into the appropriate response envelope
+/// (`CallResponse::Called` inline, or an `ActionResult` for an execution row).
+///
+/// `ceiling_user_id` is recomputed by the caller from the requester's
+/// identity (typically `group_ceiling::resolve_ceiling_user_id`). At replay
+/// time this means the access level reflects current state — if the requester
+/// has been demoted since the approval was created, the new ceiling applies.
+pub async fn invoke(
+    state: &AppState,
+    scope: &OrgScope,
+    identity_id: Uuid,
+    ceiling_user_id: Uuid,
+    action_key: &str,
+    params: HashMap<String, Value>,
+) -> Result<Value, AppError> {
+    let handler = state.platform_registry.get(action_key).ok_or_else(|| {
+        AppError::Internal(format!("platform handler '{action_key}' not registered"))
+    })?;
+
+    let access_level = {
+        let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
+        ceiling
+            .grants
+            .iter()
+            .filter(|g| g.template_key == "overslash")
+            .filter_map(|g| AccessLevel::parse(&g.access_level))
+            .max()
+            .unwrap_or(AccessLevel::Read)
+    };
+
+    let ctx = PlatformCallContext {
+        org_id: scope.org_id(),
+        identity_id: Some(identity_id),
+        access_level,
+        db: state.db.clone(),
+        registry: Arc::clone(&state.registry),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
+    };
+
+    handler.call(ctx, params).await
+}
