@@ -43,7 +43,7 @@ use crate::{
     error::AppError,
     extractors::{AuthContext, ClientIp},
     services::{
-        action_caller::{StoredCallRequest, StoredMcpCall},
+        action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
         disclosure, group_ceiling, http_caller, mcp_caller,
         oauth::OAuthError,
         platform_connections,
@@ -52,7 +52,7 @@ use crate::{
 };
 use overslash_core::{
     crypto, disclosure as core_disclosure,
-    permissions::{AccessLevel, GroupCeilingResult, PermissionKey, SuggestedTier, suggest_tiers},
+    permissions::{GroupCeilingResult, PermissionKey, SuggestedTier, suggest_tiers},
     secret_injection::inject_secrets,
     types::{
         ActionRequest, ActionResult, DisclosureField, FilteredBody, InjectAs, McpAuth, Runtime,
@@ -729,9 +729,16 @@ async fn call_action_impl(
                 //
                 // MCP-runtime approvals get a different shape (StoredMcpCall)
                 // disambiguated at parse time by the top-level `tool` key.
-                // Platform-runtime is still None (no replay path).
-                let replay_payload = if meta.platform_target.is_some() {
-                    None
+                // Platform-runtime gets StoredPlatformCall, disambiguated by
+                // an explicit top-level `runtime: "platform"` marker.
+                let replay_payload = if let Some(pt) = meta.platform_target.as_ref() {
+                    serde_json::to_value(StoredPlatformCall {
+                        runtime: "platform".into(),
+                        service: meta.service_scope.as_ref().map(|s| s.service_key.clone()),
+                        action: pt.action_key.clone(),
+                        params: pt.params.clone(),
+                    })
+                    .ok()
                 } else if let Some(target) = meta.mcp_target.as_ref() {
                     serde_json::to_value(StoredMcpCall {
                         url: target.url.clone(),
@@ -950,41 +957,22 @@ async fn call_action_impl(
     // ── Platform dispatch fork ───────────────────────────────────────
     // Platform-runtime services are dispatched in-process to the handler
     // registry. No HTTP call, no secret injection, no streaming path.
+    // The dispatch itself (handler lookup, access-level computation, ctx
+    // construction) is shared with the approval-replay path at
+    // `POST /v1/approvals/{id}/call` via `platform_caller::invoke`.
     if let Some(pt) = meta.platform_target.as_ref() {
-        let handler = state.platform_registry.get(&pt.action_key).ok_or_else(|| {
-            AppError::Internal(format!(
-                "platform handler '{}' not registered",
-                pt.action_key
-            ))
-        })?;
-
-        let platform_access_level = {
-            let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
-            ceiling
-                .grants
-                .iter()
-                .filter(|g| g.template_key == "overslash")
-                .filter_map(|g| AccessLevel::parse(&g.access_level))
-                .max()
-                .unwrap_or(AccessLevel::Read)
-        };
-        let ctx = crate::services::platform_caller::PlatformCallContext {
-            org_id: auth.org_id,
-            // The action gateway already requires an identity-bound key
-            // (see `BadRequest("api key must be bound to an identity")`
-            // earlier in this function), so `Some(identity_id)` here is
-            // always populated.
-            identity_id: Some(identity_id),
-            access_level: platform_access_level,
-            db: state.db.clone(),
-            registry: std::sync::Arc::clone(&state.registry),
-            config: state.config.clone(),
-            http_client: state.http_client.clone(),
-        };
         let params: std::collections::HashMap<String, serde_json::Value> =
             pt.params.clone().into_iter().collect();
 
-        let value = handler.call(ctx, params).await?;
+        let value = crate::services::platform_caller::invoke(
+            &state,
+            &scope,
+            identity_id,
+            ceiling_user_id,
+            &pt.action_key,
+            params,
+        )
+        .await?;
 
         let audit_detail = serde_json::json!({
             "runtime": "platform",
