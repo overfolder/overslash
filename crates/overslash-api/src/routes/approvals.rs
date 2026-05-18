@@ -1405,8 +1405,16 @@ async fn execute_claimed_approval(
                         duration_ms: 0,
                         filtered_body: None,
                     };
-                    let result_json = serde_json::to_value(&result)
+                    let mut result_json = serde_json::to_value(&result)
                         .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
+                    // Stamp a top-level `runtime` so `extract_runtime` (which
+                    // probes the stored result for the `ExecutionSummary`
+                    // payload) classifies platform executions correctly
+                    // instead of falling through the `status_code` check and
+                    // misreporting them as HTTP to the dashboard.
+                    if let Some(obj) = result_json.as_object_mut() {
+                        obj.insert("runtime".into(), serde_json::json!("platform"));
+                    }
                     // Mirror the MCP branch's `action.executed` audit, stamped
                     // with replayed_from_approval / execution_id so reviewers
                     // can trace platform replays in the audit log.

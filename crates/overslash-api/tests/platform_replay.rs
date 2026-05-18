@@ -97,6 +97,17 @@ async fn platform_approval_replay_succeeds() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["execution"]["status"], "executed");
 
+    // ExecutionSummary's `runtime` field is derived from the stored result
+    // envelope via `extract_runtime`. A platform replay must classify as
+    // `"platform"` so the dashboard renders the right runtime pill and
+    // suppresses `http_status_code` (which is meaningless here).
+    assert_eq!(body["execution"]["runtime"], "platform");
+    assert!(
+        body["execution"]["http_status_code"].is_null(),
+        "platform runtime must not surface http_status_code, got: {:?}",
+        body["execution"]["http_status_code"]
+    );
+
     let result_body = body["execution"]["result"]["body"]
         .as_str()
         .expect("execution.result.body string");
