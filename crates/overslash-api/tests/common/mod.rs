@@ -668,6 +668,7 @@ where
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer,
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -810,6 +811,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -942,6 +944,7 @@ pub async fn start_api_with_auth_providers(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1405,6 +1408,7 @@ pub async fn start_api_with_registry(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1539,6 +1543,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1645,6 +1650,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()

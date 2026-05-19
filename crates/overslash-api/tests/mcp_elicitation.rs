@@ -1202,5 +1202,6 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     }
 }
