@@ -446,7 +446,17 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .layer(axum::middleware::from_fn(
             overslash_metrics::http::middleware,
         ))
-        .layer(TraceLayer::new_for_http());
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
+                tracing::debug_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    version = ?request.version(),
+                    org = tracing::field::Empty,
+                )
+            }),
+        );
 
     Ok(app)
 }

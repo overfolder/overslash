@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, si.template_id, si.connection_id, si.secret_name, si.url, si.status, si.is_system, si.created_at, si.updated_at FROM service_instances si WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' AND EXISTS ( SELECT 1 FROM group_grants gg JOIN identity_groups ig ON ig.group_id = gg.group_id JOIN groups g ON g.id = gg.group_id WHERE ig.identity_id = $3 AND gg.service_instance_id = si.id AND g.org_id = $1 )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_identity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "template_source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "template_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "template_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "connection_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "secret_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "is_system",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ea2f7518fe85f0e2f58f0848f71a0fbbd939b3b25e2ccfd8348fdc8248e0e883"
+}

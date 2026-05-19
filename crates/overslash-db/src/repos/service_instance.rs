@@ -123,6 +123,8 @@ pub(crate) async fn get_by_name(
 ///    agent's owner user has created are always reachable by the agent, regardless of
 ///    group membership.
 /// 4. Org-level instance (`owner_identity_id IS NULL`).
+/// 5. Group-granted instance — the ceiling user has a group grant covering this instance
+///    by name. Consistent with the visibility `search` returns via `get_visible_service_ids`.
 ///
 /// Use `get_by_name` for any-status lookups.
 pub(crate) async fn resolve_by_name(
@@ -188,8 +190,8 @@ pub(crate) async fn resolve_by_name(
         }
     }
 
-    // Fall through to org scope
-    sqlx::query_as!(
+    // Org-level instance (no owner).
+    let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
          template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
@@ -199,7 +201,39 @@ pub(crate) async fn resolve_by_name(
         raw_name,
     )
     .fetch_optional(pool)
-    .await
+    .await?;
+    if org_instance.is_some() {
+        return Ok(org_instance);
+    }
+
+    // Group-granted: the ceiling user has a group grant for this instance.
+    // Mirrors what `get_visible_service_ids` + `list_available_with_groups` returns in search,
+    // so an instance visible via search is also callable by name.
+    if let Some(user_id) = ceiling_user_id {
+        return sqlx::query_as!(
+            ServiceInstanceRow,
+            "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
+             si.template_id, si.connection_id, si.secret_name, si.url, si.status, si.is_system, \
+             si.created_at, si.updated_at \
+             FROM service_instances si \
+             WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' \
+               AND EXISTS ( \
+                 SELECT 1 FROM group_grants gg \
+                 JOIN identity_groups ig ON ig.group_id = gg.group_id \
+                 JOIN groups g ON g.id = gg.group_id \
+                 WHERE ig.identity_id = $3 \
+                   AND gg.service_instance_id = si.id \
+                   AND g.org_id = $1 \
+               )",
+            org_id,
+            raw_name,
+            user_id,
+        )
+        .fetch_optional(pool)
+        .await;
+    }
+
+    Ok(None)
 }
 
 /// Resolve a service instance by name with the same user-shadows-org semantics
