@@ -1601,3 +1601,251 @@ async fn remove_grant_returns_403_for_non_admin_on_admins() {
         "overslash grant should still be present on Admins"
     );
 }
+
+/// Regression test for the search/call desync: an instance owned by another
+/// identity but shared to a user via a group grant must be resolvable by name
+/// in the call path, not just in search.
+///
+/// Scenario mirrors the production bug — service owned by user B, viewer is
+/// agent under user A. Both users are in the same group, the group has a
+/// grant on the instance. Without the group-granted fallback in
+/// `resolve_by_name` step 5, search returns the row (via `get_visible_service_ids`)
+/// but `/v1/actions/call` returns 404.
+#[tokio::test]
+async fn group_granted_instance_is_callable_by_name() {
+    let (base, org_key, user_a_id, _user_a_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // User B owns the service. Use a separate identity from user A so the
+    // ceiling-user-owned step in resolve_by_name misses and step 5 (group
+    // grant) is the only path that can find it.
+    let user_b: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "user-b", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_b_id: Uuid = user_b["id"].as_str().unwrap().parse().unwrap();
+    let user_b_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"org_id": user_b["org_id"], "identity_id": user_b_id, "name": "user-b-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_b_key = user_b_key_resp["key"].as_str().unwrap();
+
+    // Agent under user A — this is the caller.
+    let agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "agent", "kind": "agent", "parent_id": user_a_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    let agent_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"org_id": agent["org_id"], "identity_id": agent_id, "name": "agent-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_api_key = agent_key["key"].as_str().unwrap();
+
+    // Template (org-level so both users can instantiate against it).
+    let openapi = common::minimal_openapi("shared_svc");
+    let tpl_resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"openapi": openapi, "user_level": false}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        tpl_resp.status().is_success(),
+        "create template failed: status={} body={}",
+        tpl_resp.status(),
+        tpl_resp.text().await.unwrap()
+    );
+
+    // User-level instance owned by user B — created with user B's own key so
+    // the ownership lands on user B. This is the production shape — instance
+    // owned by user X, viewed by an agent owned by a different user.
+    let svc_resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {user_b_key}"))
+        .json(&json!({
+            "template_key": "shared_svc",
+            "name": "shared_svc",
+            "user_level": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    let svc_status = svc_resp.status();
+    let svc: Value = svc_resp.json().await.unwrap();
+    assert!(
+        svc_status.is_success(),
+        "create user-level service failed: status={svc_status} body={svc}"
+    );
+    let svc_id: Uuid = svc["id"].as_str().unwrap().parse().unwrap();
+
+    // Group with user A in it, then grant the (user-B-owned) instance.
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "SharedServices"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+
+    let member_resp = client
+        .post(format!("{base}/v1/groups/{group_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_a_id}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        member_resp.status().is_success(),
+        "add user_a to group failed: status={} body={}",
+        member_resp.status(),
+        member_resp.text().await.unwrap()
+    );
+
+    let grant_resp = client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"service_instance_id": svc_id, "access_level": "write"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        grant_resp.status().is_success(),
+        "grant service to group failed: status={} body={}",
+        grant_resp.status(),
+        grant_resp.text().await.unwrap()
+    );
+
+    // Search from the agent must find it.
+    let search: Value = client
+        .get(format!("{base}/v1/search?q=shared_svc"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        search["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["service"].as_str() == Some("shared_svc")),
+        "search should find the group-granted instance"
+    );
+
+    // Call must NOT return 404 — the instance is group-visible so it must resolve.
+    // The minimal-openapi service points at https://shared_svc.example.com which
+    // won't actually respond, so the call may still fail (timeout / DNS / etc.);
+    // but it must not return 404 with "no service named 'shared_svc'".
+    let call_resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .json(&json!({"service": "shared_svc", "action": "list_items", "params": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        call_resp.status().as_u16(),
+        404,
+        "call should not return 404 for a group-granted instance"
+    );
+
+    // Dashboard surface mirrors the same desync. `GET /v1/services/{name}/actions`
+    // resolves via `resolve_by_name_any_status` (which had the same gap until
+    // step 5 was added there too). Exercising it here pins the parity.
+    let actions_resp = client
+        .get(format!("{base}/v1/services/shared_svc/actions"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        actions_resp.status().as_u16(),
+        200,
+        "list-actions on a group-granted instance should resolve via any_status fallback"
+    );
+
+    // Negative: a third user (no group membership) cannot resolve the instance.
+    let user_c: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "user-c", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_c_id: Uuid = user_c["id"].as_str().unwrap().parse().unwrap();
+    let other_agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "other-agent", "kind": "agent", "parent_id": user_c_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_agent_id: Uuid = other_agent["id"].as_str().unwrap().parse().unwrap();
+    let other_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"org_id": other_agent["org_id"], "identity_id": other_agent_id, "name": "other-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_api_key = other_key["key"].as_str().unwrap();
+
+    let negative_call = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {other_api_key}"))
+        .json(&json!({"service": "shared_svc", "action": "list_items", "params": {}}))
+        .send()
+        .await
+        .unwrap();
+    let neg_status = negative_call.status().as_u16();
+    let neg_body = negative_call.text().await.unwrap();
+    // Either 404 (no instance resolved) or 403 (template resolved but no
+    // group grant covers it) is correct — the point is the agent without a
+    // group grant cannot call. 200 (and the request reaching the executor)
+    // would mean the fix had leaked visibility too widely.
+    assert!(
+        neg_status == 404 || neg_status == 403,
+        "agent without a group grant should be denied (got status={neg_status} body={neg_body})"
+    );
+}

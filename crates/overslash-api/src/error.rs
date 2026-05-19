@@ -261,6 +261,10 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let sc = self.status_code();
+        if sc.as_u16() >= 400 {
+            tracing::debug!(error = %self, status = sc.as_u16(), "api error");
+        }
         let (status, message) = match &self {
             Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             Self::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),

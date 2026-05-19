@@ -56,6 +56,9 @@ pub async fn subdomain_middleware(
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
+    if let RequestOrgContext::Org { ref slug, .. } = ctx {
+        tracing::Span::current().record("org", slug.as_str());
+    }
     request.extensions_mut().insert(ctx);
     next.run(request).await
 }
