@@ -7,12 +7,13 @@ use serde_json::json;
 
 #[tokio::test]
 async fn test_filter_jq_happy_path() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1_000_000).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, api_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Mock /echo returns {"headers":..., "body": "<request body string>", "uri": "/echo"}.
     // We POST a JSON envelope, then ask jq to parse the inner body and
@@ -65,12 +66,13 @@ async fn test_filter_jq_happy_path() {
 
 #[tokio::test]
 async fn test_filter_jq_syntax_error_returns_400() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1_000_000).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, api_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let resp = client
         .post(format!("{base}/v1/actions/call"))
@@ -94,12 +96,13 @@ async fn test_filter_jq_syntax_error_returns_400() {
 
 #[tokio::test]
 async fn test_filter_body_not_json_returns_200_with_envelope() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1_000_000).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, api_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // /large-file returns N bytes of 0xAB with content-type
     // application/octet-stream. After utf8-lossy decoding, this is N
@@ -131,12 +134,13 @@ async fn test_filter_body_not_json_returns_200_with_envelope() {
 
 #[tokio::test]
 async fn test_filter_runtime_error_returns_envelope() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1_000_000).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, api_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // POST /echo with a JSON body. The echo response has `.body` (the
     // string `"{\"a\":1}"`). Calling `tonumber` on a non-numeric string
@@ -165,12 +169,13 @@ async fn test_filter_runtime_error_returns_envelope() {
 
 #[tokio::test]
 async fn test_filter_rejected_with_prefer_stream() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1_000_000).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, api_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let resp = client
         .post(format!("{base}/v1/actions/call"))
@@ -197,13 +202,14 @@ async fn test_filter_rejected_with_prefer_stream() {
 
 #[tokio::test]
 async fn test_filter_does_not_rescue_oversized_upstream() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     // 1 KB body limit, request 10 KB upstream.
     let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
     let base = format!("http://{api_addr}");
 
-    let (_org_id, _ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, api_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let resp = client
         .post(format!("{base}/v1/actions/call"))
