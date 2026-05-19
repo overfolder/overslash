@@ -216,6 +216,12 @@ variable "email_api_key_secret_id" {
   description = "GSM secret ID holding the provider API key (Resend `re_…`). Only consumed when email_provider != \"\"."
 }
 
+variable "rust_log" {
+  type        = string
+  default     = "info"
+  description = "RUST_LOG value passed to the API container. Override per-env (e.g. `debug` for dev)."
+}
+
 variable "enable_metrics_sidecar" {
   type        = bool
   default     = true
@@ -253,7 +259,7 @@ locals {
       # picked up when an org hasn't set its own credentials. Org-level BYO
       # via POST /v1/org/oauth-credentials/google still takes precedence.
       OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS = "1"
-      RUST_LOG                                       = "info"
+      RUST_LOG                                       = var.rust_log
       SERVICES_DIR                                   = "/app/services"
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},

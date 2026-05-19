@@ -1,6 +1,7 @@
 project_id = "overslash-dev"
 region     = "europe-west1"
 env        = "dev"
+rust_log   = "debug"
 
 # Apex API host. Kept as a real Cloud Run domain mapping so the apex stays
 # reachable when `enable_api_lb = false` (dev runs without GCLB to save cost).

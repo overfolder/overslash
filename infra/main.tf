@@ -158,6 +158,7 @@ module "cloud_run" {
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
   enable_metrics_sidecar = var.enable_metrics_sidecar
+  rust_log               = var.rust_log
 
   depends_on = [
     module.cloud_sql,
