@@ -525,6 +525,7 @@ pub async fn mint_upgrade_auth_url(
                 byoc_credential_id: conn.byoc_credential_id,
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
+                return_url: None,
             },
             RequestMeta::default(),
         )
@@ -554,6 +555,7 @@ pub async fn mint_upgrade_auth_url(
                 byoc_credential_id: conn.byoc_credential_id,
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
+                return_url: None,
             },
             RequestMeta::default(),
         )
