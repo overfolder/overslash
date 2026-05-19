@@ -207,8 +207,8 @@ pub(crate) async fn resolve_by_name(
     }
 
     // Group-granted: the ceiling user has a group grant for this instance.
-    // Mirrors what `get_visible_service_ids` + `list_available_with_groups` returns in search,
-    // so an instance visible via search is also callable by name.
+    // Mirrors the join used by `get_visible_service_ids` so an instance
+    // visible via search is also callable by name.
     if let Some(user_id) = ceiling_user_id {
         return sqlx::query_as!(
             ServiceInstanceRow,
@@ -220,9 +220,11 @@ pub(crate) async fn resolve_by_name(
                AND EXISTS ( \
                  SELECT 1 FROM group_grants gg \
                  JOIN identity_groups ig ON ig.group_id = gg.group_id \
+                 JOIN identities i ON i.id = ig.identity_id \
                  JOIN groups g ON g.id = gg.group_id \
                  WHERE ig.identity_id = $3 \
                    AND gg.service_instance_id = si.id \
+                   AND i.org_id = $1 \
                    AND g.org_id = $1 \
                )",
             org_id,
@@ -237,8 +239,9 @@ pub(crate) async fn resolve_by_name(
 }
 
 /// Resolve a service instance by name with the same user-shadows-org semantics
-/// as [`resolve_by_name`], but without filtering by status. Used by the dashboard
-/// detail view, which must be able to inspect draft and archived instances.
+/// as [`resolve_by_name`] — including the group-granted fallback (step 5) —
+/// but without filtering by status. Used by the dashboard detail view, which
+/// must be able to inspect draft and archived instances.
 pub async fn resolve_by_name_any_status(
     pool: &PgPool,
     org_id: Uuid,
@@ -298,7 +301,7 @@ pub async fn resolve_by_name_any_status(
         }
     }
 
-    sqlx::query_as!(
+    let org_instance = sqlx::query_as!(
         ServiceInstanceRow,
         "SELECT id, org_id, owner_identity_id, name, template_source, template_key, \
          template_id, connection_id, secret_name, url, status, is_system, created_at, updated_at \
@@ -308,7 +311,39 @@ pub async fn resolve_by_name_any_status(
         raw_name,
     )
     .fetch_optional(pool)
-    .await
+    .await?;
+    if org_instance.is_some() {
+        return Ok(org_instance);
+    }
+
+    // Group-granted: same visibility logic as resolve_by_name step 5.
+    if let Some(user_id) = ceiling_user_id {
+        return sqlx::query_as!(
+            ServiceInstanceRow,
+            "SELECT si.id, si.org_id, si.owner_identity_id, si.name, si.template_source, si.template_key, \
+             si.template_id, si.connection_id, si.secret_name, si.url, si.status, si.is_system, \
+             si.created_at, si.updated_at \
+             FROM service_instances si \
+             WHERE si.org_id = $1 AND si.name = $2 \
+               AND EXISTS ( \
+                 SELECT 1 FROM group_grants gg \
+                 JOIN identity_groups ig ON ig.group_id = gg.group_id \
+                 JOIN identities i ON i.id = ig.identity_id \
+                 JOIN groups g ON g.id = gg.group_id \
+                 WHERE ig.identity_id = $3 \
+                   AND gg.service_instance_id = si.id \
+                   AND i.org_id = $1 \
+                   AND g.org_id = $1 \
+               )",
+            org_id,
+            raw_name,
+            user_id,
+        )
+        .fetch_optional(pool)
+        .await;
+    }
+
+    Ok(None)
 }
 
 /// List org-level instances.

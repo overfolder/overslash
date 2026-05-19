@@ -1601,3 +1601,153 @@ async fn remove_grant_returns_403_for_non_admin_on_admins() {
         "overslash grant should still be present on Admins"
     );
 }
+
+/// Regression test for the search/call desync: an instance owned by another
+/// identity but shared to a user via a group grant must be resolvable by name
+/// in the call path, not just in search.
+#[tokio::test]
+async fn group_granted_instance_is_callable_by_name() {
+    let (base, org_key, user_id, _user_key) = bootstrap().await;
+    let client = reqwest::Client::new();
+
+    // Create an agent under the user.
+    let agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "agent", "kind": "agent", "parent_id": user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    let agent_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"org_id": agent["org_id"], "identity_id": agent_id, "name": "agent-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_api_key = agent_key["key"].as_str().unwrap();
+
+    // Create a group, add the user, create an org-level service instance,
+    // and grant it to the group — simulating an admin sharing a service.
+    let group: Value = client
+        .post(format!("{base}/v1/groups"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "SharedServices"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let group_id = group["id"].as_str().unwrap();
+
+    client
+        .post(format!("{base}/v1/groups/{group_id}/members"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"identity_id": user_id}))
+        .send()
+        .await
+        .unwrap();
+
+    // Org-level service (owned by no one — admin-created).
+    let svc_id = create_org_service(&base, &client, &org_key, "shared_svc").await;
+
+    client
+        .post(format!("{base}/v1/groups/{group_id}/grants"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"service_instance_id": svc_id, "access_level": "write"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Search from the agent must find it.
+    let search: Value = client
+        .get(format!("{base}/v1/search?q=shared_svc"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        search["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["service"].as_str() == Some("shared_svc")),
+        "search should find the group-granted instance"
+    );
+
+    // Call must NOT return 404 — the instance is group-visible so it should resolve.
+    // The http service has no auth/secrets so the call path reaches execution
+    // (which may itself fail if the service has no URL, but the point is it does
+    // NOT return 404 for "service not found").
+    let call_resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .json(&json!({"service": "shared_svc", "action": "list", "params": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        call_resp.status().as_u16(),
+        404,
+        "call should not return 404 for a group-granted instance"
+    );
+
+    // Negative: an agent from a different user should NOT resolve the instance by name.
+    let other_user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "other-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_user_id: Uuid = other_user["id"].as_str().unwrap().parse().unwrap();
+    let other_agent: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "other-agent", "kind": "agent", "parent_id": other_user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_agent_id: Uuid = other_agent["id"].as_str().unwrap().parse().unwrap();
+    let other_key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"org_id": other_agent["org_id"], "identity_id": other_agent_id, "name": "other-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let other_api_key = other_key["key"].as_str().unwrap();
+
+    let negative_call = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {other_api_key}"))
+        .json(&json!({"service": "shared_svc", "action": "list", "params": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        negative_call.status().as_u16(),
+        404,
+        "agent without a group grant should get 404"
+    );
+}
