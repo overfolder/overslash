@@ -1076,6 +1076,69 @@ pub async fn bootstrap_org_identity(base: &str, client: &Client) -> (Uuid, Uuid,
     (org_id, ident_id, api_key, org_api_key)
 }
 
+/// Faster counterpart to [`bootstrap_org_identity`] for tests that start from a
+/// bootstrapped pool: skips the org + org-key HTTP calls (they're already baked
+/// into the template) and just creates the test-user / test-agent / agent-key
+/// triple. Returns the same trailing shape: `(user_id, agent_id, agent_key)`.
+/// Pair with `test_pool_bootstrapped()` to migrate tests that previously did
+/// `(_, _, agent_key, admin_key) = bootstrap_org_identity(...)`: substitute
+/// `admin_key` with `fx.org_key` (semantically identical — org-bound key).
+pub async fn bootstrap_agent_on_fixtures(
+    base: &str,
+    client: &Client,
+    fx: &BootstrapFixtures,
+) -> (Uuid, Uuid, String) {
+    let user_ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {}", fx.org_key))
+        .json(&json!({"name": "test-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_id: Uuid = user_ident["id"].as_str().unwrap().parse().unwrap();
+
+    let ident: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {}", fx.org_key))
+        .json(&json!({"name": "test-agent", "kind": "agent", "parent_id": user_id}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
+
+    // Match `bootstrap_org_identity`: disable auto-call-on-approve so the
+    // suite's manual /call flow keeps winning the execution claim race.
+    client
+        .patch(format!(
+            "{base}/v1/identities/{ident_id}/auto-call-on-approve"
+        ))
+        .header("Authorization", format!("Bearer {}", fx.org_key))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+
+    let key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {}", fx.org_key))
+        .json(&json!({"org_id": fx.org_id, "identity_id": ident_id, "name": "agent-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let api_key = key_resp["key"].as_str().unwrap().to_string();
+
+    (user_id, ident_id, api_key)
+}
+
 pub fn auth(key: &str) -> (&'static str, String) {
     ("Authorization", format!("Bearer {key}"))
 }

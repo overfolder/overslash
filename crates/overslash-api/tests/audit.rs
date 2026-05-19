@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{auth, bootstrap_org_identity, start_api, start_mock};
+use common::{auth, bootstrap_agent_on_fixtures, bootstrap_org_identity, start_api, start_mock};
 use overslash_db::repos::audit::{AuditEntry, AuditFilter};
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -108,10 +108,16 @@ fn filter(org_id: Uuid) -> AuditFilter {
 }
 
 /// Full bootstrap: org + identity + identity-bound key + permissions + API base URL.
-async fn setup_with_perm(pool: PgPool, pattern: &str) -> (String, String, Uuid, Uuid, Client) {
+async fn setup_with_perm(
+    pool: PgPool,
+    fx: &common::BootstrapFixtures,
+    pattern: &str,
+) -> (String, String, Uuid, Uuid, Client) {
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, fx).await;
+    let admin_key = fx.org_key.clone();
+    let org_id = fx.org_id;
 
     client
         .post(format!("{base}/v1/permissions"))
@@ -647,8 +653,8 @@ async fn test_audit_api_requires_auth() {
 
 #[tokio::test]
 async fn test_audit_api_response_shape() {
-    let pool = common::test_pool().await;
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
     let mock_addr = start_mock().await;
 
     client
@@ -687,8 +693,8 @@ async fn test_audit_api_response_shape() {
 
 #[tokio::test]
 async fn test_audit_api_pagination() {
-    let pool = common::test_pool().await;
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
     let mock_addr = start_mock().await;
 
     for _ in 0..3 {
@@ -728,10 +734,10 @@ async fn test_audit_api_pagination() {
 
 #[tokio::test]
 async fn test_audit_api_filter_by_action() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Store a secret → secret.put audit entry
     client
@@ -752,10 +758,10 @@ async fn test_audit_api_filter_by_action() {
 
 #[tokio::test]
 async fn test_audit_api_filter_by_resource_type() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Store a secret → resource_type=secret
     client
@@ -814,8 +820,8 @@ async fn test_audit_api_org_isolation() {
 
 #[tokio::test]
 async fn test_audit_action_called() {
-    let pool = common::test_pool().await;
-    let (base, key, _org_id, ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
     let mock_addr = start_mock().await;
 
     let resp = client
@@ -871,10 +877,10 @@ async fn test_audit_action_called() {
 
 #[tokio::test]
 async fn test_audit_approval_created() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let mock_addr = start_mock().await;
 
     // Store secret, no permission → triggers approval
@@ -922,10 +928,11 @@ async fn test_audit_approval_created() {
 
 #[tokio::test]
 async fn test_audit_approval_resolved() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
     let mock_addr = start_mock().await;
     // The bootstrap helper already returns an org-level admin key — agents
     // are not allowed to resolve their own approvals, so we use that one.
@@ -976,10 +983,10 @@ async fn test_audit_approval_resolved() {
 
 #[tokio::test]
 async fn test_audit_secret_put() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, _) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     client
         .put(format!("{base}/v1/secrets/my_key"))
@@ -998,10 +1005,11 @@ async fn test_audit_secret_put() {
 
 #[tokio::test]
 async fn test_audit_secret_deleted() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     client
         .put(format!("{base}/v1/secrets/to_delete"))
@@ -1030,10 +1038,11 @@ async fn test_audit_secret_deleted() {
 
 #[tokio::test]
 async fn test_audit_permission_rule_created() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     client
         .post(format!("{base}/v1/permissions"))
@@ -1051,10 +1060,11 @@ async fn test_audit_permission_rule_created() {
 
 #[tokio::test]
 async fn test_audit_permission_rule_deleted() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .post(format!("{base}/v1/permissions"))
@@ -1085,10 +1095,11 @@ async fn test_audit_permission_rule_deleted() {
 
 #[tokio::test]
 async fn test_audit_webhook_created() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     client
         .post(format!("{base}/v1/webhooks"))
@@ -1106,10 +1117,11 @@ async fn test_audit_webhook_created() {
 
 #[tokio::test]
 async fn test_audit_webhook_deleted() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .post(format!("{base}/v1/webhooks"))
@@ -1140,10 +1152,11 @@ async fn test_audit_webhook_deleted() {
 
 #[tokio::test]
 async fn test_audit_byoc_credential_created() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
@@ -1166,10 +1179,11 @@ async fn test_audit_byoc_credential_created() {
 
 #[tokio::test]
 async fn test_audit_byoc_credential_deleted() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .post(format!("{base}/v1/byoc-credentials"))
@@ -1195,10 +1209,11 @@ async fn test_audit_byoc_credential_deleted() {
 
 #[tokio::test]
 async fn test_audit_byoc_delete_nonexistent_no_entry() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     let fake_id = Uuid::new_v4();
     client
@@ -1218,10 +1233,11 @@ async fn test_audit_byoc_delete_nonexistent_no_entry() {
 
 #[tokio::test]
 async fn test_audit_noop_deletes_no_entries() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     // Delete non-existent webhook
     let fake = Uuid::new_v4();
@@ -1269,10 +1285,11 @@ async fn test_audit_noop_deletes_no_entries() {
 
 #[tokio::test]
 async fn test_audit_mixed_events() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, ident_id, key, admin_key) = bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
     let mock_addr = start_mock().await;
 
     // BYOC credential
@@ -1400,8 +1417,8 @@ async fn test_query_audit_log_overwrites_filter_org_id() {
 
 #[tokio::test]
 async fn test_audit_api_includes_identity_path() {
-    let pool = common::test_pool().await;
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
     let mock_addr = start_mock().await;
 
     client
@@ -1419,7 +1436,7 @@ async fn test_audit_api_includes_identity_path() {
     let path = entries[0]["identity_path"]
         .as_str()
         .expect("identity_path should be present for resolvable identities");
-    // bootstrap_org_identity wires: org → user "test-user" → agent "test-agent".
+    // bootstrap_agent_on_fixtures wires: user "test-user" → agent "test-agent".
     assert!(
         path.starts_with("spiffe://"),
         "expected SPIFFE-format path, got {path}"
@@ -1436,8 +1453,8 @@ async fn test_audit_api_includes_identity_path() {
 
 #[tokio::test]
 async fn test_audit_api_filter_by_event_id() {
-    let pool = common::test_pool().await;
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, "http:**").await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
     let mock_addr = start_mock().await;
 
     // Generate two action.executed entries.
