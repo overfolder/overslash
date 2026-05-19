@@ -1,28 +1,21 @@
-//! Regression test for the cross-user / group-granted re-auth bug.
+//! Cross-user group-granted re-auth path.
 //!
-//! Scenario (matches the live `overfolder-dev` repro on `google_calendar_angel`):
+//! Scenario:
 //!
 //! - User A owns the calling agent.
 //! - User B owns a user-level service instance with an expired, no-refresh
 //!   OAuth connection.
 //! - A group contains both users, with a `write` grant on the instance.
 //!
-//! `resolve_by_name` step 5 (group-granted) correctly resolves the instance,
-//! so the call reaches the OAuth recovery path. There, `mint_upgrade_auth_url`
-//! sees `conn.identity_id (B) != caller_identity_id (A's agent)` and sets
-//! `on_behalf_of = Some(B)`. `validate_on_behalf_of` then rejects the call
-//! because the caller's ceiling user (A) is not the target (B), surfacing
-//! a 403 "caller may only act on_behalf_of its owner user" instead of the
-//! expected typed 401 `reauth_required` envelope.
-//!
-//! The fix should either:
-//!   1) Skip `on_behalf_of` (or refuse the mint) for cross-user group-granted
-//!      connections, returning a clear typed error that names the owner; OR
-//!   2) Loosen `validate_on_behalf_of` for the upgrade-flow path when the
-//!      caller has a group grant on the connection's service instance.
-//!
-//! Today (HEAD on the `fix-...-reauth` branch base) this test fails: the
-//! call returns 403 with the misleading body instead of the structured 401.
+//! `resolve_by_name` resolves the instance via the group grant, so the
+//! call reaches the OAuth recovery path. Because the caller's ceiling
+//! user (A) differs from the connection owner (B), the recovery helper
+//! could naively thread `on_behalf_of = B` into the kernel — which the
+//! ceiling check refuses, surfacing 403 "caller may only act
+//! on_behalf_of its owner user". This test asserts that does NOT happen:
+//! the group grant is the caller's authorisation, and the recovery
+//! helper must mint a normal 401 `reauth_required` envelope for it
+//! (same shape the same-user expired-token case produces).
 
 #![allow(clippy::disallowed_methods)]
 
@@ -238,6 +231,209 @@ async fn group_granted_cross_user_reauth_does_not_403() {
         status,
         StatusCode::UNAUTHORIZED,
         "expected 401 reauth_required, got status={status} body={body_text}"
+    );
+    let body: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(body["error"], "reauth_required");
+    assert_eq!(
+        body["connection_id"].as_str().unwrap(),
+        connection_id.to_string()
+    );
+}
+
+/// Sibling negative test: the fix MUST NOT widen access for callers
+/// without a group grant. Same setup as above minus the shared group, so
+/// caller A is just an unrelated user reaching a B-owned, B-bound
+/// connection. The validate_on_behalf_of ceiling check must still
+/// refuse — losing this assertion would mean any caller could mint a
+/// re-auth URL for any other user's OAuth connection.
+#[tokio::test]
+async fn non_group_granted_cross_user_reauth_still_403() {
+    let pool = common::test_pool().await;
+
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", "x_test_client");
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
+    }
+
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, _agent_a_id, agent_a_key, org_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // User B + B-owned instance bound to an expired no-refresh connection.
+    let user_b: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({"name": "user-b", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_b_id: Uuid = user_b["id"].as_str().unwrap().parse().unwrap();
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, user_b_id, "x").await;
+
+    let user_b_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "org_id": org_id,
+            "identity_id": user_b_id,
+            "name": "user-b-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_b_key = user_b_key_resp["key"].as_str().unwrap();
+
+    let svc_resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {user_b_key}"))
+        .json(&json!({
+            "template_key": "x",
+            "name": "x_b_private",
+            "user_level": true,
+            "status": "active",
+            "connection_id": connection_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(svc_resp.status().is_success());
+
+    // No group containing both users — A has no path to B's connection.
+    // The call must NOT successfully resolve through the group-grant
+    // fallback in resolve_by_name step 5 either; the layer 1 ceiling will
+    // refuse before reauth ever runs. Either way, the request must NOT
+    // surface a successful reauth_required envelope or otherwise let A
+    // touch B's connection.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_a_key}"))
+        .json(&json!({
+            "service": "x_b_private",
+            "action": "get_me",
+            "params": {},
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap();
+    assert!(
+        status != StatusCode::OK && status != StatusCode::UNAUTHORIZED,
+        "without a group grant, the reauth path must not succeed — \
+         got status={status} body={body_text}"
+    );
+}
+
+/// Pins the legacy cross-identity branch: an agent calling its OWN owner
+/// user's connection. No group grant is involved — the connection belongs
+/// to the agent's ceiling user, so `mint_upgrade_auth_url` falls through
+/// to `on_behalf_of: Some(conn.identity_id)` and `validate_on_behalf_of`
+/// accepts because `ceiling(agent) == conn.identity_id`. The same 401
+/// `reauth_required` envelope must come back as the same-identity path.
+///
+/// This case predates the group-granted branch but is structurally easy
+/// to break in a refactor, so pin it.
+#[tokio::test]
+async fn agent_acting_for_own_owner_user_reauth_succeeds() {
+    let pool = common::test_pool().await;
+
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", "x_test_client");
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
+    }
+
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    // bootstrap_org_identity creates `test-user` and an agent `test-agent`
+    // under it, returning the agent's key. The agent's owner_id is the user.
+    let (org_id, _agent_id, agent_api_key, org_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Fetch the owner user's id (the agent's ceiling user).
+    let identities: Value = client
+        .get(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owner_user_id: Uuid = identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"].as_str() == Some("test-user"))
+        .and_then(|r| r["id"].as_str())
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Connection lives on the owner user (the agent's ceiling), not on
+    // the agent itself. Token expired, no refresh.
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, owner_user_id, "x").await;
+
+    // User-level instance owned by the same user, bound to the connection.
+    let owner_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&json!({
+            "org_id": org_id,
+            "identity_id": owner_user_id,
+            "name": "owner-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owner_key = owner_key_resp["key"].as_str().unwrap();
+    let svc_resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({
+            "template_key": "x",
+            "name": "x_owned",
+            "user_level": true,
+            "status": "active",
+            "connection_id": connection_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(svc_resp.status().is_success());
+
+    // Call from the agent. resolve_by_name finds the instance via the
+    // ceiling-user-owned step (3), then the reauth path takes the
+    // `on_behalf_of: Some(conn.identity_id)` branch because the connection
+    // is owned by a different identity (the user) than the agent. The
+    // ceiling check accepts because the target IS the agent's owner user.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .json(&json!({
+            "service": "x_owned",
+            "action": "get_me",
+            "params": {},
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "agent calling its own owner user's connection should reauth — \
+         got status={status} body={body_text}"
     );
     let body: Value = serde_json::from_str(&body_text).unwrap();
     assert_eq!(body["error"], "reauth_required");

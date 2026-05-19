@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n             SELECT 1\n             FROM group_grants gg\n             JOIN identity_groups ig ON ig.group_id = gg.group_id\n             JOIN identities i ON i.id = ig.identity_id\n             JOIN groups g ON g.id = gg.group_id\n             JOIN service_instances si ON si.id = gg.service_instance_id\n             WHERE ig.identity_id = $1\n               AND i.org_id = $2\n               AND g.org_id = $2\n               AND si.org_id = $2\n               AND si.connection_id = $3\n         ) AS \"has_access!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "has_access!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2a469a2ed2d36dbb948007cb35e18ebb015ed986cc9d2f2adaffd1540efe84d8"
+}
