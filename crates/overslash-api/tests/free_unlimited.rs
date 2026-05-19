@@ -69,6 +69,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately
     // observe the new state without waiting on cache expiry. Tests that want

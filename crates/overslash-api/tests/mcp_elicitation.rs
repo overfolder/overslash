@@ -1177,6 +1177,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     overslash_api::AppState {

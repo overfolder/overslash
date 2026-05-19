@@ -148,6 +148,15 @@ pub struct Config {
     /// a defense-in-depth gate alongside `preview_origin_allowlist`: the
     /// preview-handoff feature is off unless this is exactly `dev`.
     pub overslash_env: Option<String>,
+    /// Hosts the OAuth callback is willing to 302 to when the create-flow
+    /// caller supplied a `return_url`. Operator-owned allow-list — without
+    /// it, an attacker who can fabricate a state could fish OAuth completion
+    /// state through an arbitrary URL. Comma-separated host list from
+    /// `OVERSLASH_CONNECTION_RETURN_URL_HOSTS` (e.g.
+    /// `cloud.overfolder.com,localhost`); matched exact + lowercase. An
+    /// empty list disables the redirect feature entirely (callback falls
+    /// back to the historical JSON response).
+    pub connection_return_url_allowed_hosts: Vec<String>,
 }
 
 /// Parse the `PREVIEW_ORIGIN_ALLOWLIST` env var into a compiled regex.
@@ -177,6 +186,16 @@ fn parse_preview_origin_allowlist(raw: Option<&str>) -> Option<regex::Regex> {
             None
         }
     }
+}
+
+fn parse_connection_return_url_allowed_hosts(raw: Option<&str>) -> Vec<String> {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    s.split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect()
 }
 
 fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
@@ -423,6 +442,11 @@ impl Config {
                 env::var("PREVIEW_ORIGIN_ALLOWLIST").ok().as_deref(),
             ),
             overslash_env: env::var("OVERSLASH_ENV").ok().filter(|s| !s.is_empty()),
+            connection_return_url_allowed_hosts: parse_connection_return_url_allowed_hosts(
+                env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
+                    .ok()
+                    .as_deref(),
+            ),
         }
     }
 
@@ -1032,6 +1056,7 @@ mod tests {
             email_api_key: None,
             preview_origin_allowlist: None,
             overslash_env: None,
+            connection_return_url_allowed_hosts: Vec::new(),
         }
     }
 }

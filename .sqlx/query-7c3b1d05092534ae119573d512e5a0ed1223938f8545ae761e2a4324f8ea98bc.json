@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO oauth_connection_flows\n            (id, org_id, identity_id, actor_identity_id, provider_key,\n             byoc_credential_id, scopes, pkce_code_verifier,\n             upstream_authorize_url, expires_at,\n             created_ip, created_user_agent)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n         RETURNING id, org_id, identity_id, actor_identity_id, provider_key,\n                   byoc_credential_id, scopes, pkce_code_verifier,\n                   upstream_authorize_url, expires_at, consumed_at,\n                   created_at, created_ip, created_user_agent",
+  "query": "UPDATE oauth_connection_flows\n            SET consumed_at = now()\n          WHERE id = $1\n            AND consumed_at IS NULL\n            AND expires_at > now()\n          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,\n                    byoc_credential_id, scopes, pkce_code_verifier,\n                    upstream_authorize_url, expires_at, consumed_at,\n                    created_at, created_ip, created_user_agent, return_url",
   "describe": {
     "columns": [
       {
@@ -72,21 +72,15 @@
         "ordinal": 13,
         "name": "created_user_agent",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "return_url",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Uuid",
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Uuid",
-        "TextArray",
-        "Text",
-        "Text",
-        "Timestamptz",
-        "Text",
         "Text"
       ]
     },
@@ -104,8 +98,9 @@
       true,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "0b64e21de12daea222309e49ca9970b12b1a5eee4259e20313917aea5e7890bd"
+  "hash": "7c3b1d05092534ae119573d512e5a0ed1223938f8545ae761e2a4324f8ea98bc"
 }

@@ -637,6 +637,7 @@ where
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
     customize(&mut config);
 
@@ -780,6 +781,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let state = overslash_api::AppState {
@@ -908,6 +910,7 @@ pub async fn start_api_with_auth_providers(
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let state = overslash_api::AppState {
@@ -1310,6 +1313,7 @@ pub async fn start_api_with_registry(
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let state = overslash_api::AppState {
@@ -1443,6 +1447,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let state = overslash_api::AppState {
@@ -1548,6 +1553,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let state = overslash_api::AppState {
