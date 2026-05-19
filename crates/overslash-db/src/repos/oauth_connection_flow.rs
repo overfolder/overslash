@@ -35,6 +35,10 @@ pub struct OauthConnectionFlowRow {
     pub created_at: OffsetDateTime,
     pub created_ip: Option<String>,
     pub created_user_agent: Option<String>,
+    /// Optional tenant-supplied URL the OAuth callback redirects back to
+    /// after success/error (when its host is on the operator allow-list).
+    /// `None` falls back to the historical JSON response.
+    pub return_url: Option<String>,
 }
 
 pub struct CreateOauthConnectionFlow<'a> {
@@ -50,6 +54,7 @@ pub struct CreateOauthConnectionFlow<'a> {
     pub expires_at: OffsetDateTime,
     pub created_ip: Option<&'a str>,
     pub created_user_agent: Option<&'a str>,
+    pub return_url: Option<&'a str>,
 }
 
 pub async fn create(
@@ -62,12 +67,12 @@ pub async fn create(
             (id, org_id, identity_id, actor_identity_id, provider_key,
              byoc_credential_id, scopes, pkce_code_verifier,
              upstream_authorize_url, expires_at,
-             created_ip, created_user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             created_ip, created_user_agent, return_url)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,
                    byoc_credential_id, scopes, pkce_code_verifier,
                    upstream_authorize_url, expires_at, consumed_at,
-                   created_at, created_ip, created_user_agent",
+                   created_at, created_ip, created_user_agent, return_url",
         input.id,
         input.org_id,
         input.identity_id,
@@ -80,6 +85,7 @@ pub async fn create(
         input.expires_at,
         input.created_ip,
         input.created_user_agent,
+        input.return_url,
     )
     .fetch_one(pool)
     .await
@@ -97,7 +103,7 @@ pub async fn get_by_id(
         "SELECT id, org_id, identity_id, actor_identity_id, provider_key,
                 byoc_credential_id, scopes, pkce_code_verifier,
                 upstream_authorize_url, expires_at, consumed_at,
-                created_at, created_ip, created_user_agent
+                created_at, created_ip, created_user_agent, return_url
            FROM oauth_connection_flows WHERE id = $1",
         id,
     )
@@ -121,7 +127,7 @@ pub async fn consume(
           RETURNING id, org_id, identity_id, actor_identity_id, provider_key,
                     byoc_credential_id, scopes, pkce_code_verifier,
                     upstream_authorize_url, expires_at, consumed_at,
-                    created_at, created_ip, created_user_agent",
+                    created_at, created_ip, created_user_agent, return_url",
         id,
     )
     .fetch_optional(pool)

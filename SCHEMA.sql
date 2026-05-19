@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict UUcxcMBG21C30WsecwEbdo0btK54DwUWSiKupwGhFbfzzXFtuX2bqN3ea0LmpQP
+\restrict Ue2xXtUVagvCgvOs8I3p5Cw7Ff9kRtPm3hNWaTwfP9Qd1IOOex9vHiakiKa1krA
 
--- Dumped from database version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
+-- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
@@ -98,6 +98,21 @@ CREATE TABLE public.audit_log (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     description text,
     impersonated_by_identity_id uuid
+);
+
+
+--
+-- Name: billing_email_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.billing_email_log (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    stripe_event_id text NOT NULL,
+    kind text NOT NULL,
+    user_id uuid NOT NULL,
+    attempted_at timestamp with time zone DEFAULT now() NOT NULL,
+    sent_at timestamp with time zone,
+    CONSTRAINT billing_email_log_kind_check CHECK ((kind = ANY (ARRAY['invoice_paid'::text, 'invoice_payment_failed'::text, 'subscription_canceled'::text])))
 );
 
 
@@ -371,7 +386,8 @@ CREATE TABLE public.oauth_connection_flows (
     consumed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_ip text,
-    created_user_agent text
+    created_user_agent text,
+    return_url text
 );
 
 
@@ -827,6 +843,22 @@ ALTER TABLE ONLY public.audit_log
 
 
 --
+-- Name: billing_email_log billing_email_log_event_kind_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.billing_email_log
+    ADD CONSTRAINT billing_email_log_event_kind_unique UNIQUE (stripe_event_id, kind);
+
+
+--
+-- Name: billing_email_log billing_email_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.billing_email_log
+    ADD CONSTRAINT billing_email_log_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: byoc_credentials byoc_credentials_org_id_identity_id_provider_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1224,6 +1256,20 @@ ALTER TABLE ONLY public.webhook_digest_runs
 
 ALTER TABLE ONLY public.webhook_subscriptions
     ADD CONSTRAINT webhook_subscriptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: billing_email_log_attempted_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX billing_email_log_attempted_at ON public.billing_email_log USING btree (attempted_at);
+
+
+--
+-- Name: billing_email_log_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX billing_email_log_user_id ON public.billing_email_log USING btree (user_id);
 
 
 --
@@ -1879,6 +1925,14 @@ ALTER TABLE ONLY public.audit_log
 
 
 --
+-- Name: billing_email_log billing_email_log_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.billing_email_log
+    ADD CONSTRAINT billing_email_log_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: byoc_credentials byoc_credentials_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2490,5 +2544,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict UUcxcMBG21C30WsecwEbdo0btK54DwUWSiKupwGhFbfzzXFtuX2bqN3ea0LmpQP
+\unrestrict Ue2xXtUVagvCgvOs8I3p5Cw7Ff9kRtPm3hNWaTwfP9Qd1IOOex9vHiakiKa1krA
 

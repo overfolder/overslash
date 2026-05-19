@@ -95,6 +95,63 @@ pub struct CreateConnectionInput {
     /// state-segment parser.
     #[serde(default)]
     pub upgrade_connection_id: Option<Uuid>,
+    /// Optional URL the callback redirects the user to after the flow
+    /// completes — e.g. `https://cloud.overfolder.com/oauth/overslash/callback`.
+    /// Format is validated at create time (https, no fragment/userinfo,
+    /// ≤2048 chars; `http://localhost` allowed for dev). The host must
+    /// additionally appear in the operator allow-list
+    /// (`OVERSLASH_CONNECTION_RETURN_URL_HOSTS`) at callback time —
+    /// otherwise the callback silently falls back to the default JSON
+    /// response, preserving today's behavior.
+    #[serde(default)]
+    pub return_url: Option<String>,
+}
+
+/// Maximum byte length for caller-supplied `return_url`. Cap is generous
+/// (we don't expect tenants to pack significant data into the URL) but
+/// finite — keeps the DB column honest and the redirect header sane.
+const RETURN_URL_MAX_LEN: usize = 2048;
+
+/// Parse and validate a caller-supplied `return_url`. Allow-list membership
+/// is intentionally **not** checked here — that gate lives at the callback
+/// so an allow-list misconfiguration falls back to JSON instead of
+/// breaking flow creation. See [`oauth_callback`].
+pub(crate) fn parse_return_url(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if raw.len() > RETURN_URL_MAX_LEN {
+        return Err(AppError::BadRequest(format!(
+            "return_url exceeds {RETURN_URL_MAX_LEN}-byte limit"
+        )));
+    }
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| AppError::BadRequest(format!("return_url is not a valid URL: {e}")))?;
+    // `url::Url::parse` accepts relative-looking inputs like `foo:bar` as
+    // opaque-data URLs; require a real authority with a host instead.
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::BadRequest("return_url must include a host".into()))?
+        .to_ascii_lowercase();
+    let scheme = parsed.scheme();
+    let scheme_ok = scheme == "https"
+        || (scheme == "http" && matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"));
+    if !scheme_ok {
+        return Err(AppError::BadRequest(
+            "return_url must use https (http allowed only for localhost)".into(),
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(AppError::BadRequest(
+            "return_url must not contain a fragment".into(),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::BadRequest(
+            "return_url must not contain userinfo".into(),
+        ));
+    }
+    Ok(Some(parsed.into()))
 }
 
 #[derive(Debug, Serialize)]
@@ -228,15 +285,31 @@ async fn kernel_create_connection_for_identity(
         .upgrade_connection_id
         .map_or_else(|| "_".to_string(), |id| id.to_string());
 
+    // Validate the caller-supplied return URL up front. The kernel mints
+    // the flow row below; we need a parsed value to persist and a
+    // 400-on-failure shape that flows out of `initiate_connection`.
+    let return_url = parse_return_url(input.return_url.as_deref())?;
+
+    // Allocate the flow id early so we can embed it in the OAuth state.
+    // The callback uses this id to look up the flow row and recover
+    // `return_url` — that's why it has to be in state, not just a
+    // server-side lookup key. The id is base62-opaque, already public
+    // (it appears in the `/connect-authorize?id=…` URL the user clicks),
+    // and is cross-checked against the rest of the state segments at
+    // callback time so a forged id can't redirect through someone
+    // else's flow.
+    let flow_id = svc::mint_flow_id();
+
     let oauth_state = format!(
-        "{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}",
         ctx.org_id,
         identity_id,
         input.provider,
         byoc_segment,
         verifier_segment,
         actor_segment,
-        upgrade_segment
+        upgrade_segment,
+        flow_id,
     );
 
     let raw_authorize_url = oauth::build_auth_url(
@@ -248,13 +321,10 @@ async fn kernel_create_connection_for_identity(
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
-    // Persist the gate-flow row. The flow id is the URL short-id (`?id=`)
-    // and is independent of the OAuth `state` — `state` is the security-
-    // critical parameter at the callback boundary; the flow id is just the
-    // gate's lookup key. We could collapse the two but keeping them
-    // separate matches `mcp_upstream_flow` and means rotating one doesn't
-    // affect the other.
-    let flow_id = svc::mint_flow_id();
+    // Persist the gate-flow row. `flow_id` was minted above so we could
+    // bake it into the OAuth state — it's the lookup key the callback
+    // uses to recover the `return_url` (and to cross-check the rest of
+    // the state segments against the row).
     let now = OffsetDateTime::now_utc();
     let expires_at = now + FLOW_TTL;
     let pkce_verifier = pkce.as_ref().map(|p| p.verifier.as_str());
@@ -274,6 +344,7 @@ async fn kernel_create_connection_for_identity(
             expires_at,
             created_ip: request_meta.ip,
             created_user_agent: request_meta.user_agent,
+            return_url: return_url.as_deref(),
         },
     )
     .await?;
@@ -391,6 +462,10 @@ pub async fn mint_initial_auth_url(
             byoc_credential_id: None,
             on_behalf_of,
             upgrade_connection_id: None,
+            // Action-handler auth-recovery doesn't surface a tenant
+            // return_url today; the URL the agent hands the user lands
+            // back on the default JSON response.
+            return_url: None,
         },
         RequestMeta::default(),
     )
@@ -450,6 +525,7 @@ pub async fn mint_upgrade_auth_url(
                 byoc_credential_id: conn.byoc_credential_id,
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
+                return_url: None,
             },
             RequestMeta::default(),
         )
@@ -479,6 +555,7 @@ pub async fn mint_upgrade_auth_url(
                 byoc_credential_id: conn.byoc_credential_id,
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
+                return_url: None,
             },
             RequestMeta::default(),
         )
@@ -504,6 +581,7 @@ pub async fn mint_upgrade_auth_url(
             byoc_credential_id: conn.byoc_credential_id,
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
+            return_url: None,
         },
         RequestMeta::default(),
     )
@@ -534,5 +612,62 @@ mod tests {
         assert!(merge_scopes(&[], &[]).is_empty());
         assert_eq!(merge_scopes(&["x".into()], &[]), vec!["x".to_string()]);
         assert_eq!(merge_scopes(&[], &["x".into()]), vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn parse_return_url_accepts_https() {
+        let parsed = parse_return_url(Some("https://cloud.overfolder.com/cb"))
+            .expect("valid")
+            .expect("present");
+        assert_eq!(parsed, "https://cloud.overfolder.com/cb");
+    }
+
+    #[test]
+    fn parse_return_url_accepts_http_localhost() {
+        let parsed = parse_return_url(Some("http://localhost:5173/cb?ref=x"))
+            .expect("valid")
+            .expect("present");
+        assert_eq!(parsed, "http://localhost:5173/cb?ref=x");
+    }
+
+    #[test]
+    fn parse_return_url_none_and_blank_pass_through_as_none() {
+        assert!(parse_return_url(None).unwrap().is_none());
+        assert!(parse_return_url(Some("")).unwrap().is_none());
+        assert!(parse_return_url(Some("   ")).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_return_url_rejects_plain_http_non_localhost() {
+        assert!(parse_return_url(Some("http://evil.example.com/cb")).is_err());
+    }
+
+    #[test]
+    fn parse_return_url_rejects_fragment() {
+        assert!(parse_return_url(Some("https://cloud.overfolder.com/cb#frag")).is_err());
+    }
+
+    #[test]
+    fn parse_return_url_rejects_userinfo() {
+        assert!(parse_return_url(Some("https://attacker@cloud.overfolder.com/cb")).is_err());
+        assert!(parse_return_url(Some("https://u:p@cloud.overfolder.com/cb")).is_err());
+    }
+
+    #[test]
+    fn parse_return_url_rejects_overlong() {
+        let mut s = String::from("https://cloud.overfolder.com/");
+        s.extend(std::iter::repeat_n('a', RETURN_URL_MAX_LEN));
+        assert!(parse_return_url(Some(&s)).is_err());
+    }
+
+    #[test]
+    fn parse_return_url_rejects_relative_and_unparseable() {
+        assert!(parse_return_url(Some("/just/a/path")).is_err());
+        assert!(parse_return_url(Some("not a url")).is_err());
+        // Schemes without an authority (no host) — e.g. `mailto:`,
+        // `javascript:` — must be rejected so the redirect can't escape
+        // to a non-HTTP target.
+        assert!(parse_return_url(Some("javascript:alert(1)")).is_err());
+        assert!(parse_return_url(Some("mailto:foo@example.com")).is_err());
     }
 }

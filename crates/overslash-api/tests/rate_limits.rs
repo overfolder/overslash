@@ -382,6 +382,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -633,6 +634,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -702,6 +704,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
     overslash_api::AppState {
         db: pool,
@@ -1091,6 +1094,7 @@ async fn test_cache_invalidation_user_budget() {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     // Prime the cache
@@ -1257,6 +1261,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let r1 = cache
