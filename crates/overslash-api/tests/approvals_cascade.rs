@@ -100,32 +100,16 @@ async fn create_api_key(
     resp["key"].as_str().unwrap().to_string()
 }
 
-async fn bootstrap(pool: sqlx::PgPool) -> (String, String, Uuid, std::net::SocketAddr) {
+async fn bootstrap(
+    pool: sqlx::PgPool,
+    fx: &common::BootstrapFixtures,
+) -> (String, String, Uuid, std::net::SocketAddr) {
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
     let mock_addr = common::start_mock().await;
 
-    let org: Value = client
-        .post(format!("{base}/v1/orgs"))
-        .json(&json!({"name": "CascadeOrg", "slug": format!("cascade-{}", Uuid::new_v4())}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-
-    let org_key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
+    let org_id = fx.org_id;
+    let org_key = fx.org_key.clone();
 
     // Cascade tests assert on `triggered_by="agent"` semantics from the
     // manual `/call` flow; flip the org default so every agent we
@@ -160,8 +144,8 @@ async fn approval_id_from_call(resp: reqwest::Response) -> String {
 
 #[tokio::test]
 async fn cascade_resolves_peer_under_placement_after_remember() {
-    let pool = common::test_pool().await;
-    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone(), &fx).await;
 
     // User → AgentA, with SubAgentS inheriting from AgentA.
     let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
@@ -252,8 +236,8 @@ async fn cascade_resolves_peer_under_placement_after_remember() {
 
 #[tokio::test]
 async fn cascade_skips_pending_approvals_with_unrelated_keys() {
-    let pool = common::test_pool().await;
-    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone(), &fx).await;
 
     let user_id = create_identity(&base, &org_key, "alice", "user", None).await;
     let agent_a_id = create_identity(&base, &org_key, "agent-a", "agent", Some(user_id)).await;
@@ -320,8 +304,8 @@ async fn cascade_skips_pending_approvals_with_unrelated_keys() {
 
 #[tokio::test]
 async fn cascade_ignores_approvals_outside_placement_subtree() {
-    let pool = common::test_pool().await;
-    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone()).await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, org_id, mock_addr) = bootstrap(pool.clone(), &fx).await;
 
     // Two sibling subtrees under the same user: AgentA / AgentB.
     // The new rule lands on AgentA — AgentB's pending approval must be

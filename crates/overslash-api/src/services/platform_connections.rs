@@ -210,10 +210,6 @@ pub async fn kernel_create_connection(
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
 
-    let provider = overslash_db::repos::oauth_provider::get_by_key(&ctx.db, &input.provider)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", input.provider)))?;
-
     // If on_behalf_of is set, validate it walks the agent's owner chain and
     // bind the resulting connection to the user instead of the calling agent.
     let identity_id = if let Some(target) = input.on_behalf_of {
@@ -221,6 +217,31 @@ pub async fn kernel_create_connection(
     } else {
         caller_identity_id
     };
+
+    kernel_create_connection_for_identity(ctx, identity_id, caller_identity_id, input, request_meta)
+        .await
+}
+
+/// Build the OAuth flow row + authorize URLs binding the eventual connection
+/// to `identity_id`, attributed to `caller_identity_id` for audit. No caller
+/// validation — the caller has already decided which identity the
+/// connection (or upgrade) belongs to.
+///
+/// Reachable from inside this module only. Two callers:
+///   - `kernel_create_connection` after `validate_on_behalf_of` has run.
+///   - `mint_upgrade_auth_url`'s group-granted cross-user branch, which
+///     authorises the call via `caller_has_group_access_to_connection`
+///     instead of the on_behalf_of ceiling check.
+async fn kernel_create_connection_for_identity(
+    ctx: PlatformCallContext,
+    identity_id: Uuid,
+    caller_identity_id: Uuid,
+    input: CreateConnectionInput,
+    request_meta: RequestMeta<'_>,
+) -> Result<CreateConnectionResponse, AppError> {
+    let provider = overslash_db::repos::oauth_provider::get_by_key(&ctx.db, &input.provider)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", input.provider)))?;
 
     let enc_key = ctx.config.keyring()?;
     let creds = crate::services::client_credentials::resolve(
@@ -475,13 +496,80 @@ pub async fn mint_upgrade_auth_url(
     extra_scopes: &[String],
 ) -> Result<AuthRecoveryUrls, AppError> {
     let scopes = merge_scopes(&conn.scopes, extra_scopes);
+    let scope = OrgScope::new(org_id, state.db.clone());
 
-    // If the connection belongs to a different identity than the caller
-    // (agent-on-behalf-of-user case), thread `on_behalf_of` so the kernel's
-    // ceiling-validation runs and the resulting flow updates the
-    // user-bound row rather than failing cross-identity.
-    let on_behalf_of = (conn.identity_id != caller_identity_id).then_some(conn.identity_id);
+    // The OAuth callback (`routes/connections.rs::oauth_callback`) updates
+    // the existing row in place when segment 7 carries `upgrade_connection_id`
+    // — it preserves `existing.identity_id` and just swaps tokens/scopes.
+    // So whichever identity threads through the state, the connection's
+    // owner is unchanged after the dance. Two cases to handle:
+    //
+    // (1) Same-identity caller. Nothing to validate; the existing kernel
+    //     handles it directly.
+    //
+    // (2) Cross-identity caller. Either an agent acting for its owner user
+    //     (handled by `on_behalf_of` + `validate_on_behalf_of`), or user A
+    //     reaching user B's connection via a group grant on a service
+    //     instance bound to it. The group-granted branch bypasses
+    //     `validate_on_behalf_of` because the group grant is itself the
+    //     caller's authorisation to touch the connection; running the
+    //     ceiling check on top would refuse a flow the resolver already
+    //     accepts at call time.
+    if conn.identity_id == caller_identity_id {
+        let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
+        let response = kernel_create_connection(
+            ctx,
+            CreateConnectionInput {
+                provider: conn.provider_key.clone(),
+                scopes,
+                byoc_credential_id: conn.byoc_credential_id,
+                on_behalf_of: None,
+                upgrade_connection_id: Some(conn.id),
+            },
+            RequestMeta::default(),
+        )
+        .await?;
+        return Ok(AuthRecoveryUrls {
+            auth_url: response.auth_url,
+            short: response.short,
+            raw: response.raw,
+        });
+    }
 
+    // Cross-identity. Try the group-granted path first.
+    let ceiling_user_id =
+        group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
+    let group_granted = scope
+        .caller_has_group_access_to_connection(ceiling_user_id, conn.id)
+        .await?;
+    if group_granted && ceiling_user_id != conn.identity_id {
+        let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
+        let response = kernel_create_connection_for_identity(
+            ctx,
+            conn.identity_id,
+            caller_identity_id,
+            CreateConnectionInput {
+                provider: conn.provider_key.clone(),
+                scopes,
+                byoc_credential_id: conn.byoc_credential_id,
+                on_behalf_of: None,
+                upgrade_connection_id: Some(conn.id),
+            },
+            RequestMeta::default(),
+        )
+        .await?;
+        return Ok(AuthRecoveryUrls {
+            auth_url: response.auth_url,
+            short: response.short,
+            raw: response.raw,
+        });
+    }
+
+    // No group grant — fall through to the existing agent-on-behalf-of-owner
+    // path. `validate_on_behalf_of` will accept when the caller's ceiling
+    // user equals the connection owner (i.e. an agent calling its own
+    // owner user's connection) and reject otherwise. This preserves the
+    // original boundary for callers with neither relationship.
     let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
     let response = kernel_create_connection(
         ctx,
@@ -489,7 +577,7 @@ pub async fn mint_upgrade_auth_url(
             provider: conn.provider_key.clone(),
             scopes,
             byoc_credential_id: conn.byoc_credential_id,
-            on_behalf_of,
+            on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
             return_url: None,
         },

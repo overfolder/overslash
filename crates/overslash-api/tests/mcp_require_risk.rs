@@ -14,11 +14,11 @@ use serde_json::json;
 
 #[tokio::test]
 async fn require_risk_read_rejects_post_method_in_raw_http_mode() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Mode-A POST → Risk::Write inferred from the HTTP method. The
     // require_risk=read gate must reject with 400 before any permission
@@ -50,11 +50,11 @@ async fn require_risk_read_rejects_post_method_in_raw_http_mode() {
 
 #[tokio::test]
 async fn require_risk_read_rejects_delete_method_in_raw_http_mode() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let resp = client
         .post(format!("{base}/v1/actions/call"))
@@ -88,12 +88,12 @@ async fn require_risk_read_rejects_delete_method_in_raw_http_mode() {
 /// `"params": null` forward and break parameterless tool calls.
 #[tokio::test]
 async fn actions_call_rejects_explicit_null_params() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api(pool).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let resp = client
         .post(format!("{base}/v1/actions/call"))
@@ -136,12 +136,12 @@ async fn actions_call_rejects_explicit_null_params() {
 
 #[tokio::test]
 async fn require_risk_read_does_not_block_get_method() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
     let (api_addr, client) = common::start_api(pool).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Mode-A GET → Risk::Read inferred. The require_risk gate must let it
     // through. (What happens next — auth, permission walk, upstream — is

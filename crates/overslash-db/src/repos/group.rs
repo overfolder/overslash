@@ -635,3 +635,42 @@ pub(crate) async fn get_visible_service_ids(
     .await?;
     Ok(rows.into_iter().map(|r| r.service_instance_id).collect())
 }
+
+/// `true` when the caller's ceiling user has group-granted access to any
+/// service instance currently bound to `connection_id`. Used by the OAuth
+/// re-auth helper to allow a cross-user upgrade-URL mint without taking
+/// the `validate_on_behalf_of` path (which is for the agent-acting-for-
+/// owner-user case, not the user-A-reaches-user-B-via-group case).
+///
+/// Mirrors the EXISTS clause in `service_instance::resolve_by_name`
+/// step 5, but pivots on the connection rather than the name — multiple
+/// instances may share a connection in theory, and any group-granted
+/// path among them authorises the upgrade.
+pub(crate) async fn caller_has_group_access_to_connection(
+    pool: &PgPool,
+    org_id: Uuid,
+    caller_ceiling_user_id: Uuid,
+    connection_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM group_grants gg
+             JOIN identity_groups ig ON ig.group_id = gg.group_id
+             JOIN identities i ON i.id = ig.identity_id
+             JOIN groups g ON g.id = gg.group_id
+             JOIN service_instances si ON si.id = gg.service_instance_id
+             WHERE ig.identity_id = $1
+               AND i.org_id = $2
+               AND g.org_id = $2
+               AND si.org_id = $2
+               AND si.connection_id = $3
+         ) AS \"has_access!\"",
+        caller_ceiling_user_id,
+        org_id,
+        connection_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.has_access)
+}

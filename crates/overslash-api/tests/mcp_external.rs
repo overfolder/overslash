@@ -256,14 +256,15 @@ async fn setup_template_and_grants(ctx: SetupCtx<'_>) -> uuid::Uuid {
 
 #[tokio::test]
 async fn mcp_none_auth_calls_and_audits_with_mcp_runtime() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     let _inst = setup_template_and_grants(SetupCtx {
         base: &base,
@@ -323,14 +324,15 @@ async fn mcp_none_auth_calls_and_audits_with_mcp_runtime() {
 
 #[tokio::test]
 async fn mcp_bearer_auth_forwards_secret() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     setup_template_and_grants(SetupCtx {
         base: &base,
@@ -362,7 +364,7 @@ async fn mcp_bearer_auth_forwards_secret() {
 
 #[tokio::test]
 async fn mcp_is_error_surfaces_in_envelope_not_http() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     stub.force_error(vec![json!({
         "type": "text",
@@ -372,8 +374,9 @@ async fn mcp_is_error_surfaces_in_envelope_not_http() {
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     setup_template_and_grants(SetupCtx {
         base: &base,
@@ -409,14 +412,15 @@ async fn mcp_is_error_surfaces_in_envelope_not_http() {
 
 #[tokio::test]
 async fn mcp_missing_secret_returns_400_before_upstream_call() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     // Upload template that declares a bearer secret, but don't write it.
     let resp = client
@@ -468,7 +472,7 @@ async fn mcp_missing_secret_returns_400_before_upstream_call() {
 
 #[tokio::test]
 async fn mcp_resync_populates_discovered_tools() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     stub.set_tools(vec![json!({
         "name": "search_docs",
@@ -479,8 +483,7 @@ async fn mcp_resync_populates_discovered_tools() {
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, _agent_ident, _agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_key = fx.org_key.clone();
 
     let resp = client
         .post(format!("{base}/v1/templates"))
@@ -531,11 +534,10 @@ async fn mcp_resync_populates_discovered_tools() {
 
 #[tokio::test]
 async fn mcp_resync_rejected_on_http_runtime_template() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, _agent_ident, _agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_key = fx.org_key.clone();
 
     // Plain HTTP-runtime template.
     let yaml = r#"openapi: 3.1.0
@@ -570,14 +572,13 @@ paths:
 
 #[tokio::test]
 async fn mcp_resync_rejected_when_autodiscover_false() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, _stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, _agent_ident, _agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_key = fx.org_key.clone();
 
     let yaml = format!(
         r#"openapi: 3.1.0
@@ -620,14 +621,15 @@ x-overslash-mcp:
 
 #[tokio::test]
 async fn mcp_agent_without_permission_triggers_approval() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, _stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, _agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     // Upload + instance (but deliberately NO permission rule).
     let resp = client
@@ -735,14 +737,15 @@ async fn mcp_agent_without_permission_triggers_approval() {
 /// "audit omits is_error" and "audit + approval detail omit tool arguments".
 #[tokio::test]
 async fn mcp_call_audit_contains_tool_arguments_and_is_error_success() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, _stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     setup_template_and_grants(SetupCtx {
         base: &base,
@@ -793,15 +796,16 @@ async fn mcp_call_audit_contains_tool_arguments_and_is_error_success() {
 /// Tool-level isError must flip `is_error: true` on the audit row too.
 #[tokio::test]
 async fn mcp_call_audit_is_error_true_on_tool_failure() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, stub) = start_stub().await;
     stub.force_error(vec![json!({ "type": "text", "text": "nope" })]);
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, agent_ident, agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
 
     setup_template_and_grants(SetupCtx {
         base: &base,
@@ -846,14 +850,13 @@ async fn mcp_call_audit_is_error_true_on_tool_failure() {
 /// Regression for vet finding: "Template update wipes discovered_tools".
 #[tokio::test]
 async fn mcp_template_update_preserves_discovered_tools() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, _stub) = start_stub().await;
     let stub_url = format!("http://{addr}/mcp");
 
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, _agent_ident, _agent_key, org_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_key = fx.org_key.clone();
 
     let create_resp: Value = client
         .post(format!("{base}/v1/templates"))

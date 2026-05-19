@@ -40,11 +40,13 @@ async fn list_creds(base: &str, client: &Client, admin_key: &str) -> Vec<Value> 
 
 #[tokio::test]
 async fn test_put_creates_two_org_secrets_and_lists() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, _agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     let put_resp = put_google_creds(&base, &client, &admin_key).await;
     assert_eq!(put_resp["provider_key"], "google");
@@ -82,11 +84,11 @@ async fn test_put_creates_two_org_secrets_and_lists() {
 
 #[tokio::test]
 async fn test_delete_removes_both_secrets() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     put_google_creds(&base, &client, &admin_key).await;
 
@@ -120,11 +122,11 @@ async fn test_delete_is_atomic_across_both_secret_names() {
     // (simulating an earlier partial-write that our PUT guards against
     // but the repo layer should still handle cleanly), DELETE must not
     // leave an orphan record.
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     put_google_creds(&base, &client, &admin_key).await;
     // Sanity — both secrets exist after PUT.
@@ -174,11 +176,10 @@ async fn test_delete_unknown_provider_returns_404() {
     // Mirror the PUT contract: unknown provider returns 404 rather than
     // silently reporting deleted=false (ambiguous with "provider exists
     // but has no org secrets yet").
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .delete(format!(
@@ -204,11 +205,10 @@ async fn test_put_rejects_when_service_oauth_env_var_set() {
         std::env::set_var("OAUTH_SPOTIFY_CLIENT_SECRET", "env-spotify-secret");
     }
 
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .put(format!("{base}/v1/org-oauth-credentials/spotify"))
@@ -237,11 +237,12 @@ async fn test_cascade_errors_on_half_configured_env_pair() {
         std::env::remove_var("OAUTH_MICROSOFT_CLIENT_SECRET");
     }
 
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, _admin) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, _agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
 
     let enc_key = crypto::Keyring::test();
     let err = match overslash_api::services::client_credentials::resolve(
@@ -272,11 +273,10 @@ async fn test_cascade_errors_on_half_configured_env_pair() {
 async fn test_list_preview_never_leaks_client_secret() {
     // Regression: the response must never echo the secret value. Also
     // asserts that the preview helper truncates long client_ids.
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     put_google_creds(&base, &client, &admin_key).await;
     let rows = list_creds(&base, &client, &admin_key).await;
@@ -299,11 +299,11 @@ async fn test_list_preview_never_leaks_client_secret() {
 async fn test_put_creates_new_secret_version_on_update() {
     // Editing an existing provider should bump the secret version rather
     // than fail (upsert semantics). Verifies the versioned-secrets contract.
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     put_google_creds(&base, &client, &admin_key).await;
     // Second PUT with different values.
@@ -336,11 +336,11 @@ async fn test_non_admin_cannot_list_credentials() {
     // Defense in depth: listing configured providers leaks which OAuth
     // providers the org uses and their client_id fingerprints. Only
     // admins should see that, matching the Org Settings gate in the UI.
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // The agent key is identity-bound and non-admin by default.
     let resp = client
@@ -354,11 +354,10 @@ async fn test_non_admin_cannot_list_credentials() {
 
 #[tokio::test]
 async fn test_put_unknown_provider_returns_404() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .put(format!(
@@ -374,6 +373,8 @@ async fn test_put_unknown_provider_returns_404() {
 
 #[tokio::test]
 async fn test_cross_tenant_isolation() {
+    // Multi-org test: keeps the migration template (one org per bootstrap) so
+    // each `bootstrap_org_identity` call provisions a distinct tenant.
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
@@ -403,11 +404,13 @@ async fn test_cross_tenant_isolation() {
 
 #[tokio::test]
 async fn test_cascade_resolves_org_secret_when_no_byoc() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, _agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     put_google_creds(&base, &client, &admin_key).await;
 
@@ -438,11 +441,13 @@ async fn test_cascade_resolves_org_secret_when_no_byoc() {
 
 #[tokio::test]
 async fn test_cascade_byoc_still_wins_over_org_secret() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, _agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     // Org-level credentials.
     put_google_creds(&base, &client, &admin_key).await;
@@ -485,11 +490,12 @@ async fn test_cascade_byoc_still_wins_over_org_secret() {
 
 #[tokio::test]
 async fn test_cascade_errors_when_nothing_configured() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, ident_id, _agent_key, _admin) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, ident_id, _agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
 
     let enc_key = crypto::Keyring::test();
     let err = match overslash_api::services::client_credentials::resolve(
@@ -517,11 +523,10 @@ async fn test_cascade_errors_when_nothing_configured() {
 
 #[tokio::test]
 async fn test_idp_create_with_use_org_credentials() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     // Must fail without org credentials present.
     let resp_early = client
@@ -557,11 +562,11 @@ async fn test_idp_create_with_use_org_credentials() {
 
 #[tokio::test]
 async fn test_idp_update_switches_between_org_and_dedicated_creds() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     put_google_creds(&base, &client, &admin_key).await;
 
@@ -626,11 +631,10 @@ async fn test_idp_update_switches_between_org_and_dedicated_creds() {
 
 #[tokio::test]
 async fn test_idp_update_rejects_flip_to_org_creds_when_none_configured() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     // Seed + immediately delete so the org has no credentials.
     put_google_creds(&base, &client, &admin_key).await;
@@ -675,11 +679,11 @@ async fn test_auth_login_resolves_org_creds_when_idp_defers() {
     // client_id/secret from the org OAuth App Credentials at login time.
     // Exercises this via the `/auth/login/{provider}` redirect URL, which
     // embeds the client_id as a query parameter.
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     let orgs: Value = client
         .get(format!("{base}/v1/orgs/{org_id}"))
@@ -740,11 +744,11 @@ async fn test_login_returns_clear_error_when_deferred_idp_has_no_org_creds() {
     // the org OAuth App Credentials, login should fail fast with a message
     // that tells them where to fix it. We don't currently block deletion —
     // keeping it simple keeps the admin path obvious.
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
 
     let orgs: Value = client
         .get(format!("{base}/v1/orgs/{org_id}"))
@@ -800,11 +804,10 @@ async fn test_login_returns_clear_error_when_deferred_idp_has_no_org_creds() {
 
 #[tokio::test]
 async fn test_idp_create_rejects_creds_when_use_org_credentials_true() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_org_id, _ident_id, _agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let admin_key = fx.org_key.clone();
 
     let resp = client
         .post(format!("{base}/v1/org-idp-configs"))

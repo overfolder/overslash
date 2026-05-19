@@ -242,4 +242,22 @@ impl OrgScope {
     ) -> Result<Vec<Uuid>, sqlx::Error> {
         group::get_visible_service_ids(self.db(), self.org_id(), user_identity_id).await
     }
+
+    /// `true` when the caller's ceiling user has group-granted access to any
+    /// service instance bound to `connection_id`. The OAuth re-auth helper
+    /// uses this to allow a cross-user upgrade-URL mint that would otherwise
+    /// be rejected by the `validate_on_behalf_of` ceiling check.
+    pub async fn caller_has_group_access_to_connection(
+        &self,
+        caller_ceiling_user_id: Uuid,
+        connection_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        group::caller_has_group_access_to_connection(
+            self.db(),
+            self.org_id(),
+            caller_ceiling_user_id,
+            connection_id,
+        )
+        .await
+    }
 }
