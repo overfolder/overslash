@@ -1668,13 +1668,19 @@ async fn group_granted_instance_is_callable_by_name() {
 
     // Template (org-level so both users can instantiate against it).
     let openapi = common::minimal_openapi("shared_svc");
-    client
+    let tpl_resp = client
         .post(format!("{base}/v1/templates"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({"openapi": openapi, "user_level": false}))
         .send()
         .await
         .unwrap();
+    assert!(
+        tpl_resp.status().is_success(),
+        "create template failed: status={} body={}",
+        tpl_resp.status(),
+        tpl_resp.text().await.unwrap()
+    );
 
     // User-level instance owned by user B — created with user B's own key so
     // the ownership lands on user B. This is the production shape — instance
@@ -1711,21 +1717,33 @@ async fn group_granted_instance_is_callable_by_name() {
         .unwrap();
     let group_id = group["id"].as_str().unwrap();
 
-    client
+    let member_resp = client
         .post(format!("{base}/v1/groups/{group_id}/members"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({"identity_id": user_a_id}))
         .send()
         .await
         .unwrap();
+    assert!(
+        member_resp.status().is_success(),
+        "add user_a to group failed: status={} body={}",
+        member_resp.status(),
+        member_resp.text().await.unwrap()
+    );
 
-    client
+    let grant_resp = client
         .post(format!("{base}/v1/groups/{group_id}/grants"))
         .header("Authorization", format!("Bearer {org_key}"))
         .json(&json!({"service_instance_id": svc_id, "access_level": "write"}))
         .send()
         .await
         .unwrap();
+    assert!(
+        grant_resp.status().is_success(),
+        "grant service to group failed: status={} body={}",
+        grant_resp.status(),
+        grant_resp.text().await.unwrap()
+    );
 
     // Search from the agent must find it.
     let search: Value = client
