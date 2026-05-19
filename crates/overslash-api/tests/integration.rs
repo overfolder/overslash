@@ -70,6 +70,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     // Build the app with the test pool directly
@@ -1389,6 +1390,7 @@ async fn test_service_registry_api() {
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -2404,6 +2406,7 @@ async fn start_api_with_registry(
         email_api_key: None,
         preview_origin_allowlist: None,
         overslash_env: None,
+        connection_return_url_allowed_hosts: Vec::new(),
     };
 
     let state = overslash_api::AppState {

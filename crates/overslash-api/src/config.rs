@@ -148,6 +148,15 @@ pub struct Config {
     /// a defense-in-depth gate alongside `preview_origin_allowlist`: the
     /// preview-handoff feature is off unless this is exactly `dev`.
     pub overslash_env: Option<String>,
+    /// Hosts the OAuth callback is willing to 302 to when the create-flow
+    /// caller supplied a `return_url`. Operator-owned allow-list — without
+    /// it, an attacker who can fabricate a state could fish OAuth completion
+    /// state through an arbitrary URL. Comma-separated host list from
+    /// `OVERSLASH_CONNECTION_RETURN_URL_HOSTS` (e.g.
+    /// `cloud.overfolder.com,localhost`); matched exact + lowercase. An
+    /// empty list disables the redirect feature entirely (callback falls
+    /// back to the historical JSON response).
+    pub connection_return_url_allowed_hosts: Vec<String>,
 }
 
 /// Parse the `PREVIEW_ORIGIN_ALLOWLIST` env var into a compiled regex.
@@ -177,6 +186,16 @@ fn parse_preview_origin_allowlist(raw: Option<&str>) -> Option<regex::Regex> {
             None
         }
     }
+}
+
+fn parse_connection_return_url_allowed_hosts(raw: Option<&str>) -> Vec<String> {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    s.split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect()
 }
 
 fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
@@ -423,6 +442,11 @@ impl Config {
                 env::var("PREVIEW_ORIGIN_ALLOWLIST").ok().as_deref(),
             ),
             overslash_env: env::var("OVERSLASH_ENV").ok().filter(|s| !s.is_empty()),
+            connection_return_url_allowed_hosts: parse_connection_return_url_allowed_hosts(
+                env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
+                    .ok()
+                    .as_deref(),
+            ),
         }
     }
 
@@ -631,6 +655,111 @@ mod tests {
         ));
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("api.github.com"));
+    }
+
+    // ── connection_return_url_allowed_hosts ─────────────────────────────
+    //
+    // The OAuth callback uses this list as its fail-closed gate on whether
+    // to honour a flow row's `return_url` (see
+    // `routes/connections.rs::resolve_redirect_target`). An empty list
+    // *disables* the redirect feature entirely. Parsing has to be
+    // forgiving (operators set comma-separated env vars by hand) but never
+    // silently widen the host set.
+
+    #[test]
+    fn parse_connection_return_url_hosts_handles_multiple_entries() {
+        let hosts = parse_connection_return_url_allowed_hosts(Some(
+            "cloud.overfolder.com,cloud-dev.overfolder.com,localhost",
+        ));
+        assert_eq!(
+            hosts,
+            vec![
+                "cloud.overfolder.com".to_string(),
+                "cloud-dev.overfolder.com".to_string(),
+                "localhost".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_connection_return_url_hosts_lowercases_and_trims() {
+        // The callback's allow-list check lowercases the URL's host_str()
+        // before comparing — entries must come out of the parser in the
+        // same shape or a `Cloud.Overfolder.COM` allow-list entry would
+        // silently never match a `cloud.overfolder.com` host.
+        let hosts =
+            parse_connection_return_url_allowed_hosts(Some("  Cloud.Overfolder.COM ,  Localhost "));
+        assert_eq!(
+            hosts,
+            vec!["cloud.overfolder.com".to_string(), "localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_connection_return_url_hosts_empty_disables_feature() {
+        // Empty / unset / whitespace-only all mean "the operator did not
+        // opt in" and the callback path stays on the historical JSON
+        // response. Important that none of these silently parse as a list
+        // with an empty-string entry that could be matched by a bug.
+        assert!(parse_connection_return_url_allowed_hosts(None).is_empty());
+        assert!(parse_connection_return_url_allowed_hosts(Some("")).is_empty());
+        assert!(parse_connection_return_url_allowed_hosts(Some("   ")).is_empty());
+        assert!(parse_connection_return_url_allowed_hosts(Some(",,,")).is_empty());
+    }
+
+    #[test]
+    fn parse_connection_return_url_hosts_skips_blank_entries() {
+        // Operators occasionally leave a trailing comma or double-comma
+        // in env-var syntax. Drop the empties; keep the rest.
+        let hosts =
+            parse_connection_return_url_allowed_hosts(Some(",cloud.overfolder.com, ,localhost,"));
+        assert_eq!(
+            hosts,
+            vec!["cloud.overfolder.com".to_string(), "localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn from_env_loads_connection_return_url_hosts() {
+        // The full `from_env` boot path. Exercises that the env-var name
+        // is wired correctly and that the parser feeds Config without
+        // mangling. We can't call `Config::from_env()` itself (it expects
+        // DATABASE_URL / SECRETS_ENCRYPTION_KEY / SIGNING_KEY to be set
+        // and panics otherwise), so the assertion mirrors the read-line
+        // in `from_env`.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var(
+                "OVERSLASH_CONNECTION_RETURN_URL_HOSTS",
+                "cloud.overfolder.com,localhost",
+            );
+        }
+        let hosts = parse_connection_return_url_allowed_hosts(
+            std::env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
+                .ok()
+                .as_deref(),
+        );
+        unsafe {
+            std::env::remove_var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS");
+        }
+        assert_eq!(
+            hosts,
+            vec!["cloud.overfolder.com".to_string(), "localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn from_env_unset_connection_return_url_hosts_disables_feature() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::remove_var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS");
+        }
+        let hosts = parse_connection_return_url_allowed_hosts(
+            std::env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
+                .ok()
+                .as_deref(),
+        );
+        assert!(hosts.is_empty());
     }
 
     #[test]
@@ -1032,6 +1161,7 @@ mod tests {
             email_api_key: None,
             preview_origin_allowlist: None,
             overslash_env: None,
+            connection_return_url_allowed_hosts: Vec::new(),
         }
     }
 }

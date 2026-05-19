@@ -70,6 +70,10 @@ struct InitiateConnectionRequest {
     /// chat-delivered links must always go through the gate.
     #[serde(default)]
     include_raw: bool,
+    /// Optional tenant-supplied URL the callback redirects to after the
+    /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
+    #[serde(default)]
+    return_url: Option<String>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -122,6 +126,7 @@ async fn initiate_connection(
         // point. The reauth/upgrade flows go through the action handler's
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
+        return_url: req.return_url,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -248,22 +253,49 @@ struct OAuthCallbackParams {
     state: String,
 }
 
+/// Successful-path payload of [`oauth_callback`]. Wrapped here so the
+/// outer handler can decide between returning JSON (the legacy default)
+/// and a 303 redirect to a tenant-supplied `return_url`. Field shape is identical
+/// to the historical `Json(serde_json::json!{...})` body so existing
+/// callers keep working without an opt-in.
+struct CallbackSuccess {
+    connection_id: Uuid,
+    provider_key: String,
+    account_email: Option<String>,
+    scopes: Vec<String>,
+}
+
+/// Trusted redirect target derived from a flow row that matches the
+/// callback's state and whose host is on the operator allow-list. Built
+/// once up front so success and error branches share the same gating.
+struct VerifiedRedirect {
+    url: url::Url,
+    provider_key: String,
+}
+
 async fn oauth_callback(
     State(state): State<AppState>,
     ip: ClientIp,
     Query(params): Query<OAuthCallbackParams>,
-) -> Result<Json<serde_json::Value>> {
-    // Parse state: org_id:identity_id:provider_key:byoc_credential_id[:code_verifier[:actor_identity_id[:upgrade_connection_id]]]
-    let parts: Vec<&str> = params.state.splitn(7, ':').collect();
+) -> Response {
+    // Parse state: org_id:identity_id:provider_key:byoc_credential_id
+    //   [:code_verifier[:actor_identity_id[:upgrade_connection_id[:flow_id]]]]
+    let parts: Vec<&str> = params.state.splitn(8, ':').collect();
     if parts.len() < 3 {
-        return Err(AppError::BadRequest("invalid state parameter".into()));
+        return AppError::BadRequest("invalid state parameter".into()).into_response();
     }
-    let org_id: Uuid = parts[0]
-        .parse()
-        .map_err(|_| AppError::BadRequest("invalid org_id in state".into()))?;
-    let identity_id: Uuid = parts[1]
-        .parse()
-        .map_err(|_| AppError::BadRequest("invalid identity_id in state".into()))?;
+    let org_id: Uuid = match parts[0].parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return AppError::BadRequest("invalid org_id in state".into()).into_response();
+        }
+    };
+    let identity_id: Uuid = match parts[1].parse() {
+        Ok(v) => v,
+        Err(_) => {
+            return AppError::BadRequest("invalid identity_id in state".into()).into_response();
+        }
+    };
     let provider_key = parts[2];
     let byoc_credential_id: Option<Uuid> = parts
         .get(3)
@@ -282,7 +314,166 @@ async fn oauth_callback(
     let upgrade_connection_id: Option<Uuid> = parts
         .get(6)
         .and_then(|s| if *s == "_" { None } else { s.parse().ok() });
+    // The flow_id segment is what lets us recover `return_url` (and any
+    // other future per-flow data) from the DB row. It's optional for
+    // backward-compat: state minted before this column existed has 7
+    // segments, in which case the callback falls back to its historical
+    // JSON response.
+    let flow_id_from_state: Option<&str> = parts
+        .get(7)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && *s != "_");
 
+    let redirect_target = resolve_redirect_target(
+        &state,
+        flow_id_from_state,
+        org_id,
+        identity_id,
+        actor_identity_id,
+        provider_key,
+        byoc_credential_id,
+    )
+    .await;
+
+    let outcome = oauth_callback_inner(
+        &state,
+        &ip,
+        &params,
+        org_id,
+        identity_id,
+        provider_key,
+        byoc_credential_id,
+        code_verifier,
+        actor_identity_id,
+        upgrade_connection_id,
+    )
+    .await;
+
+    match (outcome, redirect_target) {
+        (Ok(payload), Some(redir)) => success_redirect(redir, &payload),
+        (Ok(payload), None) => Json(serde_json::json!({
+            "status": "connected",
+            "connection_id": payload.connection_id,
+            "provider": payload.provider_key,
+            "account_email": payload.account_email,
+            "scopes": payload.scopes,
+        }))
+        .into_response(),
+        (Err(err), Some(redir)) => error_redirect(redir, &err),
+        (Err(err), None) => err.into_response(),
+    }
+}
+
+/// Build a verified redirect target from the flow row, or `None` if any
+/// gate fails. Each gate must reject independently so a forged flow_id
+/// can't combine with otherwise-valid state to leak completion data:
+///
+/// 1. Allow-list is configured (empty list disables the feature).
+/// 2. Flow row exists for the supplied id.
+/// 3. The flow row's tenancy fields match the rest of state (defense
+///    against an attacker stitching their own flow_id onto fabricated
+///    state).
+/// 4. The flow row carries a `return_url`.
+/// 5. The `return_url` parses and its host is on the allow-list.
+async fn resolve_redirect_target(
+    state: &AppState,
+    flow_id: Option<&str>,
+    org_id: Uuid,
+    identity_id: Uuid,
+    actor_identity_id: Uuid,
+    provider_key: &str,
+    byoc_credential_id: Option<Uuid>,
+) -> Option<VerifiedRedirect> {
+    if state.config.connection_return_url_allowed_hosts.is_empty() {
+        return None;
+    }
+    let flow_id = flow_id?;
+    let flow = oauth_connection_flow::get_by_id(&state.db, flow_id)
+        .await
+        .ok()
+        .flatten()?;
+    if flow.org_id != org_id
+        || flow.identity_id != identity_id
+        || flow.actor_identity_id != actor_identity_id
+        || flow.provider_key != provider_key
+        || flow.byoc_credential_id != byoc_credential_id
+    {
+        return None;
+    }
+    let raw = flow.return_url.as_deref()?;
+    let url = url::Url::parse(raw).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    if !state
+        .config
+        .connection_return_url_allowed_hosts
+        .contains(&host)
+    {
+        return None;
+    }
+    Some(VerifiedRedirect {
+        url,
+        provider_key: flow.provider_key,
+    })
+}
+
+fn success_redirect(redir: VerifiedRedirect, payload: &CallbackSuccess) -> Response {
+    let mut url = redir.url;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("status", "success");
+        pairs.append_pair("connection_id", &payload.connection_id.to_string());
+        pairs.append_pair("provider", &payload.provider_key);
+        if let Some(email) = payload.account_email.as_deref() {
+            pairs.append_pair("account_email", email);
+        }
+    }
+    Redirect::to(url.as_str()).into_response()
+}
+
+fn error_redirect(redir: VerifiedRedirect, err: &AppError) -> Response {
+    let mut url = redir.url;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("status", "error");
+        pairs.append_pair("provider", &redir.provider_key);
+        pairs.append_pair("reason", redirect_reason_token(err));
+    }
+    Redirect::to(url.as_str()).into_response()
+}
+
+/// Coarse, allow-listed reason token for the redirect URL. The tenant
+/// page renders its own copy from this token — we intentionally do NOT
+/// pass the raw error text. Echoing `err.to_string()` here would surface
+/// internal details (SQL errors, reqwest decode failures, etc.) that
+/// `AppError::IntoResponse` deliberately scrubs from the JSON path.
+fn redirect_reason_token(err: &AppError) -> &'static str {
+    use axum::http::StatusCode;
+    match err.status_code() {
+        StatusCode::BAD_REQUEST => "bad_request",
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::GONE => "gone",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        StatusCode::BAD_GATEWAY => "upstream_error",
+        _ => "internal_error",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn oauth_callback_inner(
+    state: &AppState,
+    ip: &ClientIp,
+    params: &OAuthCallbackParams,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    byoc_credential_id: Option<Uuid>,
+    code_verifier: Option<&str>,
+    actor_identity_id: Uuid,
+    upgrade_connection_id: Option<Uuid>,
+) -> Result<CallbackSuccess> {
     let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
@@ -444,13 +635,12 @@ async fn oauth_callback(
         });
     }
 
-    Ok(Json(serde_json::json!({
-        "status": "connected",
-        "connection_id": connection_id,
-        "provider": provider_key,
-        "account_email": account_email,
-        "scopes": granted_scopes,
-    })))
+    Ok(CallbackSuccess {
+        connection_id,
+        provider_key: provider_key.to_string(),
+        account_email,
+        scopes: granted_scopes,
+    })
 }
 
 #[derive(Serialize)]
