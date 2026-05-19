@@ -723,6 +723,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     }
 }
 

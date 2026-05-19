@@ -99,6 +99,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1427,6 +1428,7 @@ async fn test_service_registry_api() {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -2432,6 +2434,7 @@ async fn start_api_with_registry(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
