@@ -1763,6 +1763,21 @@ async fn group_granted_instance_is_callable_by_name() {
         "call should not return 404 for a group-granted instance"
     );
 
+    // Dashboard surface mirrors the same desync. `GET /v1/services/{name}/actions`
+    // resolves via `resolve_by_name_any_status` (which had the same gap until
+    // step 5 was added there too). Exercising it here pins the parity.
+    let actions_resp = client
+        .get(format!("{base}/v1/services/shared_svc/actions"))
+        .header("Authorization", format!("Bearer {agent_api_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        actions_resp.status().as_u16(),
+        200,
+        "list-actions on a group-granted instance should resolve via any_status fallback"
+    );
+
     // Negative: a third user (no group membership) cannot resolve the instance.
     let user_c: Value = client
         .post(format!("{base}/v1/identities"))
