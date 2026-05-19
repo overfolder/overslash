@@ -657,6 +657,111 @@ mod tests {
         assert!(map.contains_key("api.github.com"));
     }
 
+    // ── connection_return_url_allowed_hosts ─────────────────────────────
+    //
+    // The OAuth callback uses this list as its fail-closed gate on whether
+    // to honour a flow row's `return_url` (see
+    // `routes/connections.rs::resolve_redirect_target`). An empty list
+    // *disables* the redirect feature entirely. Parsing has to be
+    // forgiving (operators set comma-separated env vars by hand) but never
+    // silently widen the host set.
+
+    #[test]
+    fn parse_connection_return_url_hosts_handles_multiple_entries() {
+        let hosts = parse_connection_return_url_allowed_hosts(Some(
+            "cloud.overfolder.com,cloud-dev.overfolder.com,localhost",
+        ));
+        assert_eq!(
+            hosts,
+            vec![
+                "cloud.overfolder.com".to_string(),
+                "cloud-dev.overfolder.com".to_string(),
+                "localhost".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_connection_return_url_hosts_lowercases_and_trims() {
+        // The callback's allow-list check lowercases the URL's host_str()
+        // before comparing — entries must come out of the parser in the
+        // same shape or a `Cloud.Overfolder.COM` allow-list entry would
+        // silently never match a `cloud.overfolder.com` host.
+        let hosts =
+            parse_connection_return_url_allowed_hosts(Some("  Cloud.Overfolder.COM ,  Localhost "));
+        assert_eq!(
+            hosts,
+            vec!["cloud.overfolder.com".to_string(), "localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_connection_return_url_hosts_empty_disables_feature() {
+        // Empty / unset / whitespace-only all mean "the operator did not
+        // opt in" and the callback path stays on the historical JSON
+        // response. Important that none of these silently parse as a list
+        // with an empty-string entry that could be matched by a bug.
+        assert!(parse_connection_return_url_allowed_hosts(None).is_empty());
+        assert!(parse_connection_return_url_allowed_hosts(Some("")).is_empty());
+        assert!(parse_connection_return_url_allowed_hosts(Some("   ")).is_empty());
+        assert!(parse_connection_return_url_allowed_hosts(Some(",,,")).is_empty());
+    }
+
+    #[test]
+    fn parse_connection_return_url_hosts_skips_blank_entries() {
+        // Operators occasionally leave a trailing comma or double-comma
+        // in env-var syntax. Drop the empties; keep the rest.
+        let hosts =
+            parse_connection_return_url_allowed_hosts(Some(",cloud.overfolder.com, ,localhost,"));
+        assert_eq!(
+            hosts,
+            vec!["cloud.overfolder.com".to_string(), "localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn from_env_loads_connection_return_url_hosts() {
+        // The full `from_env` boot path. Exercises that the env-var name
+        // is wired correctly and that the parser feeds Config without
+        // mangling. We can't call `Config::from_env()` itself (it expects
+        // DATABASE_URL / SECRETS_ENCRYPTION_KEY / SIGNING_KEY to be set
+        // and panics otherwise), so the assertion mirrors the read-line
+        // in `from_env`.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var(
+                "OVERSLASH_CONNECTION_RETURN_URL_HOSTS",
+                "cloud.overfolder.com,localhost",
+            );
+        }
+        let hosts = parse_connection_return_url_allowed_hosts(
+            std::env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
+                .ok()
+                .as_deref(),
+        );
+        unsafe {
+            std::env::remove_var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS");
+        }
+        assert_eq!(
+            hosts,
+            vec!["cloud.overfolder.com".to_string(), "localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn from_env_unset_connection_return_url_hosts_disables_feature() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::remove_var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS");
+        }
+        let hosts = parse_connection_return_url_allowed_hosts(
+            std::env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
+                .ok()
+                .as_deref(),
+        );
+        assert!(hosts.is_empty());
+    }
+
     #[test]
     fn apply_base_overrides_swaps_host_keeping_path_and_query() {
         let mut cfg = empty_test_config();
