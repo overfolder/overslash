@@ -683,6 +683,7 @@ where
         .merge(overslash_api::routes::audit::router())
         .merge(overslash_api::routes::webhooks::router())
         .merge(overslash_api::routes::services::router())
+        .merge(overslash_api::routes::search::router())
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
         .merge(overslash_api::routes::byoc_credentials::router())
