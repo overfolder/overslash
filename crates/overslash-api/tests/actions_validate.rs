@@ -107,13 +107,14 @@ struct Fixture {
 }
 
 async fn setup_with_template(template_key: &str) -> Fixture {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let stub_addr = start_stub().await;
     let stub_url = format!("http://{stub_addr}/mcp");
 
     let (base, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{base}");
-    let (_org, _ident, agent_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     let yaml = whatsapp_template_yaml(template_key, &stub_url, "whatsapp_token");
     let resp = client
@@ -302,12 +303,13 @@ async fn approval_gap_reported_without_writing_approval_row() {
 /// breaking the dry-run contract.
 #[tokio::test]
 async fn disabled_mcp_action_404s_on_validate() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let stub_addr = start_stub().await;
     let stub_url = format!("http://{stub_addr}/mcp");
     let (base, client) = common::start_api(pool).await;
     let base = format!("http://{base}");
-    let (_org, _ident, agent_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     // Same template shape as the other tests but with `disabled: true`
     // on the only action.

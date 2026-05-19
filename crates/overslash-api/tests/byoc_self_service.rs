@@ -53,11 +53,11 @@ async fn create_second_user_with_key(
 
 #[tokio::test]
 async fn agent_can_create_and_delete_own_byoc() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, agent_ident, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Non-admin agent creates BYOC for itself → 200.
     let resp = client
@@ -90,11 +90,13 @@ async fn agent_can_create_and_delete_own_byoc() {
 
 #[tokio::test]
 async fn agent_cannot_create_byoc_for_another_identity() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, _agent_ident, agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
     let (other_ident, _other_key) =
         create_second_user_with_key(&base, &client, &admin_key, org_id).await;
 
@@ -115,11 +117,13 @@ async fn agent_cannot_create_byoc_for_another_identity() {
 
 #[tokio::test]
 async fn agent_cannot_delete_another_identitys_byoc() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, _agent_ident, agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
     let (bystander_ident, _bystander_key) =
         create_second_user_with_key(&base, &client, &admin_key, org_id).await;
 
@@ -153,11 +157,13 @@ async fn agent_cannot_delete_another_identitys_byoc() {
 
 #[tokio::test]
 async fn list_byoc_filters_to_own_identity_for_non_admin() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (org_id, agent_ident, agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
     let (bystander_ident, _bystander_key) =
         create_second_user_with_key(&base, &client, &admin_key, org_id).await;
 
@@ -213,11 +219,11 @@ async fn list_byoc_filters_to_own_identity_for_non_admin() {
 
 #[tokio::test]
 async fn oauth_providers_lists_known_providers() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let resp = client
         .get(format!("{base}/v1/oauth-providers"))
@@ -254,11 +260,11 @@ async fn oauth_providers_lists_known_providers() {
 
 #[tokio::test]
 async fn oauth_providers_has_user_byoc_reflects_own_credential() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, agent_ident, agent_key, _admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // Agent stores their own google BYOC (e.g. from a google_calendar setup).
     let resp = client
@@ -303,11 +309,12 @@ async fn oauth_providers_has_user_byoc_reflects_own_credential() {
 
 #[tokio::test]
 async fn oauth_providers_has_org_credential_reflects_org_secrets() {
-    let pool = common::test_pool().await;
+    let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
-    let (_org_id, _ident_id, agent_key, admin_key) =
-        common::bootstrap_org_identity(&base, &client).await;
+    let (_user, _ident_id, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let admin_key = fx.org_key.clone();
 
     // Configure org-level google creds.
     let put = client
