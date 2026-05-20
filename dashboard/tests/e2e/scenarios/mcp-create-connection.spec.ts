@@ -170,13 +170,10 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 		);
 		// MCP path must never leak the raw provider URL.
 		expect(connectionResp.raw ?? null).toBeNull();
-		// State encodes the binding the callback re-validates: the segment
-		// count is fixed at 8
-		// (org:identity:provider:byoc:verifier:actor:upgrade:flow_id) —
-		// `flow_id` is the lookup key the callback uses to recover the
-		// per-flow `return_url` from the DB row.
-		expect((connectionResp.state ?? '').split(':').length).toBe(8);
+		// State is the opaque flow_id — the row in `oauth_connection_flows`
+		// is the single source of truth the callback resolves against.
 		expect(connectionResp.flow_id).toMatch(/^[A-Za-z0-9]+$/);
+		expect(connectionResp.state).toBe(connectionResp.flow_id);
 	} finally {
 		await mcp.close();
 	}
