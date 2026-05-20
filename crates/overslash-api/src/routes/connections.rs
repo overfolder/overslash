@@ -294,7 +294,7 @@ async fn oauth_callback(
     if flow_id.is_empty() {
         return AppError::BadRequest("missing state parameter".into()).into_response();
     }
-    let flow = match oauth_connection_flow::get_by_id(&state.db, flow_id).await {
+    let flow = match oauth_connection_flow::get_by_id(state.db(&ext), flow_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             return AppError::BadRequest("invalid state parameter".into()).into_response();
