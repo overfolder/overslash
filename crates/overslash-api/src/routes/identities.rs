@@ -16,7 +16,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, WriteAcl},
 };
 
 pub fn router() -> Router<AppState> {
@@ -51,12 +51,13 @@ pub fn router() -> Router<AppState> {
 /// require a session cookie and aren't usable from a Bearer client.
 async fn whoami(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
 ) -> Result<axum::Json<serde_json::Value>> {
     let identity_id = auth
         .identity_id
         .ok_or_else(|| AppError::Unauthorized("no identity bound to this key".into()))?;
-    let scope = OrgScope::new(auth.org_id, state.db.clone());
+    let scope = OrgScope::new(auth.org_id, state.db_pool(&ext));
     let ident = scope
         .get_identity(identity_id)
         .await?
@@ -350,6 +351,7 @@ async fn validate_parent(
 
 async fn create_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -419,11 +421,15 @@ async fn create_identity(
 
     // Auto-join new users to the Everyone group + create their Myself group.
     if row.kind == "user" {
-        overslash_db::repos::org_bootstrap::bootstrap_user_in_org(&state.db, auth.org_id, row.id)
-            .await?;
+        overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+            state.db(&ext),
+            auth.org_id,
+            row.id,
+        )
+        .await?;
     }
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -573,15 +579,21 @@ struct McpConnectionDto {
     self_approve_enabled: bool,
 }
 
-async fn load_mcp_connection(state: &AppState, agent_id: Uuid) -> Result<Option<McpConnectionDto>> {
-    let binding =
-        overslash_db::repos::mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_id)
-            .await?;
+async fn load_mcp_connection(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    agent_id: Uuid,
+) -> Result<Option<McpConnectionDto>> {
+    let binding = overslash_db::repos::mcp_client_agent_binding::get_by_agent_identity(
+        state.db(ext),
+        agent_id,
+    )
+    .await?;
     let Some(binding) = binding else {
         return Ok(None);
     };
     let client =
-        overslash_db::repos::oauth_mcp_client::get_by_client_id(&state.db, &binding.client_id)
+        overslash_db::repos::oauth_mcp_client::get_by_client_id(state.db(ext), &binding.client_id)
             .await?;
     let Some(client) = client else {
         return Ok(None);
@@ -619,12 +631,13 @@ async fn ensure_agent(scope: &OrgScope, id: Uuid) -> Result<()> {
 
 async fn get_mcp_connection(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     _: crate::extractors::OrgAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<McpConnectionResponse>> {
     ensure_agent(&scope, id).await?;
-    let connection = load_mcp_connection(&state, id).await?;
+    let connection = load_mcp_connection(&state, &ext, id).await?;
     Ok(Json(McpConnectionResponse { connection }))
 }
 
@@ -636,6 +649,7 @@ struct PatchMcpConnectionRequest {
 
 async fn patch_mcp_connection(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -652,7 +666,9 @@ async fn patch_mcp_connection(
         // check is keyed on the calling client's binding).
         let updated =
             overslash_db::repos::mcp_client_agent_binding::set_elicitation_enabled_for_agent(
-                &state.db, id, enabled,
+                state.db(&ext),
+                id,
+                enabled,
             )
             .await?;
         if updated == 0 {
@@ -686,7 +702,9 @@ async fn patch_mcp_connection(
         // need to stay in lockstep.
         let updated =
             overslash_db::repos::mcp_client_agent_binding::set_self_approve_enabled_for_agent(
-                &state.db, id, enabled,
+                state.db(&ext),
+                id,
+                enabled,
             )
             .await?;
         if updated == 0 {
@@ -711,7 +729,7 @@ async fn patch_mcp_connection(
             .await;
     }
 
-    let connection = load_mcp_connection(&state, id).await?;
+    let connection = load_mcp_connection(&state, &ext, id).await?;
     Ok(Json(McpConnectionResponse { connection }))
 }
 
@@ -778,6 +796,7 @@ async fn patch_auto_call_on_approve(
 
 async fn disconnect_mcp_connection(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -785,7 +804,7 @@ async fn disconnect_mcp_connection(
 ) -> Result<StatusCode> {
     ensure_agent(&scope, id).await?;
     let removed =
-        overslash_db::repos::mcp_client_agent_binding::delete_by_agent_identity(&state.db, id)
+        overslash_db::repos::mcp_client_agent_binding::delete_by_agent_identity(state.db(&ext), id)
             .await?;
     if removed.is_empty() {
         return Err(AppError::NotFound(
@@ -798,7 +817,7 @@ async fn disconnect_mcp_connection(
     // `last_session_id`) so a re-initialize between elicitation-start and
     // disconnect doesn't leave stale rows pinned to an older session id —
     // and so multi-binding-per-agent (reauth flow) is fully covered.
-    let _ = overslash_db::repos::mcp_elicitation::cancel_for_agent(&state.db, id).await;
+    let _ = overslash_db::repos::mcp_elicitation::cancel_for_agent(state.db(&ext), id).await;
 
     // Audit one row per removed binding so the trail names every client_id
     // we just disconnected, not just whichever one Postgres returned first.

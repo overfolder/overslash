@@ -29,7 +29,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, WriteAcl},
+    extractors::{ClientIp, ReqExt, WriteAcl},
     services::jwt::{self, SECRET_REQUEST_KIND, SecretRequestClaims},
     services::session::extract_session,
     services::short_url,
@@ -76,6 +76,7 @@ const MAX_TTL: u64 = 86_400;
 
 async fn create_secret_request(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Json(req): Json<CreateSecretRequestBody>,
@@ -91,7 +92,7 @@ async fn create_secret_request(
 
     // Verify the target identity belongs to the same org so a caller cannot
     // mint a request scoped to another tenant.
-    let scope = OrgScope::new(acl.org_id, state.db.clone());
+    let scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
     let _target = scope
         .get_identity(target_identity)
         .await?
@@ -108,7 +109,7 @@ async fn create_secret_request(
     // allowing unsigned if the org has no explicit setting (backwards
     // compat: existing orgs keep their current open behavior).
     let allow_unsigned =
-        overslash_db::repos::org::get_allow_unsigned_secret_provide(&state.db, acl.org_id)
+        overslash_db::repos::org::get_allow_unsigned_secret_provide(state.db(&ext), acl.org_id)
             .await?
             .unwrap_or(true);
     let require_user_session = !allow_unsigned;
@@ -127,7 +128,7 @@ async fn create_secret_request(
     let token_hash = sha256(&token);
 
     secret_request::create(
-        &state.db,
+        state.db(&ext),
         &req_id,
         acl.org_id,
         target_identity,
@@ -145,7 +146,7 @@ async fn create_secret_request(
         .dashboard_url_for(&format!("/secrets/provide/{req_id}?token={token}"));
     let short_url = short_url::mint(&state, &url, expires_at).await;
 
-    let _ = OrgScope::new(acl.org_id, state.db.clone())
+    let _ = OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: Some(caller_identity),
@@ -207,13 +208,14 @@ struct ViewerInfo {
 
 async fn get_provide(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Path(req_id): Path<String>,
     Query(q): Query<TokenQuery>,
 ) -> Result<Json<ProvideMetadata>> {
-    let row = load_and_validate(&state, &req_id, &q.token).await?;
+    let row = load_and_validate(&state, &ext, &req_id, &q.token).await?;
 
-    let scope = OrgScope::new(row.org_id, state.db.clone());
+    let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
     let identity_label = scope
         .get_identity(row.identity_id)
         .await?
@@ -266,6 +268,7 @@ struct SubmitResponse {
 
 async fn submit_provide(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     ip: ClientIp,
     Path(req_id): Path<String>,
@@ -274,7 +277,7 @@ async fn submit_provide(
     if body.value.is_empty() {
         return Err(AppError::BadRequest("value is required".into()));
     }
-    let row = load_and_validate(&state, &req_id, &body.token).await?;
+    let row = load_and_validate(&state, &ext, &req_id, &body.token).await?;
 
     // Resolve any same-org session cookie the visitor happens to carry.
     // Cross-tenant sessions are discarded (treated as anonymous). We do NOT
@@ -294,7 +297,7 @@ async fn submit_provide(
     // Single-use guard *before* writing to the vault. If a parallel request
     // already fulfilled this row, abort. Done *after* the policy check so a
     // rejected submission does not burn the request.
-    if !secret_request::mark_fulfilled(&state.db, &req_id).await? {
+    if !secret_request::mark_fulfilled(state.db(&ext), &req_id).await? {
         return Err(AppError::Gone("already_fulfilled".into()));
     }
 
@@ -302,7 +305,7 @@ async fn submit_provide(
     let enc_key = state.config.keyring()?;
     let encrypted = crypto::encrypt(&enc_key, body.value.as_bytes())?;
 
-    let scope = OrgScope::new(row.org_id, state.db.clone());
+    let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
     // The target identity captured at request-creation time owns the slot
     // (visibility) and is also the version's `created_by` (attribution).
     // The slot's `owner_identity_id` is set on first insert and preserved
@@ -356,6 +359,7 @@ async fn submit_provide(
 /// codes — never echo internal detail to the public client.
 async fn load_and_validate(
     state: &AppState,
+    ext: &axum::http::Extensions,
     req_id: &str,
     token: &str,
 ) -> Result<overslash_db::repos::secret_request::SecretRequestRow> {
@@ -366,7 +370,7 @@ async fn load_and_validate(
         return Err(AppError::BadRequest("invalid_token".into()));
     }
 
-    let row = secret_request::get(&state.db, req_id)
+    let row = secret_request::get(state.db(ext), req_id)
         .await?
         .ok_or_else(|| AppError::NotFound("not_found".into()))?;
 
