@@ -16,13 +16,14 @@
 //! config flips), and the multi-org test families (per CLAUDE.md).
 
 use std::net::SocketAddr;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
 use reqwest::Client;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use overslash_api::middleware::test_pool::TEST_POOL_HEADER;
@@ -86,7 +87,7 @@ struct SharedHarness {
     registry: Arc<SharedRouterRegistry>,
 }
 
-static HARNESS: OnceLock<SharedHarness> = OnceLock::new();
+static HARNESS: OnceCell<SharedHarness> = OnceCell::const_new();
 
 /// Boot the per-binary shared router (lazy, idempotent) and register
 /// a fresh `TestResources` for this test. Returns the router's bound
@@ -94,7 +95,7 @@ static HARNESS: OnceLock<SharedHarness> = OnceLock::new();
 /// test's `X-Test-Pool-Id`, and a `ResourceGuard` that deregisters on
 /// drop.
 pub async fn start_api_shared(pool: PgPool) -> (SocketAddr, Client, ResourceGuard) {
-    let harness = HARNESS.get_or_init(boot_shared_router);
+    let harness = HARNESS.get_or_init(boot_shared_router).await;
 
     let id = TestPoolId(Uuid::new_v4());
     let resources = TestResources {
@@ -131,18 +132,14 @@ pub async fn start_api_shared(pool: PgPool) -> (SocketAddr, Client, ResourceGuar
     )
 }
 
-fn boot_shared_router() -> SharedHarness {
-    let handle = tokio::runtime::Handle::current();
+async fn boot_shared_router() -> SharedHarness {
     let registry = SharedRouterRegistry::new();
     let registry_for_state = registry.clone();
-    let addr = handle.block_on(async move {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let state = build_shared_state(registry_for_state, addr);
-        let app = build_shared_router(state);
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        addr
-    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = build_shared_state(registry_for_state, addr);
+    let app = build_shared_router(state);
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     SharedHarness { addr, registry }
 }
 
