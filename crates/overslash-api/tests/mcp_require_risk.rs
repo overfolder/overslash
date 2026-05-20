@@ -15,7 +15,7 @@ use serde_json::json;
 #[tokio::test]
 async fn require_risk_read_rejects_post_method_in_raw_http_mode() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{api_addr}");
     let (_user, _ident_id, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -51,7 +51,7 @@ async fn require_risk_read_rejects_post_method_in_raw_http_mode() {
 #[tokio::test]
 async fn require_risk_read_rejects_delete_method_in_raw_http_mode() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{api_addr}");
     let (_user, _ident_id, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -90,7 +90,7 @@ async fn require_risk_read_rejects_delete_method_in_raw_http_mode() {
 async fn actions_call_rejects_explicit_null_params() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
-    let (api_addr, client) = common::start_api(pool).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{api_addr}");
     let (_user, _ident_id, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -138,7 +138,7 @@ async fn actions_call_rejects_explicit_null_params() {
 async fn require_risk_read_does_not_block_get_method() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let mock_addr = common::start_mock().await;
-    let (api_addr, client) = common::start_api(pool).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{api_addr}");
     let (_user, _ident_id, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;

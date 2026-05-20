@@ -13,7 +13,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl, ReqExt},
 };
 
 pub fn router() -> Router<AppState> {
@@ -49,6 +49,7 @@ struct PermissionResponse {
 
 async fn create_permission(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -59,7 +60,7 @@ async fn create_permission(
         .create_permission_rule(req.identity_id, &req.action_pattern, &req.effect, None)
         .await?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,

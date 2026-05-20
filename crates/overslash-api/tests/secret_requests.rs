@@ -36,7 +36,7 @@ fn provide_url(base: &str, req_id: &str, token: &str) -> String {
 #[tokio::test]
 async fn happy_path_mint_get_submit_stored() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -85,7 +85,7 @@ async fn happy_path_mint_get_submit_stored() {
 #[tokio::test]
 async fn single_use_second_submit_rejected() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -113,7 +113,7 @@ async fn single_use_second_submit_rejected() {
 #[tokio::test]
 async fn tampered_token_rejected() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -136,7 +136,7 @@ async fn tampered_token_rejected() {
 #[tokio::test]
 async fn mismatched_req_id_rejected() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -158,7 +158,7 @@ async fn mismatched_req_id_rejected() {
 #[tokio::test]
 async fn empty_value_rejected() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -243,7 +243,7 @@ async fn patch_secret_request_settings(
 #[tokio::test]
 async fn secret_request_settings_get_defaults_to_allow_unsigned() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let org_id = fx.org_id;
     let admin_key = fx.org_key.clone();
@@ -276,7 +276,7 @@ async fn secret_request_settings_get_defaults_to_allow_unsigned() {
 async fn anonymous_fulfillment_records_no_provisioner() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let q = pool.clone();
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -311,7 +311,7 @@ async fn anonymous_fulfillment_records_no_provisioner() {
 async fn session_bound_fulfillment_records_user() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let q = pool.clone();
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let org_id = fx.org_id;
@@ -366,7 +366,7 @@ async fn session_bound_fulfillment_records_user() {
 #[tokio::test]
 async fn org_disallows_unsigned_rejects_anonymous() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let org_id = fx.org_id;
@@ -412,7 +412,7 @@ async fn org_disallows_unsigned_rejects_anonymous() {
 async fn org_disallows_unsigned_accepts_session() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let q = pool.clone();
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let org_id = fx.org_id;
@@ -452,7 +452,7 @@ async fn org_disallows_unsigned_accepts_session() {
 #[tokio::test]
 async fn outstanding_url_unaffected_by_toggle() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let org_id = fx.org_id;
@@ -499,7 +499,7 @@ async fn expired_token_rejected() {
     // `expired`.
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let q = pool.clone();
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
@@ -558,7 +558,7 @@ async fn cross_org_session_ignored() {
     // each `bootstrap_org_identity` call provisions a distinct tenant.
     let pool = common::test_pool().await;
     let q = pool.clone();
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
 
     // Org A: where the request will be minted.
@@ -618,7 +618,7 @@ async fn cross_org_session_ignored() {
 async fn session_overrides_jwt_in_audit() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let q = pool.clone();
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (_user, target_ident, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;

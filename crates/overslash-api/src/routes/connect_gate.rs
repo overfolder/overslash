@@ -56,6 +56,7 @@ pub fn read_session(state: &AppState, headers: &HeaderMap) -> Result<ParsedSessi
 /// their owned agent is fine).
 pub async fn session_authorized_for_org_identity(
     state: &AppState,
+    ext: &axum::http::Extensions,
     session: &ParsedSession,
     flow_org_id: Uuid,
     flow_identity_id: Uuid,
@@ -66,7 +67,7 @@ pub async fn session_authorized_for_org_identity(
     if session.identity_id == flow_identity_id {
         return Ok(true);
     }
-    let chain = identity::get_ancestor_chain(&state.db, flow_org_id, flow_identity_id).await?;
+    let chain = identity::get_ancestor_chain(state.db(ext), flow_org_id, flow_identity_id).await?;
     Ok(chain.iter().any(|row| row.id == session.identity_id))
 }
 

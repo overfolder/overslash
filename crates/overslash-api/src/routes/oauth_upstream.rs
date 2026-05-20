@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
-    extractors::SessionAuth,
+    extractors::{ReqExt, SessionAuth},
     routes::connect_gate::{
         ParsedSession, SessionError, gone_html, html_escape, mismatch_html, read_session,
         session_authorized_for_org_identity,
@@ -73,14 +73,15 @@ struct ConnectionSummary {
 
 async fn list_connections(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: SessionAuth,
     Path(identity_id): Path<Uuid>,
 ) -> Result<Json<Vec<ConnectionSummary>>, AppError> {
-    require_owns_identity(&state, &session, identity_id).await?;
-    let rows = mcp_upstream_connection::list_for_identity(&state.db, identity_id).await?;
+    require_owns_identity(&state, &ext, &session, identity_id).await?;
+    let rows = mcp_upstream_connection::list_for_identity(state.db(&ext), identity_id).await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let token = mcp_upstream_token::get_current(&state.db, row.id).await?;
+        let token = mcp_upstream_token::get_current(state.db(&ext), row.id).await?;
         out.push(ConnectionSummary {
             id: row.id,
             upstream_resource: row.upstream_resource,
@@ -96,33 +97,36 @@ async fn list_connections(
 
 async fn revoke_connection(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: SessionAuth,
     Path((identity_id, connection_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, AppError> {
-    require_owns_identity(&state, &session, identity_id).await?;
-    let conn = mcp_upstream_connection::get_by_id(&state.db, connection_id)
+    require_owns_identity(&state, &ext, &session, identity_id).await?;
+    let conn = mcp_upstream_connection::get_by_id(state.db(&ext), connection_id)
         .await?
         .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
     if conn.identity_id != identity_id {
         return Err(AppError::NotFound("connection not found".into()));
     }
-    mcp_upstream_token::supersede_all(&state.db, connection_id).await?;
-    mcp_upstream_connection::mark_revoked(&state.db, connection_id).await?;
+    mcp_upstream_token::supersede_all(state.db(&ext), connection_id).await?;
+    mcp_upstream_connection::mark_revoked(state.db(&ext), connection_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn require_owns_identity(
     state: &AppState,
+    ext: &axum::http::Extensions,
     session: &SessionAuth,
     target_identity_id: Uuid,
 ) -> Result<(), AppError> {
-    let target = identity::get_by_id(&state.db, session.org_id, target_identity_id)
+    let target = identity::get_by_id(state.db(ext), session.org_id, target_identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     if target.id == session.identity_id {
         return Ok(());
     }
-    let chain = identity::get_ancestor_chain(&state.db, session.org_id, target_identity_id).await?;
+    let chain =
+        identity::get_ancestor_chain(state.db(ext), session.org_id, target_identity_id).await?;
     if chain.iter().any(|row| row.id == session.identity_id) {
         Ok(())
     } else {
@@ -199,6 +203,7 @@ struct AuthorizeUrls {
 
 async fn initiate(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: SessionAuth,
     headers: HeaderMap,
     Json(req): Json<InitiateRequest>,
@@ -215,12 +220,13 @@ async fn initiate(
     // The connection attaches to either the caller's own identity or one
     // they own. Resolve and validate ownership before doing any I/O.
     let target_identity_id = req.identity_id.unwrap_or(session.identity_id);
-    let target_identity = identity::get_by_id(&state.db, session.org_id, target_identity_id)
+    let target_identity = identity::get_by_id(state.db(&ext), session.org_id, target_identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     if target_identity_id != session.identity_id {
         let chain =
-            identity::get_ancestor_chain(&state.db, session.org_id, target_identity_id).await?;
+            identity::get_ancestor_chain(state.db(&ext), session.org_id, target_identity_id)
+                .await?;
         if !chain.iter().any(|row| row.id == session.identity_id) {
             return Err(AppError::Forbidden(
                 "identity must be the caller or an identity they own".into(),
@@ -231,10 +237,11 @@ async fn initiate(
     // Idempotent boot: if a valid token already exists, short-circuit. No
     // discovery, no DCR, no flow row.
     if let Some(conn) =
-        mcp_upstream_connection::get(&state.db, target_identity_id, &req.upstream_resource).await?
+        mcp_upstream_connection::get(state.db(&ext), target_identity_id, &req.upstream_resource)
+            .await?
     {
         if conn.status == mcp_upstream_connection::STATUS_READY {
-            if let Some(token) = mcp_upstream_token::get_current(&state.db, conn.id).await? {
+            if let Some(token) = mcp_upstream_token::get_current(state.db(&ext), conn.id).await? {
                 let still_valid = token
                     .access_token_expires_at
                     .map(|exp| exp > OffsetDateTime::now_utc() + Duration::seconds(60))
@@ -252,9 +259,12 @@ async fn initiate(
 
     // If a non-expired flow already exists, reuse it — re-running boot
     // returns the same share URL rather than minting a fresh one.
-    if let Some(existing) =
-        mcp_upstream_flow::find_active_for(&state.db, target_identity_id, &req.upstream_resource)
-            .await?
+    if let Some(existing) = mcp_upstream_flow::find_active_for(
+        state.db(&ext),
+        target_identity_id,
+        &req.upstream_resource,
+    )
+    .await?
     {
         let proxied = format!(
             "{}/gated-authorize?id={}",
@@ -347,7 +357,7 @@ async fn initiate(
 
     let connection_org_id = target_identity.org_id;
     mcp_upstream_connection::upsert_pending(
-        &state.db,
+        state.db(&ext),
         &mcp_upstream_connection::UpsertMcpUpstreamConnection {
             identity_id: target_identity_id,
             org_id: connection_org_id,
@@ -358,7 +368,7 @@ async fn initiate(
     .await?;
 
     mcp_upstream_flow::create(
-        &state.db,
+        state.db(&ext),
         &mcp_upstream_flow::CreateMcpUpstreamFlow {
             id: &flow_id,
             identity_id: target_identity_id,
@@ -409,10 +419,11 @@ struct GatedAuthorizeParams {
 
 async fn gated_authorize(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Query(params): Query<GatedAuthorizeParams>,
 ) -> Result<Response, AppError> {
-    let flow = mcp_upstream_flow::get_by_id(&state.db, &params.id).await?;
+    let flow = mcp_upstream_flow::get_by_id(state.db(&ext), &params.id).await?;
     let Some(flow) = flow else {
         return Ok(gone_html("This OAuth link is invalid or has been revoked."));
     };
@@ -445,7 +456,7 @@ async fn gated_authorize(
         }
     };
 
-    if session_authorized_for_flow(&state, &session, &flow).await? {
+    if session_authorized_for_flow(&state, &ext, &session, &flow).await? {
         return Ok(Redirect::to(&flow.upstream_authorize_url).into_response());
     }
 
@@ -454,7 +465,7 @@ async fn gated_authorize(
     // of the flow's org otherwise.
     if let Some(user_id) = session.user_id {
         if session.org_id != flow.org_id
-            && membership::find(&state.db, user_id, flow.org_id)
+            && membership::find(state.db(&ext), user_id, flow.org_id)
                 .await?
                 .is_some()
         {
@@ -483,6 +494,7 @@ struct CallbackParams {
 
 async fn callback(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Query(params): Query<CallbackParams>,
 ) -> Result<Response, AppError> {
@@ -501,7 +513,7 @@ async fn callback(
 
     // Look up (without consuming) so an attacker cannot pre-burn the row by
     // calling the callback with no/wrong session.
-    let flow_preview = mcp_upstream_flow::get_by_id(&state.db, &flow_id).await?;
+    let flow_preview = mcp_upstream_flow::get_by_id(state.db(&ext), &flow_id).await?;
     let Some(flow_preview) = flow_preview else {
         return Ok(gone_html(
             "This OAuth callback is invalid, expired, or has already been completed.",
@@ -524,7 +536,7 @@ async fn callback(
             "no active Overslash session — this OAuth flow cannot be completed without it".into(),
         )
     })?;
-    if !session_authorized_for_flow(&state, &session, &flow_preview).await? {
+    if !session_authorized_for_flow(&state, &ext, &session, &flow_preview).await? {
         return Err(AppError::Forbidden(
             "Overslash session does not match the identity that initiated this OAuth flow".into(),
         ));
@@ -533,7 +545,7 @@ async fn callback(
     // Now that the session is authorized, atomically claim the row.
     // Concurrent racing callbacks: the first transaction wins; the second
     // gets None and we 410.
-    let flow = mcp_upstream_flow::consume(&state.db, &flow_id).await?;
+    let flow = mcp_upstream_flow::consume(state.db(&ext), &flow_id).await?;
     let Some(flow) = flow else {
         return Ok(gone_html(
             "This OAuth callback is invalid, expired, or has already been completed.",
@@ -571,12 +583,12 @@ async fn callback(
         .map(|s| OffsetDateTime::now_utc() + Duration::seconds(s));
 
     let connection =
-        mcp_upstream_connection::get(&state.db, flow.identity_id, &flow.upstream_resource)
+        mcp_upstream_connection::get(state.db(&ext), flow.identity_id, &flow.upstream_resource)
             .await?
             .ok_or_else(|| AppError::Internal("flow has no matching connection row".into()))?;
 
     mcp_upstream_token::insert_current(
-        &state.db,
+        state.db(&ext),
         &mcp_upstream_token::InsertMcpUpstreamToken {
             connection_id: connection.id,
             access_token_ciphertext: &access_ct,
@@ -586,7 +598,7 @@ async fn callback(
         },
     )
     .await?;
-    mcp_upstream_connection::mark_ready(&state.db, connection.id).await?;
+    mcp_upstream_connection::mark_ready(state.db(&ext), connection.id).await?;
 
     Ok(connected_html(&flow.upstream_resource))
 }
@@ -597,10 +609,11 @@ async fn callback(
 
 async fn session_authorized_for_flow(
     state: &AppState,
+    ext: &axum::http::Extensions,
     session: &ParsedSession,
     flow: &mcp_upstream_flow::McpUpstreamFlowRow,
 ) -> Result<bool, AppError> {
-    session_authorized_for_org_identity(state, session, flow.org_id, flow.identity_id).await
+    session_authorized_for_org_identity(state, ext, session, flow.org_id, flow.identity_id).await
 }
 
 // ---------------------------------------------------------------------------

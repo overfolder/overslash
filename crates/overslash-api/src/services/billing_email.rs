@@ -65,31 +65,37 @@ pub enum SendOutcome {
 }
 
 /// Send the receipt on `invoice.payment_succeeded`.
-pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value) -> SendOutcome {
+pub async fn send_invoice_paid(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    event_id: &str,
+    invoice: &Value,
+) -> SendOutcome {
     let Some(customer_id) = invoice["customer"].as_str() else {
         tracing::warn!(event_id, "invoice_paid: missing customer id on payload");
         return SendOutcome::Done;
     };
 
-    let Some((user_id, email)) = resolve_user(state, customer_id, KIND_INVOICE_PAID).await else {
+    let Some((user_id, email)) = resolve_user(state, ext, customer_id, KIND_INVOICE_PAID).await
+    else {
         return SendOutcome::Done;
     };
 
-    let Some(log_id) = claim(state, event_id, KIND_INVOICE_PAID, user_id).await else {
+    let Some(log_id) = claim(state, ext, event_id, KIND_INVOICE_PAID, user_id).await else {
         return SendOutcome::Done;
     };
 
-    let org_ctx = match resolve_org_context(state, customer_id, KIND_INVOICE_PAID).await {
+    let org_ctx = match resolve_org_context(state, ext, customer_id, KIND_INVOICE_PAID).await {
         ResolveOrg::Found(c) => c,
         ResolveOrg::Retryable => {
-            release_claim(state, log_id, KIND_INVOICE_PAID, event_id).await;
+            release_claim(state, ext, log_id, KIND_INVOICE_PAID, event_id).await;
             return SendOutcome::Retryable;
         }
         ResolveOrg::Skip => {
             // Transient sub/org lookup error or missing org row — release
             // the claim so a manual replay (after the operator resolves the
             // underlying inconsistency) can re-claim and succeed.
-            release_claim(state, log_id, KIND_INVOICE_PAID, event_id).await;
+            release_claim(state, ext, log_id, KIND_INVOICE_PAID, event_id).await;
             return SendOutcome::Done;
         }
     };
@@ -134,6 +140,7 @@ pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value
 
     deliver(
         state,
+        ext,
         log_id,
         event_id,
         KIND_INVOICE_PAID,
@@ -148,6 +155,7 @@ pub async fn send_invoice_paid(state: &AppState, event_id: &str, invoice: &Value
 /// Send the dunning email on `invoice.payment_failed`.
 pub async fn send_invoice_payment_failed(
     state: &AppState,
+    ext: &axum::http::Extensions,
     event_id: &str,
     invoice: &Value,
 ) -> SendOutcome {
@@ -160,29 +168,31 @@ pub async fn send_invoice_payment_failed(
     };
 
     let Some((user_id, email)) =
-        resolve_user(state, customer_id, KIND_INVOICE_PAYMENT_FAILED).await
+        resolve_user(state, ext, customer_id, KIND_INVOICE_PAYMENT_FAILED).await
     else {
         return SendOutcome::Done;
     };
 
-    let Some(log_id) = claim(state, event_id, KIND_INVOICE_PAYMENT_FAILED, user_id).await else {
+    let Some(log_id) = claim(state, ext, event_id, KIND_INVOICE_PAYMENT_FAILED, user_id).await
+    else {
         return SendOutcome::Done;
     };
 
-    let org_ctx = match resolve_org_context(state, customer_id, KIND_INVOICE_PAYMENT_FAILED).await {
-        ResolveOrg::Found(c) => c,
-        ResolveOrg::Retryable => {
-            release_claim(state, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
-            return SendOutcome::Retryable;
-        }
-        ResolveOrg::Skip => {
-            // Transient sub/org lookup error or missing org row — release
-            // the claim so a manual replay (after the operator resolves the
-            // underlying inconsistency) can re-claim and succeed.
-            release_claim(state, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
-            return SendOutcome::Done;
-        }
-    };
+    let org_ctx =
+        match resolve_org_context(state, ext, customer_id, KIND_INVOICE_PAYMENT_FAILED).await {
+            ResolveOrg::Found(c) => c,
+            ResolveOrg::Retryable => {
+                release_claim(state, ext, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
+                return SendOutcome::Retryable;
+            }
+            ResolveOrg::Skip => {
+                // Transient sub/org lookup error or missing org row — release
+                // the claim so a manual replay (after the operator resolves the
+                // underlying inconsistency) can re-claim and succeed.
+                release_claim(state, ext, log_id, KIND_INVOICE_PAYMENT_FAILED, event_id).await;
+                return SendOutcome::Done;
+            }
+        };
 
     let amount_minor = invoice["amount_due"].as_i64().unwrap_or(0);
     let currency = invoice["currency"].as_str().unwrap_or(&org_ctx.currency);
@@ -214,6 +224,7 @@ pub async fn send_invoice_payment_failed(
 
     deliver(
         state,
+        ext,
         log_id,
         event_id,
         KIND_INVOICE_PAYMENT_FAILED,
@@ -230,7 +241,12 @@ pub async fn send_invoice_payment_failed(
 /// `()` rather than `SendOutcome` — the caller has already done a
 /// non-idempotent state mutation, so we can't ask Stripe to retry without
 /// re-running that.
-pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &Value) {
+pub async fn send_subscription_canceled(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    event_id: &str,
+    sub: &Value,
+) {
     let Some(customer_id) = sub["customer"].as_str() else {
         tracing::warn!(
             event_id,
@@ -239,12 +255,14 @@ pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &
         return;
     };
 
-    let Some((user_id, email)) = resolve_user(state, customer_id, KIND_SUBSCRIPTION_CANCELED).await
+    let Some((user_id, email)) =
+        resolve_user(state, ext, customer_id, KIND_SUBSCRIPTION_CANCELED).await
     else {
         return;
     };
 
-    let Some(log_id) = claim(state, event_id, KIND_SUBSCRIPTION_CANCELED, user_id).await else {
+    let Some(log_id) = claim(state, ext, event_id, KIND_SUBSCRIPTION_CANCELED, user_id).await
+    else {
         return;
     };
 
@@ -252,13 +270,14 @@ pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &
     // Both Retryable and Skip collapse to "silently drop", but we still
     // release the claim row so a manual replay (after the operator fixes
     // the underlying data inconsistency) can re-claim and send.
-    let org_ctx = match resolve_org_context(state, customer_id, KIND_SUBSCRIPTION_CANCELED).await {
-        ResolveOrg::Found(c) => c,
-        ResolveOrg::Retryable | ResolveOrg::Skip => {
-            release_claim(state, log_id, KIND_SUBSCRIPTION_CANCELED, event_id).await;
-            return;
-        }
-    };
+    let org_ctx =
+        match resolve_org_context(state, ext, customer_id, KIND_SUBSCRIPTION_CANCELED).await {
+            ResolveOrg::Found(c) => c,
+            ResolveOrg::Retryable | ResolveOrg::Skip => {
+                release_claim(state, ext, log_id, KIND_SUBSCRIPTION_CANCELED, event_id).await;
+                return;
+            }
+        };
 
     // current_period_end on the deleted subscription is the access cutoff. If
     // the row's `current_period_end` was never set (free trial canceled
@@ -281,6 +300,7 @@ pub async fn send_subscription_canceled(state: &AppState, event_id: &str, sub: &
 
     deliver(
         state,
+        ext,
         log_id,
         event_id,
         KIND_SUBSCRIPTION_CANCELED,
@@ -312,10 +332,11 @@ enum ResolveOrg {
 /// `claim()` before bailing out.
 async fn resolve_user(
     state: &AppState,
+    ext: &axum::http::Extensions,
     customer_id: &str,
     kind: &'static str,
 ) -> Option<(Uuid, String)> {
-    let user = match billing_repo::get_user_by_stripe_customer(&state.db, customer_id).await {
+    let user = match billing_repo::get_user_by_stripe_customer(state.db(ext), customer_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             tracing::warn!(
@@ -342,10 +363,12 @@ async fn resolve_user(
 /// retry of the same event never re-queries these.
 async fn resolve_org_context(
     state: &AppState,
+    ext: &axum::http::Extensions,
     customer_id: &str,
     kind: &'static str,
 ) -> ResolveOrg {
-    let sub = match billing_repo::get_org_subscription_by_customer(&state.db, customer_id).await {
+    let sub = match billing_repo::get_org_subscription_by_customer(state.db(ext), customer_id).await
+    {
         Ok(Some(s)) => s,
         Ok(None) => {
             tracing::warn!(
@@ -361,7 +384,7 @@ async fn resolve_org_context(
         }
     };
 
-    let org = match org_repo::get_by_id(&state.db, sub.org_id).await {
+    let org = match org_repo::get_by_id(state.db(ext), sub.org_id).await {
         Ok(Some(o)) => o,
         Ok(None) => {
             tracing::warn!(kind, org_id = %sub.org_id, "billing email: org row missing");
@@ -380,8 +403,14 @@ async fn resolve_org_context(
     })
 }
 
-async fn release_claim(state: &AppState, log_id: Uuid, kind: &'static str, event_id: &str) {
-    if let Err(e) = billing_email_log::release(&state.db, log_id).await {
+async fn release_claim(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    log_id: Uuid,
+    kind: &'static str,
+    event_id: &str,
+) {
+    if let Err(e) = billing_email_log::release(state.db(ext), log_id).await {
         tracing::warn!(
             kind,
             event_id,
@@ -394,11 +423,12 @@ async fn release_claim(state: &AppState, log_id: Uuid, kind: &'static str, event
 
 async fn claim(
     state: &AppState,
+    ext: &axum::http::Extensions,
     event_id: &str,
     kind: &'static str,
     user_id: Uuid,
 ) -> Option<Uuid> {
-    match billing_email_log::try_claim(&state.db, event_id, kind, user_id).await {
+    match billing_email_log::try_claim(state.db(ext), event_id, kind, user_id).await {
         Ok(Some(id)) => Some(id),
         Ok(None) => {
             // Already handled — Stripe retry. Silent.
@@ -411,8 +441,10 @@ async fn claim(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn deliver(
     state: &AppState,
+    ext: &axum::http::Extensions,
     log_id: Uuid,
     event_id: &str,
     kind: &'static str,
@@ -439,7 +471,7 @@ async fn deliver(
         return;
     }
 
-    if let Err(e) = billing_email_log::mark_sent(&state.db, log_id).await {
+    if let Err(e) = billing_email_log::mark_sent(state.db(ext), log_id).await {
         tracing::warn!(kind, event_id, %log_id, error = %e, "billing email: mark_sent failed");
     }
 }

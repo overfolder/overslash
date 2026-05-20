@@ -30,6 +30,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
+    extractors::ReqExt,
     middleware::subdomain::RequestOrgContext,
     services::{jwt, oauth_as, session},
 };
@@ -99,6 +100,7 @@ struct RegisterRequest {
 
 async fn register(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Response {
@@ -144,7 +146,7 @@ async fn register(
         .map(|s| s.trim().to_string());
 
     let row = match oauth_mcp_client::create(
-        &state.db,
+        state.db(&ext),
         &oauth_mcp_client::CreateOauthMcpClient {
             client_id: &client_id,
             client_name: req.client_name.as_deref(),
@@ -210,6 +212,7 @@ struct AuthorizeQuery {
 
 async fn authorize(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ctx: Option<Extension<RequestOrgContext>>,
     Query(params): Query<AuthorizeQuery>,
     headers: HeaderMap,
@@ -253,7 +256,7 @@ async fn authorize(
         );
     }
 
-    let client = match oauth_mcp_client::get_by_client_id(&state.db, &params.client_id).await {
+    let client = match oauth_mcp_client::get_by_client_id(state.db(&ext), &params.client_id).await {
         Ok(Some(c)) if !c.is_revoked => c,
         Ok(_) => {
             return oauth_error(
@@ -289,7 +292,7 @@ async fn authorize(
         None => {
             let authorize_path = rebuild_authorize_path(&params);
             let next = urlencoding::encode(&authorize_path);
-            match default_idp_provider_for_request(&state, &ctx).await {
+            match default_idp_provider_for_request(&state, &ext, &ctx).await {
                 IdpBounce::Provider(provider) => {
                     // Dev login is a separate endpoint, not the generic
                     // /auth/login/{provider_key} path (which requires an
@@ -323,15 +326,21 @@ async fn authorize(
     // lookup failure-mode is "fall through to consent" rather than 500 so
     // a transient DB blip doesn't lock the user out of authentication.
     if let Ok(Some(binding)) =
-        mcp_client_agent_binding::get_for(&state.db, session_claims.sub, &client.client_id).await
+        mcp_client_agent_binding::get_for(state.db(&ext), session_claims.sub, &client.client_id)
+            .await
     {
-        if let Ok(Some(agent)) =
-            identity::get_by_id(&state.db, session_claims.org, binding.agent_identity_id).await
+        if let Ok(Some(agent)) = identity::get_by_id(
+            state.db(&ext),
+            session_claims.org,
+            binding.agent_identity_id,
+        )
+        .await
         {
             if agent.archived_at.is_none() && agent.kind == "agent" {
                 let email = agent.email.as_deref().unwrap_or(&session_claims.email);
                 return issue_authorization_code(
                     &state,
+                    &ext,
                     &client.client_id,
                     agent.id,
                     session_claims.org,
@@ -350,7 +359,7 @@ async fn authorize(
     // consent screen. The `request_id` lives only in memory (60s TTL) so a
     // consent submission against a stale or forged id fails closed.
     let request_id = oauth_as::generate_auth_code();
-    state.pending_authorize_store.insert(
+    state.pending_authorize_store(&ext).insert(
         request_id.clone(),
         oauth_as::PendingAuthorize {
             client_id: client.client_id.clone(),
@@ -396,6 +405,7 @@ fn rebuild_authorize_path(p: &AuthorizeQuery) -> String {
 #[allow(clippy::too_many_arguments)]
 fn issue_authorization_code(
     state: &AppState,
+    ext: &axum::http::Extensions,
     client_id: &str,
     identity_id: Uuid,
     org_id: Uuid,
@@ -405,7 +415,7 @@ fn issue_authorization_code(
     state_param: Option<&str>,
 ) -> Response {
     let code = oauth_as::generate_auth_code();
-    state.auth_code_store.insert(
+    state.auth_code_store(ext).insert(
         code.clone(),
         oauth_as::AuthCodeRecord {
             client_id: client_id.to_string(),
@@ -447,15 +457,20 @@ enum IdpBounce {
 ///
 /// On the apex (`RequestOrgContext::Root`) we keep the existing env-var
 /// behavior so personal-org sign-up keeps working without any DB IdP rows.
-async fn default_idp_provider_for_request(state: &AppState, ctx: &RequestOrgContext) -> IdpBounce {
+async fn default_idp_provider_for_request(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    ctx: &RequestOrgContext,
+) -> IdpBounce {
     match ctx {
         RequestOrgContext::Org { org_id, .. } => {
             // Designated default first.
-            if let Ok(Some(row)) = org_idp_config::get_default_by_org(&state.db, *org_id).await {
+            if let Ok(Some(row)) = org_idp_config::get_default_by_org(state.db(ext), *org_id).await
+            {
                 return IdpBounce::Provider(row.provider_key);
             }
             // No default but at least one enabled IdP → picker.
-            match org_idp_config::list_enabled_by_org(&state.db, *org_id).await {
+            match org_idp_config::list_enabled_by_org(state.db(ext), *org_id).await {
                 Ok(rows) if !rows.is_empty() => IdpBounce::Picker,
                 _ => IdpBounce::None,
             }
@@ -622,6 +637,7 @@ mod slug_tests {
 
 async fn consent_context(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Path(request_id): Path<String>,
 ) -> Result<Json<ConsentContextResponse>, AppError> {
@@ -629,7 +645,7 @@ async fn consent_context(
         .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
 
     let pending = state
-        .pending_authorize_store
+        .pending_authorize_store(&ext)
         .get(&request_id)
         .ok_or_else(|| AppError::NotFound("authorization request expired".into()))?;
 
@@ -647,7 +663,7 @@ async fn consent_context(
         ));
     }
 
-    let client = oauth_mcp_client::get_by_client_id(&state.db, &pending.client_id)
+    let client = oauth_mcp_client::get_by_client_id(state.db(&ext), &pending.client_id)
         .await?
         .ok_or_else(|| AppError::BadRequest("MCP client is no longer registered".into()))?;
 
@@ -656,7 +672,7 @@ async fn consent_context(
     // reauth target. This covers the case where a client re-registered (new
     // client_id) after losing its persisted config.
     let similar = oauth_mcp_client::find_similar_for_user(
-        &state.db,
+        state.db(&ext),
         pending.user_identity_id,
         client.client_name.as_deref(),
         client.software_id.as_deref(),
@@ -673,7 +689,7 @@ async fn consent_context(
     // User's direct children that qualify as "parents" for a new agent.
     // We include the user themselves plus any existing agents under them
     // so the user can attach the new MCP agent to an automation root.
-    let user_row = identity::get_by_id(&state.db, pending.org_id, pending.user_identity_id)
+    let user_row = identity::get_by_id(state.db(&ext), pending.org_id, pending.user_identity_id)
         .await?
         .ok_or_else(|| AppError::BadRequest("user identity not found".into()))?;
     let mut parents = vec![ConsentParentOption {
@@ -682,9 +698,10 @@ async fn consent_context(
         kind: user_row.kind.clone(),
         is_you: true,
     }];
-    let children = identity::list_children(&state.db, pending.org_id, pending.user_identity_id)
-        .await
-        .unwrap_or_default();
+    let children =
+        identity::list_children(state.db(&ext), pending.org_id, pending.user_identity_id)
+            .await
+            .unwrap_or_default();
     for c in children {
         if c.kind == "agent" && c.archived_at.is_none() {
             parents.push(ConsentParentOption {
@@ -696,7 +713,7 @@ async fn consent_context(
         }
     }
 
-    let scope = OrgScope::new(pending.org_id, state.db.clone());
+    let scope = OrgScope::new(pending.org_id, state.db_pool(&ext));
     let groups_rows = scope.list_groups().await.unwrap_or_default();
     let mut groups = Vec::with_capacity(groups_rows.len());
     for g in groups_rows {
@@ -716,11 +733,12 @@ async fn consent_context(
     let elicitation_supported = client.elicitation_supported();
 
     let (mode, reauth_target) = if let Some(sim) = similar {
-        let agent = identity::get_by_id(&state.db, pending.org_id, sim.agent_identity_id).await?;
+        let agent =
+            identity::get_by_id(state.db(&ext), pending.org_id, sim.agent_identity_id).await?;
         match agent {
             Some(a) if a.kind == "agent" && a.archived_at.is_none() => {
                 let parent_name = if let Some(pid) = a.parent_id {
-                    identity::get_by_id(&state.db, pending.org_id, pid)
+                    identity::get_by_id(state.db(&ext), pending.org_id, pid)
                         .await
                         .ok()
                         .flatten()
@@ -729,7 +747,7 @@ async fn consent_context(
                     None
                 };
                 let existing_elicitation =
-                    mcp_client_agent_binding::get_by_agent_identity(&state.db, a.id)
+                    mcp_client_agent_binding::get_by_agent_identity(state.db(&ext), a.id)
                         .await?
                         .map(|b| b.elicitation_enabled)
                         .unwrap_or(false);
@@ -773,6 +791,7 @@ async fn consent_context(
 
 async fn consent_finish(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Path(request_id): Path<String>,
     Json(body): Json<ConsentFinishRequest>,
@@ -786,7 +805,7 @@ async fn consent_finish(
     // fails the user re-starts the flow; the 60s TTL is short enough that
     // this is acceptable.
     let pending = state
-        .pending_authorize_store
+        .pending_authorize_store(&ext)
         .take(&request_id)
         .ok_or_else(|| AppError::BadRequest("authorization request expired".into()))?;
 
@@ -801,11 +820,11 @@ async fn consent_finish(
         ));
     }
 
-    let user = identity::get_by_id(&state.db, pending.org_id, pending.user_identity_id)
+    let user = identity::get_by_id(state.db(&ext), pending.org_id, pending.user_identity_id)
         .await?
         .ok_or_else(|| AppError::BadRequest("user identity not found".into()))?;
 
-    let client = oauth_mcp_client::get_by_client_id(&state.db, &pending.client_id)
+    let client = oauth_mcp_client::get_by_client_id(state.db(&ext), &pending.client_id)
         .await?
         .ok_or_else(|| AppError::BadRequest("MCP client is no longer registered".into()))?;
 
@@ -826,7 +845,7 @@ async fn consent_finish(
             // agents — we already exposed exactly that list in the
             // context endpoint, so anything else is a forged submission.
             let parent_id = body.parent_id.unwrap_or(user.id);
-            let parent = identity::get_by_id(&state.db, pending.org_id, parent_id)
+            let parent = identity::get_by_id(state.db(&ext), pending.org_id, parent_id)
                 .await?
                 .ok_or_else(|| AppError::BadRequest("parent identity not found".into()))?;
             if parent.id != user.id
@@ -840,7 +859,7 @@ async fn consent_finish(
             }
 
             let agent = identity::create_with_parent(
-                &state.db,
+                state.db(&ext),
                 pending.org_id,
                 &agent_name,
                 "agent",
@@ -857,7 +876,7 @@ async fn consent_finish(
             // logged but don't abort the enrollment — the user can always
             // fix group membership later from the dashboard.
             if !body.group_names.is_empty() {
-                let scope = OrgScope::new(pending.org_id, state.db.clone());
+                let scope = OrgScope::new(pending.org_id, state.db_pool(&ext));
                 let existing = scope.list_groups().await.unwrap_or_default();
                 for raw in &body.group_names {
                     let name = raw.trim();
@@ -906,7 +925,7 @@ async fn consent_finish(
             // Together those invariants reduce to "the user already
             // enrolled this MCP client (or a previous one) against this
             // agent" — which is the honest definition of reauth.
-            let agent = identity::get_by_id(&state.db, pending.org_id, echoed_agent_id)
+            let agent = identity::get_by_id(state.db(&ext), pending.org_id, echoed_agent_id)
                 .await?
                 .ok_or_else(|| AppError::BadRequest("agent not found".into()))?;
             if agent.kind != "agent"
@@ -918,7 +937,7 @@ async fn consent_finish(
                 ));
             }
             if !oauth_mcp_client::user_has_binding_to_agent(
-                &state.db,
+                state.db(&ext),
                 pending.user_identity_id,
                 agent.id,
             )
@@ -945,14 +964,14 @@ async fn consent_finish(
     // (`auto_call_on_approve` lives on the agent identity now and is
     // naturally preserved across reauth — no special handling needed.)
     let prior_binding =
-        mcp_client_agent_binding::get_by_agent_identity(&state.db, agent_identity_id).await?;
+        mcp_client_agent_binding::get_by_agent_identity(state.db(&ext), agent_identity_id).await?;
     let prior_elicitation = prior_binding
         .as_ref()
         .map(|b| b.elicitation_enabled)
         .unwrap_or(false);
 
     mcp_client_agent_binding::upsert(
-        &state.db,
+        state.db(&ext),
         pending.org_id,
         pending.user_identity_id,
         &pending.client_id,
@@ -972,7 +991,7 @@ async fn consent_finish(
         None => prior_elicitation,
     };
     mcp_client_agent_binding::set_elicitation_enabled_for_agent(
-        &state.db,
+        state.db(&ext),
         agent_identity_id,
         resolved_elicitation,
     )
@@ -981,13 +1000,13 @@ async fn consent_finish(
     // Fetch the agent's email (if any) so the access-token JWT carries a
     // sensible `email` claim. Agents usually inherit the owner's email
     // address for display purposes.
-    let email = match identity::get_by_id(&state.db, pending.org_id, agent_identity_id).await {
+    let email = match identity::get_by_id(state.db(&ext), pending.org_id, agent_identity_id).await {
         Ok(Some(a)) => a.email.unwrap_or_else(|| pending.email.clone()),
         _ => pending.email.clone(),
     };
 
     let code = oauth_as::generate_auth_code();
-    state.auth_code_store.insert(
+    state.auth_code_store(&ext).insert(
         code.clone(),
         oauth_as::AuthCodeRecord {
             client_id: pending.client_id.clone(),
@@ -1028,15 +1047,19 @@ struct TokenRequest {
     refresh_token: Option<String>,
 }
 
-async fn token(State(state): State<AppState>, Form(req): Form<TokenRequest>) -> Response {
+async fn token(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    Form(req): Form<TokenRequest>,
+) -> Response {
     let flow = match req.grant_type.as_str() {
         "authorization_code" => "token",
         "refresh_token" => "refresh",
         _ => "unknown_grant",
     };
     let response = match req.grant_type.as_str() {
-        "authorization_code" => exchange_authorization_code(&state, req).await,
-        "refresh_token" => exchange_refresh_token(&state, req).await,
+        "authorization_code" => exchange_authorization_code(&state, &ext, req).await,
+        "refresh_token" => exchange_refresh_token(&state, &ext, req).await,
         other => oauth_error(
             StatusCode::BAD_REQUEST,
             "unsupported_grant_type",
@@ -1052,7 +1075,11 @@ async fn token(State(state): State<AppState>, Form(req): Form<TokenRequest>) -> 
     response
 }
 
-async fn exchange_authorization_code(state: &AppState, req: TokenRequest) -> Response {
+async fn exchange_authorization_code(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    req: TokenRequest,
+) -> Response {
     let code = match req.code {
         Some(c) => c,
         None => {
@@ -1090,7 +1117,7 @@ async fn exchange_authorization_code(state: &AppState, req: TokenRequest) -> Res
         }
     };
 
-    let record = match state.auth_code_store.take(&code) {
+    let record = match state.auth_code_store(ext).take(&code) {
         Some(r) => r,
         None => {
             return oauth_error(
@@ -1113,6 +1140,7 @@ async fn exchange_authorization_code(state: &AppState, req: TokenRequest) -> Res
 
     issue_tokens(
         state,
+        ext,
         &record.client_id,
         record.identity_id,
         record.org_id,
@@ -1121,7 +1149,11 @@ async fn exchange_authorization_code(state: &AppState, req: TokenRequest) -> Res
     .await
 }
 
-async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response {
+async fn exchange_refresh_token(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    req: TokenRequest,
+) -> Response {
     let raw = match req.refresh_token {
         Some(t) => t,
         None => {
@@ -1133,7 +1165,7 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
         }
     };
     let hash = oauth_as::hash_refresh_token(&raw);
-    let row = match mcp_refresh_token::get_by_hash(&state.db, &hash).await {
+    let row = match mcp_refresh_token::get_by_hash(state.db(ext), &hash).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             return oauth_error(
@@ -1156,7 +1188,7 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
     // previously-legitimate client was compromised. Revoke the entire chain
     // so both the attacker and the original client lose access.
     if row.revoked_at.is_some() {
-        if let Err(e) = mcp_refresh_token::revoke_chain_from(&state.db, row.id).await {
+        if let Err(e) = mcp_refresh_token::revoke_chain_from(state.db(ext), row.id).await {
             tracing::error!("revoke chain failed: {e}");
         }
         return oauth_error(
@@ -1174,30 +1206,27 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
     }
 
     // We need the identity's email to mint the access JWT — fetch it.
-    let identity = match overslash_db::repos::identity::get_by_id(
-        &state.db,
-        row.org_id,
-        row.identity_id,
-    )
-    .await
-    {
-        Ok(Some(i)) => i,
-        Ok(None) => {
-            return oauth_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_grant",
-                "identity no longer exists",
-            );
-        }
-        Err(e) => {
-            tracing::error!("identity lookup failed: {e}");
-            return oauth_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                "failed to look up identity",
-            );
-        }
-    };
+    let identity =
+        match overslash_db::repos::identity::get_by_id(state.db(ext), row.org_id, row.identity_id)
+            .await
+        {
+            Ok(Some(i)) => i,
+            Ok(None) => {
+                return oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    "identity no longer exists",
+                );
+            }
+            Err(e) => {
+                tracing::error!("identity lookup failed: {e}");
+                return oauth_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "failed to look up identity",
+                );
+            }
+        };
 
     // Mint new tokens and atomically rotate (revoke old + insert new).
     let (raw_new, new_hash) = oauth_as::generate_refresh_token();
@@ -1205,7 +1234,7 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
         OffsetDateTime::now_utc() + Duration::seconds(oauth_as::REFRESH_TOKEN_TTL_SECS);
 
     if let Err(e) = mcp_refresh_token::rotate(
-        &state.db,
+        state.db(ext),
         row.id,
         &mcp_refresh_token::CreateMcpRefreshToken {
             client_id: &row.client_id,
@@ -1224,7 +1253,7 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
             "failed to rotate refresh token",
         );
     }
-    let _ = oauth_mcp_client::mark_seen(&state.db, &row.client_id).await;
+    let _ = oauth_mcp_client::mark_seen(state.db(ext), &row.client_id).await;
 
     let email = identity.email.as_deref().unwrap_or("");
     let access = match mint_access_token(state, row.identity_id, row.org_id, email, &row.client_id)
@@ -1238,6 +1267,7 @@ async fn exchange_refresh_token(state: &AppState, req: TokenRequest) -> Response
 
 async fn issue_tokens(
     state: &AppState,
+    ext: &axum::http::Extensions,
     client_id: &str,
     identity_id: Uuid,
     org_id: Uuid,
@@ -1247,7 +1277,7 @@ async fn issue_tokens(
     let expires_at =
         OffsetDateTime::now_utc() + Duration::seconds(oauth_as::REFRESH_TOKEN_TTL_SECS);
     if let Err(e) = mcp_refresh_token::create(
-        &state.db,
+        state.db(ext),
         &mcp_refresh_token::CreateMcpRefreshToken {
             client_id,
             identity_id,
@@ -1265,7 +1295,7 @@ async fn issue_tokens(
             "failed to persist refresh token",
         );
     }
-    let _ = oauth_mcp_client::mark_seen(&state.db, client_id).await;
+    let _ = oauth_mcp_client::mark_seen(state.db(ext), client_id).await;
     let access = match mint_access_token(state, identity_id, org_id, email, client_id) {
         Ok(t) => t,
         Err(resp) => return resp,
@@ -1329,7 +1359,11 @@ struct RevokeRequest {
     token_type_hint: Option<String>,
 }
 
-async fn revoke(State(state): State<AppState>, Form(req): Form<RevokeRequest>) -> Response {
+async fn revoke(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    Form(req): Form<RevokeRequest>,
+) -> Response {
     // RFC 7009: always return 200 on success, even for unknown tokens.
     // `token_type_hint` is advisory — we ignore it because refresh tokens
     // are the only form we persist; access tokens are stateless JWTs and
@@ -1337,9 +1371,9 @@ async fn revoke(State(state): State<AppState>, Form(req): Form<RevokeRequest>) -
     let _ = req.token_type_hint;
 
     let hash = oauth_as::hash_refresh_token(&req.token);
-    match mcp_refresh_token::get_by_hash(&state.db, &hash).await {
+    match mcp_refresh_token::get_by_hash(state.db(&ext), &hash).await {
         Ok(Some(row)) => {
-            if let Err(e) = mcp_refresh_token::revoke_by_id(&state.db, row.id).await {
+            if let Err(e) = mcp_refresh_token::revoke_by_id(state.db(&ext), row.id).await {
                 // Log-but-don't-fail: RFC 7009 wants a 200 for success paths
                 // so the client doesn't retry into a DB stampede, but an
                 // operator needs a signal when the revoke silently misses.

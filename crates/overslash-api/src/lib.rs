@@ -18,7 +18,7 @@ pub mod services;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{HeaderName, HeaderValue, Method, header};
+use axum::http::{Extensions, HeaderName, HeaderValue, Method, header};
 use sqlx::PgPool;
 use tower_http::{
     compression::CompressionLayer,
@@ -67,6 +67,114 @@ pub struct AppState {
     /// callers (billing, onboarding, DLQ digest) just `state.mailer.send(...)`
     /// and stay oblivious to provider wiring.
     pub mailer: Arc<dyn Mailer>,
+    /// Per-request resource resolver. `None` in production: the field
+    /// accessors below fall through to `self.db`, `self.rate_limit_cache`,
+    /// etc. `Some(_)` only in test builds where multiple test pools share
+    /// a single Axum router; the test-pool middleware stamps a
+    /// `TestPoolId` into request extensions, and the resolver returns the
+    /// per-test `TestResources` bundle so org_id-keyed caches and OAuth
+    /// stores stay isolated across tests.
+    pub test_resources: Option<Arc<dyn TestResourceResolver>>,
+}
+
+/// Per-test resource bundle for the shared-router test harness. Bundles
+/// the six AppState fields that must be swapped per request to keep tests
+/// isolated when they share an Axum router: the DB pool, the two OAuth
+/// in-memory stores, and the three org-id-keyed rate-limit / billing
+/// caches (which would otherwise alias across tests because
+/// `BootstrapFixtures.org_id` is shared by every test cloning the
+/// bootstrapped template).
+pub struct TestResources {
+    pub db: PgPool,
+    pub auth_code_store: services::oauth_as::AuthCodeStore,
+    pub pending_authorize_store: services::oauth_as::PendingAuthorizeStore,
+    pub rate_limit_cache: Arc<services::rate_limit::RateLimitConfigCache>,
+    pub free_unlimited_cache: Arc<services::billing_tier::FreeUnlimitedCache>,
+    pub rate_limiter: Arc<dyn services::rate_limit::RateLimitStore>,
+}
+
+/// Marker stamped into request `Extensions` by the test-pool middleware,
+/// used by the resolver to look up the per-test `TestResources` bundle.
+/// Production requests never carry this extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TestPoolId(pub uuid::Uuid);
+
+/// Resolves the per-test resource bundle for a request. Implemented by
+/// the test harness in `tests/common/shared_router.rs`. Always returns
+/// `None` in production (the field accessors below short-circuit to the
+/// static AppState fields).
+pub trait TestResourceResolver: Send + Sync {
+    fn resolve<'a>(&'a self, ext: &Extensions) -> Option<&'a TestResources>;
+}
+
+impl AppState {
+    /// Returns the `PgPool` for this request. In production (and in
+    /// per-test-router test helpers) this is `&self.db`. Under the
+    /// shared-router test harness, the test-pool middleware stamped a
+    /// `TestPoolId` into `ext` and this resolves to that test's pool.
+    pub fn db<'a>(&'a self, ext: &'a Extensions) -> &'a PgPool {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => &res.db,
+            None => &self.db,
+        }
+    }
+
+    /// Owned `PgPool` clone for `tokio::spawn` captures. PgPool is cheap
+    /// to clone (Arc internally) — use this anywhere the spawned future
+    /// outlives the request and can't borrow from `Extensions`.
+    pub fn db_pool(&self, ext: &Extensions) -> PgPool {
+        self.db(ext).clone()
+    }
+
+    pub fn auth_code_store<'a>(
+        &'a self,
+        ext: &'a Extensions,
+    ) -> &'a services::oauth_as::AuthCodeStore {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => &res.auth_code_store,
+            None => &self.auth_code_store,
+        }
+    }
+
+    pub fn pending_authorize_store<'a>(
+        &'a self,
+        ext: &'a Extensions,
+    ) -> &'a services::oauth_as::PendingAuthorizeStore {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => &res.pending_authorize_store,
+            None => &self.pending_authorize_store,
+        }
+    }
+
+    pub fn rate_limit_cache<'a>(
+        &'a self,
+        ext: &'a Extensions,
+    ) -> &'a services::rate_limit::RateLimitConfigCache {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => &res.rate_limit_cache,
+            None => &self.rate_limit_cache,
+        }
+    }
+
+    pub fn free_unlimited_cache<'a>(
+        &'a self,
+        ext: &'a Extensions,
+    ) -> &'a services::billing_tier::FreeUnlimitedCache {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => &res.free_unlimited_cache,
+            None => &self.free_unlimited_cache,
+        }
+    }
+
+    pub fn rate_limiter<'a>(
+        &'a self,
+        ext: &'a Extensions,
+    ) -> &'a dyn services::rate_limit::RateLimitStore {
+        match self.test_resources.as_deref().and_then(|r| r.resolve(ext)) {
+            Some(res) => res.rate_limiter.as_ref(),
+            None => self.rate_limiter.as_ref(),
+        }
+    }
 }
 
 /// Create the application router with all routes and middleware.
@@ -177,6 +285,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         embeddings_available,
         platform_registry: std::sync::Arc::new(services::platform_registry::build_registry()),
         mailer,
+        test_resources: None,
     };
 
     // Spawn background tasks

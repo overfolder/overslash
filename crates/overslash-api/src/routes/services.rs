@@ -11,7 +11,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, OrgAcl, WriteAcl},
+    extractors::{AdminAcl, AuthContext, OrgAcl, ReqExt, WriteAcl},
     services::{
         group_ceiling,
         platform_caller::PlatformCallContext,
@@ -64,7 +64,11 @@ struct ListServicesQuery {
 // -- Helpers --
 
 /// Build a [`PlatformCallContext`] from the WriteAcl extractor for kernel calls.
-fn ctx_from_acl(state: &AppState, acl: &OrgAcl) -> Result<PlatformCallContext> {
+fn ctx_from_acl(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    acl: &OrgAcl,
+) -> Result<PlatformCallContext> {
     let identity_id = acl.identity_id.ok_or_else(|| {
         AppError::Forbidden("identity-bound credential required for this operation".into())
     })?;
@@ -74,7 +78,7 @@ fn ctx_from_acl(state: &AppState, acl: &OrgAcl) -> Result<PlatformCallContext> {
         // it. Wrap with `Some` to match the kernel's `Option<Uuid>` shape.
         identity_id: Some(identity_id),
         access_level: acl.access_level,
-        db: state.db.clone(),
+        db: state.db_pool(ext),
         registry: state.registry.clone(),
         config: state.config.clone(),
         http_client: state.http_client.clone(),
@@ -85,6 +89,7 @@ fn ctx_from_acl(state: &AppState, acl: &OrgAcl) -> Result<PlatformCallContext> {
 
 async fn list_services(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     Query(q): Query<ListServicesQuery>,
@@ -111,7 +116,7 @@ async fn list_services(
         for row in rows {
             let groups = by_service.remove(&row.id).unwrap_or_default();
             let credentials_status = platform_services::compute_credentials_status(
-                &state.db,
+                state.db(&ext),
                 &state.registry,
                 &scope,
                 &row,
@@ -146,7 +151,7 @@ async fn list_services(
         org_id: auth.org_id,
         identity_id: auth.identity_id,
         access_level: overslash_core::permissions::AccessLevel::Read,
-        db: state.db.clone(),
+        db: state.db_pool(&ext),
         registry: state.registry.clone(),
         config: state.config.clone(),
         http_client: state.http_client.clone(),
@@ -171,6 +176,7 @@ async fn list_service_groups(
 
 async fn get_service(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     Path(name): Path<String>,
@@ -192,7 +198,7 @@ async fn get_service(
         }
         .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
         let credentials_status = platform_services::compute_credentials_status(
-            &state.db,
+            state.db(&ext),
             &state.registry,
             &scope,
             &row,
@@ -211,7 +217,7 @@ async fn get_service(
         // `Option<Uuid>` shape so wrap with `Some`.
         identity_id: Some(identity_id),
         access_level: overslash_core::permissions::AccessLevel::Read,
-        db: state.db.clone(),
+        db: state.db_pool(&ext),
         registry: state.registry.clone(),
         config: state.config.clone(),
         http_client: state.http_client.clone(),
@@ -229,21 +235,23 @@ async fn get_service(
 
 async fn create_service(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     Json(req): Json<CreateServiceInput>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    let ctx = ctx_from_acl(&state, &acl)?;
+    let ctx = ctx_from_acl(&state, &ext, &acl)?;
     let detail = platform_services::kernel_create_service(ctx, req).await?;
     Ok(Json(detail))
 }
 
 async fn update_service(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateServiceInput>,
 ) -> Result<Json<ServiceInstanceDetail>> {
-    let ctx = ctx_from_acl(&state, &acl)?;
+    let ctx = ctx_from_acl(&state, &ext, &acl)?;
     let detail = platform_services::kernel_update_service(ctx, id, req).await?;
     Ok(Json(detail))
 }
@@ -313,6 +321,7 @@ async fn delete_service(
 /// List actions for a service instance (delegates to the underlying template).
 async fn list_service_actions(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     Path(name): Path<String>,
@@ -327,7 +336,7 @@ async fn list_service_actions(
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
-    super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
+    super::templates::resolve_template_actions(&state, &ext, &auth, &instance.template_key)
         .await
         .map(Json)
 }

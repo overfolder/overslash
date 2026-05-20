@@ -38,7 +38,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::AppState;
+use crate::{AppState, extractors::ReqExt};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -127,11 +127,15 @@ fn replay_html() -> Html<&'static str> {
     )
 }
 
-async fn unsubscribe_get(State(state): State<AppState>, Query(q): Query<TokenQuery>) -> Response {
+async fn unsubscribe_get(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    Query(q): Query<TokenQuery>,
+) -> Response {
     let Some(token) = q.token.as_deref().and_then(|s| Uuid::parse_str(s).ok()) else {
         return (StatusCode::NOT_FOUND, "unknown token").into_response();
     };
-    match apply_unsubscribe(&state, token).await {
+    match apply_unsubscribe(&state, &ext, token).await {
         Ok(RedeemOutcome::Applied) => applied_html().into_response(),
         Ok(RedeemOutcome::Replayed) => replay_html().into_response(),
         Ok(RedeemOutcome::NotFound) => (StatusCode::NOT_FOUND, "unknown token").into_response(),
@@ -145,6 +149,7 @@ async fn unsubscribe_get(State(state): State<AppState>, Query(q): Query<TokenQue
 
 async fn unsubscribe_post(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Query(q): Query<TokenQuery>,
 ) -> StatusCode {
     // RFC 8058 §3.1: stay opaque on POST so probes can't enumerate valid
@@ -153,7 +158,7 @@ async fn unsubscribe_post(
     let Some(token) = q.token.as_deref().and_then(|s| Uuid::parse_str(s).ok()) else {
         return StatusCode::NO_CONTENT;
     };
-    match apply_unsubscribe(&state, token).await {
+    match apply_unsubscribe(&state, &ext, token).await {
         Ok(_) => StatusCode::NO_CONTENT,
         Err(()) => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -165,8 +170,12 @@ async fn unsubscribe_post(
 ///   intentionally left untouched (a previously-unsubscribed user may have
 ///   re-subscribed via `/account`).
 /// * `NotFound` — no row for this token.
-async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<RedeemOutcome, ()> {
-    let row = match email_unsubscribe_token::find(&state.db, token).await {
+async fn apply_unsubscribe(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    token: Uuid,
+) -> Result<RedeemOutcome, ()> {
+    let row = match email_unsubscribe_token::find(state.db(ext), token).await {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(RedeemOutcome::NotFound),
         Err(e) => {
@@ -174,7 +183,8 @@ async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<RedeemOutcom
             return Err(());
         }
     };
-    let was_first_redeem = match email_unsubscribe_token::mark_redeemed(&state.db, token).await {
+    let was_first_redeem = match email_unsubscribe_token::mark_redeemed(state.db(ext), token).await
+    {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(%token, error = %e, "unsubscribe: mark_redeemed failed");
@@ -191,9 +201,11 @@ async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<RedeemOutcom
     }
     let now = OffsetDateTime::now_utc();
     let set_result = match row.purpose.as_str() {
-        "welcome" => user_repo::set_welcome_unsubscribed(&state.db, row.user_id, Some(now)).await,
+        "welcome" => {
+            user_repo::set_welcome_unsubscribed(state.db(ext), row.user_id, Some(now)).await
+        }
         "webhook_digest" => {
-            user_repo::set_webhook_digest_unsubscribed(&state.db, row.user_id, Some(now)).await
+            user_repo::set_webhook_digest_unsubscribed(state.db(ext), row.user_id, Some(now)).await
         }
         other => {
             tracing::error!(%token, purpose = %other, "unsubscribe: unknown purpose");
@@ -204,7 +216,7 @@ async fn apply_unsubscribe(state: &AppState, token: Uuid) -> Result<RedeemOutcom
         tracing::error!(user_id = %row.user_id, %token, purpose = %row.purpose, error = %e, "unsubscribe: set_*_unsubscribed failed");
         return Err(());
     }
-    let scope = OrgScope::new(row.org_id, state.db.clone());
+    let scope = OrgScope::new(row.org_id, state.db_pool(ext));
     if let Err(e) = scope
         .log_audit(AuditEntry {
             org_id: row.org_id,

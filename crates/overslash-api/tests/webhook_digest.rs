@@ -259,7 +259,7 @@ async fn unsubscribe_redemption_flips_only_digest_column() {
     // a swapped arm would mis-route the digest token to the welcome setter
     // and the welcome-column assertion below would catch it.
     let pool = test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let org = make_org(&pool, "Zeta").await;
     let admin = make_member(&pool, org, "redeemer@example.com", "admin").await;
     let sub = make_subscription(&pool, org, "https://hook.example.com/z", true).await;

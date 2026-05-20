@@ -38,7 +38,7 @@ fn mint_session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
 #[tokio::test]
 async fn test_get_secret_with_session_cookie_works() {
     let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, agent_key, _org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
@@ -73,7 +73,7 @@ async fn test_get_secret_with_session_cookie_works() {
 #[tokio::test]
 async fn test_list_secrets_with_session_cookie_works() {
     let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
     let (org_id, ident_id, agent_key, _org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
@@ -104,7 +104,7 @@ async fn test_list_secrets_with_session_cookie_works() {
 #[tokio::test]
 async fn test_get_secret_with_invalid_session_cookie_returns_401() {
     let pool = common::test_pool().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{addr}");
 
     let resp = client
