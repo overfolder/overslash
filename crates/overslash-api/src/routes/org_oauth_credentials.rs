@@ -21,7 +21,7 @@ use overslash_db::repos::{audit::AuditEntry, oauth_provider};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp},
+    extractors::{AdminAcl, ClientIp, ReqExt},
     services::client_credentials::oauth_secret_names,
 };
 
@@ -60,6 +60,7 @@ struct CredentialRow {
 
 async fn list_credentials(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
 ) -> Result<Json<Vec<CredentialRow>>> {
@@ -69,7 +70,7 @@ async fn list_credentials(
     // GET at the same level matches the dashboard's Org Settings gate.
     debug_assert_eq!(acl.org_id, scope.org_id());
 
-    let providers = oauth_provider::list_all(&state.db).await?;
+    let providers = oauth_provider::list_all(state.db(&ext)).await?;
     let enc_key = state.config.keyring()?;
     let env_fallback_enabled =
         std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
@@ -117,6 +118,7 @@ async fn list_credentials(
 
 async fn put_credentials(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -124,7 +126,7 @@ async fn put_credentials(
     Json(req): Json<PutCredentialsRequest>,
 ) -> Result<Json<CredentialRow>> {
     // Validate provider exists
-    let provider = oauth_provider::get_by_key(&state.db, &provider_key)
+    let provider = oauth_provider::get_by_key(state.db(&ext), &provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
@@ -198,6 +200,7 @@ async fn put_credentials(
 
 async fn delete_credentials(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -206,7 +209,7 @@ async fn delete_credentials(
     // Match the put_credentials contract: unknown provider → 404 so a
     // typo'd path doesn't silently return `{"deleted": false}` (which is
     // indistinguishable from "nothing to delete").
-    oauth_provider::get_by_key(&state.db, &provider_key)
+    oauth_provider::get_by_key(state.db(&ext), &provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
