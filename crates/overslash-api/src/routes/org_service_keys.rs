@@ -42,7 +42,7 @@ use overslash_db::repos::identity::ORG_SERVICE_EXTERNAL_ID;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp},
+    extractors::{AdminAcl, ClientIp, ReqExt},
 };
 
 pub fn router() -> Router<AppState> {
@@ -90,6 +90,7 @@ struct ServiceKeySummary {
 
 async fn create(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -109,7 +110,7 @@ async fn create(
     }
 
     let (agent, agent_created) =
-        overslash_db::repos::identity::get_or_create_org_service_agent(&state.db, req.org_id)
+        overslash_db::repos::identity::get_or_create_org_service_agent(state.db(&ext), req.org_id)
             .await?;
 
     if agent_created {
