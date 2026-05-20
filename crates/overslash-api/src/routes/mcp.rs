@@ -51,7 +51,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    extractors::AuthContext,
+    extractors::{AuthContext, ReqExt},
     middleware::subdomain::RequestOrgContext,
     routes::oauth_as as oauth_as_routes,
     services::{jwt, mcp_session, oauth_as, session},
@@ -124,6 +124,7 @@ async fn get_mcp(
 
 async fn post_mcp(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ctx: Option<Extension<RequestOrgContext>>,
     auth: Result<AuthContext, crate::error::AppError>,
     headers: HeaderMap,
@@ -177,9 +178,11 @@ async fn post_mcp(
             return rpc_error_response(req.id, INVALID_REQUEST, "jsonrpc must be \"2.0\"");
         }
         return match req.method.as_str() {
-            "initialize" => initialize_response(&state, &auth, &req).await,
-            "tools/list" => tools_list_response(&state, &auth, req.id).await,
-            "tools/call" => tools_call(&state, &auth, req, bearer.as_deref(), req_session_id).await,
+            "initialize" => initialize_response(&state, &ext, &auth, &req).await,
+            "tools/list" => tools_list_response(&state, &ext, &auth, req.id).await,
+            "tools/call" => {
+                tools_call(&state, &ext, &auth, req, bearer.as_deref(), req_session_id).await
+            }
             "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
             other => rpc_error_response(
                 req.id,
@@ -199,15 +202,15 @@ async fn post_mcp(
                 // Only the agent that owns the elicitation row may answer
                 // it — otherwise a caller in another tenant who learns the
                 // id could drive the victim's resolve+call as the victim.
-                let owner_ok = match overslash_db::repos::mcp_elicitation::get(&state.db, id).await
-                {
-                    Ok(Some(row)) => Some(row.agent_identity_id) == auth.identity_id,
-                    Ok(None) => false,
-                    Err(e) => {
-                        tracing::error!("lookup elicitation failed: {e}");
-                        false
-                    }
-                };
+                let owner_ok =
+                    match overslash_db::repos::mcp_elicitation::get(state.db(&ext), id).await {
+                        Ok(Some(row)) => Some(row.agent_identity_id) == auth.identity_id,
+                        Ok(None) => false,
+                        Err(e) => {
+                            tracing::error!("lookup elicitation failed: {e}");
+                            false
+                        }
+                    };
                 if !owner_ok {
                     return rpc_error_response(
                         Value::String(id.to_string()),
@@ -220,6 +223,7 @@ async fn post_mcp(
                     || json!({ "action": "cancel", "content": resp.get("error").cloned() }),
                 );
                 let st = state.clone();
+                let db = state.db_pool(&ext);
                 let id_owned = id.to_string();
                 // Bound the background task: two loopback HTTP calls
                 // (resolve + call) shouldn't take more than a minute even
@@ -240,8 +244,8 @@ async fn post_mcp(
                                 elicit_id = %id_owned,
                                 "complete elicitation timed out after 60s; cancelling row"
                             );
-                            let _ = overslash_db::repos::mcp_elicitation::cancel(&st.db, &id_owned)
-                                .await;
+                            let _ =
+                                overslash_db::repos::mcp_elicitation::cancel(&db, &id_owned).await;
                         }
                     }
                 });
@@ -302,6 +306,7 @@ fn rpc_tool_error_response(id: Value, envelope: &Value) -> Response {
 
 async fn initialize_response(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     req: &JsonRpcRequest,
 ) -> Response {
@@ -327,7 +332,7 @@ async fn initialize_response(
             .and_then(Value::as_str)
             .unwrap_or("");
         if let Err(e) = overslash_db::repos::oauth_mcp_client::update_initialize_state(
-            &state.db,
+            state.db(ext),
             client_id,
             &capabilities,
             &client_info,
@@ -367,7 +372,12 @@ async fn initialize_response(
         .into_response()
 }
 
-async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) -> Response {
+async fn tools_list_response(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+    id: Value,
+) -> Response {
     // The two `overslash_approve_*` tools both forward to the same resolve
     // endpoint; the split exists so Claude Code permission rules can
     // separately allowlist `overslash_approve` (the always-on downstream-only
@@ -382,7 +392,7 @@ async fn tools_list_response(state: &AppState, auth: &AuthContext, id: Value) ->
     {
         if let Ok(Some(binding)) =
             overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
-                &state.db,
+                state.db(ext),
                 identity_id,
                 client_id,
             )
@@ -559,6 +569,7 @@ struct ToolCallParams {
 
 async fn tools_call(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     req: JsonRpcRequest,
     bearer: Option<&str>,
@@ -585,6 +596,7 @@ async fn tools_call(
         "overslash_call" => {
             return tools_call_overslash_call(
                 state,
+                ext,
                 auth,
                 &req,
                 bearer,
@@ -623,8 +635,10 @@ async fn tools_call(
 /// result lands once the user resolves through the dialog (or an out-of-band
 /// dashboard click). Otherwise the original synchronous `pending_approval`
 /// JSON is returned just like before.
+#[allow(clippy::too_many_arguments)]
 async fn tools_call_overslash_call(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     req: &JsonRpcRequest,
     bearer: &str,
@@ -655,7 +669,7 @@ async fn tools_call_overslash_call(
     }
 
     // Pending approval — promote to elicitation if eligible.
-    let promote = elicitation_eligible(state, auth).await;
+    let promote = elicitation_eligible(state, ext, auth).await;
     if !promote {
         return rpc_ok_response(
             req.id.clone(),
@@ -693,8 +707,11 @@ async fn tools_call_overslash_call(
         Some(s) => s,
         None => match auth.mcp_client_id.as_deref() {
             Some(client_id) => {
-                match overslash_db::repos::oauth_mcp_client::get_by_client_id(&state.db, client_id)
-                    .await
+                match overslash_db::repos::oauth_mcp_client::get_by_client_id(
+                    state.db(ext),
+                    client_id,
+                )
+                .await
                 {
                     Ok(Some(c)) => c.last_session_id.unwrap_or_else(Uuid::new_v4),
                     _ => Uuid::new_v4(),
@@ -741,7 +758,11 @@ fn synchronous_pending_response(id: &Value, outcome: &Value) -> Response {
 /// multi-client-per-agent setup, an eligible client could be denied
 /// because the most recent binding belongs to a different client whose
 /// capabilities or toggle don't match.
-async fn elicitation_eligible(state: &AppState, auth: &AuthContext) -> bool {
+async fn elicitation_eligible(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+) -> bool {
     let Some(agent_id) = auth.identity_id else {
         return false;
     };
@@ -749,7 +770,9 @@ async fn elicitation_eligible(state: &AppState, auth: &AuthContext) -> bool {
         return false;
     };
     let binding = match overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
-        &state.db, agent_id, client_id,
+        state.db(ext),
+        agent_id,
+        client_id,
     )
     .await
     {
@@ -760,7 +783,9 @@ async fn elicitation_eligible(state: &AppState, auth: &AuthContext) -> bool {
         return false;
     }
     let client =
-        match overslash_db::repos::oauth_mcp_client::get_by_client_id(&state.db, client_id).await {
+        match overslash_db::repos::oauth_mcp_client::get_by_client_id(state.db(ext), client_id)
+            .await
+        {
             Ok(Some(c)) => c,
             _ => return false,
         };

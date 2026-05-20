@@ -41,7 +41,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, ClientIp},
+    extractors::{AuthContext, ClientIp, ReqExt},
     services::{
         action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
         disclosure, group_ceiling, http_caller, mcp_caller,
@@ -85,6 +85,7 @@ pub fn validate_router() -> Router<AppState> {
 /// the inner function — for now we classify by HTTP status only.
 async fn call_action(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
@@ -110,7 +111,7 @@ async fn call_action(
         None => "_invalid".to_string(),
     };
 
-    let result = call_action_impl(State(state), auth, scope, ip, Json(req)).await;
+    let result = call_action_impl(State(state), ReqExt(ext), auth, scope, ip, Json(req)).await;
 
     // Resolve the outcome to its eventual HTTP status so 4xx user-input errors
     // (BadRequest, NotFound, Forbidden, RateLimited) don't count as `failed`.
@@ -150,6 +151,7 @@ async fn call_action(
 /// pre-validate without burning quota on a request it isn't sure of yet.
 async fn validate_action(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     _ip: ClientIp,
@@ -167,7 +169,7 @@ async fn validate_action(
         None => "_invalid".to_string(),
     };
 
-    let result = validate_action_impl(State(state), auth, scope, Json(req)).await;
+    let result = validate_action_impl(State(state), ReqExt(ext), auth, scope, Json(req)).await;
 
     let outcome = match &result {
         Ok((_, label)) => *label,
@@ -197,6 +199,7 @@ async fn validate_action(
 /// re-parsing the response body.
 async fn validate_action_impl(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     Json(req): Json<CallRequest>,
@@ -222,7 +225,7 @@ async fn validate_action_impl(
     // doesn't forward them anywhere; they're dropped at the end of
     // this scope.
     let (meta, _resolved_mode_c) =
-        resolve_action_metadata(&state, &auth, &scope, ceiling_user_id, &req).await?;
+        resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
 
     // Argument validation runs before the risk gate so a request with
     // both bad params and a wrong-risk assertion produces the same
@@ -318,7 +321,7 @@ async fn validate_action_impl(
     }
 
     let bubble_secs =
-        overslash_db::repos::org::get_approval_auto_bubble_secs(&state.db, auth.org_id)
+        overslash_db::repos::org::get_approval_auto_bubble_secs(state.db(&ext), auth.org_id)
             .await?
             .unwrap_or(300);
     let force_user_resolver = bubble_secs == 0;
@@ -512,8 +515,10 @@ struct HttpVerb {
     path: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn call_action_impl(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
@@ -563,7 +568,7 @@ async fn call_action_impl(
     // `resolve_request` below so the call hot path doesn't re-fetch
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
-        resolve_action_metadata(&state, &auth, &scope, ceiling_user_id, &req).await?;
+        resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
     if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
         &pre_meta.validation_params,
         &req.params,
@@ -578,6 +583,7 @@ async fn call_action_impl(
     // the identity lookup above so service-name resolution doesn't re-fetch it.
     let (action_req, meta) = resolve_request(
         &state,
+        &ext,
         &auth,
         &scope,
         identity_id,
@@ -681,7 +687,7 @@ async fn call_action_impl(
     // non-mutating actions without writing a permission rule.
     if identity.kind != "user" && needs_gate && !skip_layer2 {
         let bubble_secs =
-            overslash_db::repos::org::get_approval_auto_bubble_secs(&state.db, auth.org_id)
+            overslash_db::repos::org::get_approval_auto_bubble_secs(state.db(&ext), auth.org_id)
                 .await?
                 .unwrap_or(300);
         let force_user_resolver = bubble_secs == 0;
@@ -788,7 +794,7 @@ async fn call_action_impl(
                         );
                 }
 
-                let _ = OrgScope::new(auth.org_id, state.db.clone())
+                let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
                     .log_audit(AuditEntry {
                         org_id: auth.org_id,
                         identity_id: Some(identity_id),
@@ -832,7 +838,7 @@ async fn call_action_impl(
                     "can_be_handled_by": can_be_handled_by,
                 });
                 {
-                    let db = state.db.clone();
+                    let db = state.db_pool(&ext);
                     let client = state.http_client.clone();
                     let org_id = auth.org_id;
                     tokio::spawn(async move {
@@ -931,7 +937,7 @@ async fn call_action_impl(
                 );
         }
 
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
@@ -979,7 +985,7 @@ async fn call_action_impl(
             "action": req.action,
             "service": req.service,
         });
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
@@ -1077,7 +1083,7 @@ async fn call_action_impl(
                 );
         }
 
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
@@ -1182,7 +1188,7 @@ async fn call_action_impl(
             );
     }
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: Some(identity_id),
@@ -1437,6 +1443,7 @@ struct ResolvedModeC {
 /// Mirrors the (service, action) arm's resolution, minus the action lookup.
 async fn resolve_service_for_verb_shape(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     scope: &OrgScope,
     ceiling_user_id: Uuid,
@@ -1455,6 +1462,7 @@ async fn resolve_service_for_verb_shape(
     let svc = if let Some(ref inst) = instance {
         super::templates::resolve_template_definition(
             state,
+            ext,
             auth.org_id,
             auth.identity_id,
             &inst.template_key,
@@ -1463,6 +1471,7 @@ async fn resolve_service_for_verb_shape(
     } else {
         let from_template = super::templates::resolve_template_definition(
             state,
+            ext,
             auth.org_id,
             auth.identity_id,
             service_key,
@@ -1613,6 +1622,7 @@ fn resolve_verb_host_and_path(
 
 async fn resolve_action_metadata(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     scope: &OrgScope,
     ceiling_user_id: Uuid,
@@ -1641,7 +1651,7 @@ async fn resolve_action_metadata(
             )
         })?;
         let (instance, svc) =
-            resolve_service_for_verb_shape(state, auth, scope, ceiling_user_id, service_key)
+            resolve_service_for_verb_shape(state, ext, auth, scope, ceiling_user_id, service_key)
                 .await?;
         // Verb shape is HTTP-only — MCP / Platform runtimes have no
         // notion of "method + path" and would crash downstream when we
@@ -1689,6 +1699,7 @@ async fn resolve_action_metadata(
         let svc = if let Some(ref inst) = instance {
             super::templates::resolve_template_definition(
                 state,
+                ext,
                 auth.org_id,
                 auth.identity_id,
                 &inst.template_key,
@@ -1697,6 +1708,7 @@ async fn resolve_action_metadata(
         } else {
             let from_template = super::templates::resolve_template_definition(
                 state,
+                ext,
                 auth.org_id,
                 auth.identity_id,
                 service_key,
@@ -1827,8 +1839,10 @@ fn invalid_action_args_error(
 /// already looked up by `resolve_action_metadata`, so service shapes
 /// don't pay for a duplicate DB lookup. `None` is fine for the validate
 /// path or for callers that don't share that work.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_request(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     scope: &OrgScope,
     identity_id: Uuid,
@@ -1849,7 +1863,8 @@ async fn resolve_request(
         let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
-            resolve_service_for_verb_shape(state, auth, scope, ceiling_user_id, service_key).await?
+            resolve_service_for_verb_shape(state, ext, auth, scope, ceiling_user_id, service_key)
+                .await?
         };
         // Defense in depth: `resolve_action_metadata` already rejects
         // non-HTTP runtimes for the verb shape, so reaching here is a
@@ -1867,6 +1882,7 @@ async fn resolve_request(
         let (secrets, _oauth_injected) = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
+                ext,
                 scope,
                 identity_id,
                 inst,
@@ -1876,8 +1892,16 @@ async fn resolve_request(
             )
             .await?
         } else {
-            resolve_service_auth(state, scope, identity_id, &svc, &req.secrets, &mut headers)
-                .await?
+            resolve_service_auth(
+                state,
+                ext,
+                scope,
+                identity_id,
+                &svc,
+                &req.secrets,
+                &mut headers,
+            )
+            .await?
         };
 
         let description = format!("{} {} ({})", raw_method, path, svc.display_name);
@@ -1932,6 +1956,7 @@ async fn resolve_request(
                 // to global registry, which could match on the wrong key)
                 super::templates::resolve_template_definition(
                     state,
+                    ext,
                     auth.org_id,
                     auth.identity_id,
                     &inst.template_key,
@@ -1944,6 +1969,7 @@ async fn resolve_request(
                 // instead, so the agent doesn't dead-end on "service not found".
                 let from_template = super::templates::resolve_template_definition(
                     state,
+                    ext,
                     auth.org_id,
                     auth.identity_id,
                     service_key,
@@ -2212,6 +2238,7 @@ async fn resolve_request(
         let (secrets, oauth_injected) = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
+                ext,
                 scope,
                 identity_id,
                 inst,
@@ -2221,8 +2248,16 @@ async fn resolve_request(
             )
             .await?
         } else {
-            resolve_service_auth(state, scope, identity_id, &svc, &req.secrets, &mut headers)
-                .await?
+            resolve_service_auth(
+                state,
+                ext,
+                scope,
+                identity_id,
+                &svc,
+                &req.secrets,
+                &mut headers,
+            )
+            .await?
         };
 
         // After resolution, if the template declares OAuth and *nothing*
@@ -2534,6 +2569,7 @@ async fn needs_authentication_for_service(
 /// recovery shape.
 async fn resolve_service_auth(
     state: &AppState,
+    ext: &axum::http::Extensions,
     scope: &OrgScope,
     identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
@@ -2594,7 +2630,7 @@ async fn resolve_service_auth(
             // legitimate "try the next provider" signal. Log and continue
             // instead of bailing the whole loop.
             let creds = match crate::services::client_credentials::resolve(
-                &state.db,
+                state.db(ext),
                 &enc_key,
                 org_id,
                 Some(identity_id),
@@ -2779,8 +2815,10 @@ async fn check_required_scopes(
 
 /// Resolve auth for a service instance. If the instance has a bound connection_id or secret_name,
 /// use that directly. Otherwise fall back to auto-resolve from the template's auth config.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_instance_auth(
     state: &AppState,
+    ext: &axum::http::Extensions,
     scope: &OrgScope,
     identity_id: Uuid,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
@@ -2827,7 +2865,7 @@ async fn resolve_instance_auth(
                 .keyring()
                 .map_err(|e| AppError::Internal(format!("encryption key invalid: {e}")))?;
             let creds = crate::services::client_credentials::resolve(
-                &state.db,
+                state.db(ext),
                 &enc_key,
                 org_id,
                 Some(identity_id),
@@ -2918,7 +2956,16 @@ async fn resolve_instance_auth(
     }
 
     // No bound credentials on instance — fall back to auto-resolve
-    resolve_service_auth(state, scope, identity_id, svc, explicit_secrets, headers).await
+    resolve_service_auth(
+        state,
+        ext,
+        scope,
+        identity_id,
+        svc,
+        explicit_secrets,
+        headers,
+    )
+    .await
 }
 
 fn generate_token() -> String {

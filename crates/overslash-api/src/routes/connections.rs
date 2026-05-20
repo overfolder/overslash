@@ -23,7 +23,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, WriteAcl},
+    extractors::{ClientIp, ReqExt, WriteAcl},
     services::{
         client_credentials, oauth,
         platform_caller::PlatformCallContext,
@@ -100,6 +100,7 @@ struct InitiateConnectionResponse {
 
 async fn initiate_connection(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     headers: HeaderMap,
@@ -112,7 +113,7 @@ async fn initiate_connection(
         org_id: acl.org_id,
         identity_id: acl.identity_id,
         access_level: acl.access_level,
-        db: state.db.clone(),
+        db: state.db_pool(&ext),
         registry: state.registry.clone(),
         config: state.config.clone(),
         http_client: state.http_client.clone(),
@@ -176,10 +177,11 @@ struct ConnectAuthorizeParams {
 
 async fn connect_authorize(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Query(params): Query<ConnectAuthorizeParams>,
 ) -> Result<Response> {
-    let Some(flow) = oauth_connection_flow::get_by_id(&state.db, &params.id).await? else {
+    let Some(flow) = oauth_connection_flow::get_by_id(state.db(&ext), &params.id).await? else {
         return Ok(gone_html("This OAuth link is invalid or has been revoked."));
     };
     if flow.consumed_at.is_some() {
@@ -215,7 +217,7 @@ async fn connect_authorize(
         }
     };
 
-    if session_authorized_for_flow(&state, &session, flow.org_id, flow.identity_id).await? {
+    if session_authorized_for_flow(&state, &ext, &session, flow.org_id, flow.identity_id).await? {
         // Atomically claim the flow for redirect. `consume` is the
         // gate's single-use UX flag — a concurrent click that already
         // marked the row returns `None`, in which case we render the
@@ -223,7 +225,7 @@ async fn connect_authorize(
         // race into the upstream provider. The `/v1/oauth/callback`
         // security boundary still re-validates everything from the
         // OAuth `state` parameter regardless.
-        match oauth_connection_flow::consume(&state.db, &flow.id).await? {
+        match oauth_connection_flow::consume(state.db(&ext), &flow.id).await? {
             Some(row) => {
                 return Ok(Redirect::to(&row.upstream_authorize_url).into_response());
             }
@@ -240,11 +242,12 @@ async fn connect_authorize(
 
 async fn session_authorized_for_flow(
     state: &AppState,
+    ext: &axum::http::Extensions,
     session: &ParsedSession,
     flow_org_id: Uuid,
     flow_identity_id: Uuid,
 ) -> std::result::Result<bool, AppError> {
-    session_authorized_for_org_identity(state, session, flow_org_id, flow_identity_id).await
+    session_authorized_for_org_identity(state, ext, session, flow_org_id, flow_identity_id).await
 }
 
 #[derive(Deserialize)]
@@ -275,6 +278,7 @@ struct VerifiedRedirect {
 
 async fn oauth_callback(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ip: ClientIp,
     Query(params): Query<OAuthCallbackParams>,
 ) -> Response {
@@ -326,6 +330,7 @@ async fn oauth_callback(
 
     let redirect_target = resolve_redirect_target(
         &state,
+        &ext,
         flow_id_from_state,
         org_id,
         identity_id,
@@ -337,6 +342,7 @@ async fn oauth_callback(
 
     let outcome = oauth_callback_inner(
         &state,
+        &ext,
         &ip,
         &params,
         org_id,
@@ -375,8 +381,10 @@ async fn oauth_callback(
 ///    state).
 /// 4. The flow row carries a `return_url`.
 /// 5. The `return_url` parses and its host is on the allow-list.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_redirect_target(
     state: &AppState,
+    ext: &axum::http::Extensions,
     flow_id: Option<&str>,
     org_id: Uuid,
     identity_id: Uuid,
@@ -388,7 +396,7 @@ async fn resolve_redirect_target(
         return None;
     }
     let flow_id = flow_id?;
-    let flow = oauth_connection_flow::get_by_id(&state.db, flow_id)
+    let flow = oauth_connection_flow::get_by_id(state.db(ext), flow_id)
         .await
         .ok()
         .flatten()?;
@@ -464,6 +472,7 @@ fn redirect_reason_token(err: &AppError) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 async fn oauth_callback_inner(
     state: &AppState,
+    ext: &axum::http::Extensions,
     ip: &ClientIp,
     params: &OAuthCallbackParams,
     org_id: Uuid,
@@ -474,13 +483,13 @@ async fn oauth_callback_inner(
     actor_identity_id: Uuid,
     upgrade_connection_id: Option<Uuid>,
 ) -> Result<CallbackSuccess> {
-    let provider = overslash_db::repos::oauth_provider::get_by_key(&state.db, provider_key)
+    let provider = overslash_db::repos::oauth_provider::get_by_key(state.db(ext), provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
     let enc_key = state.config.keyring()?;
     let creds = client_credentials::resolve(
-        &state.db,
+        state.db(ext),
         &enc_key,
         org_id,
         Some(identity_id),
@@ -533,7 +542,7 @@ async fn oauth_callback_inner(
     // The OAuth callback is unauthenticated by design (the redirect_uri is
     // public), so all tenancy invariants come from the state we issued at
     // initiate time — which we already validated above by decoding into Uuids.
-    let scope = OrgScope::new(org_id, state.db.clone());
+    let scope = OrgScope::new(org_id, state.db_pool(ext));
 
     let (connection_id, audit_action, effective_scopes) =
         if let Some(existing_id) = upgrade_connection_id {
@@ -608,7 +617,7 @@ async fn oauth_callback_inner(
         .await;
 
     {
-        let db = state.db.clone();
+        let db = state.db_pool(ext);
         let client = state.http_client.clone();
         let provider_key = provider_key.to_string();
         let account_email = account_email.clone();
@@ -709,6 +718,7 @@ struct UpgradeScopesResponse {
 /// update the row in place instead of minting a new one.
 async fn upgrade_connection_scopes(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     Path(id): Path<Uuid>,
     Json(req): Json<UpgradeScopesRequest>,
@@ -717,7 +727,7 @@ async fn upgrade_connection_scopes(
         .identity_id
         .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
 
-    let org_scope = OrgScope::new(acl.org_id, state.db.clone());
+    let org_scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
     let existing = org_scope
         .get_connection(id)
         .await?
@@ -730,7 +740,7 @@ async fn upgrade_connection_scopes(
     }
 
     let provider =
-        overslash_db::repos::oauth_provider::get_by_key(&state.db, &existing.provider_key)
+        overslash_db::repos::oauth_provider::get_by_key(state.db(&ext), &existing.provider_key)
             .await?
             .ok_or_else(|| {
                 AppError::NotFound(format!("provider '{}' not found", existing.provider_key))
@@ -741,7 +751,7 @@ async fn upgrade_connection_scopes(
     // upgrade flow runs against the same OAuth client — otherwise the
     // provider may reject the incremental request as a new client.
     let creds = client_credentials::resolve(
-        &state.db,
+        state.db(&ext),
         &enc_key,
         acl.org_id,
         Some(caller_identity_id),
@@ -796,6 +806,7 @@ async fn upgrade_connection_scopes(
 
 async fn delete_connection(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -804,17 +815,17 @@ async fn delete_connection(
     // Scope delete: if identity-bound, must own the connection.
     // Org-level keys can delete any connection in the org.
     let deleted = if let Some(identity_id) = auth.identity_id {
-        UserScope::new(auth.org_id, identity_id, state.db.clone())
+        UserScope::new(auth.org_id, identity_id, state.db_pool(&ext))
             .delete_my_connection(id)
             .await?
     } else {
-        OrgScope::new(auth.org_id, state.db.clone())
+        OrgScope::new(auth.org_id, state.db_pool(&ext))
             .delete_connection(id)
             .await?
     };
 
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
@@ -827,7 +838,7 @@ async fn delete_connection(
             })
             .await;
 
-        let db = state.db.clone();
+        let db = state.db_pool(&ext);
         let client = state.http_client.clone();
         let org_id = auth.org_id;
         let identity_id = auth.identity_id;

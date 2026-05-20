@@ -16,7 +16,7 @@ use overslash_db::repos::{billing, org as org_repo};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext},
+    extractors::{AdminAcl, AuthContext, ReqExt},
     routes::orgs::{provision_new_org_contents, redirect_for_org},
 };
 
@@ -121,6 +121,7 @@ struct CheckoutResponse {
 /// Team org. Returns the Stripe-hosted URL to redirect the user to.
 async fn create_checkout(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Json(req): Json<CreateCheckoutRequest>,
 ) -> Result<Json<CheckoutResponse>> {
@@ -145,7 +146,7 @@ async fn create_checkout(
         .map_err(|code| AppError::BadRequest(code.into()))?;
 
     // Reject slug before hitting Stripe if it's already taken.
-    if org_repo::get_by_slug(&state.db, slug).await?.is_some() {
+    if org_repo::get_by_slug(state.db(&ext), slug).await?.is_some() {
         return Err(AppError::Conflict("slug_taken".into()));
     }
 
@@ -170,10 +171,10 @@ async fn create_checkout(
     };
 
     // Find or create the Stripe Customer for this user.
-    let customer_id = match billing::get_stripe_customer(&state.db, user_id).await? {
+    let customer_id = match billing::get_stripe_customer(state.db(&ext), user_id).await? {
         Some(id) => id,
         None => {
-            let user = overslash_db::repos::user::get_by_id(&state.db, user_id)
+            let user = overslash_db::repos::user::get_by_id(state.db(&ext), user_id)
                 .await?
                 .ok_or_else(|| AppError::Unauthorized("user not found".into()))?;
             let cid = stripe_create_customer(
@@ -193,7 +194,7 @@ async fn create_checkout(
             // Two failure modes: (a) Err from sqlx (transient DB issue,
             // constraint violation), and (b) Ok(false) — the UPDATE matched
             // zero rows because the user was deleted between auth and now.
-            let persist_result = billing::set_stripe_customer(&state.db, user_id, &cid).await;
+            let persist_result = billing::set_stripe_customer(state.db(&ext), user_id, &cid).await;
             let persist_failed = match &persist_result {
                 Ok(true) => false,
                 Ok(false) => {
@@ -268,7 +269,7 @@ async fn create_checkout(
     // failure so the user can't pay it. Best-effort: if the expire call
     // also fails we still surface the original error to the user.
     if let Err(e) = billing::insert_pending_checkout(
-        &state.db,
+        state.db(&ext),
         &session_id,
         user_id,
         req.org_name.trim(),
@@ -319,6 +320,7 @@ struct CheckoutStatusResponse {
 /// GET /v1/billing/checkout/{session_id}/status — polled by the success page.
 async fn get_checkout_status(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(session_id): Path<String>,
 ) -> Result<Json<CheckoutStatusResponse>> {
@@ -326,7 +328,7 @@ async fn get_checkout_status(
         .user_id
         .ok_or_else(|| AppError::Unauthorized("multi-org session required".into()))?;
 
-    let checkout = billing::get_pending_checkout_any(&state.db, &session_id)
+    let checkout = billing::get_pending_checkout_any(state.db(&ext), &session_id)
         .await?
         .ok_or_else(|| AppError::NotFound("checkout not found".into()))?;
 
@@ -336,7 +338,7 @@ async fn get_checkout_status(
     }
 
     if let Some(org_id) = checkout.fulfilled_org_id {
-        let org = org_repo::get_by_id(&state.db, org_id).await?;
+        let org = org_repo::get_by_id(state.db(&ext), org_id).await?;
         let redirect_to = org.as_ref().map(|o| redirect_for_org(&state, o));
         return Ok(Json(CheckoutStatusResponse {
             status: "fulfilled",
@@ -370,6 +372,7 @@ struct PortalResponse {
 /// user can manage seats, payment methods, and cancellation.
 async fn create_portal(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Json(req): Json<CreatePortalRequest>,
 ) -> Result<Json<PortalResponse>> {
@@ -384,12 +387,12 @@ async fn create_portal(
         .ok_or_else(|| AppError::Internal("billing not configured".into()))?;
 
     // Verify there's an active subscription for this org.
-    let sub = billing::get_org_subscription(&state.db, req.org_id)
+    let sub = billing::get_org_subscription(state.db(&ext), req.org_id)
         .await?
         .ok_or_else(|| AppError::NotFound("no subscription for this org".into()))?;
 
     // Verify the caller has a Stripe customer (they created the subscription).
-    let customer_id = billing::get_stripe_customer(&state.db, user_id)
+    let customer_id = billing::get_stripe_customer(state.db(&ext), user_id)
         .await?
         .ok_or_else(|| AppError::Forbidden("not the billing contact for this org".into()))?;
 
@@ -431,6 +434,7 @@ struct SubscriptionResponse {
 async fn get_subscription(
     AdminAcl(acl): AdminAcl,
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Path(org_id): Path<Uuid>,
 ) -> Result<Json<SubscriptionResponse>> {
     if acl.org_id != org_id {
@@ -441,8 +445,8 @@ async fn get_subscription(
     // synthetic body so the dashboard can render a "Courtesy plan" badge in
     // place of the billing controls.
     if state
-        .free_unlimited_cache
-        .is_free_unlimited(&state.db, org_id)
+        .free_unlimited_cache(&ext)
+        .is_free_unlimited(state.db(&ext), org_id)
         .await
     {
         return Ok(Json(SubscriptionResponse {
@@ -456,7 +460,7 @@ async fn get_subscription(
         }));
     }
 
-    let sub = billing::get_org_subscription(&state.db, org_id)
+    let sub = billing::get_org_subscription(state.db(&ext), org_id)
         .await?
         .ok_or_else(|| AppError::NotFound("no subscription".into()))?;
 
@@ -479,6 +483,7 @@ async fn get_subscription(
 /// against STRIPE_WEBHOOK_SECRET using HMAC-SHA256 before processing.
 pub async fn stripe_webhook(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode> {
@@ -514,13 +519,13 @@ pub async fn stripe_webhook(
 
     match event_type {
         "checkout.session.completed" => {
-            handle_checkout_completed(&state, data).await?;
+            handle_checkout_completed(&state, &ext, data).await?;
         }
         "customer.subscription.updated" => {
-            handle_subscription_updated(&state, data).await?;
+            handle_subscription_updated(&state, &ext, data).await?;
         }
         "customer.subscription.deleted" => {
-            handle_subscription_deleted(&state, data).await?;
+            handle_subscription_deleted(&state, &ext, data).await?;
             crate::services::billing_email::send_subscription_canceled(&state, event_id, data)
                 .await;
         }
@@ -555,7 +560,11 @@ pub async fn stripe_webhook(
     Ok(StatusCode::OK)
 }
 
-async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value) -> Result<()> {
+async fn handle_checkout_completed(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    session: &serde_json::Value,
+) -> Result<()> {
     let session_id = session["id"].as_str().unwrap_or("");
     let subscription_id = session["subscription"].as_str().unwrap_or("");
     let customer_id = session["customer"].as_str().unwrap_or("");
@@ -569,7 +578,7 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     }
 
     // Use _any variant so late Stripe retries (after the 2h expiry window) still work.
-    let checkout = match billing::get_pending_checkout_any(&state.db, session_id).await? {
+    let checkout = match billing::get_pending_checkout_any(state.db(ext), session_id).await? {
         Some(c) => c,
         None => {
             tracing::warn!(
@@ -596,7 +605,7 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     // Distinguished by checking whether the existing org has any identity
     // owned by this checkout's user_id.
     let org = match overslash_db::repos::org::create(
-        &state.db,
+        state.db(ext),
         &checkout.org_name,
         &checkout.org_slug,
         "standard",
@@ -605,11 +614,11 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     {
         Ok(o) => o,
         Err(sqlx::Error::Database(ref de)) if de.is_unique_violation() => {
-            let existing = overslash_db::repos::org::get_by_slug(&state.db, &checkout.org_slug)
+            let existing = overslash_db::repos::org::get_by_slug(state.db(ext), &checkout.org_slug)
                 .await?
                 .ok_or_else(|| AppError::Internal("slug conflict but org not found".into()))?;
             let owns_existing = overslash_db::repos::identity::find_by_org_and_user(
-                &state.db,
+                state.db(ext),
                 existing.id,
                 checkout.user_id,
             )
@@ -646,11 +655,11 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     // both pass this check before either inserts. The second `provision_new_org_contents`
     // call would 23505. Catch the unique-violation and treat it as success —
     // a sibling invocation already provisioned us.
-    if overslash_db::repos::identity::find_by_org_and_user(&state.db, org.id, checkout.user_id)
+    if overslash_db::repos::identity::find_by_org_and_user(state.db(ext), org.id, checkout.user_id)
         .await?
         .is_none()
     {
-        match provision_new_org_contents(state, org.id, Some(checkout.user_id)).await {
+        match provision_new_org_contents(state, ext, org.id, Some(checkout.user_id)).await {
             Ok(_) => {}
             Err(AppError::Database(sqlx::Error::Database(ref de))) if de.is_unique_violation() => {
                 tracing::info!(
@@ -695,7 +704,7 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
         .unwrap_or(false);
 
     billing::upsert_org_subscription(
-        &state.db,
+        state.db(ext),
         org.id,
         billing::UpsertSubscription {
             stripe_subscription_id: subscription_id,
@@ -710,7 +719,7 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     )
     .await?;
 
-    billing::fulfill_pending_checkout(&state.db, session_id, org.id).await?;
+    billing::fulfill_pending_checkout(state.db(ext), session_id, org.id).await?;
 
     tracing::info!(
         session_id,
@@ -721,7 +730,11 @@ async fn handle_checkout_completed(state: &AppState, session: &serde_json::Value
     Ok(())
 }
 
-async fn handle_subscription_updated(state: &AppState, sub: &serde_json::Value) -> Result<()> {
+async fn handle_subscription_updated(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    sub: &serde_json::Value,
+) -> Result<()> {
     let sub_id = sub["id"].as_str().unwrap_or("");
     let status = sub["status"].as_str().unwrap_or("active");
     let seats = sub["items"]["data"][0]["quantity"].as_i64().unwrap_or(2) as i32;
@@ -734,7 +747,7 @@ async fn handle_subscription_updated(state: &AppState, sub: &serde_json::Value) 
     let cancel_at_period_end = sub["cancel_at_period_end"].as_bool().unwrap_or(false);
 
     billing::update_subscription_status(
-        &state.db,
+        state.db(ext),
         sub_id,
         status,
         seats,
@@ -746,9 +759,13 @@ async fn handle_subscription_updated(state: &AppState, sub: &serde_json::Value) 
     Ok(())
 }
 
-async fn handle_subscription_deleted(state: &AppState, sub: &serde_json::Value) -> Result<()> {
+async fn handle_subscription_deleted(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    sub: &serde_json::Value,
+) -> Result<()> {
     let sub_id = sub["id"].as_str().unwrap_or("");
-    billing::cancel_subscription(&state.db, sub_id).await?;
+    billing::cancel_subscription(state.db(ext), sub_id).await?;
     Ok(())
 }
 

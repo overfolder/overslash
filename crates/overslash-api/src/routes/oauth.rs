@@ -30,6 +30,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
+    extractors::ReqExt,
     middleware::subdomain::RequestOrgContext,
     services::{jwt, oauth_as, session},
 };
@@ -99,6 +100,7 @@ struct RegisterRequest {
 
 async fn register(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Response {
@@ -144,7 +146,7 @@ async fn register(
         .map(|s| s.trim().to_string());
 
     let row = match oauth_mcp_client::create(
-        &state.db,
+        state.db(&ext),
         &oauth_mcp_client::CreateOauthMcpClient {
             client_id: &client_id,
             client_name: req.client_name.as_deref(),
@@ -210,6 +212,7 @@ struct AuthorizeQuery {
 
 async fn authorize(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ctx: Option<Extension<RequestOrgContext>>,
     Query(params): Query<AuthorizeQuery>,
     headers: HeaderMap,
@@ -253,7 +256,7 @@ async fn authorize(
         );
     }
 
-    let client = match oauth_mcp_client::get_by_client_id(&state.db, &params.client_id).await {
+    let client = match oauth_mcp_client::get_by_client_id(state.db(&ext), &params.client_id).await {
         Ok(Some(c)) if !c.is_revoked => c,
         Ok(_) => {
             return oauth_error(
@@ -289,7 +292,7 @@ async fn authorize(
         None => {
             let authorize_path = rebuild_authorize_path(&params);
             let next = urlencoding::encode(&authorize_path);
-            match default_idp_provider_for_request(&state, &ctx).await {
+            match default_idp_provider_for_request(&state, &ext, &ctx).await {
                 IdpBounce::Provider(provider) => {
                     // Dev login is a separate endpoint, not the generic
                     // /auth/login/{provider_key} path (which requires an
@@ -323,15 +326,21 @@ async fn authorize(
     // lookup failure-mode is "fall through to consent" rather than 500 so
     // a transient DB blip doesn't lock the user out of authentication.
     if let Ok(Some(binding)) =
-        mcp_client_agent_binding::get_for(&state.db, session_claims.sub, &client.client_id).await
+        mcp_client_agent_binding::get_for(state.db(&ext), session_claims.sub, &client.client_id)
+            .await
     {
-        if let Ok(Some(agent)) =
-            identity::get_by_id(&state.db, session_claims.org, binding.agent_identity_id).await
+        if let Ok(Some(agent)) = identity::get_by_id(
+            state.db(&ext),
+            session_claims.org,
+            binding.agent_identity_id,
+        )
+        .await
         {
             if agent.archived_at.is_none() && agent.kind == "agent" {
                 let email = agent.email.as_deref().unwrap_or(&session_claims.email);
                 return issue_authorization_code(
                     &state,
+                    &ext,
                     &client.client_id,
                     agent.id,
                     session_claims.org,
@@ -350,7 +359,7 @@ async fn authorize(
     // consent screen. The `request_id` lives only in memory (60s TTL) so a
     // consent submission against a stale or forged id fails closed.
     let request_id = oauth_as::generate_auth_code();
-    state.pending_authorize_store.insert(
+    state.pending_authorize_store(&ext).insert(
         request_id.clone(),
         oauth_as::PendingAuthorize {
             client_id: client.client_id.clone(),
@@ -396,6 +405,7 @@ fn rebuild_authorize_path(p: &AuthorizeQuery) -> String {
 #[allow(clippy::too_many_arguments)]
 fn issue_authorization_code(
     state: &AppState,
+    ext: &axum::http::Extensions,
     client_id: &str,
     identity_id: Uuid,
     org_id: Uuid,
@@ -405,7 +415,7 @@ fn issue_authorization_code(
     state_param: Option<&str>,
 ) -> Response {
     let code = oauth_as::generate_auth_code();
-    state.auth_code_store.insert(
+    state.auth_code_store(ext).insert(
         code.clone(),
         oauth_as::AuthCodeRecord {
             client_id: client_id.to_string(),
@@ -447,15 +457,20 @@ enum IdpBounce {
 ///
 /// On the apex (`RequestOrgContext::Root`) we keep the existing env-var
 /// behavior so personal-org sign-up keeps working without any DB IdP rows.
-async fn default_idp_provider_for_request(state: &AppState, ctx: &RequestOrgContext) -> IdpBounce {
+async fn default_idp_provider_for_request(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    ctx: &RequestOrgContext,
+) -> IdpBounce {
     match ctx {
         RequestOrgContext::Org { org_id, .. } => {
             // Designated default first.
-            if let Ok(Some(row)) = org_idp_config::get_default_by_org(&state.db, *org_id).await {
+            if let Ok(Some(row)) = org_idp_config::get_default_by_org(state.db(ext), *org_id).await
+            {
                 return IdpBounce::Provider(row.provider_key);
             }
             // No default but at least one enabled IdP → picker.
-            match org_idp_config::list_enabled_by_org(&state.db, *org_id).await {
+            match org_idp_config::list_enabled_by_org(state.db(ext), *org_id).await {
                 Ok(rows) if !rows.is_empty() => IdpBounce::Picker,
                 _ => IdpBounce::None,
             }

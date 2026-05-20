@@ -15,7 +15,7 @@ use overslash_db::repos::{identity, membership, user as user_repo};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, InstanceAdminAuth},
+    extractors::{AdminAcl, AuthContext, ClientIp, InstanceAdminAuth, ReqExt},
     routes::auth::{session_cookie, signing_key_bytes},
     services::jwt,
 };
@@ -187,6 +187,7 @@ impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
 /// lock the surface after initial setup.
 async fn create_org(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ip: ClientIp,
     headers: axum::http::HeaderMap,
     Json(req): Json<CreateOrgRequest>,
@@ -213,19 +214,20 @@ async fn create_org(
         return Err(AppError::BadRequest(reject.code().into()));
     }
 
-    let org = match overslash_db::repos::org::create(&state.db, name, &req.slug, "standard").await {
-        Ok(row) => row,
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            return Err(AppError::Conflict("slug_taken".into()));
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let org =
+        match overslash_db::repos::org::create(state.db(&ext), name, &req.slug, "standard").await {
+            Ok(row) => row,
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                return Err(AppError::Conflict("slug_taken".into()));
+            }
+            Err(e) => return Err(e.into()),
+        };
 
     // New corp orgs opt in to Overslash-managed sign-in by default
     // (migration 066). Existing orgs stay opted out — the migration left
     // the column at `false` for them so live tenants don't see behavior
     // changes. Login still requires an `org_invites` row, so this is safe.
-    let org = flip_managed_signin_on_new_org(&state, org).await?;
+    let org = flip_managed_signin_on_new_org(&state, &ext, org).await?;
 
     // Optional session: if the caller presents a valid `oss_session` with a
     // multi-org `user_id` claim, attach the bootstrap admin. Otherwise the
@@ -237,7 +239,7 @@ async fn create_org(
         "bootstrap_user_id": session_user_id.map(|u| u.to_string()),
     });
 
-    finalize_new_org(&state, org, session_user_id, audit_detail, ip).await
+    finalize_new_org(&state, &ext, org, session_user_id, audit_detail, ip).await
 }
 
 /// Shared tail for org-creation handlers: provisions contents (with
@@ -254,20 +256,21 @@ async fn create_org(
 /// service_instances / group_grants on failure.
 async fn finalize_new_org(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org: overslash_db::repos::org::OrgRow,
     bootstrap_user_id: Option<Uuid>,
     audit_detail: serde_json::Value,
     ip: ClientIp,
 ) -> Result<axum::response::Response> {
     let bootstrap_identity_id =
-        match provision_new_org_contents(state, org.id, bootstrap_user_id).await {
+        match provision_new_org_contents(state, ext, org.id, bootstrap_user_id).await {
             Ok(id) => id,
             Err(e) => {
                 // Best-effort cleanup. If this also fails we leave a dangling
                 // org row, but that's strictly better than the half-bootstrapped
                 // state; admins can sweep manually.
                 if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                    .execute(&state.db)
+                    .execute(state.db(ext))
                     .await
                 {
                     tracing::error!(
@@ -281,7 +284,7 @@ async fn finalize_new_org(
             }
         };
 
-    let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db.clone());
+    let bootstrap_scope = overslash_db::OrgScope::new(org.id, state.db_pool(ext));
     let _ = bootstrap_scope
         .log_audit(AuditEntry {
             org_id: org.id,
@@ -333,7 +336,7 @@ async fn finalize_new_org(
         let claims = jwt::Claims {
             sub: identity_id,
             org: resp.id,
-            email: user_repo::get_by_id(&state.db, user_id)
+            email: user_repo::get_by_id(state.db(ext), user_id)
                 .await?
                 .and_then(|u| u.email)
                 .unwrap_or_default(),
@@ -362,6 +365,7 @@ async fn finalize_new_org(
 async fn create_free_unlimited_org(
     admin: InstanceAdminAuth,
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ip: ClientIp,
     Json(req): Json<CreateOrgRequest>,
 ) -> Result<axum::response::Response> {
@@ -376,17 +380,18 @@ async fn create_free_unlimited_org(
         return Err(AppError::BadRequest(reject.code().into()));
     }
 
-    let org = match overslash_db::repos::org::create(&state.db, name, &req.slug, "free_unlimited")
-        .await
-    {
-        Ok(row) => row,
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            return Err(AppError::Conflict("slug_taken".into()));
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let org =
+        match overslash_db::repos::org::create(state.db(&ext), name, &req.slug, "free_unlimited")
+            .await
+        {
+            Ok(row) => row,
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                return Err(AppError::Conflict("slug_taken".into()));
+            }
+            Err(e) => return Err(e.into()),
+        };
 
-    let org = flip_managed_signin_on_new_org(&state, org).await?;
+    let org = flip_managed_signin_on_new_org(&state, &ext, org).await?;
 
     let audit_detail = serde_json::json!({
         "name": &org.name,
@@ -395,7 +400,7 @@ async fn create_free_unlimited_org(
         "created_by_instance_admin": admin.user_id.to_string(),
     });
 
-    finalize_new_org(&state, org, Some(admin.user_id), audit_detail, ip).await
+    finalize_new_org(&state, &ext, org, Some(admin.user_id), audit_detail, ip).await
 }
 
 /// Flip `allow_overslash_managed_signin` to `true` for a freshly-created
@@ -404,12 +409,14 @@ async fn create_free_unlimited_org(
 /// flag value so callers don't have to re-read.
 async fn flip_managed_signin_on_new_org(
     state: &AppState,
+    ext: &axum::http::Extensions,
     mut org: overslash_db::repos::org::OrgRow,
 ) -> Result<overslash_db::repos::org::OrgRow> {
     if org.is_personal {
         return Ok(org);
     }
-    overslash_db::repos::org::set_allow_overslash_managed_signin(&state.db, org.id, true).await?;
+    overslash_db::repos::org::set_allow_overslash_managed_signin(state.db(ext), org.id, true)
+        .await?;
     org.allow_overslash_managed_signin = true;
     Ok(org)
 }
@@ -431,6 +438,7 @@ struct CheckSlugResponse {
 /// exists for first-time cloud signups.
 async fn check_slug(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Query(q): Query<CheckSlugQuery>,
 ) -> Json<CheckSlugResponse> {
     if let Err(reject) = validate_slug_format(&q.slug) {
@@ -439,7 +447,7 @@ async fn check_slug(
             reason: Some(reject.code()),
         });
     }
-    match overslash_db::repos::org::get_by_slug(&state.db, &q.slug).await {
+    match overslash_db::repos::org::get_by_slug(state.db(&ext), &q.slug).await {
         Ok(Some(_)) => Json(CheckSlugResponse {
             available: false,
             reason: Some("slug_taken"),
@@ -478,12 +486,13 @@ fn extract_optional_session_user(
 
 pub(crate) async fn provision_new_org_contents(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     session_user_id: Option<Uuid>,
 ) -> Result<Option<Uuid>> {
     match session_user_id {
         Some(user_id) => {
-            let user = user_repo::get_by_id(&state.db, user_id)
+            let user = user_repo::get_by_id(state.db(ext), user_id)
                 .await?
                 .ok_or_else(|| AppError::Unauthorized("session user no longer exists".into()))?;
             let display_name = user
@@ -491,7 +500,7 @@ pub(crate) async fn provision_new_org_contents(
                 .clone()
                 .unwrap_or_else(|| user.email.clone().unwrap_or_else(|| "admin".into()));
             let creator_identity = identity::create_with_email(
-                &state.db,
+                state.db(ext),
                 org_id,
                 &display_name,
                 "user",
@@ -500,27 +509,28 @@ pub(crate) async fn provision_new_org_contents(
                 serde_json::json!({ "bootstrap": true }),
             )
             .await?;
-            identity::set_is_org_admin(&state.db, org_id, creator_identity.id, true).await?;
-            identity::set_user_id(&state.db, org_id, creator_identity.id, Some(user_id)).await?;
+            identity::set_is_org_admin(state.db(ext), org_id, creator_identity.id, true).await?;
+            identity::set_user_id(state.db(ext), org_id, creator_identity.id, Some(user_id))
+                .await?;
 
             overslash_db::repos::org_bootstrap::bootstrap_org(
-                &state.db,
+                state.db(ext),
                 org_id,
                 Some(creator_identity.id),
             )
             .await?;
-            membership::create(&state.db, user_id, org_id, membership::ROLE_ADMIN).await?;
+            membership::create(state.db(ext), user_id, org_id, membership::ROLE_ADMIN).await?;
 
             // Durable record of the founder. Read by `drop_account_membership`
             // to flag the `was_original_creator` bit on `membership.removed`
             // audit events. Idempotent (only sets when NULL) so retry paths
             // can't rewrite history.
-            overslash_db::repos::org::set_creator_user_id(&state.db, org_id, user_id).await?;
+            overslash_db::repos::org::set_creator_user_id(state.db(ext), org_id, user_id).await?;
 
             Ok(Some(creator_identity.id))
         }
         None => {
-            overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org_id, None).await?;
+            overslash_db::repos::org_bootstrap::bootstrap_org(state.db(ext), org_id, None).await?;
             Ok(None)
         }
     }
@@ -541,13 +551,14 @@ pub(crate) fn redirect_for_org(state: &AppState, org: &overslash_db::repos::org:
 
 async fn get_org(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<OrgResponse>> {
     if id != auth.org_id {
         return Err(AppError::Forbidden("cannot read another org".into()));
     }
-    let org = overslash_db::repos::org::get_by_id(&state.db, id)
+    let org = overslash_db::repos::org::get_by_id(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     Ok(Json(org.into()))
@@ -579,6 +590,7 @@ struct PatchCleanupConfigRequest {
 
 async fn patch_subagent_cleanup_config(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -604,7 +616,7 @@ async fn patch_subagent_cleanup_config(
     }
 
     let org = overslash_db::repos::org::update_subagent_cleanup_config(
-        &state.db,
+        state.db(&ext),
         id,
         req.subagent_idle_timeout_secs,
         req.subagent_archive_retention_days,
@@ -612,7 +624,7 @@ async fn patch_subagent_cleanup_config(
     .await?
     .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: org.id,
             identity_id: acl.identity_id,
@@ -645,6 +657,7 @@ struct TemplateSettingsResponse {
 
 async fn patch_template_settings(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -661,7 +674,7 @@ async fn patch_template_settings(
     }
 
     let (allow, globals) = overslash_db::repos::org::update_template_settings(
-        &state.db,
+        state.db(&ext),
         id,
         req.allow_user_templates,
         req.global_templates_enabled,
@@ -669,7 +682,7 @@ async fn patch_template_settings(
     .await?
     .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: id,
             identity_id: acl.identity_id,
@@ -709,13 +722,14 @@ struct PatchSecretRequestSettingsRequest {
 
 async fn get_secret_request_settings(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<SecretRequestSettingsResponse>> {
     if id != auth.org_id {
         return Err(AppError::Forbidden("cannot read another org".into()));
     }
-    let allow = overslash_db::repos::org::get_allow_unsigned_secret_provide(&state.db, id)
+    let allow = overslash_db::repos::org::get_allow_unsigned_secret_provide(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     Ok(Json(SecretRequestSettingsResponse {
@@ -725,6 +739,7 @@ async fn get_secret_request_settings(
 
 async fn patch_secret_request_settings(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -737,7 +752,7 @@ async fn patch_secret_request_settings(
     }
 
     let updated = overslash_db::repos::org::set_allow_unsigned_secret_provide(
-        &state.db,
+        state.db(&ext),
         id,
         req.allow_unsigned_secret_provide,
     )
@@ -746,7 +761,7 @@ async fn patch_secret_request_settings(
         return Err(AppError::NotFound("org not found".into()));
     }
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: id,
             identity_id: acl.identity_id,
@@ -785,13 +800,14 @@ struct PatchExecutionSettingsRequest {
 
 async fn get_execution_settings(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ExecutionSettingsResponse>> {
     if id != auth.org_id {
         return Err(AppError::Forbidden("cannot read another org".into()));
     }
-    let value = overslash_db::repos::org::get_default_deferred_execution(&state.db, id)
+    let value = overslash_db::repos::org::get_default_deferred_execution(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     Ok(Json(ExecutionSettingsResponse {
@@ -801,6 +817,7 @@ async fn get_execution_settings(
 
 async fn patch_execution_settings(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -813,7 +830,7 @@ async fn patch_execution_settings(
     }
 
     let updated = overslash_db::repos::org::set_default_deferred_execution(
-        &state.db,
+        state.db(&ext),
         id,
         req.default_deferred_execution,
     )
@@ -822,7 +839,7 @@ async fn patch_execution_settings(
         return Err(AppError::NotFound("org not found".into()));
     }
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: id,
             identity_id: acl.identity_id,
@@ -860,13 +877,14 @@ struct PatchManagedSigninRequest {
 
 async fn get_managed_signin(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ManagedSigninResponse>> {
     if id != auth.org_id {
         return Err(AppError::Forbidden("cannot read another org".into()));
     }
-    let value = overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, id)
+    let value = overslash_db::repos::org::get_allow_overslash_managed_signin(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     Ok(Json(ManagedSigninResponse {
@@ -876,6 +894,7 @@ async fn get_managed_signin(
 
 async fn patch_managed_signin(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -888,7 +907,7 @@ async fn patch_managed_signin(
     }
 
     let updated = overslash_db::repos::org::set_allow_overslash_managed_signin(
-        &state.db,
+        state.db(&ext),
         id,
         req.allow_overslash_managed_signin,
     )
@@ -897,7 +916,7 @@ async fn patch_managed_signin(
         return Err(AppError::NotFound("org not found".into()));
     }
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: id,
             identity_id: acl.identity_id,

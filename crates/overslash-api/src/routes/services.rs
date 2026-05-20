@@ -321,6 +321,7 @@ async fn delete_service(
 /// List actions for a service instance (delegates to the underlying template).
 async fn list_service_actions(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     Path(name): Path<String>,
@@ -335,7 +336,7 @@ async fn list_service_actions(
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{name}' not found")))?;
 
-    super::templates::resolve_template_actions(&state, &auth, &instance.template_key)
+    super::templates::resolve_template_actions(&state, &ext, &auth, &instance.template_key)
         .await
         .map(Json)
 }
