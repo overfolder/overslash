@@ -130,7 +130,7 @@ async fn force_org_config(pool: &sqlx::PgPool, org_id: Uuid, idle_secs: i32, ret
 #[tokio::test]
 async fn test_create_subagent_has_active_state() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (_org, api_key, agent_id) = setup_hierarchy(&client, &base, "create-active").await;
 
@@ -147,7 +147,7 @@ async fn test_create_subagent_has_active_state() {
 #[tokio::test]
 async fn test_authenticated_request_touches_last_active_at() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "touch-active").await;
 
@@ -193,7 +193,7 @@ async fn test_authenticated_request_touches_last_active_at() {
 #[tokio::test]
 async fn test_archive_pass_archives_idle_subagents() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "archive-pass").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -225,7 +225,7 @@ async fn test_archive_pass_archives_idle_subagents() {
 #[tokio::test]
 async fn test_archive_revokes_api_keys_and_expires_approvals() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) =
         setup_hierarchy(&client, &base, "archive-side-effects").await;
@@ -299,7 +299,7 @@ async fn test_archived_identity_auth_rejected_with_403() {
     // keys with reason='identity_archived'. The client's still-cached key should
     // get a clear 403 with restore hints, NOT a 401.
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "archived-auth").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -354,7 +354,7 @@ async fn test_cannot_restore_child_under_archived_parent() {
     // Regression: restoring a child under an archived parent would re-create
     // a live child, permanently blocking the parent from being purged.
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (_org_id, admin_key, agent_id) =
         setup_hierarchy(&client, &base, "restore-under-archived").await;
@@ -425,7 +425,7 @@ async fn test_cannot_create_subagent_under_archived_parent() {
     // immediately non-functional and (b) block the parent from ever being
     // purged because purge requires NO remaining children.
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) =
         setup_hierarchy(&client, &base, "no-child-on-archived").await;
@@ -500,7 +500,7 @@ async fn test_archived_identity_takes_precedence_over_key_expiry() {
     // AND whose identity is archived should still see the actionable
     // 403 identity_archived (with restore hint), not 401 api_key_expired.
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) =
         setup_hierarchy(&client, &base, "archived-vs-expired").await;
@@ -554,7 +554,7 @@ async fn test_archived_identity_resolves_for_rate_limit_charging() {
     // return a row whose identity_id is set, so the bucket can be charged
     // before auth eventually rejects with 403.
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "rl-archived").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -606,7 +606,7 @@ async fn test_manually_revoked_key_returns_401_not_403() {
     // A manually-revoked key (revoked_reason IS NULL) on a healthy identity must
     // still return 401, not 403, because nothing about the identity is archived.
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "manual-revoke").await;
 
@@ -638,7 +638,7 @@ async fn test_manually_revoked_key_returns_401_not_403() {
 #[tokio::test]
 async fn test_parent_does_not_archive_while_child_alive() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "parent-waits").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -711,7 +711,7 @@ async fn test_parent_does_not_archive_while_child_alive() {
 #[tokio::test]
 async fn test_restore_resurrects_api_keys_but_not_manual_revokes() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "restore-keys").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -778,7 +778,7 @@ async fn test_restore_resurrects_api_keys_but_not_manual_revokes() {
 #[tokio::test]
 async fn test_restore_rejects_not_archived_and_past_retention() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "restore-edge").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -825,7 +825,7 @@ async fn test_restore_rejects_not_archived_and_past_retention() {
 #[tokio::test]
 async fn test_purge_after_retention_and_skips_with_children() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, agent_id) = setup_hierarchy(&client, &base, "purge-pass").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -871,7 +871,7 @@ async fn test_purge_after_retention_and_skips_with_children() {
 #[tokio::test]
 async fn test_users_and_agents_never_archived() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
     let (org_id, _admin_key, agent_id) = setup_hierarchy(&client, &base, "users-immune").await;
     let org_uuid: Uuid = org_id.parse().unwrap();
@@ -902,7 +902,7 @@ async fn test_users_and_agents_never_archived() {
 #[tokio::test]
 async fn test_per_org_idle_timeout_is_respected() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool.clone()).await;
+    let (base, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{base}");
 
     let (org_a, key_a, agent_a) = setup_hierarchy(&client, &base, "org-a").await;
@@ -949,7 +949,7 @@ async fn test_per_org_idle_timeout_is_respected() {
 #[tokio::test]
 async fn test_subagent_cleanup_config_endpoint_validates_bounds() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, _agent_id) = setup_hierarchy(&client, &base, "cfg-bounds").await;
 
@@ -1025,7 +1025,7 @@ async fn test_subagent_cleanup_config_endpoint_validates_bounds() {
 #[tokio::test]
 async fn test_get_org_returns_cleanup_config_with_defaults() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, _agent_id) = setup_hierarchy(&client, &base, "cfg-defaults").await;
 
@@ -1045,7 +1045,7 @@ async fn test_get_org_returns_cleanup_config_with_defaults() {
 #[tokio::test]
 async fn test_get_org_blocks_cross_org_access() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (_org_a, key_a, _agent_a) = setup_hierarchy(&client, &base, "isolate-a").await;
     let (org_b, _key_b, _agent_b) = setup_hierarchy(&client, &base, "isolate-b").await;
@@ -1063,7 +1063,7 @@ async fn test_get_org_blocks_cross_org_access() {
 #[tokio::test]
 async fn test_patch_subagent_cleanup_config_blocks_cross_org() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (_org_a, key_a, _agent_a) = setup_hierarchy(&client, &base, "patch-iso-a").await;
     let (org_b, _key_b, _agent_b) = setup_hierarchy(&client, &base, "patch-iso-b").await;
@@ -1085,7 +1085,7 @@ async fn test_patch_subagent_cleanup_config_blocks_cross_org() {
 #[tokio::test]
 async fn test_patch_org_with_no_fields_returns_400() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (org_id, admin_key, _agent_id) = setup_hierarchy(&client, &base, "patch-empty").await;
 
@@ -1114,7 +1114,7 @@ async fn test_patch_org_with_no_fields_returns_400() {
 #[tokio::test]
 async fn test_restore_not_found_for_unknown_identity() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let (_org, admin_key, _agent) = setup_hierarchy(&client, &base, "restore-404").await;
 
