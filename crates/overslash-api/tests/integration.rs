@@ -1759,9 +1759,9 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection() {
         .unwrap();
     let ident_id: Uuid = ident["id"].as_str().unwrap().parse().unwrap();
 
-    // Simulate OAuth callback with a code
-    // State format: org_id:identity_id:provider_key:byoc_credential_id
-    let state_param = format!("{org_id}:{ident_id}:github:_");
+    // Simulate OAuth callback with a code. `state` is the opaque flow row id;
+    // every other field (org/identity/provider/byoc/…) is read from the row.
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "github", None).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=test_auth_code_123&state={state_param}"
@@ -2145,7 +2145,7 @@ async fn test_oauth_callback_with_org_byoc_credential() {
     let byoc_id = byoc["id"].as_str().unwrap();
 
     // OAuth callback should resolve org-level BYOC — no env vars, no danger flag
-    let state_param = format!("{org_id}:{ident_id}:github:_");
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "github", None).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=byoc_test_code&state={state_param}"
@@ -2210,7 +2210,7 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
     let ident_byoc_id = ident_byoc["id"].as_str().unwrap();
 
     // OAuth callback — identity-level should be selected
-    let state_param = format!("{org_id}:{ident_id}:github:_");
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "github", None).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=priority_code&state={state_param}"
@@ -2273,8 +2273,10 @@ async fn test_oauth_callback_pinned_byoc_credential() {
         .unwrap();
     let byoc_id = byoc["id"].as_str().unwrap();
 
-    // Explicitly pin the BYOC credential in the state parameter
-    let state_param = format!("{org_id}:{ident_id}:github:{byoc_id}");
+    // Explicitly pin the BYOC credential on the flow row
+    let byoc_uuid: Uuid = byoc_id.parse().unwrap();
+    let state_param =
+        common::seed_oauth_flow(&pool, org_id, ident_id, "github", Some(byoc_uuid)).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=pinned_code&state={state_param}"
@@ -2314,7 +2316,7 @@ async fn test_oauth_callback_fails_without_credentials() {
     // Use "spotify" provider — no BYOC credentials exist, and no OAUTH_SPOTIFY_* env vars set.
     // Even if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set by another test,
     // there are no OAUTH_SPOTIFY_* env vars, so env fallback also fails.
-    let state_param = format!("{org_id}:{ident_id}:spotify:_");
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "spotify", None).await;
     let resp = client
         .get(format!(
             "{base}/v1/oauth/callback?code=will_fail&state={state_param}"

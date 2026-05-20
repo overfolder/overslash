@@ -62,6 +62,7 @@ use super::group_ceiling;
 use super::oauth;
 use super::oauth_upstream as svc;
 use super::platform_caller::PlatformCallContext;
+use super::platform_services::resolve_template_definition;
 use super::short_url;
 use crate::AppState;
 use crate::error::AppError;
@@ -91,8 +92,8 @@ pub struct CreateConnectionInput {
     /// `reauth_required` and `missing_scopes` arms — without this, a
     /// reauth would orphan the broken connection alongside a brand-new
     /// row, leaving `service_instances.connection_id` pointing at the
-    /// dead one. See `routes/connections.rs::oauth_callback` for the
-    /// state-segment parser.
+    /// dead one. Persisted on the flow row; the callback reads it back
+    /// when resolving the state.
     #[serde(default)]
     pub upgrade_connection_id: Option<Uuid>,
     /// Optional URL the callback redirects the user to after the flow
@@ -105,6 +106,17 @@ pub struct CreateConnectionInput {
     /// response, preserving today's behavior.
     #[serde(default)]
     pub return_url: Option<String>,
+    /// Optional catalog template key (e.g. `"gmail"`, `"google_calendar"`).
+    /// When set, the kernel resolves the template across the standard
+    /// user → org → global tiers, validates that its declared OAuth
+    /// provider matches `provider`, then folds the union of every action's
+    /// `required_scopes` into `scopes` via [`merge_scopes`]. Lets
+    /// white-label callers (e.g. Overfolder's `configure_external_service`)
+    /// initiate OAuth from the template key alone, without hard-coding
+    /// scope strings. Omitting it preserves the prior behavior of passing
+    /// `scopes` through verbatim.
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 /// Maximum byte length for caller-supplied `return_url`. Cap is generous
@@ -199,7 +211,7 @@ pub struct AuthRecoveryUrls {
 
 pub async fn kernel_create_connection(
     ctx: PlatformCallContext,
-    input: CreateConnectionInput,
+    mut input: CreateConnectionInput,
     request_meta: RequestMeta<'_>,
 ) -> Result<CreateConnectionResponse, AppError> {
     // OAuth is identity-bound by construction (the resulting connection row
@@ -207,6 +219,21 @@ pub async fn kernel_create_connection(
     let caller_identity_id = ctx
         .identity_id
         .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
+
+    // Optional catalog-template scope defaulting. Done at the public entry
+    // (not in `_for_identity`) so the cross-user upgrade branch in
+    // `mint_upgrade_auth_url` — which already passes a fully-resolved scope
+    // set from an existing connection — stays untouched.
+    if let Some(key) = input.template.clone() {
+        input.scopes = resolve_template_scopes(
+            &ctx,
+            caller_identity_id,
+            &key,
+            &input.provider,
+            &input.scopes,
+        )
+        .await?;
+    }
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
 
@@ -261,56 +288,24 @@ async fn kernel_create_connection_for_identity(
     );
 
     let byoc_id = creds.byoc_credential_id;
-    let byoc_segment = byoc_id.map_or_else(|| "_".to_string(), |id| id.to_string());
 
     let pkce = if provider.supports_pkce {
         Some(oauth::generate_pkce())
     } else {
         None
     };
-    let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
-
-    // The actor (caller agent) is preserved separately from `identity_id` so
-    // the callback can audit the agent that initiated the OAuth flow even
-    // when the resulting connection is bound to the owner user via
-    // on_behalf_of. State format unchanged — see routes/connections.rs
-    // `oauth_callback` for the parser.
-    let actor_segment = if caller_identity_id == identity_id {
-        "_".to_string()
-    } else {
-        caller_identity_id.to_string()
-    };
-
-    let upgrade_segment = input
-        .upgrade_connection_id
-        .map_or_else(|| "_".to_string(), |id| id.to_string());
 
     // Validate the caller-supplied return URL up front. The kernel mints
     // the flow row below; we need a parsed value to persist and a
     // 400-on-failure shape that flows out of `initiate_connection`.
     let return_url = parse_return_url(input.return_url.as_deref())?;
 
-    // Allocate the flow id early so we can embed it in the OAuth state.
-    // The callback uses this id to look up the flow row and recover
-    // `return_url` — that's why it has to be in state, not just a
-    // server-side lookup key. The id is base62-opaque, already public
-    // (it appears in the `/connect-authorize?id=…` URL the user clicks),
-    // and is cross-checked against the rest of the state segments at
-    // callback time so a forged id can't redirect through someone
-    // else's flow.
+    // The OAuth `state` parameter is the opaque base62 flow id. The
+    // callback resolves it back to this row and reads every other field
+    // (org, identity, provider, byoc, PKCE verifier, actor, upgrade
+    // target) directly from the row — no segments to forge.
     let flow_id = svc::mint_flow_id();
-
-    let oauth_state = format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}",
-        ctx.org_id,
-        identity_id,
-        input.provider,
-        byoc_segment,
-        verifier_segment,
-        actor_segment,
-        upgrade_segment,
-        flow_id,
-    );
+    let oauth_state = flow_id.clone();
 
     let raw_authorize_url = oauth::build_auth_url(
         &provider,
@@ -321,10 +316,9 @@ async fn kernel_create_connection_for_identity(
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
-    // Persist the gate-flow row. `flow_id` was minted above so we could
-    // bake it into the OAuth state — it's the lookup key the callback
-    // uses to recover the `return_url` (and to cross-check the rest of
-    // the state segments against the row).
+    // Persist the gate-flow row. `flow_id` is the OAuth `state` parameter
+    // we just emitted, so the callback can look this row up directly and
+    // read identity, PKCE, byoc, return_url, and upgrade target off it.
     let now = OffsetDateTime::now_utc();
     let expires_at = now + FLOW_TTL;
     let pkce_verifier = pkce.as_ref().map(|p| p.verifier.as_str());
@@ -345,6 +339,7 @@ async fn kernel_create_connection_for_identity(
             created_ip: request_meta.ip,
             created_user_agent: request_meta.user_agent,
             return_url: return_url.as_deref(),
+            upgrade_connection_id: input.upgrade_connection_id,
         },
     )
     .await?;
@@ -382,6 +377,63 @@ async fn kernel_create_connection_for_identity(
 pub struct RequestMeta<'a> {
     pub ip: Option<&'a str>,
     pub user_agent: Option<&'a str>,
+}
+
+/// Resolve the named template, validate it declares the requested OAuth
+/// `provider`, and return the union of every action's `required_scopes`
+/// merged with any caller-supplied `scopes`. The template lookup uses the
+/// caller's tier-visibility (user → org → global) so a caller can connect
+/// against templates they actually own. Errors raised here are
+/// `BadRequest` — the template field is a caller input, not server state.
+async fn resolve_template_scopes(
+    ctx: &PlatformCallContext,
+    caller_identity_id: Uuid,
+    key: &str,
+    provider: &str,
+    caller_scopes: &[String],
+) -> Result<Vec<String>, AppError> {
+    let def = match resolve_template_definition(
+        &ctx.db,
+        &ctx.registry,
+        ctx.org_id,
+        Some(caller_identity_id),
+        key,
+    )
+    .await
+    {
+        Ok(def) => def,
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::BadRequest(format!("template '{key}' not found")));
+        }
+        Err(other) => return Err(other),
+    };
+
+    let declared_provider = def.auth.iter().find_map(|a| match a {
+        overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
+        _ => None,
+    });
+    match declared_provider {
+        None => {
+            return Err(AppError::BadRequest(format!(
+                "template '{key}' does not declare OAuth auth"
+            )));
+        }
+        Some(declared) if declared != provider => {
+            return Err(AppError::BadRequest(format!(
+                "template '{key}' declares OAuth provider '{declared}', got '{provider}'"
+            )));
+        }
+        Some(_) => {}
+    }
+
+    let template_scopes: Vec<String> = def
+        .actions
+        .values()
+        .flat_map(|a| a.required_scopes.iter().cloned())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    Ok(merge_scopes(&template_scopes, caller_scopes))
 }
 
 /// Return the union of `existing` and `incoming`, preserving an order
@@ -466,6 +518,9 @@ pub async fn mint_initial_auth_url(
             // return_url today; the URL the agent hands the user lands
             // back on the default JSON response.
             return_url: None,
+            // Caller already passed the resolved per-action scope set; no
+            // template-key defaulting needed here.
+            template: None,
         },
         RequestMeta::default(),
     )
@@ -478,10 +533,11 @@ pub async fn mint_initial_auth_url(
 }
 
 /// Mint a gated `/connect-authorize` URL that, when consumed, refreshes
-/// the *existing* connection in place (sets segment 7 of the OAuth state
-/// so the callback updates the row instead of creating a new one). Used
-/// by the action handler's `reauth_required` arm (refresh-token failed)
-/// and the `missing_scopes` arm (incremental scope upgrade).
+/// the *existing* connection in place (the minted flow row carries
+/// `upgrade_connection_id` so the callback updates that row instead of
+/// creating a new one). Used by the action handler's `reauth_required`
+/// arm (refresh-token failed) and the `missing_scopes` arm (incremental
+/// scope upgrade).
 ///
 /// Scopes default to the connection's existing set unioned with
 /// `extra_scopes` — Google with `include_granted_scopes=true` would
@@ -499,10 +555,10 @@ pub async fn mint_upgrade_auth_url(
     let scope = OrgScope::new(org_id, state.db.clone());
 
     // The OAuth callback (`routes/connections.rs::oauth_callback`) updates
-    // the existing row in place when segment 7 carries `upgrade_connection_id`
-    // — it preserves `existing.identity_id` and just swaps tokens/scopes.
-    // So whichever identity threads through the state, the connection's
-    // owner is unchanged after the dance. Two cases to handle:
+    // the existing row in place when the flow row's `upgrade_connection_id`
+    // is set — it preserves `existing.identity_id` and just swaps
+    // tokens/scopes. So whichever identity owns the flow row, the
+    // connection's owner is unchanged after the dance. Two cases to handle:
     //
     // (1) Same-identity caller. Nothing to validate; the existing kernel
     //     handles it directly.
@@ -526,6 +582,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: None,
+                template: None,
             },
             RequestMeta::default(),
         )
@@ -556,6 +613,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: None,
+                template: None,
             },
             RequestMeta::default(),
         )
@@ -582,6 +640,7 @@ pub async fn mint_upgrade_auth_url(
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
             return_url: None,
+            template: None,
         },
         RequestMeta::default(),
     )

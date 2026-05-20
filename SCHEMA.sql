@@ -387,7 +387,8 @@ CREATE TABLE public.oauth_connection_flows (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     created_ip text,
     created_user_agent text,
-    return_url text
+    return_url text,
+    upgrade_connection_id uuid
 );
 
 

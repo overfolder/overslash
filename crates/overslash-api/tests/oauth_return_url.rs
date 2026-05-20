@@ -2,8 +2,9 @@
 //!
 //! Companion to `parse_return_url` unit tests in `services/platform_connections.rs`:
 //! those validate the format check at create time; these validate the
-//! callback's allow-list gate and the spoofing defense built around the
-//! flow_id state segment.
+//! callback's allow-list gate. The OAuth `state` is now the opaque flow-row
+//! id, so there's nothing for a caller to spoof — every field comes off the
+//! row.
 #![allow(clippy::disallowed_methods)]
 
 mod common;
@@ -86,6 +87,7 @@ async fn seed_flow(
             created_ip: None,
             created_user_agent: None,
             return_url,
+            upgrade_connection_id: None,
         },
     )
     .await
@@ -106,11 +108,10 @@ async fn bootstrap_owner(pool: &sqlx::PgPool, slug: &str) -> (Uuid, Uuid) {
     (org.id, ident.id)
 }
 
-fn state_with_flow(org: Uuid, ident: Uuid, flow_id: &str) -> String {
-    // Mirrors `kernel_create_connection`'s 8-segment format. We use the
-    // owner identity for both the "owner" and "actor" slots; the callback
-    // only cross-checks that they match the flow row.
-    format!("{org}:{ident}:github:_:_:{ident}:_:{flow_id}")
+/// The OAuth `state` parameter is the opaque flow-row id. Wrapper exists
+/// so the tests read intentionally — they're not just passing a raw string.
+fn state_for(flow_id: &str) -> String {
+    flow_id.to_string()
 }
 
 #[tokio::test]
@@ -127,7 +128,7 @@ async fn callback_redirects_to_allow_listed_return_url_on_success() {
     .await;
 
     let (api_addr, client, _) = boot(pool.clone(), vec!["allowed.test".into()], None).await;
-    let state = state_with_flow(org_id, ident_id, &flow_id);
+    let state = state_for(&flow_id);
     let resp = client
         .get(format!(
             "http://{api_addr}/v1/oauth/callback?code=test_code&state={state}"
@@ -175,7 +176,7 @@ async fn callback_falls_back_to_json_when_host_not_allow_listed() {
 
     // Allow-list does not include `evil.test`.
     let (api_addr, client, _) = boot(pool.clone(), vec!["allowed.test".into()], None).await;
-    let state = state_with_flow(org_id, ident_id, &flow_id);
+    let state = state_for(&flow_id);
     let resp = client
         .get(format!(
             "http://{api_addr}/v1/oauth/callback?code=test_code&state={state}"
@@ -192,55 +193,17 @@ async fn callback_falls_back_to_json_when_host_not_allow_listed() {
 }
 
 #[tokio::test]
-async fn callback_falls_back_to_json_when_flow_state_mismatch() {
-    // Spoof attempt: pass flow A's id but state segments naming identity B.
-    // The cross-check in `resolve_redirect_target` must reject the flow row
-    // and the callback must render JSON, not redirect.
-    let pool = common::test_pool().await;
-    let (org_a, ident_a) = bootstrap_owner(&pool, &format!("ret-spoof-a-{}", Uuid::new_v4())).await;
-    let (_org_b, ident_b) =
-        bootstrap_owner(&pool, &format!("ret-spoof-b-{}", Uuid::new_v4())).await;
-    let flow_id_a = seed_flow(
-        &pool,
-        org_a,
-        ident_a,
-        ident_a,
-        Some("https://allowed.test/cb"),
-    )
-    .await;
-
-    let (api_addr, client, _) = boot(pool.clone(), vec!["allowed.test".into()], None).await;
-    // State names identity B, but the supplied flow_id belongs to identity A.
-    // The mocked OAuth callback wouldn't have got this far in real life —
-    // an attacker would also have to forge a `code` — but the test exists
-    // to verify the gate, not the upstream protocol.
-    let state = state_with_flow(org_a, ident_b, &flow_id_a);
-    let resp = client
-        .get(format!(
-            "http://{api_addr}/v1/oauth/callback?code=test_code&state={state}"
-        ))
-        .send()
-        .await
-        .unwrap();
-
-    // Connection still gets created against `ident_b` from state, but the
-    // response stays JSON because the redirect cross-check rejected the
-    // stitched flow row.
-    assert_eq!(resp.status().as_u16(), 200);
-    assert!(resp.headers().get("location").is_none());
-}
-
-#[tokio::test]
-async fn callback_falls_back_to_json_when_state_has_no_flow_id_segment() {
-    // Backward-compat: an in-flight callback that was minted before this
-    // PR shipped has only 7 state segments. The new parser must tolerate
-    // that and take the JSON path.
+async fn callback_falls_back_to_json_when_flow_row_has_no_return_url() {
+    // Row exists, allow-list is configured, but the row was minted without
+    // a `return_url`. The callback must take the historical JSON path
+    // rather than try to redirect somewhere unspecified.
     let pool = common::test_pool().await;
     let (org_id, ident_id) =
-        bootstrap_owner(&pool, &format!("ret-legacy-{}", Uuid::new_v4())).await;
+        bootstrap_owner(&pool, &format!("ret-no-url-{}", Uuid::new_v4())).await;
+    let flow_id = seed_flow(&pool, org_id, ident_id, ident_id, None).await;
 
     let (api_addr, client, _) = boot(pool.clone(), vec!["allowed.test".into()], None).await;
-    let state = format!("{org_id}:{ident_id}:github:_:_:{ident_id}:_");
+    let state = state_for(&flow_id);
     let resp = client
         .get(format!(
             "http://{api_addr}/v1/oauth/callback?code=test_code&state={state}"
@@ -253,6 +216,28 @@ async fn callback_falls_back_to_json_when_state_has_no_flow_id_segment() {
     assert!(resp.headers().get("location").is_none());
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "connected");
+}
+
+#[tokio::test]
+async fn callback_rejects_unknown_state() {
+    // No row exists for this id → 400. With `state` now being the row id
+    // itself, an attacker can't fabricate org/identity segments to extract
+    // any behavior — the only thing they can supply is an opaque id, and
+    // it has to resolve to a real row.
+    let pool = common::test_pool().await;
+    let (_org_id, _ident_id) =
+        bootstrap_owner(&pool, &format!("ret-unknown-{}", Uuid::new_v4())).await;
+
+    let (api_addr, client, _) = boot(pool.clone(), vec!["allowed.test".into()], None).await;
+    let resp = client
+        .get(format!(
+            "http://{api_addr}/v1/oauth/callback?code=test_code&state=flow_does_not_exist"
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 400);
 }
 
 #[tokio::test]
@@ -280,7 +265,7 @@ async fn callback_redirects_with_error_reason_when_token_exchange_fails() {
         Some("http://127.0.0.1:1/oauth/token".into()),
     )
     .await;
-    let state = state_with_flow(org_id, ident_id, &flow_id);
+    let state = state_for(&flow_id);
     let resp = client
         .get(format!(
             "http://{api_addr}/v1/oauth/callback?code=test_code&state={state}"

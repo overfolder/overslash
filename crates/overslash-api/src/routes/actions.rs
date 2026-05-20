@@ -2770,8 +2770,9 @@ async fn check_required_scopes(
 
     // Mint a chat-deliverable gated `/connect-authorize` URL that, when
     // consumed, runs an incremental-scope OAuth flow against the existing
-    // connection (segment 7 of the OAuth state carries `connection.id`).
-    // The legacy `upgrade_url` field — pointing at the raw REST endpoint
+    // connection (the minted flow row's `upgrade_connection_id` points at
+    // `connection.id`; the callback reads it back from the row). The legacy
+    // `upgrade_url` field — pointing at the raw REST endpoint
     // `/v1/connections/{id}/upgrade_scopes` — is preserved alongside for
     // white-label callers that drive the API directly. Agents should use
     // `auth_url`.

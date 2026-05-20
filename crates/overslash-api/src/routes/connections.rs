@@ -74,6 +74,10 @@ struct InitiateConnectionRequest {
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
+    /// Optional catalog template key. When set, scope defaults are derived
+    /// from the template's actions. See [`CreateConnectionInput::template`].
+    #[serde(default)]
+    template: Option<String>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -128,6 +132,7 @@ async fn initiate_connection(
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
         return_url: req.return_url,
+        template: req.template,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -282,76 +287,35 @@ async fn oauth_callback(
     ip: ClientIp,
     Query(params): Query<OAuthCallbackParams>,
 ) -> Response {
-    // Parse state: org_id:identity_id:provider_key:byoc_credential_id
-    //   [:code_verifier[:actor_identity_id[:upgrade_connection_id[:flow_id]]]]
-    let parts: Vec<&str> = params.state.splitn(8, ':').collect();
-    if parts.len() < 3 {
-        return AppError::BadRequest("invalid state parameter".into()).into_response();
+    // `state` is the opaque base62 flow-row id. Every field the callback
+    // needs (org/identity/provider/byoc/PKCE/actor/upgrade) is read from
+    // the row — no other segments to parse, no cross-check to forge.
+    let flow_id = params.state.trim();
+    if flow_id.is_empty() {
+        return AppError::BadRequest("missing state parameter".into()).into_response();
     }
-    let org_id: Uuid = match parts[0].parse() {
-        Ok(v) => v,
-        Err(_) => {
-            return AppError::BadRequest("invalid org_id in state".into()).into_response();
+    let flow = match oauth_connection_flow::get_by_id(&state.db, flow_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return AppError::BadRequest("invalid state parameter".into()).into_response();
         }
+        Err(e) => return AppError::from(e).into_response(),
     };
-    let identity_id: Uuid = match parts[1].parse() {
-        Ok(v) => v,
-        Err(_) => {
-            return AppError::BadRequest("invalid identity_id in state".into()).into_response();
-        }
-    };
-    let provider_key = parts[2];
-    let byoc_credential_id: Option<Uuid> = parts
-        .get(3)
-        .and_then(|s| if *s == "_" { None } else { s.parse().ok() });
-    let code_verifier: Option<&str> = parts
-        .get(4)
-        .and_then(|s| if *s == "_" { None } else { Some(*s) });
-    // Actor (agent) for audit attribution. Falls back to identity_id when the
-    // connection wasn't on_behalf_of (i.e. caller == owner).
-    let actor_identity_id: Uuid = parts
-        .get(5)
-        .and_then(|s| if *s == "_" { None } else { s.parse().ok() })
-        .unwrap_or(identity_id);
-    // When present, the callback updates this existing connection in place
-    // (incremental scope upgrade) instead of minting a new one.
-    let upgrade_connection_id: Option<Uuid> = parts
-        .get(6)
-        .and_then(|s| if *s == "_" { None } else { s.parse().ok() });
-    // The flow_id segment is what lets us recover `return_url` (and any
-    // other future per-flow data) from the DB row. It's optional for
-    // backward-compat: state minted before this column existed has 7
-    // segments, in which case the callback falls back to its historical
-    // JSON response.
-    let flow_id_from_state: Option<&str> = parts
-        .get(7)
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty() && *s != "_");
 
-    let redirect_target = resolve_redirect_target(
-        &state,
-        &ext,
-        flow_id_from_state,
-        org_id,
-        identity_id,
-        actor_identity_id,
-        provider_key,
-        byoc_credential_id,
-    )
-    .await;
+    let redirect_target = resolve_redirect_target(&state, &flow);
 
     let outcome = oauth_callback_inner(
         &state,
         &ext,
         &ip,
         &params,
-        org_id,
-        identity_id,
-        provider_key,
-        byoc_credential_id,
-        code_verifier,
-        actor_identity_id,
-        upgrade_connection_id,
+        flow.org_id,
+        flow.identity_id,
+        &flow.provider_key,
+        flow.byoc_credential_id,
+        flow.pkce_code_verifier.as_deref(),
+        flow.actor_identity_id,
+        flow.upgrade_connection_id,
     )
     .await;
 
@@ -371,41 +335,20 @@ async fn oauth_callback(
 }
 
 /// Build a verified redirect target from the flow row, or `None` if any
-/// gate fails. Each gate must reject independently so a forged flow_id
-/// can't combine with otherwise-valid state to leak completion data:
+/// gate fails:
 ///
 /// 1. Allow-list is configured (empty list disables the feature).
-/// 2. Flow row exists for the supplied id.
-/// 3. The flow row's tenancy fields match the rest of state (defense
-///    against an attacker stitching their own flow_id onto fabricated
-///    state).
-/// 4. The flow row carries a `return_url`.
-/// 5. The `return_url` parses and its host is on the allow-list.
-#[allow(clippy::too_many_arguments)]
-async fn resolve_redirect_target(
+/// 2. The flow row carries a `return_url`.
+/// 3. The `return_url` parses and its host is on the allow-list.
+///
+/// Per-tenancy cross-checks that used to live here are gone: the OAuth
+/// `state` parameter is now the row id itself, so there's no separate
+/// state to forge against the row.
+fn resolve_redirect_target(
     state: &AppState,
-    ext: &axum::http::Extensions,
-    flow_id: Option<&str>,
-    org_id: Uuid,
-    identity_id: Uuid,
-    actor_identity_id: Uuid,
-    provider_key: &str,
-    byoc_credential_id: Option<Uuid>,
+    flow: &oauth_connection_flow::OauthConnectionFlowRow,
 ) -> Option<VerifiedRedirect> {
     if state.config.connection_return_url_allowed_hosts.is_empty() {
-        return None;
-    }
-    let flow_id = flow_id?;
-    let flow = oauth_connection_flow::get_by_id(state.db(ext), flow_id)
-        .await
-        .ok()
-        .flatten()?;
-    if flow.org_id != org_id
-        || flow.identity_id != identity_id
-        || flow.actor_identity_id != actor_identity_id
-        || flow.provider_key != provider_key
-        || flow.byoc_credential_id != byoc_credential_id
-    {
         return None;
     }
     let raw = flow.return_url.as_deref()?;
@@ -420,7 +363,7 @@ async fn resolve_redirect_target(
     }
     Some(VerifiedRedirect {
         url,
-        provider_key: flow.provider_key,
+        provider_key: flow.provider_key.clone(),
     })
 }
 
@@ -538,10 +481,11 @@ async fn oauth_callback_inner(
         .expires_in
         .map(|secs| time::OffsetDateTime::now_utc() + time::Duration::seconds(secs));
 
-    // The org_id from state is the source of truth for scope construction.
     // The OAuth callback is unauthenticated by design (the redirect_uri is
-    // public), so all tenancy invariants come from the state we issued at
-    // initiate time — which we already validated above by decoding into Uuids.
+    // public), so all tenancy invariants come from the flow row that the
+    // opaque `state` parameter resolved to — that row is what we issued at
+    // initiate time and the unguessable id is the only thing the attacker
+    // would have to forge.
     let scope = OrgScope::new(org_id, state.db_pool(ext));
 
     let (connection_id, audit_action, effective_scopes) =
@@ -713,13 +657,16 @@ struct UpgradeScopesResponse {
     requested_scopes: Vec<String>,
 }
 
-/// Start an incremental-scope OAuth flow for an existing connection. Returns
-/// an auth URL whose state encodes the connection id — the callback will
-/// update the row in place instead of minting a new one.
+/// Start an incremental-scope OAuth flow for an existing connection. Mints a
+/// flow row whose `upgrade_connection_id` points at this connection — the
+/// callback reads that off the row and updates this connection in place
+/// instead of minting a new one.
 async fn upgrade_connection_scopes(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<UpgradeScopesRequest>,
 ) -> Result<Json<UpgradeScopesResponse>> {
@@ -739,66 +686,49 @@ async fn upgrade_connection_scopes(
         ));
     }
 
-    let provider =
-        overslash_db::repos::oauth_provider::get_by_key(state.db(&ext), &existing.provider_key)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("provider '{}' not found", existing.provider_key))
-            })?;
+    // Union existing + requested scopes. Google with `include_granted_scopes=true`
+    // would preserve old ones anyway, but sending the full union is what makes
+    // non-Google providers work.
+    let merged: Vec<String> = merge_scopes(&existing.scopes, &req.scopes);
 
-    let enc_key = state.config.keyring()?;
-    // Pin the same BYOC credential the original connection used so the
-    // upgrade flow runs against the same OAuth client — otherwise the
-    // provider may reject the incremental request as a new client.
-    let creds = client_credentials::resolve(
-        state.db(&ext),
-        &enc_key,
-        acl.org_id,
-        Some(caller_identity_id),
-        &existing.provider_key,
-        None,
-        existing.byoc_credential_id,
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    let ctx = PlatformCallContext {
+        org_id: acl.org_id,
+        identity_id: acl.identity_id,
+        access_level: acl.access_level,
+        db: state.db_pool(&ext),
+        registry: state.registry.clone(),
+        config: state.config.clone(),
+        http_client: state.http_client.clone(),
+    };
+    let response = kernel_create_connection(
+        ctx,
+        CreateConnectionInput {
+            provider: existing.provider_key.clone(),
+            scopes: merged.clone(),
+            // Pin the same BYOC credential the original connection used so
+            // the upgrade flow runs against the same OAuth client.
+            byoc_credential_id: existing.byoc_credential_id,
+            on_behalf_of: None,
+            upgrade_connection_id: Some(id),
+            return_url: None,
+            // Upgrade flow already has the resolved scope set on hand
+            // (`existing.scopes` ∪ request scopes); template-key defaulting
+            // would be a no-op here.
+            template: None,
+        },
+        RequestMeta {
+            ip: ip.0.as_deref(),
+            user_agent,
+        },
     )
     .await?;
 
-    let redirect_uri = format!(
-        "{}/v1/oauth/callback",
-        state.config.public_url.trim_end_matches('/')
-    );
-
-    let byoc_segment = creds
-        .byoc_credential_id
-        .map_or_else(|| "_".to_string(), |id| id.to_string());
-
-    let pkce = if provider.supports_pkce {
-        Some(oauth::generate_pkce())
-    } else {
-        None
-    };
-    let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
-
-    // Union the existing and newly-requested scopes. Google with
-    // `include_granted_scopes=true` would preserve the old ones anyway, but
-    // sending the full union is what makes non-Google providers work.
-    let merged: Vec<String> = merge_scopes(&existing.scopes, &req.scopes);
-
-    let oauth_state = format!(
-        "{}:{}:{}:{}:{}:_:{}",
-        acl.org_id, caller_identity_id, existing.provider_key, byoc_segment, verifier_segment, id
-    );
-
-    let auth_url = oauth::build_auth_url(
-        &provider,
-        &creds.client_id,
-        &redirect_uri,
-        &merged,
-        &oauth_state,
-        pkce.as_ref().map(|p| p.challenge.as_str()),
-    );
-
     Ok(Json(UpgradeScopesResponse {
-        auth_url,
-        state: oauth_state,
+        auth_url: response.auth_url,
+        state: response.state,
         connection_id: id,
         requested_scopes: merged,
     }))
