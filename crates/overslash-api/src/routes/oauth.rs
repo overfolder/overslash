@@ -645,7 +645,7 @@ async fn consent_context(
         .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
 
     let pending = state
-        .pending_authorize_store
+        .pending_authorize_store(&ext)
         .get(&request_id)
         .ok_or_else(|| AppError::NotFound("authorization request expired".into()))?;
 
@@ -805,7 +805,7 @@ async fn consent_finish(
     // fails the user re-starts the flow; the 60s TTL is short enough that
     // this is acceptable.
     let pending = state
-        .pending_authorize_store
+        .pending_authorize_store(&ext)
         .take(&request_id)
         .ok_or_else(|| AppError::BadRequest("authorization request expired".into()))?;
 
@@ -1006,7 +1006,7 @@ async fn consent_finish(
     };
 
     let code = oauth_as::generate_auth_code();
-    state.auth_code_store.insert(
+    state.auth_code_store(&ext).insert(
         code.clone(),
         oauth_as::AuthCodeRecord {
             client_id: pending.client_id.clone(),
@@ -1117,7 +1117,7 @@ async fn exchange_authorization_code(
         }
     };
 
-    let record = match state.auth_code_store.take(&code) {
+    let record = match state.auth_code_store(ext).take(&code) {
         Some(r) => r,
         None => {
             return oauth_error(
