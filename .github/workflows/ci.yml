@@ -97,6 +97,16 @@ jobs:
       SIGNING_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
       SQLX_OFFLINE: "true"
     steps:
+      - name: Tune Postgres for CI (durability off; data is throwaway)
+        run: |
+          PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
+          ALTER SYSTEM SET synchronous_commit = 'off';
+          ALTER SYSTEM SET wal_compression = 'off';
+          ALTER SYSTEM SET wal_writer_delay = '10s';
+          ALTER SYSTEM SET commit_delay = '100000';
+          ALTER SYSTEM SET work_mem = '32MB';
+          SELECT pg_reload_conf();
+          SQL
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -162,6 +172,16 @@ jobs:
       # Points oversla-sh integration tests at the valkey service above.
       VALKEY_URL: redis://localhost:6380
     steps:
+      - name: Tune Postgres for CI (durability off; data is throwaway)
+        run: |
+          PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
+          ALTER SYSTEM SET synchronous_commit = 'off';
+          ALTER SYSTEM SET wal_compression = 'off';
+          ALTER SYSTEM SET wal_writer_delay = '10s';
+          ALTER SYSTEM SET commit_delay = '100000';
+          ALTER SYSTEM SET work_mem = '32MB';
+          SELECT pg_reload_conf();
+          SQL
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -267,6 +287,16 @@ jobs:
     steps:
       - name: Set WORKTREE_STATE_DIR to a per-job temp dir
         run: echo "WORKTREE_STATE_DIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Tune Postgres for CI (durability off; data is throwaway)
+        run: |
+          PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
+          ALTER SYSTEM SET synchronous_commit = 'off';
+          ALTER SYSTEM SET wal_compression = 'off';
+          ALTER SYSTEM SET wal_writer_delay = '10s';
+          ALTER SYSTEM SET commit_delay = '100000';
+          ALTER SYSTEM SET work_mem = '32MB';
+          SELECT pg_reload_conf();
+          SQL
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
