@@ -1392,6 +1392,7 @@ async fn execute_claimed_approval(
                         replay_timeout,
                         platform_caller::invoke(
                             state,
+                            ext,
                             scope,
                             approval.identity_id,
                             ceiling_user_id,

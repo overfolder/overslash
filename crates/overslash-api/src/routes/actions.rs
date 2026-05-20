@@ -972,6 +972,7 @@ async fn call_action_impl(
 
         let value = crate::services::platform_caller::invoke(
             &state,
+            &ext,
             &scope,
             identity_id,
             ceiling_user_id,
