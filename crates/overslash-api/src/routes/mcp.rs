@@ -223,6 +223,7 @@ async fn post_mcp(
                     || json!({ "action": "cancel", "content": resp.get("error").cloned() }),
                 );
                 let st = state.clone();
+                let ext_c = ext.clone();
                 let db = state.db_pool(&ext);
                 let id_owned = id.to_string();
                 // Bound the background task: two loopback HTTP calls
@@ -230,7 +231,8 @@ async fn post_mcp(
                 // under load. Without this an unresponsive upstream could
                 // pin a tokio task slot indefinitely.
                 tokio::spawn(async move {
-                    let work = mcp_session::complete_from_elicitation(&st, &id_owned, &result);
+                    let work =
+                        mcp_session::complete_from_elicitation(&st, &ext_c, &id_owned, &result);
                     match tokio::time::timeout(Duration::from_secs(60), work).await {
                         Ok(Ok(())) => {}
                         Ok(Err(e)) => {
@@ -722,6 +724,7 @@ async fn tools_call_overslash_call(
     };
     if let Err(e) = mcp_session::open(
         state,
+        ext,
         &elicit_id,
         session_id,
         agent_identity_id,
@@ -735,6 +738,7 @@ async fn tools_call_overslash_call(
 
     sse_elicitation_response(
         state.clone(),
+        ext.clone(),
         req.id.clone(),
         elicit_id,
         approval_id,
@@ -796,8 +800,10 @@ async fn elicitation_eligible(
         .is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sse_elicitation_response(
     state: AppState,
+    ext: axum::http::Extensions,
     rpc_id: Value,
     elicit_id: String,
     approval_id: Uuid,
@@ -811,7 +817,8 @@ fn sse_elicitation_response(
         "params": elicitation_params(&action_summary, &pending_outcome),
     });
 
-    let stream = elicitation_event_stream(state, rpc_id, elicit_id, approval_id, elicit_request);
+    let stream =
+        elicitation_event_stream(state, ext, rpc_id, elicit_id, approval_id, elicit_request);
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response()
@@ -819,6 +826,7 @@ fn sse_elicitation_response(
 
 fn elicitation_event_stream(
     state: AppState,
+    ext: axum::http::Extensions,
     rpc_id: Value,
     elicit_id: String,
     approval_id: Uuid,
@@ -829,7 +837,7 @@ fn elicitation_event_stream(
     });
 
     let tail = stream::once(async move {
-        let outcome = mcp_session::await_completion(&state, &elicit_id).await;
+        let outcome = mcp_session::await_completion(&state, &ext, &elicit_id).await;
         let result_event = match outcome {
             mcp_session::ElicitOutcome::Completed(v) => json!({
                 "jsonrpc": "2.0",
