@@ -74,6 +74,10 @@ struct InitiateConnectionRequest {
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
+    /// Optional catalog template key. When set, scope defaults are derived
+    /// from the template's actions. See [`CreateConnectionInput::template`].
+    #[serde(default)]
+    template: Option<String>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -127,6 +131,7 @@ async fn initiate_connection(
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
         return_url: req.return_url,
+        template: req.template,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -702,6 +707,10 @@ async fn upgrade_connection_scopes(
             on_behalf_of: None,
             upgrade_connection_id: Some(id),
             return_url: None,
+            // Upgrade flow already has the resolved scope set on hand
+            // (`existing.scopes` ∪ request scopes); template-key defaulting
+            // would be a no-op here.
+            template: None,
         },
         RequestMeta {
             ip: ip.0.as_deref(),
