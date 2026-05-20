@@ -38,6 +38,10 @@ enable_dev_auth  = false
 # as defense-in-depth — production must NEVER set this var.
 vercel_preview_origin_regex = "^https://overslash-[a-z0-9-]+-amanuelmartincanto-2204s-projects\\.vercel\\.app$"
 
+# OAuth return_url redirect allow-list: allow Overfolder dev backend to receive
+# post-consent redirects after Overslash completes the code exchange.
+connection_return_url_hosts = "api-dev.overfolder.com"
+
 # Cloud SQL — minimum viable
 cloud_sql_tier         = "db-f1-micro"
 cloud_sql_disk_size_gb = 10

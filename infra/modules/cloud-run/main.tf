@@ -155,6 +155,12 @@ variable "vercel_preview_origin_regex" {
   description = "Regex matching Vercel preview-deployment URLs allowed to OAuth-handoff back to themselves (dev only). Empty = feature off; production must leave empty."
 }
 
+variable "connection_return_url_hosts" {
+  type        = string
+  default     = ""
+  description = "Comma-separated hostnames allowed as OAuth return_url redirect targets. Empty = feature disabled (Overslash falls back to JSON)."
+}
+
 variable "redis_host" {
   type    = string
   default = ""
@@ -282,6 +288,7 @@ locals {
     var.session_cookie_domain != "" ? { SESSION_COOKIE_DOMAIN = var.session_cookie_domain } : {},
     var.overslash_env != "" ? { OVERSLASH_ENV = var.overslash_env } : {},
     var.vercel_preview_origin_regex != "" ? { PREVIEW_ORIGIN_ALLOWLIST = var.vercel_preview_origin_regex } : {},
+    var.connection_return_url_hosts != "" ? { OVERSLASH_CONNECTION_RETURN_URL_HOSTS = var.connection_return_url_hosts } : {},
   )
 
   env_secrets = merge(
