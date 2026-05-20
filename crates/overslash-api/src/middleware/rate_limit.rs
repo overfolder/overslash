@@ -20,7 +20,7 @@ pub async fn rate_limit_middleware(
     };
 
     // Resolve identity from prefix cache
-    let identity = match resolve_identity(&state, &prefix).await {
+    let identity = match resolve_identity(&state, request.extensions(), &prefix).await {
         Some(id) => id,
         None => return next.run(request).await, // Unknown key → let auth extractor reject
     };
@@ -35,8 +35,8 @@ pub async fn rate_limit_middleware(
     // clients that integer-parse the values fail loudly rather than silently
     // treating a missing/zero value as the limit.
     if state
-        .free_unlimited_cache
-        .is_free_unlimited(&state.db, org_id)
+        .free_unlimited_cache(request.extensions())
+        .is_free_unlimited(state.db(request.extensions()), org_id)
         .await
     {
         overslash_metrics::rate_limit::record_decision("free_unlimited", "allow");
@@ -62,22 +62,27 @@ pub async fn rate_limit_middleware(
     let user_id = owner_user_id.or(identity_id);
     let (bucket_key, budget) = if let Some(user_id) = user_id {
         let budget = state
-            .rate_limit_cache
-            .resolve_user_budget(&state.db, &state.config, org_id, user_id)
+            .rate_limit_cache(request.extensions())
+            .resolve_user_budget(
+                state.db(request.extensions()),
+                &state.config,
+                org_id,
+                user_id,
+            )
             .await;
         (format!("rl:{org_id}:user:{user_id}"), budget)
     } else {
         // Org-level fallback: use the org default (or system fallback)
         let budget = state
-            .rate_limit_cache
-            .resolve_org_budget(&state.db, &state.config, org_id)
+            .rate_limit_cache(request.extensions())
+            .resolve_org_budget(state.db(request.extensions()), &state.config, org_id)
             .await;
         (format!("rl:{org_id}:org"), budget)
     };
     let user_scope_label = if user_id.is_some() { "user" } else { "org" };
     let user_budget = {
         let result = state
-            .rate_limiter
+            .rate_limiter(request.extensions())
             .check_and_increment(&bucket_key, budget.max_requests, budget.window_seconds)
             .await;
         if !result.allowed {
@@ -98,13 +103,13 @@ pub async fn rate_limit_middleware(
     // Counter 2: Identity cap (optional, tighter ceiling for specific agents)
     if let Some(identity_id) = identity_id {
         if let Some(cap) = state
-            .rate_limit_cache
-            .resolve_identity_cap(&state.db, org_id, identity_id)
+            .rate_limit_cache(request.extensions())
+            .resolve_identity_cap(state.db(request.extensions()), org_id, identity_id)
             .await
         {
             let key = format!("rl:{org_id}:id:{identity_id}");
             let result = state
-                .rate_limiter
+                .rate_limiter(request.extensions())
                 .check_and_increment(&key, cap.max_requests, cap.window_seconds)
                 .await;
             if !result.allowed {
@@ -161,6 +166,7 @@ pub fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String>
 /// `find_by_prefix` already filters `revoked_at IS NULL`, so revoked keys are skipped.
 pub async fn resolve_identity(
     state: &AppState,
+    ext: &axum::http::Extensions,
     prefix: &str,
 ) -> Option<(Uuid, Option<Uuid>, Option<Uuid>)> {
     // Look up API key by prefix (no argon2 — just identification).
@@ -168,7 +174,7 @@ pub async fn resolve_identity(
     // belonging to an archived identity still gets rate-limited (the 403 reject
     // still costs us DB lookups + argon2 in the auth extractor).
     // Cross-org by design — see `SystemScope::find_api_key_by_prefix_including_archived`.
-    let key_row = overslash_db::SystemScope::new_internal(state.db.clone())
+    let key_row = overslash_db::SystemScope::new_internal(state.db_pool(ext))
         .find_api_key_by_prefix_including_archived(prefix)
         .await
         .ok()
@@ -183,7 +189,7 @@ pub async fn resolve_identity(
 
     // Resolve owner_user_id from the identity, bounded to the key's org.
     let identity_id = key_row.identity_id;
-    let scope = overslash_db::OrgScope::new(key_row.org_id, state.db.clone());
+    let scope = overslash_db::OrgScope::new(key_row.org_id, state.db_pool(ext));
     let owner_user_id = match scope.get_identity(identity_id).await {
         Ok(Some(identity)) => {
             if identity.kind == "user" {

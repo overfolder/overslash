@@ -625,6 +625,7 @@ async fn complete_from_elicitation_accept_allow_resolves_and_calls() {
     let state = build_state_for_session(&fx).await;
     mcp_session::complete_from_elicitation(
         &state,
+        &axum::http::Extensions::new(),
         &elicit_id,
         &json!({
             "action": "accept",
@@ -733,6 +734,7 @@ async fn complete_from_elicitation_allow_remember_without_keys_creates_rule() {
     // expose per-key checkboxes. Must still succeed.
     mcp_session::complete_from_elicitation(
         &state,
+        &axum::http::Extensions::new(),
         &elicit_id,
         &json!({
             "action": "accept",
@@ -996,9 +998,14 @@ async fn complete_from_elicitation_decline_resolves_approval_as_denied() {
     .unwrap();
 
     let state = build_state_for_session(&fx).await;
-    mcp_session::complete_from_elicitation(&state, &elicit_id, &json!({ "action": "decline" }))
-        .await
-        .unwrap();
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        &json!({ "action": "decline" }),
+    )
+    .await
+    .unwrap();
 
     // The elicitation row terminates as `failed` (the SSE stream will emit
     // isError: true to the model).
@@ -1064,9 +1071,13 @@ async fn await_completion_returns_completed_when_row_finalises() {
     });
 
     let state = build_state_for_session(&fx).await;
-    let outcome =
-        mcp_session::await_completion_with_timeout(&state, &elicit_id, Duration::from_secs(3))
-            .await;
+    let outcome = mcp_session::await_completion_with_timeout(
+        &state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        Duration::from_secs(3),
+    )
+    .await;
     match outcome {
         mcp_session::ElicitOutcome::Completed(v) => {
             assert_eq!(v["ok"], true);
@@ -1104,9 +1115,13 @@ async fn await_completion_returns_cancelled_on_timeout() {
     .unwrap();
 
     let state = build_state_for_session(&fx).await;
-    let outcome =
-        mcp_session::await_completion_with_timeout(&state, &elicit_id, Duration::from_millis(200))
-            .await;
+    let outcome = mcp_session::await_completion_with_timeout(
+        &state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        Duration::from_millis(200),
+    )
+    .await;
     assert!(
         matches!(outcome, mcp_session::ElicitOutcome::Cancelled),
         "expected Cancelled, got {outcome:?}"
@@ -1202,5 +1217,6 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     }
 }

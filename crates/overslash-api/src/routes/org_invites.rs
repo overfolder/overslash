@@ -20,7 +20,7 @@ use overslash_db::repos::{identity, membership, org, user};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp},
+    extractors::{AdminAcl, ClientIp, ReqExt},
 };
 
 use super::util::fmt_time;
@@ -91,6 +91,7 @@ fn validate_email(raw: &str) -> Result<String> {
 
 async fn create_invite(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -137,10 +138,10 @@ async fn create_invite(
     // lookup, mailer send) are logged and swallowed — the invite row is
     // the source of truth, and the admin can revoke + re-invite if
     // delivery hiccups.
-    match org::get_by_id(&state.db, scope.org_id()).await {
+    match org::get_by_id(state.db(&ext), scope.org_id()).await {
         Ok(Some(org_row)) => {
             let inviter_name = match acl.identity_id {
-                Some(id) => resolve_inviter_display_name(&state, scope.org_id(), id).await,
+                Some(id) => resolve_inviter_display_name(&state, &ext, scope.org_id(), id).await,
                 None => None,
             };
             crate::services::invite_email::send(&state, &row, &org_row, inviter_name.as_deref())
@@ -174,15 +175,19 @@ async fn create_invite(
 /// identity, so the email body is a soft surface.
 async fn resolve_inviter_display_name(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     identity_id: Uuid,
 ) -> Option<String> {
-    let identity_row = identity::get_by_id(&state.db, org_id, identity_id)
+    let identity_row = identity::get_by_id(state.db(ext), org_id, identity_id)
         .await
         .ok()
         .flatten()?;
     let user_id = identity_row.user_id?;
-    let user_row = user::get_by_id(&state.db, user_id).await.ok().flatten()?;
+    let user_row = user::get_by_id(state.db(ext), user_id)
+        .await
+        .ok()
+        .flatten()?;
     user_row
         .display_name
         .filter(|s| !s.trim().is_empty())

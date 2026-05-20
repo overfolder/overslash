@@ -39,13 +39,14 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 /// pod just before it emits `elicitation/create` on its SSE stream.
 pub async fn open(
     state: &AppState,
+    ext: &axum::http::Extensions,
     elicit_id: &str,
     session_id: Uuid,
     agent_identity_id: Uuid,
     approval_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     repo::insert(
-        &state.db,
+        state.db(ext),
         elicit_id,
         session_id,
         agent_identity_id,
@@ -59,18 +60,23 @@ pub async fn open(
 /// On timeout we mark the row `cancelled` so a late-arriving receiver doesn't
 /// drive resolve+call against a stream nobody's listening on. Caller should
 /// emit a JSON-RPC error on its SSE stream.
-pub async fn await_completion(state: &AppState, elicit_id: &str) -> ElicitOutcome {
-    await_completion_with_timeout(state, elicit_id, DEFAULT_TIMEOUT).await
+pub async fn await_completion(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    elicit_id: &str,
+) -> ElicitOutcome {
+    await_completion_with_timeout(state, ext, elicit_id, DEFAULT_TIMEOUT).await
 }
 
 pub async fn await_completion_with_timeout(
     state: &AppState,
+    ext: &axum::http::Extensions,
     elicit_id: &str,
     timeout: Duration,
 ) -> ElicitOutcome {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        match repo::get(&state.db, elicit_id).await {
+        match repo::get(state.db(ext), elicit_id).await {
             Ok(Some(row)) => match row.status.as_str() {
                 repo::STATUS_COMPLETED => {
                     return ElicitOutcome::Completed(row.final_response.unwrap_or(json!({})));
@@ -93,7 +99,7 @@ pub async fn await_completion_with_timeout(
         }
 
         if tokio::time::Instant::now() >= deadline {
-            let _ = repo::cancel(&state.db, elicit_id).await;
+            let _ = repo::cancel(state.db(ext), elicit_id).await;
             return ElicitOutcome::Cancelled;
         }
         sleep(POLL_INTERVAL).await;
@@ -108,11 +114,12 @@ pub async fn await_completion_with_timeout(
 ///   { action: "accept"|"decline"|"cancel", content?: { decision, ttl, ... } }
 pub async fn complete_from_elicitation(
     state: &AppState,
+    ext: &axum::http::Extensions,
     elicit_id: &str,
     elicit_response: &Value,
 ) -> anyhow::Result<()> {
     // Atomically claim. If we don't claim, another replica is handling it.
-    let row = match repo::claim(&state.db, elicit_id).await? {
+    let row = match repo::claim(state.db(ext), elicit_id).await? {
         Some(r) => r,
         None => return Ok(()),
     };
@@ -168,7 +175,7 @@ pub async fn complete_from_elicitation(
         }
         other => {
             let err = json!({ "error": format!("unknown decision: {other}") });
-            repo::fail(&state.db, elicit_id, &err).await?;
+            repo::fail(state.db(ext), elicit_id, &err).await?;
             return Ok(());
         }
     };
@@ -177,13 +184,13 @@ pub async fn complete_from_elicitation(
     // the agent's replay call. Both are minted from the binding looked up
     // by `agent_identity_id`.
     let binding = overslash_db::repos::mcp_client_agent_binding::get_by_agent_identity(
-        &state.db,
+        state.db(ext),
         row.agent_identity_id,
     )
     .await?;
     let Some(binding) = binding else {
         let err = json!({ "error": "mcp binding gone" });
-        repo::fail(&state.db, elicit_id, &err).await?;
+        repo::fail(state.db(ext), elicit_id, &err).await?;
         return Ok(());
     };
 
@@ -195,7 +202,7 @@ pub async fn complete_from_elicitation(
     // resolve the FK before looking up the user row. Email comes off the
     // identity directly so we don't need a users.id at all for that.
     let user_identity = overslash_db::repos::identity::get_by_id(
-        &state.db,
+        state.db(ext),
         binding.org_id,
         binding.user_identity_id,
     )
@@ -247,7 +254,7 @@ pub async fn complete_from_elicitation(
         let status = resolve_resp.status();
         let body = resolve_resp.text().await.unwrap_or_default();
         let err = json!({ "error": format!("resolve {status}: {body}") });
-        repo::fail(&state.db, elicit_id, &err).await?;
+        repo::fail(state.db(ext), elicit_id, &err).await?;
         return Ok(());
     }
 
@@ -260,7 +267,7 @@ pub async fn complete_from_elicitation(
             "resolution": decision,
             "result": resolve_resp.json::<Value>().await.unwrap_or(Value::Null),
         });
-        repo::fail(&state.db, elicit_id, &final_resp).await?;
+        repo::fail(state.db(ext), elicit_id, &final_resp).await?;
         return Ok(());
     }
 
@@ -290,7 +297,7 @@ pub async fn complete_from_elicitation(
     crate::routes::mcp::strip_oauth_raw_for_chat_delivery(&mut call_body);
 
     if call_status.is_success() {
-        let updated = repo::complete(&state.db, elicit_id, &call_body).await?;
+        let updated = repo::complete(state.db(ext), elicit_id, &call_body).await?;
         if updated == 0 {
             // Row was already terminal (cancelled by originator timeout or
             // by an admin disconnect) when our /call returned. The action
@@ -304,7 +311,7 @@ pub async fn complete_from_elicitation(
         }
     } else {
         let err = json!({ "error": format!("call {call_status}"), "body": call_body });
-        repo::fail(&state.db, elicit_id, &err).await?;
+        repo::fail(state.db(ext), elicit_id, &err).await?;
     }
     Ok(())
 }

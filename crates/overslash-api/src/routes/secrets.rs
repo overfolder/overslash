@@ -12,7 +12,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, SessionAuth, WriteAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, SessionAuth, WriteAcl},
 };
 use overslash_core::crypto;
 
@@ -119,6 +119,7 @@ struct RevealResponse {
 
 async fn put_secret(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -164,7 +165,7 @@ async fn put_secret(
         .put_secret(&name, &encrypted, owner, owner, None)
         .await?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -332,6 +333,7 @@ async fn list_secrets(
 
 async fn reveal_version(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: SessionAuth,
     scope: OrgScope,
     ip: ClientIp,
@@ -359,7 +361,7 @@ async fn reveal_version(
     let value = String::from_utf8(plaintext)
         .map_err(|_| AppError::Internal("decrypted secret was not valid UTF-8".into()))?;
 
-    let _ = OrgScope::new(session.org_id, state.db.clone())
+    let _ = OrgScope::new(session.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: session.org_id,
             identity_id: Some(session.identity_id),
@@ -378,6 +380,7 @@ async fn reveal_version(
 
 async fn restore_version(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     session: SessionAuth,
     scope: OrgScope,
@@ -412,7 +415,7 @@ async fn restore_version(
         .put_secret(&name, &row.encrypted_value, auth.identity_id, None, None)
         .await?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -438,6 +441,7 @@ async fn restore_version(
 
 async fn delete_secret(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -447,7 +451,7 @@ async fn delete_secret(
     let deleted = scope.soft_delete_secret(&name).await?;
     overslash_metrics::secrets::record_op("delete", if deleted { "ok" } else { "not_found" });
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,

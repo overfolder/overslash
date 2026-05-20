@@ -9,7 +9,7 @@ use overslash_db::repos::audit::AuditEntry;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, OptionalOrgAcl, OrgAcl},
+    extractors::{ClientIp, OptionalOrgAcl, OrgAcl, ReqExt},
 };
 use overslash_core::permissions::AccessLevel;
 
@@ -88,11 +88,12 @@ struct CreateApiKeyResponse {
 /// thing as a naked "org-level" key.
 async fn create_api_key(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     OptionalOrgAcl(acl): OptionalOrgAcl,
     ip: ClientIp,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
-    let create_scope = OrgScope::new(req.org_id, state.db.clone());
+    let create_scope = OrgScope::new(req.org_id, state.db_pool(&ext));
 
     // The "impersonate" scope is admin-only; reject early so the error is
     // clear regardless of which path (authenticated vs. bootstrap) we take.
@@ -138,14 +139,14 @@ async fn create_api_key(
             // via the existing org bootstrap helper.
             let admin_user = create_scope.create_identity("admin", "user", None).await?;
             overslash_db::repos::identity::set_is_org_admin(
-                &state.db,
+                state.db(&ext),
                 req.org_id,
                 admin_user.id,
                 true,
             )
             .await?;
             overslash_db::repos::org_bootstrap::bootstrap_org(
-                &state.db,
+                state.db(&ext),
                 req.org_id,
                 Some(admin_user.id),
             )

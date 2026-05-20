@@ -31,7 +31,7 @@ use overslash_db::repos::{enabled_global_template, org as org_repo};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, WriteAcl},
+    extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, WriteAcl},
 };
 
 /// Run `parse_normalize_compile_yaml` and then validate that every
@@ -251,14 +251,18 @@ struct EnableGlobalRequest {
 /// Returns the set of visible global template keys for this org.
 /// When `global_templates_enabled` is true, returns `None` (all visible).
 /// When false, returns `Some(HashSet)` of explicitly enabled keys.
-async fn visible_global_filter(state: &AppState, org_id: Uuid) -> Result<Option<HashSet<String>>> {
-    let enabled = org_repo::get_global_templates_enabled(&state.db, org_id)
+async fn visible_global_filter(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+) -> Result<Option<HashSet<String>>> {
+    let enabled = org_repo::get_global_templates_enabled(state.db(ext), org_id)
         .await?
         .unwrap_or(true);
     if enabled {
         return Ok(None);
     }
-    let keys = enabled_global_template::list_enabled_keys(&state.db, org_id).await?;
+    let keys = enabled_global_template::list_enabled_keys(state.db(ext), org_id).await?;
     Ok(Some(keys.into_iter().collect()))
 }
 
@@ -387,11 +391,12 @@ fn compile_row(t: &service_template::ServiceTemplateRow) -> Result<ServiceDefini
 /// List all templates visible to the caller: global (filtered) + org + user tiers merged.
 async fn list_templates(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
 ) -> Result<Json<Vec<TemplateSummary>>> {
     let mut templates = Vec::new();
 
-    let global_filter = visible_global_filter(&state, auth.org_id).await?;
+    let global_filter = visible_global_filter(&state, &ext, auth.org_id).await?;
 
     // Global tier (in-memory registry, filtered by org setting)
     for svc in state.registry.all() {
@@ -410,11 +415,11 @@ async fn list_templates(
     }
 
     // Org + user tiers (DB)
-    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+    let user_templates_allowed = org_repo::get_allow_user_templates(state.db(&ext), auth.org_id)
         .await?
         .unwrap_or(false);
     let db_templates =
-        service_template::list_available(&state.db, auth.org_id, auth.identity_id).await?;
+        service_template::list_available(state.db(&ext), auth.org_id, auth.identity_id).await?;
     for t in db_templates {
         let is_user_tier = t.owner_identity_id.is_some();
         if is_user_tier && !user_templates_allowed {
@@ -441,13 +446,14 @@ async fn list_templates(
 /// Search templates across all tiers by query string.
 async fn search_templates(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<Vec<TemplateSummary>>> {
     let q = params.q.to_lowercase();
     let mut results = Vec::new();
 
-    let global_filter = visible_global_filter(&state, auth.org_id).await?;
+    let global_filter = visible_global_filter(&state, &ext, auth.org_id).await?;
 
     // Search global tier
     for svc in state.registry.search(&params.q) {
@@ -466,11 +472,11 @@ async fn search_templates(
     }
 
     // Search DB templates (simple substring match on key/display_name)
-    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+    let user_templates_allowed = org_repo::get_allow_user_templates(state.db(&ext), auth.org_id)
         .await?
         .unwrap_or(false);
     let db_templates =
-        service_template::list_available(&state.db, auth.org_id, auth.identity_id).await?;
+        service_template::list_available(state.db(&ext), auth.org_id, auth.identity_id).await?;
     for t in db_templates {
         let is_user_tier = t.owner_identity_id.is_some();
         if is_user_tier && !user_templates_allowed {
@@ -503,17 +509,19 @@ async fn search_templates(
 /// user (if identity) → org → global (filtered).
 async fn get_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(key): Path<String>,
 ) -> Result<Json<TemplateDetail>> {
     // Try user tier first (only if user templates are enabled)
     if let Some(identity_id) = auth.identity_id {
-        let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
-            .await?
-            .unwrap_or(false);
+        let user_templates_allowed =
+            org_repo::get_allow_user_templates(state.db(&ext), auth.org_id)
+                .await?
+                .unwrap_or(false);
         if user_templates_allowed {
             if let Some(t) =
-                service_template::get_by_key(&state.db, auth.org_id, Some(identity_id), &key)
+                service_template::get_by_key(state.db(&ext), auth.org_id, Some(identity_id), &key)
                     .await?
             {
                 return Ok(Json(db_row_to_detail(t, "user")?));
@@ -522,12 +530,12 @@ async fn get_template(
     }
 
     // Try org tier
-    if let Some(t) = service_template::get_by_key(&state.db, auth.org_id, None, &key).await? {
+    if let Some(t) = service_template::get_by_key(state.db(&ext), auth.org_id, None, &key).await? {
         return Ok(Json(db_row_to_detail(t, "org")?));
     }
 
     // Try global tier (respect visibility filter)
-    let global_filter = visible_global_filter(&state, auth.org_id).await?;
+    let global_filter = visible_global_filter(&state, &ext, auth.org_id).await?;
     if !is_global_visible(&global_filter, &key) {
         return Err(AppError::NotFound(format!("template '{key}' not found")));
     }
@@ -583,24 +591,25 @@ fn load_global_yaml(key: &str) -> Option<String> {
 /// disabled org-wide).
 async fn ensure_template_visible(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     key: &str,
 ) -> Result<Option<Uuid>> {
-    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+    let user_templates_allowed = org_repo::get_allow_user_templates(state.db(ext), auth.org_id)
         .await?
         .unwrap_or(false);
     let in_user_tier = user_templates_allowed
         && auth.identity_id.is_some()
-        && service_template::get_by_key(&state.db, auth.org_id, auth.identity_id, key)
+        && service_template::get_by_key(state.db(ext), auth.org_id, auth.identity_id, key)
             .await?
             .is_some();
     let in_org_tier = !in_user_tier
-        && service_template::get_by_key(&state.db, auth.org_id, None, key)
+        && service_template::get_by_key(state.db(ext), auth.org_id, None, key)
             .await?
             .is_some();
 
     if !in_user_tier && !in_org_tier {
-        let global_filter = visible_global_filter(state, auth.org_id).await?;
+        let global_filter = visible_global_filter(state, ext, auth.org_id).await?;
         if !is_global_visible(&global_filter, key) {
             return Err(AppError::NotFound(format!("template '{key}' not found")));
         }
@@ -616,10 +625,11 @@ async fn ensure_template_visible(
 /// List actions for a template.
 async fn list_template_actions(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path(key): Path<String>,
 ) -> Result<Json<Vec<ActionSummary>>> {
-    let effective_identity = ensure_template_visible(&state, &auth, &key).await?;
+    let effective_identity = ensure_template_visible(&state, &ext, &auth, &key).await?;
     let effective_auth = AuthContext {
         org_id: auth.org_id,
         identity_id: effective_identity,
@@ -628,7 +638,7 @@ async fn list_template_actions(
         impersonated_by: auth.impersonated_by,
         mcp_client_id: auth.mcp_client_id.clone(),
     };
-    let actions = resolve_template_actions(&state, &effective_auth, &key).await?;
+    let actions = resolve_template_actions(&state, &ext, &effective_auth, &key).await?;
     Ok(Json(actions))
 }
 
@@ -636,11 +646,13 @@ async fn list_template_actions(
 /// template. Used by the API Explorer to auto-generate parameter forms.
 async fn get_template_action(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     Path((key, action_key)): Path<(String, String)>,
 ) -> Result<Json<ActionDetail>> {
-    let effective_identity = ensure_template_visible(&state, &auth, &key).await?;
-    let def = resolve_template_definition(&state, auth.org_id, effective_identity, &key).await?;
+    let effective_identity = ensure_template_visible(&state, &ext, &auth, &key).await?;
+    let def =
+        resolve_template_definition(&state, &ext, auth.org_id, effective_identity, &key).await?;
     let action = def.actions.get(&action_key).ok_or_else(|| {
         AppError::NotFound(format!(
             "action '{action_key}' not found in template '{key}'"
@@ -692,6 +704,7 @@ async fn validate_template(auth: AuthContext, body: String) -> Result<Json<Valid
 /// Create a new org or user template.
 async fn create_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Json(req): Json<CreateTemplateRequest>,
@@ -701,7 +714,7 @@ async fn create_template(
         let identity_id = acl.identity_id.ok_or_else(|| {
             AppError::BadRequest("user-level templates require an identity-bound API key".into())
         })?;
-        let allowed = org_repo::get_allow_user_templates(&state.db, acl.org_id)
+        let allowed = org_repo::get_allow_user_templates(state.db(&ext), acl.org_id)
             .await?
             .unwrap_or(false);
         if !allowed {
@@ -749,7 +762,7 @@ async fn create_template(
         status: "active",
     };
 
-    let row = service_template::create(&state.db, &input)
+    let row = service_template::create(state.db(&ext), &input)
         .await
         .map_err(|e| {
             if let sqlx::Error::Database(ref db_err) = e {
@@ -769,7 +782,7 @@ async fn create_template(
         "org"
     };
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -787,7 +800,7 @@ async fn create_template(
         .await;
 
     crate::services::embedding_backfill::refresh_template(
-        &state.db,
+        state.db(&ext),
         state.embedder.as_ref(),
         tier,
         Some(acl.org_id),
@@ -802,6 +815,7 @@ async fn create_template(
 /// Update a DB-stored template by id.
 async fn update_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -811,7 +825,7 @@ async fn update_template(
     // `/v1/templates/drafts/*` surface — routing them through this endpoint
     // would bypass the draft-specific audit trail and allow active-template
     // callers to mutate work-in-progress rows they cannot otherwise see.
-    let existing = service_template::get_by_id(&state.db, id)
+    let existing = service_template::get_by_id(state.db(&ext), id)
         .await?
         .filter(|r| r.org_id == acl.org_id && r.status == "active")
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
@@ -859,7 +873,7 @@ async fn update_template(
         key: None,
     };
 
-    let row = service_template::update(&state.db, id, &input)
+    let row = service_template::update(state.db(&ext), id, &input)
         .await?
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
 
@@ -869,7 +883,7 @@ async fn update_template(
         "org"
     };
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -886,7 +900,7 @@ async fn update_template(
         .await;
 
     crate::services::embedding_backfill::refresh_template(
-        &state.db,
+        state.db(&ext),
         state.embedder.as_ref(),
         tier,
         Some(acl.org_id),
@@ -907,6 +921,7 @@ async fn update_template(
 /// blocking legitimate draft cleanup.
 async fn delete_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -914,7 +929,7 @@ async fn delete_template(
     // Multi-tenancy guard + status filter. Status filter pushes draft rows
     // to the dedicated endpoint so a caller who knows a draft's UUID can't
     // destroy it through here (and bypass the draft-audit action label).
-    let existing = service_template::get_by_id(&state.db, id)
+    let existing = service_template::get_by_id(state.db(&ext), id)
         .await?
         .filter(|r| r.org_id == acl.org_id && r.status == "active")
         .ok_or_else(|| AppError::NotFound("template not found".into()))?;
@@ -923,10 +938,10 @@ async fn delete_template(
     // Ownership check + delete live in `platform_templates` so the MCP
     // `delete_template` kernel and this HTTP handler stay in sync.
     let (key, tier, _) =
-        delete_active_template_inner(&state.db, existing, acl.identity_id, acl.access_level)
+        delete_active_template_inner(state.db(&ext), existing, acl.identity_id, acl.access_level)
             .await?;
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -943,7 +958,7 @@ async fn delete_template(
         .await;
 
     crate::services::embedding_backfill::delete_template_embeddings(
-        &state.db,
+        state.db(&ext),
         tier,
         Some(acl.org_id),
         owner_identity_id,
@@ -960,18 +975,19 @@ async fn delete_template(
 /// Global templates include an `enabled` flag reflecting the org's setting.
 async fn list_templates_admin(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
 ) -> Result<Json<Vec<AdminTemplateSummary>>> {
     let mut templates = Vec::new();
 
-    let globals_on = org_repo::get_global_templates_enabled(&state.db, acl.org_id)
+    let globals_on = org_repo::get_global_templates_enabled(state.db(&ext), acl.org_id)
         .await?
         .unwrap_or(true);
 
     let enabled_keys: HashSet<String> = if globals_on {
         HashSet::new() // not needed when all are on
     } else {
-        enabled_global_template::list_enabled_keys(&state.db, acl.org_id)
+        enabled_global_template::list_enabled_keys(state.db(&ext), acl.org_id)
             .await?
             .into_iter()
             .collect()
@@ -995,7 +1011,7 @@ async fn list_templates_admin(
     }
 
     // ALL DB templates (org + all users')
-    let db_templates = service_template::list_all_by_org(&state.db, acl.org_id).await?;
+    let db_templates = service_template::list_all_by_org(state.db(&ext), acl.org_id).await?;
     for t in db_templates {
         let action_count = openapi::compile_service(&t.openapi)
             .map(|(def, _)| def.actions.len())
@@ -1025,9 +1041,10 @@ async fn list_templates_admin(
 /// List which global templates are explicitly enabled for this org.
 async fn list_enabled_globals(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
 ) -> Result<Json<Vec<String>>> {
-    let keys = enabled_global_template::list_enabled_keys(&state.db, acl.org_id).await?;
+    let keys = enabled_global_template::list_enabled_keys(state.db(&ext), acl.org_id).await?;
     Ok(Json(keys))
 }
 
@@ -1035,6 +1052,7 @@ async fn list_enabled_globals(
 /// `global_templates_enabled` is off).
 async fn enable_global_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Json(req): Json<EnableGlobalRequest>,
@@ -1047,10 +1065,15 @@ async fn enable_global_template(
         )));
     }
 
-    enabled_global_template::enable(&state.db, acl.org_id, &req.template_key, acl.identity_id)
-        .await?;
+    enabled_global_template::enable(
+        state.db(&ext),
+        acl.org_id,
+        &req.template_key,
+        acl.identity_id,
+    )
+    .await?;
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -1071,18 +1094,19 @@ async fn enable_global_template(
 /// Disable a previously-enabled global template for this org.
 async fn disable_global_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     ip: ClientIp,
     Path(key): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    let removed = enabled_global_template::disable(&state.db, acl.org_id, &key).await?;
+    let removed = enabled_global_template::disable(state.db(&ext), acl.org_id, &key).await?;
     if !removed {
         return Err(AppError::NotFound(
             "template was not in the enabled list".into(),
         ));
     }
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -1199,6 +1223,7 @@ struct DraftTemplateDetail {
 /// resolves the source (URL fetch or inline body) and writes the audit row.
 async fn import_template(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Json(req): Json<ImportTemplateRequest>,
@@ -1234,7 +1259,7 @@ async fn import_template(
         // of a 500 from a nil-uuid FK violation.
         identity_id: acl.identity_id,
         access_level: acl.access_level,
-        db: state.db.clone(),
+        db: state.db_pool(&ext),
         registry: std::sync::Arc::clone(&state.registry),
         config: state.config.clone(),
         http_client: state.http_client.clone(),
@@ -1250,7 +1275,7 @@ async fn import_template(
     )
     .await?;
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -1274,6 +1299,7 @@ async fn import_template(
 /// GET /v1/templates/drafts
 async fn list_drafts(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
 ) -> Result<Json<Vec<DraftTemplateDetail>>> {
     // Admins see every draft in the org (both org-level and all users').
@@ -1282,9 +1308,9 @@ async fn list_drafts(
     // non-admin would invite a 403 on click-through. Matches the SPEC's
     // "org drafts for admins, user drafts for their owner".
     let rows = if acl.access_level >= AccessLevel::Admin {
-        service_template::list_all_drafts_in_org(&state.db, acl.org_id).await?
+        service_template::list_all_drafts_in_org(state.db(&ext), acl.org_id).await?
     } else if let Some(identity_id) = acl.identity_id {
-        service_template::list_user_drafts(&state.db, acl.org_id, identity_id).await?
+        service_template::list_user_drafts(state.db(&ext), acl.org_id, identity_id).await?
     } else {
         Vec::new()
     };
@@ -1298,10 +1324,11 @@ async fn list_drafts(
 /// GET /v1/templates/drafts/{id}
 async fn get_draft(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     Path(id): Path<Uuid>,
 ) -> Result<Json<DraftTemplateDetail>> {
-    let row = service_template::get_by_id(&state.db, id)
+    let row = service_template::get_by_id(state.db(&ext), id)
         .await?
         .filter(|r| r.org_id == acl.org_id && r.status == "draft")
         .ok_or_else(|| AppError::NotFound("draft not found".into()))?;
@@ -1330,12 +1357,13 @@ async fn get_draft(
 /// if the new source has errors.
 async fn update_draft(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateDraftRequest>,
 ) -> Result<Json<DraftTemplateDetail>> {
-    let existing = load_draft_for_write(&state, &acl, id).await?;
+    let existing = load_draft_for_write(&state, &ext, &acl, id).await?;
 
     if req.openapi.len() > MAX_TEMPLATE_YAML_BYTES {
         return Err(AppError::BadRequest(format!(
@@ -1373,13 +1401,13 @@ async fn update_draft(
         key: Some(&scalars.key),
     };
 
-    let row = service_template::update(&state.db, existing.id, &update)
+    let row = service_template::update(state.db(&ext), existing.id, &update)
         .await?
         .ok_or_else(|| AppError::NotFound("draft not found".into()))?;
 
     let tier = tier_of(&row);
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -1414,11 +1442,12 @@ async fn update_draft(
 /// `TemplateValidationFailed` with the full report.
 async fn promote_draft(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<TemplateDetail>> {
-    let existing = load_draft_for_write(&state, &acl, id).await?;
+    let existing = load_draft_for_write(&state, &ext, &acl, id).await?;
 
     // Re-serialize the stored doc to YAML and hand it to the strict validator,
     // so promotion uses the exact same code path as `POST /v1/templates`.
@@ -1445,9 +1474,14 @@ async fn promote_draft(
             def.key
         )));
     }
-    if service_template::get_by_key(&state.db, acl.org_id, existing.owner_identity_id, &def.key)
-        .await?
-        .is_some()
+    if service_template::get_by_key(
+        state.db(&ext),
+        acl.org_id,
+        existing.owner_identity_id,
+        &def.key,
+    )
+    .await?
+    .is_some()
     {
         return Err(AppError::Conflict(format!(
             "template key '{}' is already in use (delete the existing active template first)",
@@ -1455,13 +1489,13 @@ async fn promote_draft(
         )));
     }
 
-    let promoted = service_template::promote_draft(&state.db, existing.id)
+    let promoted = service_template::promote_draft(state.db(&ext), existing.id)
         .await?
         .ok_or_else(|| AppError::NotFound("draft not found".into()))?;
 
     let tier = tier_of(&promoted);
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -1478,7 +1512,7 @@ async fn promote_draft(
         .await;
 
     crate::services::embedding_backfill::refresh_template(
-        &state.db,
+        state.db(&ext),
         state.embedder.as_ref(),
         if tier == "user" { "user" } else { "org" },
         Some(acl.org_id),
@@ -1493,11 +1527,12 @@ async fn promote_draft(
 /// DELETE /v1/templates/drafts/{id}
 async fn discard_draft(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let existing = load_draft_for_write(&state, &acl, id).await?;
+    let existing = load_draft_for_write(&state, &ext, &acl, id).await?;
     let key = existing.key.clone();
 
     // `delete_draft` has `AND status = 'draft'` baked into the SQL. If a
@@ -1505,14 +1540,14 @@ async fn discard_draft(
     // load check and this call, the delete matches zero rows and we return
     // 409 rather than destroying an active template. Closes the TOCTOU
     // window on the draft-discard surface.
-    let deleted = service_template::delete_draft(&state.db, existing.id).await?;
+    let deleted = service_template::delete_draft(state.db(&ext), existing.id).await?;
     if !deleted {
         return Err(AppError::Conflict(
             "draft was promoted concurrently; nothing to discard".into(),
         ));
     }
 
-    let _ = overslash_db::OrgScope::new(acl.org_id, state.db.clone())
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,
@@ -1534,10 +1569,18 @@ async fn discard_draft(
 /// Thin wrapper around [`load_draft_for_write_inner`].
 async fn load_draft_for_write(
     state: &AppState,
+    ext: &axum::http::Extensions,
     acl: &crate::extractors::OrgAcl,
     id: Uuid,
 ) -> Result<service_template::ServiceTemplateRow> {
-    load_draft_for_write_inner(&state.db, acl.org_id, acl.identity_id, acl.access_level, id).await
+    load_draft_for_write_inner(
+        state.db(ext),
+        acl.org_id,
+        acl.identity_id,
+        acl.access_level,
+        id,
+    )
+    .await
 }
 
 fn row_to_draft_detail(row: service_template::ServiceTemplateRow) -> DraftTemplateDetail {
@@ -1746,13 +1789,14 @@ where
 /// Resolve template actions across tiers (helper reused by both templates and services routes).
 pub(crate) async fn resolve_template_actions(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     key: &str,
 ) -> Result<Vec<ActionSummary>> {
     // Try user tier
     if let Some(identity_id) = auth.identity_id {
         if let Some(t) =
-            service_template::get_by_key(&state.db, auth.org_id, Some(identity_id), key).await?
+            service_template::get_by_key(state.db(ext), auth.org_id, Some(identity_id), key).await?
         {
             let def = compile_row(&t)?;
             return Ok(actions_from_definition(&def));
@@ -1760,7 +1804,7 @@ pub(crate) async fn resolve_template_actions(
     }
 
     // Try org tier
-    if let Some(t) = service_template::get_by_key(&state.db, auth.org_id, None, key).await? {
+    if let Some(t) = service_template::get_by_key(state.db(ext), auth.org_id, None, key).await? {
         let def = compile_row(&t)?;
         return Ok(actions_from_definition(&def));
     }
@@ -1780,6 +1824,7 @@ pub(crate) async fn resolve_template_actions(
 /// remain resolvable so existing service instances keep working.
 pub(crate) async fn resolve_template_definition(
     state: &AppState,
+    ext: &axum::http::Extensions,
     org_id: Uuid,
     identity_id: Option<Uuid>,
     key: &str,
@@ -1787,14 +1832,14 @@ pub(crate) async fn resolve_template_definition(
     // Try user tier
     if let Some(identity_id) = identity_id {
         if let Some(t) =
-            service_template::get_by_key(&state.db, org_id, Some(identity_id), key).await?
+            service_template::get_by_key(state.db(ext), org_id, Some(identity_id), key).await?
         {
             return compile_row(&t);
         }
     }
 
     // Try org tier
-    if let Some(t) = service_template::get_by_key(&state.db, org_id, None, key).await? {
+    if let Some(t) = service_template::get_by_key(state.db(ext), org_id, None, key).await? {
         return compile_row(&t);
     }
 
@@ -1825,6 +1870,7 @@ struct McpResyncResponse {
 /// owner; an org-tier template requires admin.
 async fn resync_mcp_tools(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     ip: ClientIp,
     Path(key): Path<String>,
@@ -1837,11 +1883,12 @@ async fn resync_mcp_tools(
     // org tier. Globals cannot be resynced; they ship their tool list in-repo.
     let row = if let Some(identity_id) = acl.identity_id {
         if let Some(r) =
-            service_template::get_by_key(&state.db, acl.org_id, Some(identity_id), &key).await?
+            service_template::get_by_key(state.db(&ext), acl.org_id, Some(identity_id), &key)
+                .await?
         {
             r
         } else if let Some(r) =
-            service_template::get_by_key(&state.db, acl.org_id, None, &key).await?
+            service_template::get_by_key(state.db(&ext), acl.org_id, None, &key).await?
         {
             if acl.access_level < AccessLevel::Admin {
                 return Err(AppError::Forbidden(
@@ -1852,7 +1899,9 @@ async fn resync_mcp_tools(
         } else {
             return Err(AppError::NotFound(format!("template '{key}' not found")));
         }
-    } else if let Some(r) = service_template::get_by_key(&state.db, acl.org_id, None, &key).await? {
+    } else if let Some(r) =
+        service_template::get_by_key(state.db(&ext), acl.org_id, None, &key).await?
+    {
         if acl.access_level < AccessLevel::Admin {
             return Err(AppError::Forbidden(
                 "admin access required for org-level templates".into(),
@@ -1895,7 +1944,7 @@ async fn resync_mcp_tools(
     }
 
     // Resolve auth and call tools/list against the upstream.
-    let scope = OrgScope::new(acl.org_id, state.db.clone());
+    let scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
     let headers = match &mcp.auth {
         McpAuth::None => reqwest::header::HeaderMap::new(),
         McpAuth::Bearer { .. } => {
@@ -1957,7 +2006,7 @@ async fn resync_mcp_tools(
     );
 
     service_template::update(
-        &state.db,
+        state.db(&ext),
         row.id,
         &UpdateServiceTemplate {
             display_name: None,
@@ -1970,7 +2019,7 @@ async fn resync_mcp_tools(
     )
     .await?;
 
-    let _ = OrgScope::new(acl.org_id, state.db.clone())
+    let _ = OrgScope::new(acl.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: acl.org_id,
             identity_id: acl.identity_id,

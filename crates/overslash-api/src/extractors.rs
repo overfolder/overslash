@@ -6,6 +6,34 @@ use uuid::Uuid;
 
 use crate::{AppState, error::AppError, services::jwt};
 
+/// Hands handlers the request's `Extensions` map so they can pass it to
+/// the per-request accessor methods on [`AppState`] (`state.db(&ext)`,
+/// `state.rate_limit_cache(&ext)`, etc.). The accessors dispatch to a
+/// per-test `TestResources` bundle under the shared-router test harness
+/// and fall through to the static AppState fields in production.
+///
+/// Pull this into any handler that touches a DB pool or one of the
+/// per-request caches/stores directly. Handlers that reach those
+/// resources only through `OrgScope` / `UserScope` / `AuthContext`
+/// don't need it — those extractors already pick the right pool inside
+/// their own `from_request_parts`.
+///
+/// Cloning `Extensions` is shallow; the map carries a handful of
+/// `Arc`-shaped markers (`TestPoolId`, `ConnectInfo`,
+/// `RequestOrgContext`), each O(1) to clone.
+pub struct ReqExt(pub axum::http::Extensions);
+
+impl<S: Send + Sync> FromRequestParts<S> for ReqExt {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        Ok(ReqExt(parts.extensions.clone()))
+    }
+}
+
 /// Extracts the client IP address from request headers or connection info.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
@@ -139,10 +167,13 @@ impl FromRequestParts<AppState> for AuthContext {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, raw_key, jwt::AUD_MCP) {
-                let identity =
-                    overslash_db::repos::identity::get_by_id(&state.db, claims.org, claims.sub)
-                        .await
-                        .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+                let identity = overslash_db::repos::identity::get_by_id(
+                    state.db(&parts.extensions),
+                    claims.org,
+                    claims.sub,
+                )
+                .await
+                .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
                 let identity = identity.ok_or_else(|| {
                     AppError::Unauthorized("token identity no longer exists".into())
                 })?;
@@ -181,7 +212,7 @@ impl FromRequestParts<AppState> for AuthContext {
         // is no org context — the API key row is what tells us which org the
         // caller belongs to. The lookup runs through `SystemScope`, which is
         // the documented home for the bootstrap path.
-        let key_row = SystemScope::new_internal(state.db.clone())
+        let key_row = SystemScope::new_internal(state.db_pool(&parts.extensions))
             .find_api_key_by_prefix_including_archived(prefix)
             .await
             .map_err(|e| AppError::Internal(format!("db error: {e}")))?
@@ -208,19 +239,21 @@ impl FromRequestParts<AppState> for AuthContext {
         let mut identity_archive_error: Option<AppError> = None;
         let identity_id = key_row.identity_id;
         {
-            let key_scope = OrgScope::new(key_row.org_id, state.db.clone());
+            let key_scope = OrgScope::new(key_row.org_id, state.db_pool(&parts.extensions));
             let identity = key_scope
                 .get_identity(identity_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
             if let Some(ident) = identity {
                 if let Some(archived_at) = ident.archived_at {
-                    let retention_days =
-                        overslash_db::repos::org::get_by_id(&state.db, ident.org_id)
-                            .await
-                            .map_err(|e| AppError::Internal(format!("db error: {e}")))?
-                            .map(|o| o.subagent_archive_retention_days)
-                            .unwrap_or(0);
+                    let retention_days = overslash_db::repos::org::get_by_id(
+                        state.db(&parts.extensions),
+                        ident.org_id,
+                    )
+                    .await
+                    .map_err(|e| AppError::Internal(format!("db error: {e}")))?
+                    .map(|o| o.subagent_archive_retention_days)
+                    .unwrap_or(0);
                     let restorable_until =
                         archived_at + time::Duration::days(retention_days as i64);
                     identity_archive_error = Some(AppError::IdentityArchived {
@@ -230,7 +263,8 @@ impl FromRequestParts<AppState> for AuthContext {
                     });
                 } else if ident.kind == "sub_agent" {
                     // Sub-agents only: keep idle-cleanup tracking current.
-                    let touch_scope = OrgScope::new(key_row.org_id, state.db.clone());
+                    let touch_scope =
+                        OrgScope::new(key_row.org_id, state.db_pool(&parts.extensions));
                     tokio::spawn(async move {
                         let _ = touch_scope.touch_identity_last_active(identity_id).await;
                     });
@@ -261,7 +295,7 @@ impl FromRequestParts<AppState> for AuthContext {
 
         // Touch api_key last_used (fire and forget). Bounded to the key's
         // own org via OrgScope.
-        let touch_scope = OrgScope::new(key_row.org_id, state.db.clone());
+        let touch_scope = OrgScope::new(key_row.org_id, state.db_pool(&parts.extensions));
         let key_id = key_row.id;
         tokio::spawn(async move {
             let _ = touch_scope.touch_api_key_last_used(key_id).await;
@@ -281,7 +315,7 @@ impl FromRequestParts<AppState> for AuthContext {
                             AppError::BadRequest("x-overslash-as must be a valid UUID".into())
                         })?;
 
-                let tmp_scope = OrgScope::new(key_row.org_id, state.db.clone());
+                let tmp_scope = OrgScope::new(key_row.org_id, state.db_pool(&parts.extensions));
                 let target = tmp_scope
                     .get_identity(target_id)
                     .await
@@ -479,7 +513,7 @@ impl FromRequestParts<AppState> for OrgAcl {
         // Fast-path: Users with the org-admin flag get Admin without needing
         // group lookup. Agents and non-admin users still go through the
         // overslash service group-grant path below.
-        let scope_for_admin = OrgScope::new(auth.org_id, state.db.clone());
+        let scope_for_admin = OrgScope::new(auth.org_id, state.db_pool(&parts.extensions));
         if let Some(ident) = scope_for_admin.get_identity(identity_id).await? {
             if ident.is_org_admin {
                 return Ok(OrgAcl {
@@ -493,7 +527,7 @@ impl FromRequestParts<AppState> for OrgAcl {
         // Construct an OrgScope inline (extractors are the official scope
         // construction site, per `scopes/mod.rs`) so the identity lookup
         // and the ceiling SQL are both bounded by the caller's org.
-        let scope = OrgScope::new(auth.org_id, state.db.clone());
+        let scope = OrgScope::new(auth.org_id, state.db_pool(&parts.extensions));
 
         // Resolve the ceiling user (agents use their owner's groups)
         let ceiling_user_id =
@@ -582,9 +616,10 @@ impl FromRequestParts<AppState> for InstanceAdminAuth {
         let user_id = session
             .user_id
             .ok_or_else(|| AppError::Unauthorized("multi-org session required".into()))?;
-        let is_admin = overslash_db::repos::user::is_instance_admin(&state.db, user_id)
-            .await
-            .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
+        let is_admin =
+            overslash_db::repos::user::is_instance_admin(state.db(&parts.extensions), user_id)
+                .await
+                .map_err(|e| AppError::Internal(format!("db error: {e}")))?;
         if !is_admin {
             return Err(AppError::Forbidden("instance_admin_required".into()));
         }
@@ -646,7 +681,11 @@ impl FromRequestParts<AppState> for UserScope {
         let identity_id = auth.identity_id.ok_or_else(|| {
             AppError::BadRequest("this endpoint requires an identity-bound credential".into())
         })?;
-        Ok(UserScope::new(auth.org_id, identity_id, state.db.clone()))
+        Ok(UserScope::new(
+            auth.org_id,
+            identity_id,
+            state.db_pool(&parts.extensions),
+        ))
     }
 }
 
@@ -665,10 +704,10 @@ impl FromRequestParts<AppState> for OrgScope {
         match auth.impersonated_by {
             Some(caller_id) => Ok(OrgScope::new_impersonated(
                 auth.org_id,
-                state.db.clone(),
+                state.db_pool(&parts.extensions),
                 caller_id,
             )),
-            None => Ok(OrgScope::new(auth.org_id, state.db.clone())),
+            None => Ok(OrgScope::new(auth.org_id, state.db_pool(&parts.extensions))),
         }
     }
 }

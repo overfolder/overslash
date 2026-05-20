@@ -14,7 +14,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, WriteAcl},
+    extractors::{ClientIp, ReqExt, WriteAcl},
 };
 use overslash_core::crypto;
 use overslash_db::OrgScope;
@@ -48,6 +48,7 @@ struct ByocCredentialResponse {
 
 async fn create_byoc(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -64,7 +65,7 @@ async fn create_byoc(
     }
 
     // Validate provider exists
-    overslash_db::repos::oauth_provider::get_by_key(&state.db, &req.provider)
+    overslash_db::repos::oauth_provider::get_by_key(state.db(&ext), &req.provider)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", req.provider)))?;
 

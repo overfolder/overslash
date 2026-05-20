@@ -1,7 +1,10 @@
 //! Shared test helpers for integration tests.
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 // Test setup requires dynamic SQL for updating provider endpoints, creating template DBs, etc.
 #![allow(clippy::disallowed_methods)]
+
+pub mod shared_router;
+pub use shared_router::{ResourceGuard, start_api_shared};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -668,6 +671,7 @@ where
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer,
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -810,6 +814,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -942,6 +947,7 @@ pub async fn start_api_with_auth_providers(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1405,6 +1411,7 @@ pub async fn start_api_with_registry(
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1539,6 +1546,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()
@@ -1645,6 +1653,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
             overslash_api::services::platform_registry::build_registry(),
         ),
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
+        test_resources: None,
     };
 
     let app = axum::Router::new()

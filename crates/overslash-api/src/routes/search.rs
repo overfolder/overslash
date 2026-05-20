@@ -29,7 +29,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::AuthContext,
+    extractors::{AuthContext, ReqExt},
     services::group_ceiling,
 };
 
@@ -155,6 +155,7 @@ struct InstanceRow {
 
 async fn search(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     Query(params): Query<SearchQuery>,
@@ -162,7 +163,7 @@ async fn search(
     let q = params.q.trim();
 
     let (templates, mut instances_by_template) =
-        collect_visible_templates(&state, &auth, &scope).await?;
+        collect_visible_templates(&state, &ext, &auth, &scope).await?;
 
     // Parse `exclude` once. Entries match against either template key or
     // instance name (callers don't always know which level they want, and
@@ -295,7 +296,7 @@ async fn search(
         match state.embedder.embed(&[q]) {
             Ok(vecs) if !vecs.is_empty() => {
                 match service_action_embedding::top_k_cosine(
-                    &state.db,
+                    state.db(&ext),
                     vecs[0].clone(),
                     auth.org_id,
                     auth.identity_id,
@@ -431,11 +432,12 @@ async fn search(
 /// machinery as `routes/services.rs::list_services`.
 async fn collect_visible_templates(
     state: &AppState,
+    ext: &axum::http::Extensions,
     auth: &AuthContext,
     scope: &OrgScope,
 ) -> Result<(Vec<TemplateCandidate>, HashMap<String, Vec<InstanceRow>>)> {
-    let global_filter = visible_global_filter(state, auth.org_id).await?;
-    let user_templates_allowed = org_repo::get_allow_user_templates(&state.db, auth.org_id)
+    let global_filter = visible_global_filter(state, ext, auth.org_id).await?;
+    let user_templates_allowed = org_repo::get_allow_user_templates(state.db(ext), auth.org_id)
         .await?
         .unwrap_or(false);
 
@@ -463,7 +465,7 @@ async fn collect_visible_templates(
         });
     }
 
-    for t in service_template::list_available(&state.db, auth.org_id, auth.identity_id).await? {
+    for t in service_template::list_available(state.db(ext), auth.org_id, auth.identity_id).await? {
         let is_user_tier = t.owner_identity_id.is_some();
         if is_user_tier && !user_templates_allowed {
             continue;
@@ -546,15 +548,20 @@ fn build_auth_status(def: &ServiceDefinition, connected: bool) -> AuthStatus {
 // Reproduce the global-template visibility filter used by routes/templates.rs.
 // Kept inline (not imported) to avoid cross-route coupling; the logic is
 // two lines of SQL wrapped in a hash-set check.
-async fn visible_global_filter(state: &AppState, org_id: Uuid) -> Result<Option<HashSet<String>>> {
-    let enabled = org_repo::get_global_templates_enabled(&state.db, org_id)
+async fn visible_global_filter(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+) -> Result<Option<HashSet<String>>> {
+    let enabled = org_repo::get_global_templates_enabled(state.db(ext), org_id)
         .await?
         .unwrap_or(true);
     if enabled {
         return Ok(None);
     }
     let keys =
-        overslash_db::repos::enabled_global_template::list_enabled_keys(&state.db, org_id).await?;
+        overslash_db::repos::enabled_global_template::list_enabled_keys(state.db(ext), org_id)
+            .await?;
     Ok(Some(keys.into_iter().collect()))
 }
 

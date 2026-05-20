@@ -15,7 +15,10 @@ use overslash_db::OrgScope;
 use overslash_db::repos::oauth_provider;
 
 use crate::{
-    AppState, error::Result, extractors::WriteAcl, services::client_credentials::oauth_secret_names,
+    AppState,
+    error::Result,
+    extractors::{ReqExt, WriteAcl},
+    services::client_credentials::oauth_secret_names,
 };
 
 pub fn router() -> Router<AppState> {
@@ -42,10 +45,11 @@ struct ProviderRow {
 
 async fn list_providers(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
 ) -> Result<Json<Vec<ProviderRow>>> {
-    let providers = oauth_provider::list_all(&state.db).await?;
+    let providers = oauth_provider::list_all(state.db(&ext)).await?;
     let env_fallback_enabled =
         std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
 

@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
+    extractors::ReqExt,
     services::{jwt, oauth},
 };
 use overslash_core::crypto;
@@ -130,11 +131,12 @@ struct NormalizedUserInfo {
 
 async fn provider_login(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Path(provider_key): Path<String>,
     ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, AppError> {
-    let provider = oauth_provider::get_by_key(&state.db, &provider_key)
+    let provider = oauth_provider::get_by_key(state.db(&ext), &provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
@@ -164,7 +166,8 @@ async fn provider_login(
     };
 
     let (client_id, _client_secret) =
-        resolve_auth_credentials(&state, &provider_key, effective_org_slug.as_deref()).await?;
+        resolve_auth_credentials(&state, &ext, &provider_key, effective_org_slug.as_deref())
+            .await?;
 
     let pkce = if provider.supports_pkce {
         Some(oauth::generate_pkce())
@@ -207,7 +210,7 @@ async fn provider_login(
             let verifier_for_row = pkce.as_ref().map(|p| p.verifier.as_str());
             let org_slug_for_row = effective_org_slug.as_deref().filter(|s| !s.is_empty());
             overslash_db::repos::oauth_preview_handoff::insert_preview_origin(
-                &state.db,
+                state.db(&ext),
                 id,
                 origin,
                 &nonce,
@@ -305,6 +308,7 @@ fn clear_auth_cookie(state: &AppState, name: &str) -> String {
 
 async fn provider_callback(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Path(provider_key): Path<String>,
     ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(params): Query<CallbackQuery>,
@@ -353,9 +357,10 @@ async fn provider_callback(
         next_from_state,
         preview_origin_for_handoff,
     ) = if let Some(pid) = preview_id {
-        let row = overslash_db::repos::oauth_preview_handoff::get_preview_origin(&state.db, pid)
-            .await?
-            .ok_or_else(|| AppError::BadRequest("preview origin expired or unknown".into()))?;
+        let row =
+            overslash_db::repos::oauth_preview_handoff::get_preview_origin(state.db(&ext), pid)
+                .await?
+                .ok_or_else(|| AppError::BadRequest("preview origin expired or unknown".into()))?;
         // Re-check against the live allowlist so a tightened policy
         // takes effect even on in-flight logins minted under the old
         // rules.
@@ -388,7 +393,7 @@ async fn provider_callback(
         return Err(AppError::BadRequest("nonce mismatch".into()));
     }
 
-    let provider = oauth_provider::get_by_key(&state.db, &provider_key)
+    let provider = oauth_provider::get_by_key(state.db(&ext), &provider_key)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("unknown provider: {provider_key}")))?;
 
@@ -404,7 +409,7 @@ async fn provider_callback(
     };
 
     let (client_id, client_secret) =
-        resolve_auth_credentials(&state, &provider_key, org_slug.as_deref()).await?;
+        resolve_auth_credentials(&state, &ext, &provider_key, org_slug.as_deref()).await?;
 
     // PKCE verifier (None if provider doesn't support PKCE).
     let verifier_ref = code_verifier.as_deref();
@@ -437,7 +442,7 @@ async fn provider_callback(
     // user + personal org) apart from an org-subdomain login (→ org-only
     // user, gated by `allowed_email_domains`).
     let (org_id, identity_id, resolved_user_id, email) =
-        find_or_provision_user(&state, &userinfo, org_slug.as_deref()).await?;
+        find_or_provision_user(&state, &ext, &userinfo, org_slug.as_deref()).await?;
 
     // Mint JWT
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
@@ -472,7 +477,7 @@ async fn provider_callback(
         // had no specific intent.
         let safe_next = next_from_state.as_deref().and_then(sanitize_next);
         overslash_db::repos::oauth_preview_handoff::insert_handoff_code(
-            &state.db,
+            state.db(&ext),
             &handoff_code,
             &token,
             &origin,
@@ -586,6 +591,7 @@ fn preview_handoff_code() -> String {
 /// and force a real user to restart their OAuth round-trip.
 async fn handoff_consume(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
     Query(q): Query<HandoffQuery>,
 ) -> Result<Response, AppError> {
@@ -595,9 +601,10 @@ async fn handoff_consume(
 
     // Peek first so failed validations leave the row consumable by a
     // retry that gets the host right.
-    let row = overslash_db::repos::oauth_preview_handoff::peek_handoff_code(&state.db, &q.code)
-        .await?
-        .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
+    let row =
+        overslash_db::repos::oauth_preview_handoff::peek_handoff_code(state.db(&ext), &q.code)
+            .await?
+            .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
 
     // Bind redemption to the original preview origin so a leaked code
     // can't be redeemed against a different host.
@@ -625,7 +632,7 @@ async fn handoff_consume(
     // this caller sees `None` and gets a 400 — same outcome as a
     // replay, which is correct.
     let consumed =
-        overslash_db::repos::oauth_preview_handoff::consume_handoff_code(&state.db, &q.code)
+        overslash_db::repos::oauth_preview_handoff::consume_handoff_code(state.db(&ext), &q.code)
             .await?
             .ok_or_else(|| AppError::BadRequest("invalid or expired handoff code".into()))?;
 
@@ -659,14 +666,16 @@ async fn handoff_consume(
 
 async fn google_login_compat(
     state: State<AppState>,
+    ext: ReqExt,
     ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     query: Query<LoginQuery>,
 ) -> Result<Response, AppError> {
-    provider_login(state, Path("google".to_string()), ctx, query).await
+    provider_login(state, ext, Path("google".to_string()), ctx, query).await
 }
 
 async fn google_callback_compat(
     state: State<AppState>,
+    ext: ReqExt,
     ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(mut params): Query<CallbackQuery>,
     headers: HeaderMap,
@@ -681,6 +690,7 @@ async fn google_callback_compat(
     }
     provider_callback(
         state,
+        ext,
         Path("google".to_string()),
         ctx,
         Query(params),
@@ -695,6 +705,7 @@ async fn google_callback_compat(
 
 async fn list_auth_providers(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     ctx: Option<axum::extract::Extension<crate::middleware::subdomain::RequestOrgContext>>,
     Query(query): Query<ProvidersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -718,7 +729,7 @@ async fn list_auth_providers(
         crate::middleware::subdomain::RequestOrgContext::Org { org_id, .. } => Some(*org_id),
         crate::middleware::subdomain::RequestOrgContext::Root => {
             if let Some(slug) = &query.org {
-                org::get_by_slug(&state.db, slug).await?.map(|o| o.id)
+                org::get_by_slug(state.db(&ext), slug).await?.map(|o| o.id)
             } else {
                 None
             }
@@ -726,12 +737,12 @@ async fn list_auth_providers(
     };
 
     if let Some(org_id) = resolved_org_id {
-        let bootstrap_scope = overslash_db::OrgScope::new(org_id, state.db.clone());
+        let bootstrap_scope = overslash_db::OrgScope::new(org_id, state.db_pool(&ext));
         let configs = bootstrap_scope.list_enabled_org_idp_configs().await?;
         let dedicated_keys: std::collections::HashSet<String> =
             configs.iter().map(|c| c.provider_key.clone()).collect();
         for config in configs {
-            let display_name = oauth_provider::get_by_key(&state.db, &config.provider_key)
+            let display_name = oauth_provider::get_by_key(state.db(&ext), &config.provider_key)
                 .await?
                 .map(|p| p.display_name)
                 .unwrap_or_else(|| config.provider_key.clone());
@@ -751,7 +762,7 @@ async fn list_auth_providers(
         // membership creation fails with `not_invited`. Dedup against
         // dedicated configs since those win at credential resolution.
         let managed_on =
-            overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, org_id)
+            overslash_db::repos::org::get_allow_overslash_managed_signin(state.db(&ext), org_id)
                 .await?
                 .unwrap_or(false);
         if managed_on {
@@ -818,6 +829,7 @@ async fn list_auth_providers(
 
 async fn me(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
     let token = extract_cookie(&headers, "oss_session")
@@ -830,7 +842,7 @@ async fn me(
     // Resolve the user's ACL level from group grants. Construct an OrgScope
     // inline from the verified JWT claims so the ceiling lookup is bounded
     // by the caller's org at the SQL boundary.
-    let scope = overslash_db::OrgScope::new(claims.org, state.db.clone());
+    let scope = overslash_db::OrgScope::new(claims.org, state.db_pool(&ext));
     let ceiling = scope.get_ceiling_for_user(claims.sub).await?;
     let acl_level = ceiling
         .grants
@@ -850,6 +862,7 @@ async fn me(
 
 async fn me_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
 ) -> Result<impl IntoResponse, AppError> {
     // Was: manual cookie + jwt::verify without the RequestOrgContext cross-
@@ -858,14 +871,14 @@ async fn me_identity(
     // subdomain — leaking personal-org profile data across trust domains.
     // `SessionAuth` enforces `jwt.org == subdomain.org` via
     // `check_subdomain_matches_jwt`.
-    let scope = OrgScope::new(session.org_id, state.db.clone());
+    let scope = OrgScope::new(session.org_id, state.db_pool(&ext));
     let ident = scope
         .get_identity(session.identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
     let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
 
-    let org_row = org::get_by_id(&state.db, ident.org_id).await?;
+    let org_row = org::get_by_id(state.db(&ext), ident.org_id).await?;
     let picture = ident
         .metadata
         .get("picture")
@@ -877,9 +890,9 @@ async fn me_identity(
     // identity's FK. Fetch the user once and reuse for instance-admin too.
     let user_id = session.user_id.or(ident.user_id);
     let (memberships, personal_org_id, is_instance_admin) = if let Some(uid) = user_id {
-        let user = user_repo::get_by_id(&state.db, uid).await?;
+        let user = user_repo::get_by_id(state.db(&ext), uid).await?;
         (
-            list_membership_summaries(&state, uid).await?,
+            list_membership_summaries(&state, &ext, uid).await?,
             user.as_ref().and_then(|u| u.personal_org_id),
             user.as_ref().map(|u| u.is_instance_admin).unwrap_or(false),
         )
@@ -919,12 +932,13 @@ struct MembershipSummary {
 
 async fn list_membership_summaries(
     state: &AppState,
+    ext: &axum::http::Extensions,
     user_id: Uuid,
 ) -> Result<Vec<MembershipSummary>, AppError> {
-    let memberships = membership::list_for_user(&state.db, user_id).await?;
+    let memberships = membership::list_for_user(state.db(ext), user_id).await?;
     let mut out = Vec::with_capacity(memberships.len());
     for m in memberships {
-        let Some(o) = org::get_by_id(&state.db, m.org_id).await? else {
+        let Some(o) = org::get_by_id(state.db(ext), m.org_id).await? else {
             continue; // Org was deleted; stale membership — CASCADE will sweep it.
         };
         out.push(MembershipSummary {
@@ -955,12 +969,13 @@ struct SwitchOrgRequest {
 /// (or root), not from the target.
 async fn switch_org(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
     axum::Json(req): axum::Json<SwitchOrgRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let jwt_secret = signing_key_bytes(&state.config.signing_key);
 
-    let current_scope = OrgScope::new(session.org_id, state.db.clone());
+    let current_scope = OrgScope::new(session.org_id, state.db_pool(&ext));
     let current_ident = current_scope
         .get_identity(session.identity_id)
         .await?
@@ -973,17 +988,17 @@ async fn switch_org(
     };
 
     // Membership guard.
-    let target_membership = membership::find(&state.db, user_id, req.org_id)
+    let target_membership = membership::find(state.db(&ext), user_id, req.org_id)
         .await?
         .ok_or_else(|| AppError::Forbidden("not a member of that org".into()))?;
-    let target_org = org::get_by_id(&state.db, req.org_id)
+    let target_org = org::get_by_id(state.db(&ext), req.org_id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
     // Resolve the target identity — there is at most one user-kind identity
     // per (org_id, user_id) (enforced by the partial UNIQUE in migration 040).
     let target_identity =
-        overslash_db::repos::identity::find_by_org_and_user(&state.db, req.org_id, user_id)
+        overslash_db::repos::identity::find_by_org_and_user(state.db(&ext), req.org_id, user_id)
             .await?
             .ok_or_else(|| {
                 AppError::Internal(
@@ -1037,10 +1052,11 @@ async fn switch_org(
 /// so the dashboard can refresh the switcher without re-loading identity.
 async fn list_account_memberships(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
 ) -> Result<impl IntoResponse, AppError> {
-    let user_id = resolve_session_user_id(&state, &session).await?;
-    let summaries = list_membership_summaries(&state, user_id).await?;
+    let user_id = resolve_session_user_id(&state, &ext, &session).await?;
+    let summaries = list_membership_summaries(&state, &ext, user_id).await?;
     Ok(axum::Json(json!({ "memberships": summaries })))
 }
 
@@ -1058,13 +1074,14 @@ async fn list_account_memberships(
 /// first to commit and then reads the post-delete world.
 async fn drop_account_membership(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
     ip: crate::extractors::ClientIp,
     Path(org_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let user_id = resolve_session_user_id(&state, &session).await?;
+    let user_id = resolve_session_user_id(&state, &ext, &session).await?;
 
-    let org_row = org::get_by_id(&state.db, org_id)
+    let org_row = org::get_by_id(state.db(&ext), org_id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
@@ -1074,7 +1091,7 @@ async fn drop_account_membership(
         ));
     }
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.db(&ext).begin().await?;
 
     // Lock every admin row of the org in user_id order. This includes the
     // caller's row if (and only if) they are an admin — which is the only
@@ -1131,7 +1148,7 @@ async fn drop_account_membership(
     // notable state change worth pulling out of the broader membership
     // event stream).
     let was_original_creator = org_row.creator_user_id == Some(user_id);
-    let scope = OrgScope::new(org_id, state.db.clone());
+    let scope = OrgScope::new(org_id, state.db_pool(&ext));
     let _ = scope
         .log_audit(AuditEntry {
             org_id,
@@ -1185,10 +1202,11 @@ fn prefs_from_user(user: &overslash_db::repos::user::UserRow) -> EmailPreference
 /// returned regardless of which org subdomain the session is currently in.
 async fn get_email_preferences(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
 ) -> Result<axum::Json<EmailPreferences>, AppError> {
-    let user_id = resolve_session_user_id(&state, &session).await?;
-    let user = overslash_db::repos::user::get_by_id(&state.db, user_id)
+    let user_id = resolve_session_user_id(&state, &ext, &session).await?;
+    let user = overslash_db::repos::user::get_by_id(state.db(&ext), user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
     Ok(axum::Json(prefs_from_user(&user)))
@@ -1201,22 +1219,23 @@ async fn get_email_preferences(
 /// the audit log with non-events.
 async fn put_email_preferences(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
     axum::Json(prefs): axum::Json<EmailPreferences>,
 ) -> Result<axum::Json<EmailPreferences>, AppError> {
-    let user_id = resolve_session_user_id(&state, &session).await?;
-    let mut current = overslash_db::repos::user::get_by_id(&state.db, user_id)
+    let user_id = resolve_session_user_id(&state, &ext, &session).await?;
+    let mut current = overslash_db::repos::user::get_by_id(state.db(&ext), user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".into()))?;
 
-    let scope = OrgScope::new(session.org_id, state.db.clone());
+    let scope = OrgScope::new(session.org_id, state.db_pool(&ext));
 
     if let Some(want) = prefs.welcome_emails {
         let was = current.welcome_emails_unsubscribed_at.is_none();
         if was != want {
             let unsubscribed_at = (!want).then(time::OffsetDateTime::now_utc);
             current = overslash_db::repos::user::set_welcome_unsubscribed(
-                &state.db,
+                state.db(&ext),
                 user_id,
                 unsubscribed_at,
             )
@@ -1254,7 +1273,7 @@ async fn put_email_preferences(
         if was != want {
             let unsubscribed_at = (!want).then(time::OffsetDateTime::now_utc);
             current = overslash_db::repos::user::set_webhook_digest_unsubscribed(
-                &state.db,
+                state.db(&ext),
                 user_id,
                 unsubscribed_at,
             )
@@ -1294,12 +1313,13 @@ async fn put_email_preferences(
 /// claim (hot path); falls back to the identity's FK for legacy tokens.
 async fn resolve_session_user_id(
     state: &AppState,
+    ext: &axum::http::Extensions,
     session: &crate::extractors::SessionAuth,
 ) -> Result<Uuid, AppError> {
     if let Some(uid) = session.user_id {
         return Ok(uid);
     }
-    let scope = OrgScope::new(session.org_id, state.db.clone());
+    let scope = OrgScope::new(session.org_id, state.db_pool(ext));
     let ident = scope
         .get_identity(session.identity_id)
         .await?
@@ -1403,6 +1423,7 @@ impl DevProfile {
 
 async fn dev_token(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Query(query): Query<DevTokenQuery>,
 ) -> Result<Response, AppError> {
     if !state.config.dev_auth_enabled {
@@ -1411,17 +1432,17 @@ async fn dev_token(
 
     let profile = DevProfile::parse(query.profile.as_deref());
     let admin_email = DevProfile::Admin.email();
-    let system = SystemScope::new_internal(state.db.clone());
+    let system = SystemScope::new_internal(state.db_pool(&ext));
 
     // Step 1: ensure Dev Org exists. Look up the admin identity to find the
     // org or create one. We always run org_bootstrap (idempotent) so
     // Everyone/Admins groups + the overslash service instance exist.
     let admin_org_id = match system.find_user_identity_by_email(admin_email).await? {
         Some(existing) => existing.org_id,
-        None => match org::create(&state.db, "Dev Org", "dev-org", "standard").await {
+        None => match org::create(state.db(&ext), "Dev Org", "dev-org", "standard").await {
             Ok(new_org) => new_org.id,
             Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
-                org::get_by_slug(&state.db, "dev-org")
+                org::get_by_slug(state.db(&ext), "dev-org")
                     .await?
                     .ok_or_else(|| AppError::Internal("dev race: dev-org missing".into()))?
                     .id
@@ -1429,13 +1450,16 @@ async fn dev_token(
             Err(e) => return Err(e.into()),
         },
     };
-    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, admin_org_id, None).await?;
+    overslash_db::repos::org_bootstrap::bootstrap_org(state.db(&ext), admin_org_id, None).await?;
     // Match the public `POST /v1/orgs` corp-org default — dev orgs ship
     // with the Overslash-managed sign-in flag on so e2e flows and dashboard
     // screenshots exercise the same shape as production cloud orgs.
-    let _ =
-        overslash_db::repos::org::set_allow_overslash_managed_signin(&state.db, admin_org_id, true)
-            .await;
+    let _ = overslash_db::repos::org::set_allow_overslash_managed_signin(
+        state.db(&ext),
+        admin_org_id,
+        true,
+    )
+    .await;
 
     // Step 2: resolve (or lazily create) the requested profile's identity
     // inside Dev Org. Every profile gets the same provisioning the
@@ -1452,7 +1476,7 @@ async fn dev_token(
             // next sign-in. bootstrap_org is idempotent, so this is cheap.
             if matches!(profile, DevProfile::Admin) {
                 overslash_db::repos::org_bootstrap::bootstrap_org(
-                    &state.db,
+                    state.db(&ext),
                     admin_org_id,
                     Some(existing.id),
                 )
@@ -1460,7 +1484,7 @@ async fn dev_token(
             }
             existing.id
         } else {
-            let scope = OrgScope::new(admin_org_id, state.db.clone());
+            let scope = OrgScope::new(admin_org_id, state.db_pool(&ext));
             let new_identity = scope
                 .create_identity_with_email(
                     profile.display_name(),
@@ -1476,13 +1500,13 @@ async fn dev_token(
                 .await?;
 
             let user = user_repo::create_org_only(
-                &state.db,
+                state.db(&ext),
                 Some(profile_email),
                 Some(profile.display_name()),
             )
             .await?;
             overslash_db::repos::identity::set_user_id(
-                &state.db,
+                state.db(&ext),
                 admin_org_id,
                 new_identity.id,
                 Some(user.id),
@@ -1493,7 +1517,7 @@ async fn dev_token(
                 // Admins join the Admins group AND get an admin membership row,
                 // matching what POST /v1/orgs and the org-creator IdP path do.
                 overslash_db::repos::org_bootstrap::bootstrap_org(
-                    &state.db,
+                    state.db(&ext),
                     admin_org_id,
                     Some(new_identity.id),
                 )
@@ -1501,7 +1525,7 @@ async fn dev_token(
                 membership::ROLE_ADMIN
             } else {
                 overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
-                    &state.db,
+                    state.db(&ext),
                     admin_org_id,
                     new_identity.id,
                 )
@@ -1509,7 +1533,7 @@ async fn dev_token(
                 membership::ROLE_MEMBER
             };
 
-            match membership::create(&state.db, user.id, admin_org_id, role).await {
+            match membership::create(state.db(&ext), user.id, admin_org_id, role).await {
                 Ok(_) => {}
                 Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {}
                 Err(e) => return Err(e.into()),
@@ -1524,7 +1548,7 @@ async fn dev_token(
     // `kind='user'` identity with a `users` row; resolve it here so the dev
     // session participates in the multi-org surface (`/account`, switcher,
     // `POST /v1/orgs` bootstrap admin).
-    let dev_user_id = overslash_db::repos::identity::get_by_id(&state.db, org_id, identity_id)
+    let dev_user_id = overslash_db::repos::identity::get_by_id(state.db(&ext), org_id, identity_id)
         .await?
         .and_then(|row| row.user_id);
     if dev_user_id.is_none() {
@@ -1594,6 +1618,7 @@ async fn dev_token(
 /// the org's OAuth App Credentials (org secrets `OAUTH_{PROVIDER}_CLIENT_ID/SECRET`).
 async fn resolve_auth_credentials(
     state: &AppState,
+    ext: &axum::http::Extensions,
     provider_key: &str,
     org_slug: Option<&str>,
 ) -> Result<(String, String), AppError> {
@@ -1612,12 +1637,12 @@ async fn resolve_auth_credentials(
 
     // Org in scope → DB-config-only. Strict isolation.
     if let Some(slug) = org_slug {
-        let org_row = org::get_by_slug(&state.db, slug)
+        let org_row = org::get_by_slug(state.db(ext), slug)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("org not found: {slug}")))?;
 
         // Login bootstrap: org resolved from a public slug, no scope yet.
-        let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
+        let bootstrap_scope = overslash_db::OrgScope::new(org_row.id, state.db_pool(ext));
         let config_opt = bootstrap_scope
             .get_org_idp_config_by_provider(provider_key)
             .await?;
@@ -1829,28 +1854,33 @@ async fn fetch_oidc_userinfo(
 /// callers shape into session claims.
 async fn find_or_provision_user(
     state: &AppState,
+    ext: &axum::http::Extensions,
     userinfo: &NormalizedUserInfo,
     org_slug: Option<&str>,
 ) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
     match org_slug {
-        None => provision_root(state, userinfo).await,
-        Some(slug) => provision_org_subdomain(state, userinfo, slug).await,
+        None => provision_root(state, ext, userinfo).await,
+        Some(slug) => provision_org_subdomain(state, ext, userinfo, slug).await,
     }
 }
 
 async fn provision_root(
     state: &AppState,
+    ext: &axum::http::Extensions,
     userinfo: &NormalizedUserInfo,
 ) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
     let display_name = userinfo.name.as_deref().unwrap_or(&userinfo.email);
 
     // Hot path: existing Overslash-backed user → refresh profile and return.
-    if let Some(user) =
-        user_repo::find_by_overslash_idp(&state.db, &userinfo.provider_key, &userinfo.external_id)
-            .await?
+    if let Some(user) = user_repo::find_by_overslash_idp(
+        state.db(ext),
+        &userinfo.provider_key,
+        &userinfo.external_id,
+    )
+    .await?
     {
         let _ = user_repo::refresh_profile(
-            &state.db,
+            state.db(ext),
             user.id,
             Some(&userinfo.email),
             Some(display_name),
@@ -1862,14 +1892,14 @@ async fn provision_root(
             )
         })?;
         let identity = overslash_db::repos::identity::find_by_org_and_user(
-            &state.db,
+            state.db(ext),
             personal_org_id,
             user.id,
         )
         .await?
         .ok_or_else(|| AppError::Internal("personal org exists but has no user identity".into()))?;
         // Keep the identity's displayed email/name roughly current too.
-        let scope = OrgScope::new(personal_org_id, state.db.clone());
+        let scope = OrgScope::new(personal_org_id, state.db_pool(ext));
         let metadata = userinfo_metadata(userinfo);
         let _ = scope
             .update_identity_profile(identity.id, display_name, metadata)
@@ -1892,13 +1922,13 @@ async fn provision_root(
             } else {
                 generate_personal_slug()
             };
-            match org::create(&state.db, display_name, &candidate, "standard").await {
+            match org::create(state.db(ext), display_name, &candidate, "standard").await {
                 Ok(mut row) => {
                     // Flip is_personal=true. The column was added in 040 with
                     // DEFAULT false; personal orgs are marked explicitly so the
                     // subdomain middleware refuses to route them.
                     sqlx::query!("UPDATE orgs SET is_personal = true WHERE id = $1", row.id)
-                        .execute(&state.db)
+                        .execute(state.db(ext))
                         .await?;
                     row.is_personal = true;
                     break row;
@@ -1917,11 +1947,11 @@ async fn provision_root(
     // (other than the unique-violation race, which returns Ok(winner) after
     // manually cleaning up the org) bubbles up here, and we compensate by
     // deleting the personal-org shell to avoid leaking an empty row.
-    match provision_root_contents(state, userinfo, &org, display_name).await {
+    match provision_root_contents(state, ext, userinfo, &org, display_name).await {
         Ok(tuple) => Ok(tuple),
         Err(e) => {
             if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                .execute(&state.db)
+                .execute(state.db(ext))
                 .await
             {
                 tracing::error!(
@@ -1938,6 +1968,7 @@ async fn provision_root(
 
 async fn provision_root_contents(
     state: &AppState,
+    ext: &axum::http::Extensions,
     userinfo: &NormalizedUserInfo,
     org: &overslash_db::repos::org::OrgRow,
     display_name: &str,
@@ -1950,7 +1981,7 @@ async fn provision_root_contents(
     // ourselves (the caller's outer cleanup won't run because we're
     // returning Ok) and return the winner's (org, identity, user_id).
     let new_user = match user_repo::create_overslash_backed(
-        &state.db,
+        state.db(ext),
         Some(&userinfo.email),
         Some(display_name),
         &userinfo.provider_key,
@@ -1961,10 +1992,10 @@ async fn provision_root_contents(
         Ok(u) => u,
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             let _ = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                .execute(&state.db)
+                .execute(state.db(ext))
                 .await;
             let winner = user_repo::find_by_overslash_idp(
-                &state.db,
+                state.db(ext),
                 &userinfo.provider_key,
                 &userinfo.external_id,
             )
@@ -1985,7 +2016,7 @@ async fn provision_root_contents(
                         .await;
                     attempts += 1;
                     if let Ok(Some(refreshed)) = user_repo::find_by_overslash_idp(
-                        &state.db,
+                        state.db(ext),
                         &userinfo.provider_key,
                         &userinfo.external_id,
                     )
@@ -2002,7 +2033,7 @@ async fn provision_root_contents(
                 })?
             };
             let identity = overslash_db::repos::identity::find_by_org_and_user(
-                &state.db,
+                state.db(ext),
                 personal_org_id,
                 winner.id,
             )
@@ -2011,7 +2042,7 @@ async fn provision_root_contents(
                 AppError::Internal("race: winner has no identity in their personal org yet".into())
             })?;
             let _ = user_repo::refresh_profile(
-                &state.db,
+                state.db(ext),
                 winner.id,
                 Some(&userinfo.email),
                 Some(display_name),
@@ -2026,10 +2057,10 @@ async fn provision_root_contents(
         }
         Err(e) => return Err(e.into()),
     };
-    user_repo::set_personal_org(&state.db, new_user.id, org.id).await?;
+    user_repo::set_personal_org(state.db(ext), new_user.id, org.id).await?;
 
     let metadata = userinfo_metadata(userinfo);
-    let scope = OrgScope::new(org.id, state.db.clone());
+    let scope = OrgScope::new(org.id, state.db_pool(ext));
     let identity_row = scope
         .create_identity_with_email(
             display_name,
@@ -2040,17 +2071,17 @@ async fn provision_root_contents(
         )
         .await?;
     overslash_db::repos::identity::set_user_id(
-        &state.db,
+        state.db(ext),
         org.id,
         identity_row.id,
         Some(new_user.id),
     )
     .await?;
 
-    overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org.id, Some(identity_row.id))
+    overslash_db::repos::org_bootstrap::bootstrap_org(state.db(ext), org.id, Some(identity_row.id))
         .await?;
 
-    membership::create(&state.db, new_user.id, org.id, membership::ROLE_ADMIN).await?;
+    membership::create(state.db(ext), new_user.id, org.id, membership::ROLE_ADMIN).await?;
 
     // Best-effort welcome email. Failures are logged and swallowed inside
     // the service — a transient mailer hiccup must never block first-login.
@@ -2062,10 +2093,11 @@ async fn provision_root_contents(
 
 async fn provision_org_subdomain(
     state: &AppState,
+    ext: &axum::http::Extensions,
     userinfo: &NormalizedUserInfo,
     slug: &str,
 ) -> Result<(Uuid, Uuid, Uuid, String), AppError> {
-    let target_org = org::get_by_slug(&state.db, slug)
+    let target_org = org::get_by_slug(state.db(ext), slug)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("org not found: {slug}")))?;
     if target_org.is_personal {
@@ -2075,9 +2107,9 @@ async fn provision_org_subdomain(
     }
 
     // Existing org-identity? refresh + return.
-    let scope = OrgScope::new(target_org.id, state.db.clone());
+    let scope = OrgScope::new(target_org.id, state.db_pool(ext));
     if let Some(existing) = overslash_db::repos::identity::find_user_by_external_id_in_org(
-        &state.db,
+        state.db(ext),
         target_org.id,
         &userinfo.external_id,
     )
@@ -2094,7 +2126,7 @@ async fn provision_org_subdomain(
             )
         })?;
         let _ = user_repo::refresh_profile(
-            &state.db,
+            state.db(ext),
             user_id,
             Some(&userinfo.email),
             Some(display_name),
@@ -2145,7 +2177,8 @@ async fn provision_org_subdomain(
     // is the operator's env-creds and the same email already passed the
     // admin's invite check at first sign-in.
     let existing_member = if target_org.allow_overslash_managed_signin && !single_org_bypass {
-        user_repo::find_member_by_email_in_org(&state.db, target_org.id, &userinfo.email).await?
+        user_repo::find_member_by_email_in_org(state.db(ext), target_org.id, &userinfo.email)
+            .await?
     } else {
         None
     };
@@ -2153,7 +2186,7 @@ async fn provision_org_subdomain(
         None
     } else if target_org.allow_overslash_managed_signin {
         let pending = overslash_db::repos::org_invite::find_pending(
-            &state.db,
+            state.db(ext),
             target_org.id,
             &userinfo.email,
         )
@@ -2171,7 +2204,7 @@ async fn provision_org_subdomain(
             .unwrap_or("")
             .to_lowercase();
         let idp_config = overslash_db::repos::org_idp_config::get_by_org_and_provider(
-            &state.db,
+            state.db(ext),
             target_org.id,
             &userinfo.provider_key,
         )
@@ -2200,13 +2233,17 @@ async fn provision_org_subdomain(
     //      reuse that user.
     //   3. Otherwise → first-time admission, fresh org-only user row.
     let user_id = if let Some(ref u) = existing_member {
-        let _ =
-            user_repo::refresh_profile(&state.db, u.id, Some(&userinfo.email), Some(display_name))
-                .await;
+        let _ = user_repo::refresh_profile(
+            state.db(ext),
+            u.id,
+            Some(&userinfo.email),
+            Some(display_name),
+        )
+        .await;
         u.id
     } else {
         match user_repo::find_by_overslash_idp(
-            &state.db,
+            state.db(ext),
             &userinfo.provider_key,
             &userinfo.external_id,
         )
@@ -2214,7 +2251,7 @@ async fn provision_org_subdomain(
         {
             Some(u) => {
                 let _ = user_repo::refresh_profile(
-                    &state.db,
+                    state.db(ext),
                     u.id,
                     Some(&userinfo.email),
                     Some(display_name),
@@ -2223,7 +2260,7 @@ async fn provision_org_subdomain(
                 u.id
             }
             None => {
-                user_repo::create_org_only(&state.db, Some(&userinfo.email), Some(display_name))
+                user_repo::create_org_only(state.db(ext), Some(&userinfo.email), Some(display_name))
                     .await?
                     .id
             }
@@ -2240,14 +2277,14 @@ async fn provision_org_subdomain(
         )
         .await?;
     overslash_db::repos::identity::set_user_id(
-        &state.db,
+        state.db(ext),
         target_org.id,
         identity_row.id,
         Some(user_id),
     )
     .await?;
     overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
-        &state.db,
+        state.db(ext),
         target_org.id,
         identity_row.id,
     )
@@ -2261,7 +2298,7 @@ async fn provision_org_subdomain(
     // for this `(org, user)` and mirror its admin state onto the new row.
     if let Some(ref existing) = existing_member {
         if let Some(prior) = overslash_db::repos::identity::find_by_org_and_user(
-            &state.db,
+            state.db(ext),
             target_org.id,
             existing.id,
         )
@@ -2269,14 +2306,14 @@ async fn provision_org_subdomain(
         {
             if prior.id != identity_row.id && prior.is_org_admin {
                 overslash_db::repos::identity::set_is_org_admin(
-                    &state.db,
+                    state.db(ext),
                     target_org.id,
                     identity_row.id,
                     true,
                 )
                 .await?;
                 overslash_db::repos::org_bootstrap::add_identity_to_admins(
-                    &state.db,
+                    state.db(ext),
                     target_org.id,
                     identity_row.id,
                 )
@@ -2300,12 +2337,12 @@ async fn provision_org_subdomain(
     // a brand-new membership row was created so we only consume an invite
     // when admission actually happened — a second-IdP sign-in by an
     // already-member must not eat the pending invite (audit-trail bug).
-    let membership_created = match membership::create(&state.db, user_id, target_org.id, role).await
-    {
-        Ok(_) => true,
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => false,
-        Err(e) => return Err(e.into()),
-    };
+    let membership_created =
+        match membership::create(state.db(ext), user_id, target_org.id, role).await {
+            Ok(_) => true,
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => false,
+            Err(e) => return Err(e.into()),
+        };
 
     // Best-effort: consume the invite, but ONLY when this sign-in actually
     // produced a new membership. Otherwise the invite is preserved for the
@@ -2314,7 +2351,7 @@ async fn provision_org_subdomain(
     // it returns `Ok(false)` and we don't propagate that as an error.
     if membership_created && let Some(invite) = membership_role.as_ref() {
         if let Err(e) =
-            overslash_db::repos::org_invite::mark_accepted(&state.db, invite.id, user_id).await
+            overslash_db::repos::org_invite::mark_accepted(state.db(ext), invite.id, user_id).await
         {
             tracing::warn!(
                 org_id = %target_org.id,

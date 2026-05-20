@@ -54,7 +54,7 @@ async fn create_second_user_with_key(
 #[tokio::test]
 async fn agent_can_create_and_delete_own_byoc() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, agent_ident, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -91,7 +91,7 @@ async fn agent_can_create_and_delete_own_byoc() {
 #[tokio::test]
 async fn agent_cannot_create_byoc_for_another_identity() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, _agent_ident, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -118,7 +118,7 @@ async fn agent_cannot_create_byoc_for_another_identity() {
 #[tokio::test]
 async fn agent_cannot_delete_another_identitys_byoc() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, _agent_ident, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -158,7 +158,7 @@ async fn agent_cannot_delete_another_identitys_byoc() {
 #[tokio::test]
 async fn list_byoc_filters_to_own_identity_for_non_admin() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, agent_ident, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -220,7 +220,7 @@ async fn list_byoc_filters_to_own_identity_for_non_admin() {
 #[tokio::test]
 async fn oauth_providers_lists_known_providers() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, _ident_id, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -261,7 +261,7 @@ async fn oauth_providers_lists_known_providers() {
 #[tokio::test]
 async fn oauth_providers_has_user_byoc_reflects_own_credential() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, agent_ident, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
@@ -310,7 +310,7 @@ async fn oauth_providers_has_user_byoc_reflects_own_credential() {
 #[tokio::test]
 async fn oauth_providers_has_org_credential_reflects_org_secrets() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_user, _ident_id, agent_key) =
         common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;

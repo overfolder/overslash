@@ -56,8 +56,10 @@ pub type PlatformRegistry = HashMap<String, Box<dyn PlatformHandler + Send + Syn
 /// identity (typically `group_ceiling::resolve_ceiling_user_id`). At replay
 /// time this means the access level reflects current state — if the requester
 /// has been demoted since the approval was created, the new ceiling applies.
+#[allow(clippy::too_many_arguments)]
 pub async fn invoke(
     state: &AppState,
+    ext: &axum::http::Extensions,
     scope: &OrgScope,
     identity_id: Uuid,
     ceiling_user_id: Uuid,
@@ -83,7 +85,7 @@ pub async fn invoke(
         org_id: scope.org_id(),
         identity_id: Some(identity_id),
         access_level,
-        db: state.db.clone(),
+        db: state.db_pool(ext),
         registry: Arc::clone(&state.registry),
         config: state.config.clone(),
         http_client: state.http_client.clone(),

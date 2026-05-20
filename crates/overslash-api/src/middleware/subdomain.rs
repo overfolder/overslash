@@ -52,7 +52,7 @@ pub async fn subdomain_middleware(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let ctx = match resolve_context(&state, request.headers()).await {
+    let ctx = match resolve_context(&state, request.extensions(), request.headers()).await {
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
@@ -65,12 +65,13 @@ pub async fn subdomain_middleware(
 
 async fn resolve_context(
     state: &AppState,
+    ext: &axum::http::Extensions,
     headers: &axum::http::HeaderMap,
 ) -> Result<RequestOrgContext, Response> {
     // Single-org override takes precedence — every request is scoped to the
     // named slug and subdomain parsing is skipped entirely.
     if let Some(slug) = state.config.single_org_mode.as_deref() {
-        return resolve_by_slug(state, slug).await;
+        return resolve_by_slug(state, ext, slug).await;
     }
 
     let app_apex = state.config.app_host_suffix.as_deref();
@@ -89,7 +90,7 @@ async fn resolve_context(
         let apex = apex.to_ascii_lowercase();
         match match_against_apex(&host, &apex) {
             ApexMatch::Root => return Ok(RequestOrgContext::Root),
-            ApexMatch::Slug(slug) => return resolve_by_slug(state, &slug).await,
+            ApexMatch::Slug(slug) => return resolve_by_slug(state, ext, &slug).await,
             ApexMatch::Invalid => {
                 return Err(json_response(
                     StatusCode::NOT_FOUND,
@@ -158,8 +159,12 @@ pub fn effective_host(headers: &axum::http::HeaderMap) -> Option<String> {
     Some(raw.split(':').next().unwrap_or(raw).to_ascii_lowercase())
 }
 
-async fn resolve_by_slug(state: &AppState, slug: &str) -> Result<RequestOrgContext, Response> {
-    match overslash_db::repos::org::get_by_slug(&state.db, slug).await {
+async fn resolve_by_slug(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    slug: &str,
+) -> Result<RequestOrgContext, Response> {
+    match overslash_db::repos::org::get_by_slug(state.db(ext), slug).await {
         Ok(Some(row)) if row.is_personal => Err(json_response(
             StatusCode::NOT_FOUND,
             "personal_org_unreachable",

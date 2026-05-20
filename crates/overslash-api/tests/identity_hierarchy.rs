@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 #[tokio::test]
 async fn test_create_user_identity() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     // Create org + org-level key
@@ -55,7 +55,7 @@ async fn test_create_user_identity() {
 #[tokio::test]
 async fn test_create_agent_with_user_parent() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -113,7 +113,7 @@ async fn test_create_agent_with_user_parent() {
 #[tokio::test]
 async fn test_create_agent_without_parent_fails() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -152,7 +152,7 @@ async fn test_create_agent_without_parent_fails() {
 #[tokio::test]
 async fn test_create_agent_with_nonexistent_parent_fails() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -191,7 +191,7 @@ async fn test_create_agent_with_nonexistent_parent_fails() {
 #[tokio::test]
 async fn test_create_agent_with_agent_parent_fails() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -255,7 +255,7 @@ async fn test_create_agent_with_agent_parent_fails() {
 #[tokio::test]
 async fn test_create_sub_agent() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -325,7 +325,7 @@ async fn test_create_sub_agent() {
 #[tokio::test]
 async fn test_create_sub_agent_with_user_parent_fails() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -376,7 +376,7 @@ async fn test_create_sub_agent_with_user_parent_fails() {
 #[tokio::test]
 async fn test_create_user_with_parent_fails() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -427,7 +427,7 @@ async fn test_create_user_with_parent_fails() {
 #[tokio::test]
 async fn test_ancestor_chain() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -511,7 +511,7 @@ async fn test_ancestor_chain() {
 #[tokio::test]
 async fn test_list_children() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -674,7 +674,7 @@ async fn test_delete_parent_cascades_children() {
 #[tokio::test]
 async fn test_nested_sub_agents() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let org: Value = client
@@ -798,7 +798,7 @@ async fn create_identity_helper(
 #[tokio::test]
 async fn test_patch_rename_identity() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-rename").await;
 
@@ -826,7 +826,7 @@ async fn test_patch_rename_identity() {
 #[tokio::test]
 async fn test_patch_rename_empty_name_rejected() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-rename-empty").await;
 
@@ -852,7 +852,7 @@ async fn test_patch_rename_empty_name_rejected() {
 #[tokio::test]
 async fn test_patch_rename_trims_whitespace() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-rename-trim").await;
 
@@ -881,7 +881,7 @@ async fn test_patch_rename_trims_whitespace() {
 #[tokio::test]
 async fn test_patch_move_user_rejected() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-move-user").await;
 
@@ -915,7 +915,7 @@ async fn test_patch_move_user_rejected() {
 #[tokio::test]
 async fn test_patch_move_agent_updates_descendants() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-move-cascade").await;
 
@@ -1005,7 +1005,7 @@ async fn test_patch_move_agent_updates_descendants() {
 #[tokio::test]
 async fn test_patch_move_cycle_rejected() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-move-cycle").await;
 
@@ -1049,7 +1049,7 @@ async fn test_patch_move_cycle_rejected() {
 #[tokio::test]
 async fn test_patch_inherit_permissions_toggle() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "patch-inherit").await;
 
@@ -1098,7 +1098,7 @@ async fn test_patch_inherit_permissions_toggle() {
 #[tokio::test]
 async fn test_delete_blocked_when_children_exist() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "delete-blocked").await;
 
@@ -1130,7 +1130,7 @@ async fn test_delete_blocked_when_children_exist() {
 #[tokio::test]
 async fn test_delete_leaf_succeeds() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
     let api_key = bootstrap_admin(&client, &base, "delete-leaf").await;
 
@@ -1172,7 +1172,7 @@ async fn test_delete_leaf_succeeds() {
 #[tokio::test]
 async fn test_approvals_filter_by_identity_cross_org_rejected() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let key_a = bootstrap_admin(&client, &base, "approvals-org-a").await;
@@ -1201,7 +1201,7 @@ async fn test_approvals_filter_by_identity_cross_org_rejected() {
 #[tokio::test]
 async fn test_permissions_filter_by_identity_cross_org_rejected() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api(pool).await;
+    let (base, client, _guard) = common::start_api_shared(pool).await;
     let base = format!("http://{base}");
 
     let key_a = bootstrap_admin(&client, &base, "perms-org-a").await;

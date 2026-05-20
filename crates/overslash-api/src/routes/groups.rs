@@ -15,7 +15,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, ClientIp, OrgAcl},
+    extractors::{AdminAcl, ClientIp, OrgAcl, ReqExt},
 };
 use overslash_core::permissions::AccessLevel;
 
@@ -135,6 +135,7 @@ struct MemberResponse {
 
 async fn create_group(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -153,7 +154,7 @@ async fn create_group(
             _ => AppError::Database(e),
         })?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -215,6 +216,7 @@ async fn get_group(scope: OrgScope, Path(id): Path<Uuid>) -> Result<Json<GroupRe
 
 async fn update_group(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -246,7 +248,7 @@ async fn update_group(
         })?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -266,6 +268,7 @@ async fn update_group(
 
 async fn delete_group(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -284,7 +287,7 @@ async fn delete_group(
     let deleted = scope.delete_group(id).await?;
 
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,
@@ -305,6 +308,7 @@ async fn delete_group(
 
 async fn add_grant(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     OrgAcl {
         org_id: caller_org,
         identity_id: caller_identity,
@@ -385,7 +389,7 @@ async fn add_grant(
         })?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = OrgScope::new(caller_org, state.db.clone())
+    let _ = OrgScope::new(caller_org, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: caller_org,
             identity_id: caller_identity,
@@ -443,6 +447,7 @@ async fn list_grants(
 
 async fn remove_grant(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     OrgAcl {
         org_id: caller_org,
         identity_id: caller_identity,
@@ -487,7 +492,7 @@ async fn remove_grant(
     let deleted = scope.remove_group_grant(grant_id, group_id).await?;
 
     if deleted {
-        let _ = OrgScope::new(caller_org, state.db.clone())
+        let _ = OrgScope::new(caller_org, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: caller_org,
                 identity_id: caller_identity,
@@ -506,6 +511,7 @@ async fn remove_grant(
 
 async fn update_grant(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     OrgAcl {
         org_id: caller_org,
         identity_id: caller_identity,
@@ -581,7 +587,7 @@ async fn update_grant(
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
 
-    let _ = OrgScope::new(caller_org, state.db.clone())
+    let _ = OrgScope::new(caller_org, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: caller_org,
             identity_id: caller_identity,
@@ -615,6 +621,7 @@ async fn update_grant(
 
 async fn assign_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -665,7 +672,7 @@ async fn assign_identity(
         })?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
 
-    let _ = OrgScope::new(auth.org_id, state.db.clone())
+    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: auth.identity_id,
@@ -703,6 +710,7 @@ async fn list_members(scope: OrgScope, Path(group_id): Path<Uuid>) -> Result<Jso
 
 async fn unassign_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -743,7 +751,7 @@ async fn unassign_identity(
         .await?;
 
     if deleted {
-        let _ = OrgScope::new(auth.org_id, state.db.clone())
+        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: auth.identity_id,

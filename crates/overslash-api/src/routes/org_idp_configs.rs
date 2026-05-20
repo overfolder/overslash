@@ -16,7 +16,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, UserOrKeyAuth},
+    extractors::{ClientIp, ReqExt, UserOrKeyAuth},
     services::{client_credentials, oidc_discovery},
 };
 use overslash_core::crypto;
@@ -118,6 +118,7 @@ struct DiscoverRequest {
 
 async fn create_idp_config(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: UserOrKeyAuth,
     scope: OrgScope,
     ip: ClientIp,
@@ -125,7 +126,7 @@ async fn create_idp_config(
 ) -> Result<Json<IdpConfigResponse>> {
     let provider_key = if let Some(key) = req.provider_key {
         // Validate builtin provider exists
-        oauth_provider::get_by_key(&state.db, &key)
+        oauth_provider::get_by_key(state.db(&ext), &key)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("provider '{key}' not found")))?;
         key
@@ -168,7 +169,7 @@ async fn create_idp_config(
             .unwrap_or("client_secret_post");
 
         oauth_provider::create_custom(
-            &state.db,
+            state.db(&ext),
             &key,
             display_name,
             &doc.authorization_endpoint,
@@ -263,7 +264,7 @@ async fn create_idp_config(
         }
     }
 
-    let display_name = oauth_provider::get_by_key(&state.db, &provider_key)
+    let display_name = oauth_provider::get_by_key(state.db(&ext), &provider_key)
         .await?
         .map(|p| p.display_name)
         .unwrap_or_else(|| provider_key.clone());
@@ -301,6 +302,7 @@ async fn create_idp_config(
 
 async fn list_idp_configs(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     scope: OrgScope,
 ) -> Result<Json<Vec<serde_json::Value>>> {
     let mut results: Vec<serde_json::Value> = Vec::new();
@@ -311,10 +313,12 @@ async fn list_idp_configs(
     // (D12 blocked env-var fallthrough), so the list entries were
     // misleading. Now they're real: a user matching a pending invite can
     // sign in through them.
-    let managed_signin_on =
-        overslash_db::repos::org::get_allow_overslash_managed_signin(&state.db, scope.org_id())
-            .await?
-            .unwrap_or(false);
+    let managed_signin_on = overslash_db::repos::org::get_allow_overslash_managed_signin(
+        state.db(&ext),
+        scope.org_id(),
+    )
+    .await?
+    .unwrap_or(false);
     if managed_signin_on {
         for (key, display) in [("google", "Google"), ("github", "GitHub")] {
             if state.config.env_auth_credentials(key).is_some() {
@@ -339,7 +343,7 @@ async fn list_idp_configs(
         {
             continue;
         }
-        let display_name = oauth_provider::get_by_key(&state.db, &config.provider_key)
+        let display_name = oauth_provider::get_by_key(state.db(&ext), &config.provider_key)
             .await?
             .map(|p| p.display_name)
             .unwrap_or_else(|| config.provider_key.clone());
@@ -365,6 +369,7 @@ async fn list_idp_configs(
 
 async fn update_idp_config(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: UserOrKeyAuth,
     scope: OrgScope,
     ip: ClientIp,
@@ -457,7 +462,7 @@ async fn update_idp_config(
         None => {}
     }
 
-    let display_name = oauth_provider::get_by_key(&state.db, &updated.provider_key)
+    let display_name = oauth_provider::get_by_key(state.db(&ext), &updated.provider_key)
         .await?
         .map(|p| p.display_name)
         .unwrap_or_else(|| updated.provider_key.clone());
