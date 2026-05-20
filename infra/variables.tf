@@ -87,6 +87,12 @@ variable "vercel_preview_origin_regex" {
   default     = ""
 }
 
+variable "connection_return_url_hosts" {
+  description = "Comma-separated hostnames (no scheme, no path) allowed as OAuth return_url targets after the code exchange. E.g. `api-dev.overfolder.com` for the overfolder dev tenant. Empty = feature disabled (Overslash returns JSON; no redirect)."
+  type        = string
+  default     = ""
+}
+
 # --- Feature flags ---
 
 variable "use_private_vpc" {
