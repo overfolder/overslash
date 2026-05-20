@@ -52,8 +52,9 @@ async fn test_oauth_x_callback_stores_connection() {
     let base = format!("http://{api_addr}");
     let (org_id, ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
-    // State with dummy verifier segment (mock doesn't validate PKCE)
-    let state_param = format!("{org_id}:{ident_id}:x:_:_");
+    // `state` is the opaque flow-row id; the mock token endpoint doesn't
+    // validate PKCE, so leaving `pkce_code_verifier = None` on the row is fine.
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "x", None).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=x_auth_code_42&state={state_param}"
@@ -119,7 +120,8 @@ async fn test_oauth_x_callback_with_byoc() {
         .unwrap();
     let byoc_id = byoc["id"].as_str().unwrap();
 
-    let state_param = format!("{org_id}:{ident_id}:x:_:_");
+    // No BYOC pinned on the flow row — cascade resolver picks the identity-level one.
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "x", None).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=x_byoc_code&state={state_param}"
@@ -262,12 +264,19 @@ async fn test_oauth_x_pkce_in_auth_url() {
         "raw missing code_challenge_method: {raw}"
     );
 
-    // State has 7 segments (org:ident:provider:byoc:verifier:actor:upgrade).
-    let segments: Vec<&str> = state.splitn(7, ':').collect();
-    assert_eq!(segments.len(), 7, "state should have 7 segments: {state}");
-    assert_eq!(segments[2], "x");
-    // The verifier segment must not be "_" (it should be an actual verifier)
-    assert_ne!(segments[4], "_", "code_verifier should not be empty");
+    // `state` is the opaque flow-row id — look the row up and assert the
+    // PKCE verifier was stored.
+    let flow = overslash_db::repos::oauth_connection_flow::get_by_id(&pool, state)
+        .await
+        .unwrap()
+        .expect("flow row should exist");
+    assert_eq!(flow.provider_key, "x");
+    assert!(
+        flow.pkce_code_verifier
+            .as_deref()
+            .is_some_and(|v| !v.is_empty()),
+        "code_verifier should be stored on the flow row",
+    );
 }
 
 // ============================================================================
@@ -531,12 +540,14 @@ async fn test_oauth_github_no_pkce_in_auth_url() {
         "github raw should not have code_challenge: {raw}"
     );
 
-    // State verifier segment should be "_". Layout is now 7 segments
-    // (org:ident:provider:byoc:verifier:actor:upgrade).
-    let segments: Vec<&str> = state.splitn(7, ':').collect();
-    assert_eq!(segments.len(), 7);
-    assert_eq!(
-        segments[4], "_",
-        "github should have '_' as verifier segment"
+    // `state` is the opaque flow-row id — confirm no verifier was stored
+    // (github's provider entry has `supports_pkce = false`).
+    let flow = overslash_db::repos::oauth_connection_flow::get_by_id(&pool, state)
+        .await
+        .unwrap()
+        .expect("flow row should exist");
+    assert!(
+        flow.pkce_code_verifier.is_none(),
+        "github should not store a code verifier",
     );
 }

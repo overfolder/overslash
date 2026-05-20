@@ -83,7 +83,7 @@ async fn test_connection_created_webhook_fires_on_oauth_callback() {
 
     // Drive an OAuth callback — this stores a connection AND should fire
     // `connection.created` to the subscribed mock.
-    let state_param = format!("{org_id}:{ident_id}:x:_:_");
+    let state_param = common::seed_oauth_flow(&pool, org_id, ident_id, "x", None).await;
     let callback_resp: Value = client
         .get(format!(
             "{base}/v1/oauth/callback?code=x_auth_code_42&state={state_param}"

@@ -251,20 +251,29 @@ async fn upgrade_scopes_returns_auth_url_with_union_scopes() {
         "duplicate scope should dedupe"
     );
 
-    // State carries the existing connection id as the 7th segment so the
-    // callback updates in place.
-    let segs: Vec<&str> = state.split(':').collect();
-    assert_eq!(segs.len(), 7, "upgrade state should have 7 segments");
-    assert_eq!(
-        segs[6],
-        conn_id.to_string(),
-        "7th segment is upgrade_connection_id"
+    // `state` is the opaque flow-row id. The row carries
+    // `upgrade_connection_id` pointing at the connection we're upgrading —
+    // that's what tells the callback to update this row in place rather
+    // than minting a new connection. The upstream provider URL stashed on
+    // the row (the one the user gets redirected to from `/connect-authorize`)
+    // is where google-specific bits like `include_granted_scopes` land.
+    let flow = overslash_db::repos::oauth_connection_flow::get_by_id(&pool, state)
+        .await
+        .unwrap()
+        .expect("upgrade flow row should exist");
+    assert_eq!(flow.upgrade_connection_id, Some(conn_id));
+    assert_eq!(flow.provider_key, "google");
+    assert_eq!(flow.identity_id, ident_id);
+    assert!(
+        flow.upstream_authorize_url
+            .contains("include_granted_scopes=true")
     );
+    assert!(flow.upstream_authorize_url.contains("drive.readonly"));
 
-    // Auth URL preserves google's include_granted_scopes=true and the full
-    // scope union.
-    assert!(auth_url.contains("include_granted_scopes=true"));
-    assert!(auth_url.contains("drive.readonly"));
+    // The returned `auth_url` is the Overslash-gated `/connect-authorize?id=…`
+    // URL — consistent with the initiate path so chat-delivered upgrade
+    // links go through the same login bounce / mismatch UX.
+    assert!(auth_url.contains("/connect-authorize?id="));
 }
 
 #[tokio::test]

@@ -376,8 +376,9 @@
 			);
 			if (ctrl.signal.aborted) return;
 			const popup = window.open(resp.auth_url, 'oss_oauth_upgrade', 'width=520,height=680');
-			// upgrade_scopes still returns auth_url today (its own response shape
-			// is unchanged in this PR — the gate only fronts the initial connect).
+			// `auth_url` is the Overslash-gated `/connect-authorize?id=…` page —
+			// the popup hits that first, then the gate redirects to the
+			// upstream provider after the session check.
 			if (!popup) {
 				error = 'Pop-up blocked. Allow pop-ups and try again.';
 				return;
