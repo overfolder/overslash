@@ -1797,3 +1797,41 @@ pub async fn seed_org_user_key(pool: &PgPool, opts: SeedOptions) -> (Uuid, Uuid,
 
     (org_id, user_id, raw_key)
 }
+
+/// Seed an `oauth_connection_flows` row and return its id, suitable for
+/// using as the OAuth `state` query parameter. Replaces the hand-crafted
+/// state strings that pre-dated the single-id state design.
+pub async fn seed_oauth_flow(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    byoc_credential_id: Option<Uuid>,
+) -> String {
+    use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
+    use time::{Duration, OffsetDateTime};
+
+    let flow_id = format!("flow_{}", &Uuid::new_v4().simple().to_string()[..16]);
+    oauth_connection_flow::create(
+        pool,
+        &CreateOauthConnectionFlow {
+            id: &flow_id,
+            org_id,
+            identity_id,
+            actor_identity_id: identity_id,
+            provider_key,
+            byoc_credential_id,
+            scopes: &[],
+            pkce_code_verifier: None,
+            upstream_authorize_url: "https://example.test/authorize",
+            expires_at: OffsetDateTime::now_utc() + Duration::minutes(10),
+            created_ip: None,
+            created_user_agent: None,
+            return_url: None,
+            upgrade_connection_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    flow_id
+}

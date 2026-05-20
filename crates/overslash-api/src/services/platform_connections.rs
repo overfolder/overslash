@@ -91,8 +91,8 @@ pub struct CreateConnectionInput {
     /// `reauth_required` and `missing_scopes` arms — without this, a
     /// reauth would orphan the broken connection alongside a brand-new
     /// row, leaving `service_instances.connection_id` pointing at the
-    /// dead one. See `routes/connections.rs::oauth_callback` for the
-    /// state-segment parser.
+    /// dead one. Persisted on the flow row; the callback reads it back
+    /// when resolving the state.
     #[serde(default)]
     pub upgrade_connection_id: Option<Uuid>,
     /// Optional URL the callback redirects the user to after the flow
@@ -261,56 +261,24 @@ async fn kernel_create_connection_for_identity(
     );
 
     let byoc_id = creds.byoc_credential_id;
-    let byoc_segment = byoc_id.map_or_else(|| "_".to_string(), |id| id.to_string());
 
     let pkce = if provider.supports_pkce {
         Some(oauth::generate_pkce())
     } else {
         None
     };
-    let verifier_segment = pkce.as_ref().map(|p| p.verifier.as_str()).unwrap_or("_");
-
-    // The actor (caller agent) is preserved separately from `identity_id` so
-    // the callback can audit the agent that initiated the OAuth flow even
-    // when the resulting connection is bound to the owner user via
-    // on_behalf_of. State format unchanged — see routes/connections.rs
-    // `oauth_callback` for the parser.
-    let actor_segment = if caller_identity_id == identity_id {
-        "_".to_string()
-    } else {
-        caller_identity_id.to_string()
-    };
-
-    let upgrade_segment = input
-        .upgrade_connection_id
-        .map_or_else(|| "_".to_string(), |id| id.to_string());
 
     // Validate the caller-supplied return URL up front. The kernel mints
     // the flow row below; we need a parsed value to persist and a
     // 400-on-failure shape that flows out of `initiate_connection`.
     let return_url = parse_return_url(input.return_url.as_deref())?;
 
-    // Allocate the flow id early so we can embed it in the OAuth state.
-    // The callback uses this id to look up the flow row and recover
-    // `return_url` — that's why it has to be in state, not just a
-    // server-side lookup key. The id is base62-opaque, already public
-    // (it appears in the `/connect-authorize?id=…` URL the user clicks),
-    // and is cross-checked against the rest of the state segments at
-    // callback time so a forged id can't redirect through someone
-    // else's flow.
+    // The OAuth `state` parameter is the opaque base62 flow id. The
+    // callback resolves it back to this row and reads every other field
+    // (org, identity, provider, byoc, PKCE verifier, actor, upgrade
+    // target) directly from the row — no segments to forge.
     let flow_id = svc::mint_flow_id();
-
-    let oauth_state = format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}",
-        ctx.org_id,
-        identity_id,
-        input.provider,
-        byoc_segment,
-        verifier_segment,
-        actor_segment,
-        upgrade_segment,
-        flow_id,
-    );
+    let oauth_state = flow_id.clone();
 
     let raw_authorize_url = oauth::build_auth_url(
         &provider,
@@ -321,10 +289,9 @@ async fn kernel_create_connection_for_identity(
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
 
-    // Persist the gate-flow row. `flow_id` was minted above so we could
-    // bake it into the OAuth state — it's the lookup key the callback
-    // uses to recover the `return_url` (and to cross-check the rest of
-    // the state segments against the row).
+    // Persist the gate-flow row. `flow_id` is the OAuth `state` parameter
+    // we just emitted, so the callback can look this row up directly and
+    // read identity, PKCE, byoc, return_url, and upgrade target off it.
     let now = OffsetDateTime::now_utc();
     let expires_at = now + FLOW_TTL;
     let pkce_verifier = pkce.as_ref().map(|p| p.verifier.as_str());
@@ -345,6 +312,7 @@ async fn kernel_create_connection_for_identity(
             created_ip: request_meta.ip,
             created_user_agent: request_meta.user_agent,
             return_url: return_url.as_deref(),
+            upgrade_connection_id: input.upgrade_connection_id,
         },
     )
     .await?;
@@ -478,10 +446,11 @@ pub async fn mint_initial_auth_url(
 }
 
 /// Mint a gated `/connect-authorize` URL that, when consumed, refreshes
-/// the *existing* connection in place (sets segment 7 of the OAuth state
-/// so the callback updates the row instead of creating a new one). Used
-/// by the action handler's `reauth_required` arm (refresh-token failed)
-/// and the `missing_scopes` arm (incremental scope upgrade).
+/// the *existing* connection in place (the minted flow row carries
+/// `upgrade_connection_id` so the callback updates that row instead of
+/// creating a new one). Used by the action handler's `reauth_required`
+/// arm (refresh-token failed) and the `missing_scopes` arm (incremental
+/// scope upgrade).
 ///
 /// Scopes default to the connection's existing set unioned with
 /// `extra_scopes` — Google with `include_granted_scopes=true` would
@@ -499,10 +468,10 @@ pub async fn mint_upgrade_auth_url(
     let scope = OrgScope::new(org_id, state.db.clone());
 
     // The OAuth callback (`routes/connections.rs::oauth_callback`) updates
-    // the existing row in place when segment 7 carries `upgrade_connection_id`
-    // — it preserves `existing.identity_id` and just swaps tokens/scopes.
-    // So whichever identity threads through the state, the connection's
-    // owner is unchanged after the dance. Two cases to handle:
+    // the existing row in place when the flow row's `upgrade_connection_id`
+    // is set — it preserves `existing.identity_id` and just swaps
+    // tokens/scopes. So whichever identity owns the flow row, the
+    // connection's owner is unchanged after the dance. Two cases to handle:
     //
     // (1) Same-identity caller. Nothing to validate; the existing kernel
     //     handles it directly.
