@@ -526,12 +526,15 @@ pub async fn stripe_webhook(
         }
         "customer.subscription.deleted" => {
             handle_subscription_deleted(&state, &ext, data).await?;
-            crate::services::billing_email::send_subscription_canceled(&state, event_id, data)
-                .await;
+            crate::services::billing_email::send_subscription_canceled(
+                &state, &ext, event_id, data,
+            )
+            .await;
         }
         "invoice.payment_succeeded" => {
             if matches!(
-                crate::services::billing_email::send_invoice_paid(&state, event_id, data).await,
+                crate::services::billing_email::send_invoice_paid(&state, &ext, event_id, data)
+                    .await,
                 crate::services::billing_email::SendOutcome::Retryable,
             ) {
                 // Webhook ordering race: known customer, but
@@ -545,8 +548,10 @@ pub async fn stripe_webhook(
         }
         "invoice.payment_failed" => {
             if matches!(
-                crate::services::billing_email::send_invoice_payment_failed(&state, event_id, data)
-                    .await,
+                crate::services::billing_email::send_invoice_payment_failed(
+                    &state, &ext, event_id, data,
+                )
+                .await,
                 crate::services::billing_email::SendOutcome::Retryable,
             ) {
                 return Err(AppError::Internal(
