@@ -14,7 +14,7 @@ use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{AppState, error::AppError};
+use crate::{AppState, error::AppError, extractors::ReqExt};
 use overslash_core::crypto;
 use overslash_db::repos::{oauth_provider, org, org_idp_config};
 
@@ -74,6 +74,7 @@ struct SeededOrg {
 
 async fn seed_e2e_idps(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     Json(req): Json<SeedRequest>,
 ) -> Result<Json<SeedResponse>, AppError> {
     if !state.config.dev_auth_enabled {
@@ -91,7 +92,7 @@ async fn seed_e2e_idps(
     let mut seeded_providers = Vec::with_capacity(req.providers.len());
     for p in &req.providers {
         oauth_provider::create_custom(
-            &state.db,
+            state.db(&ext),
             &p.key,
             &p.display_name,
             &p.authorization_endpoint,
@@ -115,23 +116,25 @@ async fn seed_e2e_idps(
     // 2. Ensure orgs exist + are bootstrapped, then attach the IdP config.
     let mut seeded_orgs = Vec::with_capacity(req.orgs.len());
     for o in &req.orgs {
-        let org_row = match org::get_by_slug(&state.db, &o.slug).await? {
+        let org_row = match org::get_by_slug(state.db(&ext), &o.slug).await? {
             Some(existing) => existing,
-            None => match org::create(&state.db, &o.name, &o.slug, "standard").await {
+            None => match org::create(state.db(&ext), &o.name, &o.slug, "standard").await {
                 Ok(new_org) => new_org,
                 Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-                    org::get_by_slug(&state.db, &o.slug).await?.ok_or_else(|| {
-                        AppError::Internal(format!(
-                            "seed race: {} missing after unique violation",
-                            o.slug
-                        ))
-                    })?
+                    org::get_by_slug(state.db(&ext), &o.slug)
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Internal(format!(
+                                "seed race: {} missing after unique violation",
+                                o.slug
+                            ))
+                        })?
                 }
                 Err(e) => return Err(e.into()),
             },
         };
 
-        overslash_db::repos::org_bootstrap::bootstrap_org(&state.db, org_row.id, None).await?;
+        overslash_db::repos::org_bootstrap::bootstrap_org(state.db(&ext), org_row.id, None).await?;
 
         let enc_id = crypto::encrypt(&enc_key, o.client_id.as_bytes())
             .map_err(|e| AppError::Internal(format!("encrypt client_id: {e}")))?;
@@ -142,8 +145,9 @@ async fn seed_e2e_idps(
         // in place rather than failing on the (org_id, provider_key) unique
         // constraint.
         let existing =
-            org_idp_config::get_by_org_and_provider(&state.db, org_row.id, &o.provider_key).await?;
-        let scope = overslash_db::OrgScope::new(org_row.id, state.db.clone());
+            org_idp_config::get_by_org_and_provider(state.db(&ext), org_row.id, &o.provider_key)
+                .await?;
+        let scope = overslash_db::OrgScope::new(org_row.id, state.db_pool(&ext));
         let cfg_id = if let Some(cfg) = existing {
             scope
                 .update_org_idp_config(

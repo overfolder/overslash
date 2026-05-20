@@ -21,7 +21,7 @@ use overslash_core::types::service::Risk;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp, OrgAcl, WriteAcl},
+    extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
     services::action_caller::{self, AuditSource, CallContext, CallOutcome, ReplayPayload},
     services::group_ceiling,
     services::mcp_caller,
@@ -533,8 +533,10 @@ struct ResolveRequest {
     ttl: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_approval(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth_ctx: AuthContext,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
@@ -582,7 +584,7 @@ async fn resolve_approval(
                         })?;
                 let binding =
                     overslash_db::repos::mcp_client_agent_binding::get_for_agent_and_client(
-                        &state.db,
+                        state.db(&ext),
                         caller_identity,
                         client_id,
                     )
@@ -826,7 +828,7 @@ async fn resolve_approval(
         // which excluded plain REST and white-label agents; moving it onto
         // the identity makes the toggle universal across surfaces.
         let auto_call_enabled = match overslash_db::repos::identity::get_by_id(
-            &state.db,
+            state.db(&ext),
             approval_pre.org_id,
             approval_pre.identity_id,
         )
@@ -855,7 +857,7 @@ async fn resolve_approval(
         // is naturally a no-op for them.
         let elicitation_active =
             match overslash_db::repos::mcp_elicitation::has_active_for_approval(
-                &state.db,
+                state.db(&ext),
                 approval_pre.id,
             )
             .await
@@ -872,12 +874,13 @@ async fn resolve_approval(
 
         if !elicitation_active && auto_call_enabled {
             let state_c = state.clone();
+            let ext_c = ext.clone();
             let approval_c = approval_pre.clone();
             let resolver_identity = auth.identity_id;
             let resolver_org_id = auth.org_id;
             let ip_c = ip.0.clone();
             tokio::spawn(async move {
-                let scope_c = OrgScope::new(approval_c.org_id, state_c.db.clone());
+                let scope_c = OrgScope::new(approval_c.org_id, state_c.db_pool(&ext_c));
                 // Atomic claim with triggered_by="auto". Losing this claim
                 // is fine — it means a manual /call beat us to it.
                 let claim = match scope_c.claim_execution(approval_c.id, "auto").await {
@@ -893,6 +896,7 @@ async fn resolve_approval(
                 };
                 if let Err(e) = execute_claimed_approval(
                     &state_c,
+                    &ext_c,
                     &scope_c,
                     &approval_c,
                     claim,
@@ -956,7 +960,7 @@ async fn resolve_approval(
 
     // Dispatch webhook (fire-and-forget)
     {
-        let db = state.db.clone();
+        let db = state.db_pool(&ext);
         let client = state.http_client.clone();
         let org_id = auth.org_id;
         let approval_id = row.id;
@@ -1014,6 +1018,7 @@ async fn resolve_approval(
 
 async fn call_approval(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -1075,6 +1080,7 @@ async fn call_approval(
 
     let (finalised, _succeeded, cascaded_approval_ids) = execute_claimed_approval(
         &state,
+        &ext,
         &scope,
         &approval,
         claimed,
@@ -1118,6 +1124,7 @@ async fn call_approval(
 #[allow(clippy::too_many_arguments)]
 async fn execute_claimed_approval(
     state: &AppState,
+    ext: &axum::http::Extensions,
     scope: &OrgScope,
     approval: &overslash_db::repos::approval::ApprovalRow,
     claimed: ExecutionRow,
@@ -1534,7 +1541,7 @@ async fn execute_claimed_approval(
         .await;
 
     {
-        let db = state.db.clone();
+        let db = state.db_pool(ext);
         let client = state.http_client.clone();
         let org_id = audit_org_id;
         let webhook_event = if succeeded {
@@ -1584,6 +1591,7 @@ async fn execute_claimed_approval(
 
 async fn cancel_approval_execution(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -1643,7 +1651,7 @@ async fn cancel_approval_execution(
         .await;
 
     {
-        let db = state.db.clone();
+        let db = state.db_pool(&ext);
         let client = state.http_client.clone();
         let org_id = auth.org_id;
         let payload = serde_json::json!({
