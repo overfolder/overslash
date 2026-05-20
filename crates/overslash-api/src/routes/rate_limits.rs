@@ -14,7 +14,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp},
+    extractors::{AuthContext, ClientIp, ReqExt},
 };
 
 pub fn router() -> Router<AppState> {
@@ -89,6 +89,7 @@ impl From<rate_limit::RateLimitRow> for RateLimitResponse {
 /// Invalidate cached config entries so updates take effect immediately.
 fn invalidate_cache_for(
     state: &AppState,
+    ext: &axum::http::Extensions,
     scope: &RateLimitScope,
     org_id: Uuid,
     identity_id: Option<Uuid>,
@@ -96,16 +97,20 @@ fn invalidate_cache_for(
     match scope {
         // Org defaults and group defaults can affect any user → flush the whole org
         RateLimitScope::Org | RateLimitScope::Group => {
-            state.rate_limit_cache.invalidate_org(org_id);
+            state.rate_limit_cache(ext).invalidate_org(org_id);
         }
         RateLimitScope::User => {
             if let Some(id) = identity_id {
-                state.rate_limit_cache.invalidate_user_budget(org_id, id);
+                state
+                    .rate_limit_cache(ext)
+                    .invalidate_user_budget(org_id, id);
             }
         }
         RateLimitScope::IdentityCap => {
             if let Some(id) = identity_id {
-                state.rate_limit_cache.invalidate_identity_cap(org_id, id);
+                state
+                    .rate_limit_cache(ext)
+                    .invalidate_identity_cap(org_id, id);
             }
         }
     }
@@ -115,6 +120,7 @@ fn invalidate_cache_for(
 
 async fn upsert_rate_limit(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
@@ -178,7 +184,7 @@ async fn upsert_rate_limit(
 
     // Invalidate cached configs so the new value takes effect immediately
     // (rather than waiting up to 30s for the cache TTL).
-    invalidate_cache_for(&state, &req.scope, auth.org_id, req.identity_id);
+    invalidate_cache_for(&state, &ext, &req.scope, auth.org_id, req.identity_id);
 
     // Audit
     scope
@@ -213,6 +219,7 @@ async fn list_rate_limits(scope: OrgScope) -> Result<Json<Vec<RateLimitResponse>
 
 async fn delete_rate_limit(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
@@ -225,7 +232,7 @@ async fn delete_rate_limit(
 
     // Invalidate everything for the org. We don't know the scope of the deleted row
     // (we'd need to fetch it first), so the safest course is to flush the org's cache.
-    state.rate_limit_cache.invalidate_org(scope.org_id());
+    state.rate_limit_cache(&ext).invalidate_org(scope.org_id());
 
     scope
         .log_audit(AuditEntry {
