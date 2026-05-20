@@ -1,7 +1,10 @@
 //! Shared test helpers for integration tests.
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 // Test setup requires dynamic SQL for updating provider endpoints, creating template DBs, etc.
 #![allow(clippy::disallowed_methods)]
+
+pub mod shared_router;
+pub use shared_router::{ResourceGuard, start_api_shared};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
