@@ -12,8 +12,9 @@
 //!
 //! Single-use is enforced via `consumed_at`. Concurrent clicks of the
 //! same URL: first wins, second sees `Ok(None)`. The `/v1/oauth/callback`
-//! security boundary is unchanged and still keys off the colon-segmented
-//! `state` parameter — `consumed_at` is purely the gate's UX flag.
+//! security boundary keys off the opaque `state` (this row's `id`) and
+//! reads identity, PKCE, and upgrade-target back from the row —
+//! `consumed_at` is purely the gate's UX flag.
 
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -39,6 +40,10 @@ pub struct OauthConnectionFlowRow {
     /// after success/error (when its host is on the operator allow-list).
     /// `None` falls back to the historical JSON response.
     pub return_url: Option<String>,
+    /// When set, the OAuth callback updates this existing connection in place
+    /// (incremental scope upgrade) instead of minting a new one. `None` is
+    /// the new-connection path.
+    pub upgrade_connection_id: Option<Uuid>,
 }
 
 pub struct CreateOauthConnectionFlow<'a> {
@@ -55,6 +60,7 @@ pub struct CreateOauthConnectionFlow<'a> {
     pub created_ip: Option<&'a str>,
     pub created_user_agent: Option<&'a str>,
     pub return_url: Option<&'a str>,
+    pub upgrade_connection_id: Option<Uuid>,
 }
 
 pub async fn create(
@@ -67,12 +73,14 @@ pub async fn create(
             (id, org_id, identity_id, actor_identity_id, provider_key,
              byoc_credential_id, scopes, pkce_code_verifier,
              upstream_authorize_url, expires_at,
-             created_ip, created_user_agent, return_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             created_ip, created_user_agent, return_url,
+             upgrade_connection_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id, org_id, identity_id, actor_identity_id, provider_key,
                    byoc_credential_id, scopes, pkce_code_verifier,
                    upstream_authorize_url, expires_at, consumed_at,
-                   created_at, created_ip, created_user_agent, return_url",
+                   created_at, created_ip, created_user_agent, return_url,
+                   upgrade_connection_id",
         input.id,
         input.org_id,
         input.identity_id,
@@ -86,6 +94,7 @@ pub async fn create(
         input.created_ip,
         input.created_user_agent,
         input.return_url,
+        input.upgrade_connection_id,
     )
     .fetch_one(pool)
     .await
@@ -103,7 +112,8 @@ pub async fn get_by_id(
         "SELECT id, org_id, identity_id, actor_identity_id, provider_key,
                 byoc_credential_id, scopes, pkce_code_verifier,
                 upstream_authorize_url, expires_at, consumed_at,
-                created_at, created_ip, created_user_agent, return_url
+                created_at, created_ip, created_user_agent, return_url,
+                upgrade_connection_id
            FROM oauth_connection_flows WHERE id = $1",
         id,
     )
@@ -127,7 +137,8 @@ pub async fn consume(
           RETURNING id, org_id, identity_id, actor_identity_id, provider_key,
                     byoc_credential_id, scopes, pkce_code_verifier,
                     upstream_authorize_url, expires_at, consumed_at,
-                    created_at, created_ip, created_user_agent, return_url",
+                    created_at, created_ip, created_user_agent, return_url,
+                    upgrade_connection_id",
         id,
     )
     .fetch_optional(pool)
