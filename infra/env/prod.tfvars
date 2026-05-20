@@ -73,6 +73,10 @@ email_provider = "resend"
 email_from     = "no-reply@overslash.com"
 email_reply_to = "support@overslash.com"
 
+# OAuth return_url redirect allow-list: allow Overfolder production backend to
+# receive post-consent redirects after Overslash completes the code exchange.
+connection_return_url_hosts = "api.overfolder.com"
+
 pagerduty_enabled = true
 alert_email       = "alert@overslash.com"
 
