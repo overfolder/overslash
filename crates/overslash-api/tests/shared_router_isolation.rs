@@ -17,19 +17,20 @@
 
 mod common;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-/// Two tests, each with its own bootstrapped pool. Each test verifies
-/// that the org it created is visible in its OWN pool and absent from
-/// the other (the routes go through `state.db(&ext)` which the test-
-/// pool middleware steers to the right per-test pool).
+/// Two tests, each with its own pool. Each registers an org via the
+/// shared router (going through `state.db(&ext)`); a `SystemScope`
+/// read against the *other* pool must not see the freshly-created
+/// org row. If the resolver leaked, the second probe would find the
+/// first test's org in the wrong DB.
 #[tokio::test]
 async fn db_pool_isolated_per_test() {
-    let (pool_a, fx_a) = common::test_pool_bootstrapped().await;
+    let pool_a = common::test_pool().await;
     let (addr_a, client_a, _guard_a) = common::start_api_shared(pool_a.clone()).await;
     let base_a = format!("http://{addr_a}");
 
-    let (pool_b, fx_b) = common::test_pool_bootstrapped().await;
+    let pool_b = common::test_pool().await;
     let (addr_b, client_b, _guard_b) = common::start_api_shared(pool_b.clone()).await;
     let base_b = format!("http://{addr_b}");
 
@@ -38,51 +39,84 @@ async fn db_pool_isolated_per_test() {
     // default_headers by `start_api_shared`) is what disambiguates.
     assert_eq!(addr_a, addr_b, "shared-router harness binds a single addr");
 
-    // Each client reads its OWN org.
-    let me_a: Value = client_a
-        .get(format!("{base_a}/v1/whoami"))
-        .header("Authorization", format!("Bearer {}", fx_a.org_key))
+    // Create a unique slug per pool via the shared router (so the
+    // write actually flows through `state.db(&ext)` → the per-test
+    // resolver). Each pool starts empty (plain `test_pool()`), so the
+    // slug only exists in the pool that created it.
+    let slug_a = format!("iso-a-{}", uuid::Uuid::new_v4().simple());
+    let create_a: Value = client_a
+        .post(format!("{base_a}/v1/orgs"))
+        .json(&json!({"name": "A", "slug": slug_a}))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(
-        me_a["org_id"].as_str().unwrap(),
-        fx_a.org_id.to_string(),
-        "client A must see its own org"
-    );
+    let org_id_a = create_a["id"]
+        .as_str()
+        .expect("org create returned id")
+        .to_string();
 
-    let me_b: Value = client_b
-        .get(format!("{base_b}/v1/whoami"))
-        .header("Authorization", format!("Bearer {}", fx_b.org_key))
+    let slug_b = format!("iso-b-{}", uuid::Uuid::new_v4().simple());
+    let create_b: Value = client_b
+        .post(format!("{base_b}/v1/orgs"))
+        .json(&json!({"name": "B", "slug": slug_b}))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(
-        me_b["org_id"].as_str().unwrap(),
-        fx_b.org_id.to_string(),
-        "client B must see its own org"
+    let org_id_b = create_b["id"]
+        .as_str()
+        .expect("org create returned id")
+        .to_string();
+    assert_ne!(
+        org_id_a, org_id_b,
+        "distinct pools must produce distinct ids"
     );
 
-    // Cross-key check: A's key against B's pool must NOT authenticate
-    // (the key row lives in A's DB, not B's, so the bearer should be
-    // rejected). If the resolver leaked, this would 200 unexpectedly.
-    let cross_resp = client_b
-        .get(format!("{base_b}/v1/whoami"))
-        .header("Authorization", format!("Bearer {}", fx_a.org_key))
-        .send()
-        .await
-        .unwrap();
+    // Direct DB probes against each pool: A's org row must NOT exist
+    // in B's pool, and B's org row must NOT exist in A's pool.
+    let count_a_in_b: i64 =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orgs WHERE id = $1::uuid")
+            .bind(&org_id_a)
+            .fetch_one(&pool_b)
+            .await
+            .unwrap();
     assert_eq!(
-        cross_resp.status().as_u16(),
-        401,
-        "A's API key must not authenticate against B's pool"
+        count_a_in_b, 0,
+        "A's org must NOT appear in B's DB (resolver leak)"
     );
+
+    let count_b_in_a: i64 =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orgs WHERE id = $1::uuid")
+            .bind(&org_id_b)
+            .fetch_one(&pool_a)
+            .await
+            .unwrap();
+    assert_eq!(
+        count_b_in_a, 0,
+        "B's org must NOT appear in A's DB (resolver leak)"
+    );
+
+    // And the writes did land in the right place:
+    let count_a_in_a: i64 =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orgs WHERE id = $1::uuid")
+            .bind(&org_id_a)
+            .fetch_one(&pool_a)
+            .await
+            .unwrap();
+    assert_eq!(count_a_in_a, 1, "A's org must exist in A's DB");
+
+    let count_b_in_b: i64 =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orgs WHERE id = $1::uuid")
+            .bind(&org_id_b)
+            .fetch_one(&pool_b)
+            .await
+            .unwrap();
+    assert_eq!(count_b_in_b, 1, "B's org must exist in B's DB");
 }
 
 /// Requests missing the `X-Test-Pool-Id` header must 400 with a clear
