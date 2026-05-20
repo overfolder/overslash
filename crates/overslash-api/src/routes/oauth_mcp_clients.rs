@@ -18,7 +18,11 @@ use axum::{
 use serde_json::json;
 
 use super::util::fmt_time;
-use crate::{AppState, error::AppError, extractors::AdminAcl};
+use crate::{
+    AppState,
+    error::AppError,
+    extractors::{AdminAcl, ReqExt},
+};
 use overslash_db::repos::{mcp_refresh_token, oauth_mcp_client};
 
 pub fn router() -> Router<AppState> {
@@ -29,9 +33,10 @@ pub fn router() -> Router<AppState> {
 
 async fn list(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     _acl: AdminAcl,
 ) -> Result<impl IntoResponse, AppError> {
-    let rows = oauth_mcp_client::list_all(&state.db).await?;
+    let rows = oauth_mcp_client::list_all(state.db(&ext)).await?;
     let clients: Vec<_> = rows
         .into_iter()
         .map(|r| {
@@ -52,14 +57,16 @@ async fn list(
 
 async fn revoke(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     _acl: AdminAcl,
     Path(client_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let found = oauth_mcp_client::revoke(&state.db, &client_id).await?;
+    let found = oauth_mcp_client::revoke(state.db(&ext), &client_id).await?;
     if !found {
         return Err(AppError::NotFound("mcp client not found".into()));
     }
-    let revoked_tokens = mcp_refresh_token::revoke_all_for_client(&state.db, &client_id).await?;
+    let revoked_tokens =
+        mcp_refresh_token::revoke_all_for_client(state.db(&ext), &client_id).await?;
     Ok((
         StatusCode::OK,
         Json(json!({

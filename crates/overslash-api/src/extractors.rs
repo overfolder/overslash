@@ -6,6 +6,34 @@ use uuid::Uuid;
 
 use crate::{AppState, error::AppError, services::jwt};
 
+/// Hands handlers the request's `Extensions` map so they can pass it to
+/// the per-request accessor methods on [`AppState`] (`state.db(&ext)`,
+/// `state.rate_limit_cache(&ext)`, etc.). The accessors dispatch to a
+/// per-test `TestResources` bundle under the shared-router test harness
+/// and fall through to the static AppState fields in production.
+///
+/// Pull this into any handler that touches a DB pool or one of the
+/// per-request caches/stores directly. Handlers that reach those
+/// resources only through `OrgScope` / `UserScope` / `AuthContext`
+/// don't need it — those extractors already pick the right pool inside
+/// their own `from_request_parts`.
+///
+/// Cloning `Extensions` is shallow; the map carries a handful of
+/// `Arc`-shaped markers (`TestPoolId`, `ConnectInfo`,
+/// `RequestOrgContext`), each O(1) to clone.
+pub struct ReqExt(pub axum::http::Extensions);
+
+impl<S: Send + Sync> FromRequestParts<S> for ReqExt {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        Ok(ReqExt(parts.extensions.clone()))
+    }
+}
+
 /// Extracts the client IP address from request headers or connection info.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
