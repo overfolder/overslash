@@ -214,32 +214,49 @@ async fn non_oauth_template_does_not_auto_connect() {
 
 #[tokio::test]
 async fn auto_connect_failure_keeps_instance_omits_connect_bundle() {
-    // No env-var fallback. Without `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`
-    // the connect kernel can't resolve client credentials, so
-    // `kernel_create_connection` returns BadRequest. Best-effort
-    // orchestration logs and returns the instance anyway — the caller
-    // can configure BYOC + retry via `POST /v1/connections` later. This
-    // preserves the historical "create instance now, wire credentials
-    // later" workflow that the dashboard's /services/new page has
-    // always relied on.
-    // SAFETY: scoped to this test, no other test in this file relies on
-    // the variable being unset.
-    unsafe {
-        std::env::remove_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS");
-    }
+    // Force the connect kernel to fail by seeding a template whose OAuth
+    // provider key doesn't exist in `oauth_providers`. The kernel's
+    // `oauth_provider::get_by_key` returns None, the kernel returns
+    // NotFound, and best-effort orchestration logs and returns the
+    // instance anyway — preserving the historical "create instance now,
+    // wire credentials later" workflow.
+    //
+    // We deliberately avoid `env::remove_var` here because tokio's
+    // multi-threaded test runtime shares env state across concurrent tests
+    // in the same binary, and other tests in this file set the OAuth env
+    // vars in their own `ensure_oauth_env()` calls — a remove_var race
+    // would make this test flaky in parallel runs.
+    ensure_oauth_env();
     let pool = common::test_pool().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{api_addr}");
     let (_org_id, _ident_id, api_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
 
-    seed_oauth_template(&base, &client, &admin_key, "gcal-besteffort").await;
+    let openapi = "openapi: 3.1.0\n\
+        info:\n  title: GCal Bogus Provider\n  key: gcal-bogus-provider\n\
+        servers:\n  - url: https://example.com\n\
+        components:\n  securitySchemes:\n    oauth:\n      type: oauth2\n      provider: nonexistent_provider\n      flows:\n        authorizationCode:\n          authorizationUrl: https://example.com/auth\n          tokenUrl: https://example.com/token\n          scopes:\n            read: \"\"\n\
+        paths:\n  /items:\n    get:\n      operationId: list_items\n      summary: List\n      risk: read\n      security:\n        - oauth:\n            - read\n";
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "openapi": openapi, "user_level": false }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "template seed failed: {} {}",
+        resp.status(),
+        resp.text().await.unwrap_or_default()
+    );
 
     let resp = client
         .post(format!("{base}/v1/services"))
         .header("Authorization", format!("Bearer {api_key}"))
         .json(&json!({
-            "template_key": "gcal-besteffort",
+            "template_key": "gcal-bogus-provider",
             "name": "besteffort-svc",
         }))
         .send()
@@ -258,10 +275,114 @@ async fn auto_connect_failure_keeps_instance_omits_connect_bundle() {
         body.get("connect").is_none(),
         "connect bundle should be omitted when auto-connect failed; got {body}"
     );
-    // No flow row was minted (the credential resolve failed before that).
+    // No flow row was minted (provider lookup failed before that step).
     let flow_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM oauth_connection_flows")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(flow_count.0, 0);
+}
+
+#[tokio::test]
+async fn end_to_end_oauth_callback_binds_connection_to_instance() {
+    // Real round-trip: `POST /v1/services` → user clicks `connect.auth_url`
+    // → callback exchanges code at the mock OAuth server → connection is
+    // stored AND `service_instances.connection_id` is updated. Mirrors the
+    // pattern in `oauth_x.rs` (point a provider's token_endpoint at the
+    // in-process mock, then drive the callback directly).
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    // The userinfo fetch is best-effort; point it at a known-bad URL so
+    // the callback short-circuits to `account_email = None` instead of
+    // hitting the real Google API.
+    sqlx::query("UPDATE oauth_providers SET userinfo_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/userinfo-404"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-e2e").await;
+
+    // Step 1: create the service — kicks off the OAuth flow.
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "gcal-e2e",
+            "name": "my-gcal-e2e",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status().as_u16(), 200);
+    let body: Value = create_resp.json().await.unwrap();
+    let instance_id: uuid::Uuid = body["id"].as_str().unwrap().parse().unwrap();
+    assert!(
+        body["connection_id"].is_null() || body.get("connection_id").is_none(),
+        "instance should start with no connection bound; got {body}"
+    );
+    let flow_id = body["connect"]["flow_id"].as_str().unwrap().to_string();
+
+    // Step 2: simulate the user clicking through OAuth — hit the callback
+    // directly with the flow id as `state`. The mock server's token
+    // endpoint returns canned tokens for any `code`.
+    let callback: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=e2e_code&state={flow_id}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(callback["status"], "connected");
+    assert_eq!(callback["provider"], "google");
+    let connection_id: uuid::Uuid = callback["connection_id"].as_str().unwrap().parse().unwrap();
+    let bound_id: uuid::Uuid = callback["service_instance_id"]
+        .as_str()
+        .expect("service_instance_id surfaced in JSON")
+        .parse()
+        .unwrap();
+    assert_eq!(
+        bound_id, instance_id,
+        "callback should report the same service_instance_id the flow row carried"
+    );
+    assert!(
+        callback.get("service_instance_bind_error").is_none(),
+        "bind should succeed; got error: {callback}"
+    );
+
+    // Step 3: re-fetch the service instance and verify `connection_id` is
+    // now pinned to the new connection.
+    let fetched: Value = client
+        .get(format!("{base}/v1/services/my-gcal-e2e"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let fetched_conn: uuid::Uuid = fetched["connection_id"]
+        .as_str()
+        .expect("connection_id present after callback")
+        .parse()
+        .unwrap();
+    assert_eq!(
+        fetched_conn, connection_id,
+        "service instance must be bound to the newly-created connection"
+    );
 }
