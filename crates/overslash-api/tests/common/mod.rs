@@ -1838,6 +1838,7 @@ pub async fn seed_oauth_flow(
             created_user_agent: None,
             return_url: None,
             upgrade_connection_id: None,
+            service_instance_id: None,
         },
     )
     .await
