@@ -386,3 +386,204 @@ async fn end_to_end_oauth_callback_binds_connection_to_instance() {
         "service instance must be bound to the newly-created connection"
     );
 }
+
+#[tokio::test]
+async fn callback_bind_error_surfaces_when_instance_missing() {
+    // Defensive branch in `oauth_callback_inner`: when the flow row carries
+    // a `service_instance_id` but the instance doesn't exist by the time
+    // the callback runs (e.g. concurrent delete in the race window after
+    // the flow read), the callback keeps the connection and surfaces
+    // `service_instance_bind_error: service_instance_not_found` on the
+    // response.
+    //
+    // The FK on the flow column is `ON DELETE SET NULL`, so a normal
+    // delete of the instance would clear the flow row's id before the
+    // callback even sees it. To exercise the race deterministically we
+    // drop the FK constraint temporarily, point the flow row at a bogus
+    // UUID, then drive the callback. Postgres still accepts the column
+    // value (it's just a UUID at the type level); only the bind
+    // `update_service_instance` call returns `Ok(None)` because no row
+    // matches.
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oauth_providers SET userinfo_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/userinfo-404"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-binderr").await;
+
+    let body: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "template_key": "gcal-binderr", "name": "binderr-svc" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let flow_id = body["connect"]["flow_id"].as_str().unwrap().to_string();
+
+    // Drop the FK so we can simulate a missing instance without it
+    // cascading to NULL on the flow row.
+    sqlx::query(
+        "ALTER TABLE oauth_connection_flows \
+         DROP CONSTRAINT oauth_connection_flows_service_instance_id_fkey",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let bogus_id = uuid::Uuid::new_v4();
+    sqlx::query("UPDATE oauth_connection_flows SET service_instance_id = $1 WHERE id = $2")
+        .bind(bogus_id)
+        .bind(&flow_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let callback: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=binderr_code&state={flow_id}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Connection still landed — OAuth tokens are valuable and the bind
+    // failure is reported alongside, not by tearing the connection down.
+    assert_eq!(callback["status"], "connected");
+    assert!(
+        callback["connection_id"].is_string(),
+        "connection must persist even when bind fails; got {callback}"
+    );
+    assert_eq!(
+        callback["service_instance_bind_error"], "service_instance_not_found",
+        "bind error code must surface on the response; got {callback}"
+    );
+    // Successful side-channel (service_instance_id) is suppressed when
+    // there was a bind error — callers shouldn't be told "bound to id X"
+    // alongside an error.
+    assert!(
+        callback.get("service_instance_id").is_none(),
+        "service_instance_id should be omitted when bind failed; got {callback}"
+    );
+}
+
+#[tokio::test]
+async fn callback_bind_error_surfaces_on_redirect_response_too() {
+    // The bind-error code also has to land on the redirect path, since
+    // tenants using `return_url` never see the JSON body. Drives the same
+    // scenario as `callback_bind_error_surfaces_when_instance_missing`
+    // but with a configured `return_url` so the success/error path goes
+    // through `success_redirect` instead of the JSON branch.
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oauth_providers SET userinfo_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/userinfo-404"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Set up the return-url allow-list + a non-redirecting client so we
+    // can inspect the 303 Location header.
+    let (api_addr, _) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.connection_return_url_allowed_hosts = vec!["cloud.example.test".into()];
+    })
+    .await;
+    let base = format!("http://{api_addr}");
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let (_org_id, _ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-binderr-redir").await;
+
+    let body: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "gcal-binderr-redir",
+            "name": "binderr-redir-svc",
+            "connect_return_url": "https://cloud.example.test/oauth/cb",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let flow_id = body["connect"]["flow_id"].as_str().unwrap().to_string();
+
+    sqlx::query(
+        "ALTER TABLE oauth_connection_flows \
+         DROP CONSTRAINT oauth_connection_flows_service_instance_id_fkey",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let bogus_id = uuid::Uuid::new_v4();
+    sqlx::query("UPDATE oauth_connection_flows SET service_instance_id = $1 WHERE id = $2")
+        .bind(bogus_id)
+        .bind(&flow_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=binderr_redir_code&state={flow_id}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 303);
+    let location = resp
+        .headers()
+        .get("location")
+        .expect("redirect carries Location header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        location.starts_with("https://cloud.example.test/oauth/cb"),
+        "redirect should target the configured return_url; got {location}"
+    );
+    assert!(
+        location.contains("status=success"),
+        "connection still succeeded; got {location}"
+    );
+    assert!(
+        location.contains("service_instance_bind_error=service_instance_not_found"),
+        "bind error code must ride the redirect query params; got {location}"
+    );
+    assert!(
+        !location.contains("service_instance_id="),
+        "service_instance_id should be omitted when bind failed; got {location}"
+    );
+}
