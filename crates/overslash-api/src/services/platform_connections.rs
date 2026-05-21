@@ -62,7 +62,6 @@ use super::group_ceiling;
 use super::oauth;
 use super::oauth_upstream as svc;
 use super::platform_caller::PlatformCallContext;
-use super::platform_services::resolve_template_definition;
 use super::short_url;
 use crate::AppState;
 use crate::error::AppError;
@@ -106,17 +105,13 @@ pub struct CreateConnectionInput {
     /// response, preserving today's behavior.
     #[serde(default)]
     pub return_url: Option<String>,
-    /// Optional catalog template key (e.g. `"gmail"`, `"google_calendar"`).
-    /// When set, the kernel resolves the template across the standard
-    /// user → org → global tiers, validates that its declared OAuth
-    /// provider matches `provider`, then folds the union of every action's
-    /// `required_scopes` into `scopes` via [`merge_scopes`]. Lets
-    /// white-label callers (e.g. Overfolder's `configure_external_service`)
-    /// initiate OAuth from the template key alone, without hard-coding
-    /// scope strings. Omitting it preserves the prior behavior of passing
-    /// `scopes` through verbatim.
+    /// When `POST /v1/services` orchestrates an OAuth flow as part of
+    /// setting up a new service, this carries the just-created instance's
+    /// id so the callback can bind the resulting connection back onto the
+    /// service. Plumbed onto the flow row; `None` is the low-level path
+    /// where the caller is not orchestrating a service alongside.
     #[serde(default)]
-    pub template: Option<String>,
+    pub service_instance_id: Option<Uuid>,
 }
 
 /// Maximum byte length for caller-supplied `return_url`. Cap is generous
@@ -211,7 +206,7 @@ pub struct AuthRecoveryUrls {
 
 pub async fn kernel_create_connection(
     ctx: PlatformCallContext,
-    mut input: CreateConnectionInput,
+    input: CreateConnectionInput,
     request_meta: RequestMeta<'_>,
 ) -> Result<CreateConnectionResponse, AppError> {
     // OAuth is identity-bound by construction (the resulting connection row
@@ -219,21 +214,6 @@ pub async fn kernel_create_connection(
     let caller_identity_id = ctx
         .identity_id
         .ok_or_else(|| AppError::BadRequest("OAuth requires an identity-bound API key".into()))?;
-
-    // Optional catalog-template scope defaulting. Done at the public entry
-    // (not in `_for_identity`) so the cross-user upgrade branch in
-    // `mint_upgrade_auth_url` — which already passes a fully-resolved scope
-    // set from an existing connection — stays untouched.
-    if let Some(key) = input.template.clone() {
-        input.scopes = resolve_template_scopes(
-            &ctx,
-            caller_identity_id,
-            &key,
-            &input.provider,
-            &input.scopes,
-        )
-        .await?;
-    }
 
     let scope = OrgScope::new(ctx.org_id, ctx.db.clone());
 
@@ -340,6 +320,7 @@ async fn kernel_create_connection_for_identity(
             created_user_agent: request_meta.user_agent,
             return_url: return_url.as_deref(),
             upgrade_connection_id: input.upgrade_connection_id,
+            service_instance_id: input.service_instance_id,
         },
     )
     .await?;
@@ -379,63 +360,6 @@ pub struct RequestMeta<'a> {
     pub user_agent: Option<&'a str>,
 }
 
-/// Resolve the named template, validate it declares the requested OAuth
-/// `provider`, and return the union of every action's `required_scopes`
-/// merged with any caller-supplied `scopes`. The template lookup uses the
-/// caller's tier-visibility (user → org → global) so a caller can connect
-/// against templates they actually own. Errors raised here are
-/// `BadRequest` — the template field is a caller input, not server state.
-async fn resolve_template_scopes(
-    ctx: &PlatformCallContext,
-    caller_identity_id: Uuid,
-    key: &str,
-    provider: &str,
-    caller_scopes: &[String],
-) -> Result<Vec<String>, AppError> {
-    let def = match resolve_template_definition(
-        &ctx.db,
-        &ctx.registry,
-        ctx.org_id,
-        Some(caller_identity_id),
-        key,
-    )
-    .await
-    {
-        Ok(def) => def,
-        Err(AppError::NotFound(_)) => {
-            return Err(AppError::BadRequest(format!("template '{key}' not found")));
-        }
-        Err(other) => return Err(other),
-    };
-
-    let declared_provider = def.auth.iter().find_map(|a| match a {
-        overslash_core::types::ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
-        _ => None,
-    });
-    match declared_provider {
-        None => {
-            return Err(AppError::BadRequest(format!(
-                "template '{key}' does not declare OAuth auth"
-            )));
-        }
-        Some(declared) if declared != provider => {
-            return Err(AppError::BadRequest(format!(
-                "template '{key}' declares OAuth provider '{declared}', got '{provider}'"
-            )));
-        }
-        Some(_) => {}
-    }
-
-    let template_scopes: Vec<String> = def
-        .actions
-        .values()
-        .flat_map(|a| a.required_scopes.iter().cloned())
-        .collect::<BTreeSet<String>>()
-        .into_iter()
-        .collect();
-    Ok(merge_scopes(&template_scopes, caller_scopes))
-}
-
 /// Return the union of `existing` and `incoming`, preserving an order
 /// that's deterministic for downstream comparison (lexicographic via
 /// `BTreeSet`). Used by both the REST upgrade-scopes route and the
@@ -457,11 +381,18 @@ pub async fn dispatch_create_connection(
     params: HashMap<String, serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
     let value = serde_json::Value::Object(params.into_iter().collect());
-    let input: CreateConnectionInput = serde_json::from_value(value)
+    let mut input: CreateConnectionInput = serde_json::from_value(value)
         .map_err(|e| AppError::BadRequest(format!("invalid params: {e}")))?;
     if input.provider.is_empty() {
         return Err(AppError::BadRequest("'provider' is required".into()));
     }
+    // `service_instance_id` is an internal handshake field set by
+    // `kernel_create_service` when it orchestrates an OAuth flow on behalf
+    // of `POST /v1/services`. Letting an MCP-using agent pass it directly
+    // through `overslash.create_connection` would let them target another
+    // user's service instance — the callback's bind step would refuse on
+    // the ownership check, but stripping here is the defense-in-depth.
+    input.service_instance_id = None;
     let response = kernel_create_connection(ctx, input, RequestMeta::default()).await?;
     Ok(serde_json::to_value(response).unwrap_or(serde_json::Value::Null))
 }
@@ -518,9 +449,7 @@ pub async fn mint_initial_auth_url(
             // return_url today; the URL the agent hands the user lands
             // back on the default JSON response.
             return_url: None,
-            // Caller already passed the resolved per-action scope set; no
-            // template-key defaulting needed here.
-            template: None,
+            service_instance_id: None,
         },
         RequestMeta::default(),
     )
@@ -582,7 +511,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: None,
-                template: None,
+                service_instance_id: None,
             },
             RequestMeta::default(),
         )
@@ -613,7 +542,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: None,
-                template: None,
+                service_instance_id: None,
             },
             RequestMeta::default(),
         )
@@ -640,7 +569,7 @@ pub async fn mint_upgrade_auth_url(
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
             return_url: None,
-            template: None,
+            service_instance_id: None,
         },
         RequestMeta::default(),
     )
