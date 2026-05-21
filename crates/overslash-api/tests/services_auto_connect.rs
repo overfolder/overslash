@@ -388,6 +388,69 @@ async fn end_to_end_oauth_callback_binds_connection_to_instance() {
 }
 
 #[tokio::test]
+async fn connect_include_raw_exposes_upstream_authorize_url() {
+    // White-label integration path: when the REST caller opts in with
+    // `connect_include_raw: true`, the response also carries the raw
+    // upstream provider URL (e.g. accounts.google.com/...). Default
+    // callers still see only the gated Overslash URL.
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-raw").await;
+
+    // Opt-in: raw URL is present.
+    let body: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "gcal-raw",
+            "name": "raw-svc",
+            "connect_include_raw": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let connect = body.get("connect").expect("connect bundle present");
+    let raw = connect["raw"].as_str().expect("raw url surfaced");
+    assert!(
+        raw.starts_with("https://accounts.google.com/"),
+        "raw url should be the upstream provider URL; got {raw}"
+    );
+    let auth_url = connect["auth_url"].as_str().unwrap();
+    assert!(
+        auth_url.contains("/connect-authorize?id="),
+        "gated auth_url still primary; got {auth_url}"
+    );
+
+    // Default (no opt-in): raw URL is absent.
+    let body: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "gcal-raw",
+            "name": "raw-svc-default",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let connect = body.get("connect").expect("connect bundle present");
+    assert!(
+        connect.get("raw").is_none() || connect["raw"].is_null(),
+        "raw should be omitted without opt-in; got {body}"
+    );
+}
+
+#[tokio::test]
 async fn callback_bind_error_surfaces_when_instance_missing() {
     // Defensive branch in `oauth_callback_inner`: when the flow row carries
     // a `service_instance_id` but the instance doesn't exist by the time
