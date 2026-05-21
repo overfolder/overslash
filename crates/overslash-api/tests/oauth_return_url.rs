@@ -88,6 +88,7 @@ async fn seed_flow(
             created_user_agent: None,
             return_url,
             upgrade_connection_id: None,
+            service_instance_id: None,
         },
     )
     .await

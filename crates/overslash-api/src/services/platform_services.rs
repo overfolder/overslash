@@ -40,6 +40,33 @@ pub struct CreateServiceInput {
     pub user_level: Option<bool>,
     #[serde(default)]
     pub on_behalf_of: Option<Uuid>,
+    /// Suppress the default auto-connect behavior for OAuth-backed
+    /// templates. With this `true` the kernel creates the instance with
+    /// `connection_id = NULL` and never initiates an OAuth flow — the
+    /// caller is expected to pin a connection later via `PUT
+    /// /v1/services/{id}/manage`. Ignored when `connection_id` is already
+    /// pinned or when the template is not OAuth-backed.
+    #[serde(default)]
+    pub skip_connect: Option<bool>,
+    /// Tenant-supplied URL the OAuth callback redirects back to once the
+    /// dance finishes. Only consulted when the kernel auto-initiates a
+    /// flow (OAuth template + no pinned connection + not opted out). See
+    /// [`crate::services::platform_connections::CreateConnectionInput::return_url`]
+    /// for the validation contract.
+    #[serde(default)]
+    pub connect_return_url: Option<String>,
+    /// REST-only opt-in: surface the raw upstream provider authorize URL
+    /// (e.g. `https://accounts.google.com/...`) on the `connect` bundle
+    /// in addition to the Overslash-gated `auth_url`. White-label
+    /// integrators wrap the raw URL in their own consent UI so users
+    /// never see Overslash branding. Mirrors `include_raw` on
+    /// `POST /v1/connections` — same Obsidian threat-model gating: PKCE +
+    /// state binding still hold either way, but raw delivery skips the
+    /// chat-delivery hardening that `connect-authorize` provides. The
+    /// MCP `CreateServiceHandler` strips this field so agents can't ever
+    /// hand the user a raw provider URL over chat.
+    #[serde(default)]
+    pub connect_include_raw: Option<bool>,
 }
 
 fn default_status() -> String {
@@ -134,6 +161,33 @@ pub struct ServiceInstanceDetail {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials_status: Option<CredentialsStatus>,
+    /// Present on the response to `POST /v1/services` when the kernel
+    /// auto-initiated an OAuth flow as part of setting up the instance.
+    /// The caller hands `auth_url` to the user and the OAuth callback
+    /// will write `connection_id` back onto this row when the dance
+    /// finishes. Omitted on every other code path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect: Option<ConnectBundle>,
+}
+
+/// OAuth bootstrap bundle returned alongside a freshly-created service
+/// instance. `raw` mirrors the same opt-in field on `POST /v1/connections`
+/// (`include_raw`) — surfaced here as `connect_include_raw` on the
+/// request — for white-label integrators that wrap the upstream provider
+/// URL in their own consent UI. Default callers see only the gated
+/// `auth_url`.
+#[derive(Serialize, Debug)]
+pub struct ConnectBundle {
+    pub auth_url: String,
+    pub state: String,
+    pub flow_id: String,
+    pub expires_at: time::OffsetDateTime,
+    /// Raw upstream provider authorize URL. Only populated when the
+    /// REST caller set `connect_include_raw: true` on the request. The
+    /// MCP path always strips that opt-in, so this field stays `None`
+    /// on every agent-driven flow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
 }
 
 /// Derived credential-health state for a service instance.
@@ -520,8 +574,95 @@ pub async fn kernel_create_service(
         credentials_status
     };
 
+    let row_id = row.id;
     let mut detail = row_to_detail(row);
     detail.credentials_status = credentials_status;
+
+    // Auto-connect orchestration: when the template is OAuth-backed and the
+    // caller didn't pin or opt out, kick off the OAuth flow now and surface
+    // the auth_url on the response. The just-created instance's id rides on
+    // the flow row so the callback binds the resulting connection back to
+    // this row when the dance finishes.
+    //
+    // Best-effort: if the connection kernel fails (typically because the
+    // org hasn't configured BYOC creds yet or the OAuth provider row is
+    // missing), keep the instance and just omit the `connect` bundle. The
+    // caller can configure credentials and call `POST /v1/connections`
+    // later. Rolling back would break the existing "create instance now,
+    // wire up credentials later" workflow.
+    // Org-level services (no owner) cannot pin a connection — the manual
+    // path explicitly rejects this earlier when `connection_id` is set
+    // (see the `expected_owner` check above), and the OAuth callback's
+    // bind would refuse anyway because connections are identity-bound.
+    // Skip auto-connect for org-level services to keep the two paths
+    // symmetric and avoid orchestrating a flow that can never bind.
+    let want_auto_connect = input.connection_id.is_none()
+        && !input.skip_connect.unwrap_or(false)
+        && owner_identity_id.is_some()
+        && template_oauth_provider(&template_def).is_some();
+    if want_auto_connect {
+        let provider = template_oauth_provider(&template_def)
+            .expect("checked above")
+            .to_string();
+        let scopes = template_action_scopes(&template_def);
+        // Owner identity: when the service is owned by someone other than
+        // the calling agent (the SPEC "agents create at owner-user level"
+        // rule), thread that through via `on_behalf_of` so the connection
+        // lands on the same identity the service binds to.
+        let on_behalf_of = match owner_identity_id {
+            Some(owner) if Some(owner) != ctx.identity_id => Some(owner),
+            _ => None,
+        };
+        let connect_ctx = crate::services::platform_caller::PlatformCallContext {
+            org_id: ctx.org_id,
+            identity_id: ctx.identity_id,
+            access_level: ctx.access_level,
+            db: ctx.db.clone(),
+            registry: ctx.registry.clone(),
+            config: ctx.config.clone(),
+            http_client: ctx.http_client.clone(),
+        };
+        let connect_input = crate::services::platform_connections::CreateConnectionInput {
+            provider,
+            scopes,
+            byoc_credential_id: None,
+            on_behalf_of,
+            upgrade_connection_id: None,
+            return_url: input.connect_return_url.clone(),
+            service_instance_id: Some(row_id),
+        };
+        match crate::services::platform_connections::kernel_create_connection(
+            connect_ctx,
+            connect_input,
+            crate::services::platform_connections::RequestMeta::default(),
+        )
+        .await
+        {
+            Ok(resp) => {
+                let raw = if input.connect_include_raw.unwrap_or(false) {
+                    Some(resp.raw.clone())
+                } else {
+                    None
+                };
+                detail.connect = Some(ConnectBundle {
+                    auth_url: resp.auth_url,
+                    state: resp.state,
+                    flow_id: resp.flow_id,
+                    expires_at: resp.expires_at,
+                    raw,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(
+                    service_instance_id = %row_id,
+                    template_key = %input.template_key,
+                    error = %err,
+                    "auto-connect failed; instance created without connection bundle"
+                );
+            }
+        }
+    }
+
     Ok(detail)
 }
 
@@ -632,7 +773,32 @@ pub fn row_to_detail(row: ServiceInstanceRow) -> ServiceInstanceDetail {
         created_at: fmt_time(row.created_at),
         updated_at: fmt_time(row.updated_at),
         credentials_status: None,
+        connect: None,
     }
+}
+
+/// Pull the OAuth provider declared on a template's auth schemes, if any.
+/// Returns `None` for templates that don't declare an OAuth auth (api-key
+/// only, MCP bearer only, no auth, etc.) — in which case the auto-connect
+/// orchestration in `kernel_create_service` is a no-op.
+fn template_oauth_provider(def: &ServiceDefinition) -> Option<&str> {
+    def.auth.iter().find_map(|a| match a {
+        ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
+        _ => None,
+    })
+}
+
+/// Union every action's `required_scopes` into a sorted, deduped list.
+/// Same `BTreeSet` flatten that the previous `resolve_template_scopes`
+/// helper on the connection kernel used — now lives next to the only
+/// remaining caller (auto-connect orchestration in `kernel_create_service`).
+fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
+    def.actions
+        .values()
+        .flat_map(|a| a.required_scopes.iter().cloned())
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect()
 }
 
 /// Resolve the [`ServiceDefinition`] for a template key across user/org/global tiers.

@@ -74,10 +74,6 @@ struct InitiateConnectionRequest {
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
-    /// Optional catalog template key. When set, scope defaults are derived
-    /// from the template's actions. See [`CreateConnectionInput::template`].
-    #[serde(default)]
-    template: Option<String>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -132,7 +128,7 @@ async fn initiate_connection(
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
         return_url: req.return_url,
-        template: req.template,
+        service_instance_id: None,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
         ctx,
@@ -271,6 +267,22 @@ struct CallbackSuccess {
     provider_key: String,
     account_email: Option<String>,
     scopes: Vec<String>,
+    /// When `POST /v1/services` orchestrated this flow AND the callback
+    /// successfully bound the new connection to that instance, the id of
+    /// that service instance. Suppressed when the bind failed (see
+    /// `service_instance_bind_error`) — callers should not infer that
+    /// the named instance now points at this connection.
+    service_instance_id: Option<Uuid>,
+    /// Coarse error code when binding the connection to the service
+    /// instance failed after the OAuth dance succeeded. The connection
+    /// itself is still saved — callers can retry the bind via `PUT
+    /// /v1/services/{id}/manage`. Possible codes:
+    /// - `service_instance_not_found`: the instance no longer exists.
+    /// - `service_instance_owner_mismatch`: the bind would have crossed
+    ///   identity ownership (defense against a spoofed
+    ///   `service_instance_id` on the flow row).
+    /// - `service_instance_bind_failed`: the DB update itself errored.
+    service_instance_bind_error: Option<&'static str>,
 }
 
 /// Trusted redirect target derived from a flow row that matches the
@@ -316,19 +328,28 @@ async fn oauth_callback(
         flow.pkce_code_verifier.as_deref(),
         flow.actor_identity_id,
         flow.upgrade_connection_id,
+        flow.service_instance_id,
     )
     .await;
 
     match (outcome, redirect_target) {
         (Ok(payload), Some(redir)) => success_redirect(redir, &payload),
-        (Ok(payload), None) => Json(serde_json::json!({
-            "status": "connected",
-            "connection_id": payload.connection_id,
-            "provider": payload.provider_key,
-            "account_email": payload.account_email,
-            "scopes": payload.scopes,
-        }))
-        .into_response(),
+        (Ok(payload), None) => {
+            let mut body = serde_json::json!({
+                "status": "connected",
+                "connection_id": payload.connection_id,
+                "provider": payload.provider_key,
+                "account_email": payload.account_email,
+                "scopes": payload.scopes,
+            });
+            if let Some(id) = payload.service_instance_id {
+                body["service_instance_id"] = serde_json::Value::String(id.to_string());
+            }
+            if let Some(code) = payload.service_instance_bind_error {
+                body["service_instance_bind_error"] = serde_json::Value::String(code.into());
+            }
+            Json(body).into_response()
+        }
         (Err(err), Some(redir)) => error_redirect(redir, &err),
         (Err(err), None) => err.into_response(),
     }
@@ -376,6 +397,12 @@ fn success_redirect(redir: VerifiedRedirect, payload: &CallbackSuccess) -> Respo
         pairs.append_pair("provider", &payload.provider_key);
         if let Some(email) = payload.account_email.as_deref() {
             pairs.append_pair("account_email", email);
+        }
+        if let Some(id) = payload.service_instance_id {
+            pairs.append_pair("service_instance_id", &id.to_string());
+        }
+        if let Some(code) = payload.service_instance_bind_error {
+            pairs.append_pair("service_instance_bind_error", code);
         }
     }
     Redirect::to(url.as_str()).into_response()
@@ -425,6 +452,7 @@ async fn oauth_callback_inner(
     code_verifier: Option<&str>,
     actor_identity_id: Uuid,
     upgrade_connection_id: Option<Uuid>,
+    service_instance_id: Option<Uuid>,
 ) -> Result<CallbackSuccess> {
     let provider = overslash_db::repos::oauth_provider::get_by_key(state.db(ext), provider_key)
         .await?
@@ -588,11 +616,64 @@ async fn oauth_callback_inner(
         });
     }
 
+    // Best-effort bind: if `POST /v1/services` orchestrated this flow, the
+    // service instance already exists with `connection_id = NULL`. Update
+    // it now so the instance is usable immediately. On failure we keep the
+    // connection (the OAuth tokens are valuable) and surface a coarse
+    // error code; callers can retry via `PUT /v1/services/{id}/manage`.
+    //
+    // Ownership gate: the `service_instance_id` rides on the flow row,
+    // which an MCP caller can pass directly via
+    // `CreateConnectionInput.service_instance_id`. Without this check, an
+    // attacker in the same org could spoof another user's instance id and
+    // hijack it onto their own new connection. We require the instance's
+    // `owner_identity_id` to match the flow's `identity_id` (the
+    // connection owner). Org-level instances (owner_identity_id = NULL)
+    // are also rejected here — connections are identity-bound and the
+    // create-time `kernel_create_service` validation already forbids
+    // pinning a connection to an org-level service.
+    let scope = OrgScope::new(org_id, state.db_pool(ext));
+    let mut service_instance_bind_error: Option<&'static str> = None;
+    if let Some(svc_id) = service_instance_id {
+        match scope.get_service_instance(svc_id).await {
+            Ok(None) => {
+                service_instance_bind_error = Some("service_instance_not_found");
+            }
+            Ok(Some(instance)) if instance.owner_identity_id != Some(identity_id) => {
+                service_instance_bind_error = Some("service_instance_owner_mismatch");
+            }
+            Ok(Some(_)) => {
+                let bind_input = overslash_db::repos::service_instance::UpdateServiceInstance {
+                    name: None,
+                    connection_id: Some(Some(connection_id)),
+                    secret_name: None,
+                    url: None,
+                };
+                match scope.update_service_instance(svc_id, &bind_input).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        // Concurrent delete in the gap between the
+                        // ownership check above and the UPDATE.
+                        service_instance_bind_error = Some("service_instance_not_found");
+                    }
+                    Err(_) => {
+                        service_instance_bind_error = Some("service_instance_bind_failed");
+                    }
+                }
+            }
+            Err(_) => {
+                service_instance_bind_error = Some("service_instance_bind_failed");
+            }
+        }
+    }
+
     Ok(CallbackSuccess {
         connection_id,
         provider_key: provider_key.to_string(),
         account_email,
         scopes: granted_scopes,
+        service_instance_id: service_instance_id.filter(|_| service_instance_bind_error.is_none()),
+        service_instance_bind_error,
     })
 }
 
@@ -714,10 +795,7 @@ async fn upgrade_connection_scopes(
             on_behalf_of: None,
             upgrade_connection_id: Some(id),
             return_url: None,
-            // Upgrade flow already has the resolved scope set on hand
-            // (`existing.scopes` ∪ request scopes); template-key defaulting
-            // would be a no-op here.
-            template: None,
+            service_instance_id: None,
         },
         RequestMeta {
             ip: ip.0.as_deref(),
