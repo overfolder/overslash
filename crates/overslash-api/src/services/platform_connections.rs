@@ -381,11 +381,18 @@ pub async fn dispatch_create_connection(
     params: HashMap<String, serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
     let value = serde_json::Value::Object(params.into_iter().collect());
-    let input: CreateConnectionInput = serde_json::from_value(value)
+    let mut input: CreateConnectionInput = serde_json::from_value(value)
         .map_err(|e| AppError::BadRequest(format!("invalid params: {e}")))?;
     if input.provider.is_empty() {
         return Err(AppError::BadRequest("'provider' is required".into()));
     }
+    // `service_instance_id` is an internal handshake field set by
+    // `kernel_create_service` when it orchestrates an OAuth flow on behalf
+    // of `POST /v1/services`. Letting an MCP-using agent pass it directly
+    // through `overslash.create_connection` would let them target another
+    // user's service instance — the callback's bind step would refuse on
+    // the ownership check, but stripping here is the defense-in-depth.
+    input.service_instance_id = None;
     let response = kernel_create_connection(ctx, input, RequestMeta::default()).await?;
     Ok(serde_json::to_value(response).unwrap_or(serde_json::Value::Null))
 }

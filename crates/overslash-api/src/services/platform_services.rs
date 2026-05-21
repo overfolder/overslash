@@ -590,8 +590,15 @@ pub async fn kernel_create_service(
     // caller can configure credentials and call `POST /v1/connections`
     // later. Rolling back would break the existing "create instance now,
     // wire up credentials later" workflow.
+    // Org-level services (no owner) cannot pin a connection — the manual
+    // path explicitly rejects this earlier when `connection_id` is set
+    // (see the `expected_owner` check above), and the OAuth callback's
+    // bind would refuse anyway because connections are identity-bound.
+    // Skip auto-connect for org-level services to keep the two paths
+    // symmetric and avoid orchestrating a flow that can never bind.
     let want_auto_connect = input.connection_id.is_none()
         && !input.skip_connect.unwrap_or(false)
+        && owner_identity_id.is_some()
         && template_oauth_provider(&template_def).is_some();
     if want_auto_connect {
         let provider = template_oauth_provider(&template_def)

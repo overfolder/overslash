@@ -451,6 +451,190 @@ async fn connect_include_raw_exposes_upstream_authorize_url() {
 }
 
 #[tokio::test]
+async fn callback_bind_refuses_cross_user_service_instance() {
+    // Security: the `service_instance_id` field on the flow row is set by
+    // `kernel_create_service` when it orchestrates an OAuth flow, but an
+    // MCP agent could in principle smuggle a spoofed id through
+    // `CreateConnectionInput.service_instance_id` (defense-in-depth: the
+    // MCP `dispatch_create_connection` strips this field, but the
+    // callback also re-checks). The callback must refuse to bind when
+    // the instance's owner doesn't match the connection's identity_id —
+    // otherwise user A could hijack user B's service onto user A's
+    // credentials.
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oauth_providers SET userinfo_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/userinfo-404"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, _victim_ident, _victim_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-hijack").await;
+
+    // Victim creates a service instance. It belongs to the victim's user.
+    let victim_svc: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "gcal-hijack",
+            "name": "victim-svc",
+            "skip_connect": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let victim_svc_id: uuid::Uuid = victim_svc["id"].as_str().unwrap().parse().unwrap();
+
+    // Attacker: a different identity in the same org.
+    let attacker_user: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name": "attacker-user", "kind": "user"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let attacker_id: uuid::Uuid = attacker_user["id"].as_str().unwrap().parse().unwrap();
+    let attacker_key_resp: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"org_id": org_id, "identity_id": attacker_id, "name": "attacker-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let attacker_key = attacker_key_resp["key"].as_str().unwrap().to_string();
+
+    // Attacker initiates a low-level connection flow, then injects the
+    // victim's service_instance_id directly onto the flow row to model
+    // the worst-case scenario where the MCP strip in
+    // `dispatch_create_connection` is somehow bypassed.
+    let initiate: Value = client
+        .post(format!("{base}/v1/connections"))
+        .header("Authorization", format!("Bearer {attacker_key}"))
+        .json(&json!({ "provider": "google", "scopes": ["openid"] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let flow_id = initiate["flow_id"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE oauth_connection_flows SET service_instance_id = $1 WHERE id = $2")
+        .bind(victim_svc_id)
+        .bind(&flow_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Attacker completes the OAuth dance.
+    let callback: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=hijack_code&state={flow_id}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Connection lands (OAuth tokens are real), but bind is REFUSED.
+    assert_eq!(callback["status"], "connected");
+    assert_eq!(
+        callback["service_instance_bind_error"], "service_instance_owner_mismatch",
+        "bind must refuse cross-user hijack; got {callback}"
+    );
+    assert!(
+        callback.get("service_instance_id").is_none(),
+        "service_instance_id must be suppressed on failure; got {callback}"
+    );
+
+    // And the victim's service was NOT mutated.
+    let still_unbound: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT connection_id FROM service_instances WHERE id = $1")
+            .bind(victim_svc_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        still_unbound.is_none(),
+        "victim service must remain unbound after hijack attempt"
+    );
+}
+
+#[tokio::test]
+async fn org_level_service_does_not_auto_connect() {
+    // Connections are identity-bound; the manual `connection_id` path on
+    // `kernel_create_service` already rejects pinning a connection to an
+    // org-level service. Auto-connect must obey the same rule — otherwise
+    // an admin creating `user_level: false` would get an OAuth flow that
+    // could never bind on the callback (the owner-mismatch gate would
+    // refuse it anyway, but the better behavior is to never orchestrate
+    // the flow at all).
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, _api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-orglvl").await;
+
+    // admin_key is org-level (no identity_id), so `user_level: false`
+    // clears its admin gate and creates an org-level instance.
+    let resp = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "template_key": "gcal-orglvl",
+            "name": "orglvl-svc",
+            "user_level": false,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.get("owner_identity_id").is_none() || body["owner_identity_id"].is_null(),
+        "org-level service should have no owner; got {body}"
+    );
+    assert!(
+        body.get("connect").is_none(),
+        "org-level service must not auto-connect; got {body}"
+    );
+
+    let flow_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM oauth_connection_flows")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        flow_count.0, 0,
+        "org-level service must not mint an OAuth flow"
+    );
+}
+
+#[tokio::test]
 async fn callback_bind_error_surfaces_when_instance_missing() {
     // Defensive branch in `oauth_callback_inner`: when the flow row carries
     // a `service_instance_id` but the instance doesn't exist by the time
