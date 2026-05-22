@@ -39,14 +39,14 @@
 		{#if connected.length > 0}
 			<optgroup label="Connected">
 				{#each connected as s (s.id)}
-					<option value={s.name}>{s.name}  ·  {s.template_key}</option>
+					<option value={s.id}>{s.name}  ·  {s.template_key}</option>
 				{/each}
 			</optgroup>
 		{/if}
 		{#if other.length > 0}
 			<optgroup label="Other">
 				{#each other as s (s.id)}
-					<option value={s.name}>{s.name}  ·  {s.template_key}</option>
+					<option value={s.id}>{s.name}  ·  {s.template_key}</option>
 				{/each}
 			</optgroup>
 		{/if}
