@@ -21,7 +21,10 @@
 	import RawHttpEditor from './RawHttpEditor.svelte';
 	import ResponsePanel from './ResponsePanel.svelte';
 
-	let { initialService }: { initialService?: string | null } = $props();
+	let {
+		initialService,
+		isAdmin = false
+	}: { initialService?: string | null; isAdmin?: boolean } = $props();
 
 	let mode = $state<ExplorerMode>('service_action');
 	let services = $state<ServiceInstanceSummary[]>([]);
@@ -61,13 +64,19 @@
 	let runError = $state<string | null>(null);
 	let elapsedMs = $state<number | null>(null);
 
+	// Match by id first (new UUID-in-URL path used by the services table) and
+	// fall back to name (older bookmarks and user-typed names). The backend
+	// accepts either form for `getServiceActions` and `callAction.service`.
 	const selectedServiceRow = $derived(
-		services.find((s) => s.name === selectedService) ?? null
+		services.find((s) => s.id === selectedService || s.name === selectedService) ?? null
 	);
 
 	onMount(async () => {
 		try {
-			const [s, c] = await Promise.all([listServices(), listConnections()]);
+			const [s, c] = await Promise.all([
+				listServices({ includeUserLevel: isAdmin }),
+				listConnections()
+			]);
 			services = s;
 			connections = c;
 		} catch (e) {
@@ -205,8 +214,14 @@
 			if (raw === undefined || raw === '') continue;
 			params[name] = paramToValue(raw, p.type);
 		}
+		const row = selectedServiceRow;
 		return attachFilter({
-			service: selectedService,
+			// `service` keeps the friendly name for audit/logging readability; the
+			// backend prefers `service_id` for resolution when present so admins
+			// can invoke instances owned by other users without caller-scoped name
+			// lookup failing.
+			service: row?.name ?? selectedService,
+			service_id: row?.id,
 			action: selectedAction,
 			params
 		});

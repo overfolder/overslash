@@ -41,6 +41,20 @@ impl OrgScope {
         }
     }
 
+    /// Return a clone of this scope tagged with `impersonated_by`. Used by
+    /// in-handler impersonation flows that did not go through
+    /// `X-Overslash-As` at extraction time — currently the org-admin
+    /// "act on another user's instance" path in `actions.rs`. Audit rows
+    /// logged via the returned scope carry `impersonated_by_identity_id`
+    /// automatically.
+    pub fn with_impersonator(&self, impersonated_by: Uuid) -> Self {
+        Self {
+            org_id: self.org_id,
+            db: self.db.clone(),
+            impersonated_by_identity_id: Some(impersonated_by),
+        }
+    }
+
     /// The org this scope is bound to. Exposed for logging / audit only —
     /// never pass it back into a query as a filter, because every scope
     /// method already does that.

@@ -535,6 +535,10 @@ export interface CallRequest {
   // `service` is required (use 'http' for raw HTTP via the synthetic
   // pseudo-service — the legacy no-service shape is rejected with 400).
   service: string;
+  // Optional instance UUID. When set, the backend resolves the service by id
+  // (org-scoped) and bypasses the caller-scoped name lookup. Required when an
+  // org admin invokes another user's service; ignored otherwise.
+  service_id?: string;
   // Service + defined action shape: set `action` + `params`.
   action?: string;
   params?: Record<string, unknown>;
