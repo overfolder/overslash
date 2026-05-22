@@ -87,7 +87,11 @@ test('agent with manage_services_own creates a service from a shipped template v
 				template_key: 'google_calendar',
 				name: serviceName,
 				status: 'draft'
-			}
+			},
+			// MCP defaults to the compact response shape (body is a parsed
+			// object). This test relies on the verbose shape to JSON.parse
+			// `result.body` as a string — opt in explicitly.
+			verbose: true
 		});
 		expect(step.kind).toBe('final');
 		if (step.kind !== 'final') return;
