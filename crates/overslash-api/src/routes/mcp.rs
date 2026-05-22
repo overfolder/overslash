@@ -469,7 +469,12 @@ async fn tools_list_response(
                         "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
                     },
                     "action":  { "type": "string" },
-                    "params":  {}
+                    "params":  {},
+                    "verbose": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every read. Pass true only when you need a specific header or the response was cropped."
+                    }
                 },
                 "required": ["service", "action"],
                 "additionalProperties": false
@@ -496,6 +501,11 @@ async fn tools_list_response(
                     "approval_id": {
                         "type": "string",
                         "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header or the response was cropped."
                     }
                 },
                 "additionalProperties": false
@@ -1049,6 +1059,11 @@ async fn dispatch_read(
     if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
         body.insert("params".into(), p.clone());
     }
+    // MCP defaults to the compact response shape (the HTTP API defaults to
+    // verbose for backward compatibility). Forward the caller's explicit
+    // `verbose` flag when supplied; otherwise stamp `false` so the inner
+    // handler picks compact.
+    body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     forward(
         state,
         bearer,
@@ -1057,6 +1072,15 @@ async fn dispatch_read(
         Some(Value::Object(body)),
     )
     .await
+}
+
+/// Read the caller-supplied `verbose: bool` tool argument, defaulting to
+/// `false`. Non-boolean values are ignored (the JSON schema's `boolean`
+/// type already filters this for well-behaved clients).
+fn verbose_flag(args: &Value) -> bool {
+    args.get("verbose")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 async fn dispatch_call(
@@ -1101,6 +1125,9 @@ async fn dispatch_call(
     if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
         body.insert("params".into(), p.clone());
     }
+    // Same rationale as `dispatch_read`: MCP forwards `verbose: false` by
+    // default so the LLM consumer gets the compact shape.
+    body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     forward(
         state,
         bearer,
