@@ -224,8 +224,21 @@ async fn validate_action_impl(
     // resolved template/instance ride along but the validate path
     // doesn't forward them anywhere; they're dropped at the end of
     // this scope.
-    let (meta, _resolved_mode_c) =
+    let (meta, resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+
+    // Mirror `/call`'s admin-as-owner rebind so validation answers reflect
+    // the identity that would actually run the action — see the matching
+    // block in `call_action_impl` for the full rationale.
+    let (identity, identity_id, ceiling_user_id, scope) = apply_owner_impersonation(
+        &scope,
+        identity,
+        identity_id,
+        ceiling_user_id,
+        resolved_mode_c.as_ref().and_then(|m| m.instance.as_ref()),
+        req.service_id.is_some(),
+    )
+    .await?;
 
     // Argument validation runs before the risk gate so a request with
     // both bad params and a wrong-risk assertion produces the same
@@ -392,6 +405,11 @@ struct CallRequest {
 
     // Service + action / Service + HTTP verb fields
     service: Option<String>,
+    /// Optional instance UUID. When present, the resolver looks the instance
+    /// up by id (org-scoped) instead of by caller-shadowed name — required for
+    /// an org admin to invoke an instance owned by another user, since
+    /// name-based lookup is intentionally caller-scoped.
+    service_id: Option<Uuid>,
     action: Option<String>,
     /// Service + HTTP verb (SPEC §8): path-only form (host comes from
     /// `svc.hosts`). Mutually exclusive with `action`.
@@ -606,6 +624,27 @@ async fn call_action_impl(
             errors,
         ));
     }
+
+    // ── Admin-as-owner impersonation ──────────────────────────────────
+    //
+    // When the resolved instance is owned by a different user than the
+    // caller's ceiling, only org admins are allowed to invoke it. The
+    // effective identity is rebound to the owner so OAuth/secrets, the
+    // group ceiling, and the permission chain all anchor on the user
+    // the service actually belongs to — the only credentials that make
+    // the upstream call succeed. The admin identity is preserved on the
+    // audit trail via `OrgScope::with_impersonator`.
+    let (identity, identity_id, ceiling_user_id, scope) = apply_owner_impersonation(
+        &scope,
+        identity,
+        identity_id,
+        ceiling_user_id,
+        pre_resolved_mode_c
+            .as_ref()
+            .and_then(|m| m.instance.as_ref()),
+        req.service_id.is_some(),
+    )
+    .await?;
 
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
     // the identity lookup above so service-name resolution doesn't re-fetch it.
@@ -822,7 +861,8 @@ async fn call_action_impl(
                         );
                 }
 
-                let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
+                let _ = scope
+                    .clone()
                     .log_audit(AuditEntry {
                         org_id: auth.org_id,
                         identity_id: Some(identity_id),
@@ -965,7 +1005,8 @@ async fn call_action_impl(
                 );
         }
 
-        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
+        let _ = scope
+            .clone()
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
@@ -1014,7 +1055,8 @@ async fn call_action_impl(
             "action": req.action,
             "service": req.service,
         });
-        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
+        let _ = scope
+            .clone()
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
@@ -1112,7 +1154,8 @@ async fn call_action_impl(
                 );
         }
 
-        let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
+        let _ = scope
+            .clone()
             .log_audit(AuditEntry {
                 org_id: auth.org_id,
                 identity_id: Some(identity_id),
@@ -1217,7 +1260,8 @@ async fn call_action_impl(
             );
     }
 
-    let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
+    let _ = scope
+        .clone()
         .log_audit(AuditEntry {
             org_id: auth.org_id,
             identity_id: Some(identity_id),
@@ -1468,6 +1512,85 @@ struct ResolvedModeC {
     instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
 }
 
+/// Rebind the caller's identity to the service instance owner when an org
+/// admin is invoking another user's service **via the explicit `service_id`
+/// path**. Returns the (possibly swapped) `(identity, identity_id,
+/// ceiling_user_id, scope)` tuple — the rest of the handler can keep
+/// operating on these without an explicit `if admin { ... }` at every gate.
+///
+/// Why gated on `explicit_via_uuid`: when the caller reached the instance
+/// through the name resolver, success already proves visibility — they
+/// either own it, share a ceiling user with it, or have a group grant. A
+/// non-admin agent invoking a group-granted, cross-user service is the
+/// intended cross-user flow and must keep working (see
+/// `tests/cross_user_group_reauth.rs`). The admin-as-owner rebind only
+/// kicks in for the new UUID branch, which deliberately skips visibility
+/// checks so the dashboard's "Show all users' services" view can drive
+/// invocations — that path is the one that needs the admin gate.
+async fn apply_owner_impersonation(
+    scope: &OrgScope,
+    identity: overslash_db::repos::identity::IdentityRow,
+    identity_id: Uuid,
+    ceiling_user_id: Uuid,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+    explicit_via_uuid: bool,
+) -> Result<
+    (
+        overslash_db::repos::identity::IdentityRow,
+        Uuid,
+        Uuid,
+        OrgScope,
+    ),
+    AppError,
+> {
+    if !explicit_via_uuid {
+        return Ok((identity, identity_id, ceiling_user_id, scope.clone()));
+    }
+    let Some(owner) = instance.and_then(|i| i.owner_identity_id) else {
+        return Ok((identity, identity_id, ceiling_user_id, scope.clone()));
+    };
+    if owner == ceiling_user_id {
+        return Ok((identity, identity_id, ceiling_user_id, scope.clone()));
+    }
+    if !identity.is_org_admin {
+        return Err(AppError::Forbidden(
+            "service is owned by another user; only org admins can invoke it".into(),
+        ));
+    }
+    let owner_identity = scope
+        .get_identity(owner)
+        .await?
+        .ok_or_else(|| AppError::NotFound("service owner identity not found".into()))?;
+    let owner_ceiling = group_ceiling::ceiling_user_id_from_identity(&owner_identity)?;
+    Ok((
+        owner_identity,
+        owner,
+        owner_ceiling,
+        scope.with_impersonator(identity_id),
+    ))
+}
+
+/// Look up a service instance for an action call.
+///
+/// When `service_id` is set, do an **org-scoped UUID lookup** — the only path
+/// that lets an org admin reach an instance owned by another user. Without
+/// `service_id`, fall back to the caller-scoped name resolver, which honors
+/// the user-shadows-org semantics every other call site has always used.
+async fn resolve_instance_for_call(
+    scope: &OrgScope,
+    identity_id: Option<Uuid>,
+    ceiling_user_id: Uuid,
+    service_id: Option<Uuid>,
+    service_key: &str,
+) -> Result<Option<overslash_db::repos::service_instance::ServiceInstanceRow>, AppError> {
+    if let Some(id) = service_id {
+        return Ok(scope.get_service_instance(id).await?);
+    }
+    Ok(scope
+        .resolve_service_instance_by_name(identity_id, Some(ceiling_user_id), service_key)
+        .await?)
+}
+
 /// Look up the service template + instance for a Service + HTTP verb call.
 /// Mirrors the (service, action) arm's resolution, minus the action lookup.
 async fn resolve_service_for_verb_shape(
@@ -1476,6 +1599,7 @@ async fn resolve_service_for_verb_shape(
     auth: &AuthContext,
     scope: &OrgScope,
     ceiling_user_id: Uuid,
+    service_id: Option<Uuid>,
     service_key: &str,
 ) -> Result<
     (
@@ -1484,9 +1608,14 @@ async fn resolve_service_for_verb_shape(
     ),
     AppError,
 > {
-    let instance = scope
-        .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
-        .await?;
+    let instance = resolve_instance_for_call(
+        scope,
+        auth.identity_id,
+        ceiling_user_id,
+        service_id,
+        service_key,
+    )
+    .await?;
 
     let svc = if let Some(ref inst) = instance {
         super::templates::resolve_template_definition(
@@ -1679,9 +1808,16 @@ async fn resolve_action_metadata(
                     .into(),
             )
         })?;
-        let (instance, svc) =
-            resolve_service_for_verb_shape(state, ext, auth, scope, ceiling_user_id, service_key)
-                .await?;
+        let (instance, svc) = resolve_service_for_verb_shape(
+            state,
+            ext,
+            auth,
+            scope,
+            ceiling_user_id,
+            req.service_id,
+            service_key,
+        )
+        .await?;
         // Verb shape is HTTP-only — MCP / Platform runtimes have no
         // notion of "method + path" and would crash downstream when we
         // hand them an `ActionRequest` with a method. Reject up-front
@@ -1721,9 +1857,14 @@ async fn resolve_action_metadata(
     // Service + defined action: load template, look up action, expose
     // schema + scope for validation and permission derivation.
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
-        let instance = scope
-            .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
-            .await?;
+        let instance = resolve_instance_for_call(
+            scope,
+            auth.identity_id,
+            ceiling_user_id,
+            req.service_id,
+            service_key,
+        )
+        .await?;
 
         let svc = if let Some(ref inst) = instance {
             super::templates::resolve_template_definition(
@@ -1892,8 +2033,16 @@ async fn resolve_request(
         let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
-            resolve_service_for_verb_shape(state, ext, auth, scope, ceiling_user_id, service_key)
-                .await?
+            resolve_service_for_verb_shape(
+                state,
+                ext,
+                auth,
+                scope,
+                ceiling_user_id,
+                req.service_id,
+                service_key,
+            )
+            .await?
         };
         // Defense in depth: `resolve_action_metadata` already rejects
         // non-HTTP runtimes for the verb shape, so reaching here is a
@@ -1972,13 +2121,14 @@ async fn resolve_request(
         let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
-            let instance = scope
-                .resolve_service_instance_by_name(
-                    auth.identity_id,
-                    Some(ceiling_user_id),
-                    service_key,
-                )
-                .await?;
+            let instance = resolve_instance_for_call(
+                scope,
+                auth.identity_id,
+                ceiling_user_id,
+                req.service_id,
+                service_key,
+            )
+            .await?;
 
             let svc = if let Some(ref inst) = instance {
                 // Instance exists — resolve its template; propagate errors (don't fall back

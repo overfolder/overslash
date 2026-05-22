@@ -42,12 +42,15 @@
 		goto(`${url.pathname}${url.search}`, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
-	function openInExplorer(name: string) {
-		explorerInitialService = name;
+	function openInExplorer(idOrName: string) {
+		// Prefer the row UUID so admin-as-owner lookups against other users'
+		// services hit the backend's org-scoped UUID branch instead of the
+		// caller-scoped name resolver.
+		explorerInitialService = idOrName;
 		activeTab = 'api-explorer';
 		const url = new URL($page.url);
 		url.searchParams.set('tab', 'api-explorer');
-		url.searchParams.set('service', name);
+		url.searchParams.set('service', idOrName);
 		goto(`${url.pathname}${url.search}`, { replaceState: false, keepFocus: true, noScroll: true });
 	}
 
@@ -335,7 +338,7 @@
 											type="button"
 											class="btn small"
 											title="Open in API Explorer"
-											onclick={() => openInExplorer(s.name)}
+											onclick={() => openInExplorer(s.id)}
 										>
 											⌘ Try it
 										</button>
@@ -360,7 +363,7 @@
 	{:else if activeTab === 'catalog'}
 		<TemplateCatalog {isAdmin} />
 	{:else}
-		<ApiExplorer initialService={explorerInitialService} />
+		<ApiExplorer initialService={explorerInitialService} {isAdmin} />
 	{/if}
 </div>
 
