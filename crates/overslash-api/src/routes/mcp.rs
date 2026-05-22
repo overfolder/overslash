@@ -469,7 +469,12 @@ async fn tools_list_response(
                         "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
                     },
                     "action":  { "type": "string" },
-                    "params":  {}
+                    "params":  {},
+                    "verbose": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every read. Pass true only when you need a specific header or the response was cropped."
+                    }
                 },
                 "required": ["service", "action"],
                 "additionalProperties": false
@@ -496,6 +501,11 @@ async fn tools_list_response(
                     "approval_id": {
                         "type": "string",
                         "description": "Trigger the replay of a previously-approved action. Mutually exclusive with service/action/params."
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header or the response was cropped. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
                     }
                 },
                 "additionalProperties": false
@@ -1049,6 +1059,11 @@ async fn dispatch_read(
     if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
         body.insert("params".into(), p.clone());
     }
+    // MCP defaults to the compact response shape (the HTTP API defaults to
+    // verbose for backward compatibility). Forward the caller's explicit
+    // `verbose` flag when supplied; otherwise stamp `false` so the inner
+    // handler picks compact.
+    body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     forward(
         state,
         bearer,
@@ -1057,6 +1072,15 @@ async fn dispatch_read(
         Some(Value::Object(body)),
     )
     .await
+}
+
+/// Read the caller-supplied `verbose: bool` tool argument, defaulting to
+/// `false`. Non-boolean values are ignored (the JSON schema's `boolean`
+/// type already filters this for well-behaved clients).
+fn verbose_flag(args: &Value) -> bool {
+    args.get("verbose")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 async fn dispatch_call(
@@ -1101,6 +1125,9 @@ async fn dispatch_call(
     if let Some(p) = args.get("params").filter(|v| !v.is_null()) {
         body.insert("params".into(), p.clone());
     }
+    // Same rationale as `dispatch_read`: MCP forwards `verbose: false` by
+    // default so the LLM consumer gets the compact shape.
+    body.insert("verbose".into(), Value::Bool(verbose_flag(args)));
     forward(
         state,
         bearer,
@@ -1119,6 +1146,7 @@ async fn dispatch_overslash_platform(
     require_risk: Option<&str>,
 ) -> Result<ForwardOutcome, String> {
     let params = args.get("params");
+    let verbose = verbose_flag(args);
     match action {
         "list_pending" => {
             let outcome = forward(
@@ -1174,7 +1202,7 @@ async fn dispatch_overslash_platform(
         "list_services" | "get_service" | "create_service" | "update_service"
         | "list_templates" | "get_template" | "create_template" | "import_template"
         | "delete_template" | "create_connection" | "request_secret" => {
-            forward_overslash_action(state, bearer, action, params, require_risk).await
+            forward_overslash_action(state, bearer, action, params, require_risk, verbose).await
         }
         other => Err(format!(
             "overslash platform action '{other}' is not callable via MCP"
@@ -1193,6 +1221,7 @@ async fn forward_overslash_action(
     action: &str,
     params: Option<&Value>,
     require_risk: Option<&str>,
+    verbose: bool,
 ) -> Result<ForwardOutcome, String> {
     let mut body = serde_json::Map::new();
     body.insert("service".into(), Value::String("overslash".into()));
@@ -1203,6 +1232,11 @@ async fn forward_overslash_action(
     if let Some(p) = params.filter(|v| !v.is_null()) {
         body.insert("params".into(), p.clone());
     }
+    // Same rationale as `dispatch_call` / `dispatch_read`: MCP picks the
+    // compact shape by default and the caller can flip `verbose: true` to
+    // opt back in. Without this stamp the inner handler would default to
+    // verbose for every `overslash` platform action.
+    body.insert("verbose".into(), Value::Bool(verbose));
     forward(
         state,
         bearer,
