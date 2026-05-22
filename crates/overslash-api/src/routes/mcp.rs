@@ -505,7 +505,7 @@ async fn tools_list_response(
                     "verbose": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header or the response was cropped."
+                        "description": "Return the full ActionResult including response headers and the untruncated raw body. Default false — the compact shape (status_code, duration_ms, parsed body capped at ~8 KB) is enough for almost every call. Pass true only when you need a specific header or the response was cropped. Only takes effect on fresh calls (service + action); ignored when `approval_id` is set, since approval replays return an ApprovalResponse with its own shape."
                     }
                 },
                 "additionalProperties": false
