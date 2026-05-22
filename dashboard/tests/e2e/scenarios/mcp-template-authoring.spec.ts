@@ -113,7 +113,10 @@ test('agent authors a user-level template via MCP and is rejected when publishin
 		const createStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'create_template',
-			params: { openapi: templateYaml(templateKey), user_level: true }
+			params: { openapi: templateYaml(templateKey), user_level: true },
+			// MCP defaults to compact; this spec JSON.parses `result.body`
+			// as a string, so opt back into the verbose shape per call.
+			verbose: true
 		});
 		expect(createStep.kind).toBe('final');
 		if (createStep.kind !== 'final') return;
@@ -135,7 +138,8 @@ test('agent authors a user-level template via MCP and is rejected when publishin
 		// 2) list_templates — must include the row we just created at user tier.
 		const listStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
-			action: 'list_templates'
+			action: 'list_templates',
+			verbose: true
 		});
 		expect(listStep.kind).toBe('final');
 		if (listStep.kind !== 'final') return;
@@ -153,7 +157,8 @@ test('agent authors a user-level template via MCP and is rejected when publishin
 		const getStep = await mcp.callTool('overslash_read', {
 			service: 'overslash',
 			action: 'get_template',
-			params: { key: templateKey }
+			params: { key: templateKey },
+			verbose: true
 		});
 		expect(getStep.kind).toBe('final');
 		if (getStep.kind !== 'final') return;

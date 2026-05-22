@@ -159,7 +159,11 @@ test('agent uses request_secret to fulfil a credential_missing error end-to-end'
 		const reqStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'request_secret',
-			params: { secret_name: secretName }
+			params: { secret_name: secretName },
+			// decodeCallResult JSON.parses `result.body` as a string;
+			// MCP now defaults to the compact shape (parsed body), so opt
+			// back into verbose for this call.
+			verbose: true
 		});
 		expect(reqStep.kind).toBe('final');
 		if (reqStep.kind !== 'final') return;

@@ -416,6 +416,16 @@ struct CallRequest {
     // MCP `overslash_read` tool to enforce its readOnlyHint.
     #[serde(default)]
     require_risk: Option<Risk>,
+
+    // Response shape selector. `Some(true)` → current full ActionResult
+    // (headers, raw stringified body, no crop). `Some(false)` → compact
+    // shape (headers dropped, body parsed as JSON when possible, output
+    // capped at ~8 KB). `None` defaults to `true` on the HTTP API to keep
+    // direct callers wire-compatible. The MCP layer forwards `false` by
+    // default and only flips to `true` when the caller passes `verbose: true`
+    // on the tool args.
+    #[serde(default)]
+    verbose: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -423,7 +433,12 @@ struct CallRequest {
 enum CallResponse {
     #[serde(rename = "called")]
     Called {
-        result: ActionResult,
+        /// Pre-rendered `ActionResult` view. Verbose mode encodes the full
+        /// struct (status_code, headers, raw body string, duration_ms,
+        /// optional filtered_body). Compact mode returns the shape from
+        /// `services::compact_response::compact` (headers dropped, body
+        /// parsed as JSON, ≤8 KB). The selector lives on `CallRequest.verbose`.
+        result: serde_json::Value,
         action_description: Option<String>,
     },
     #[serde(rename = "pending_approval")]
@@ -457,6 +472,19 @@ enum CallResponse {
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
+}
+
+/// Render `ActionResult` according to the caller's `verbose` selector.
+/// Defaults to verbose (`true`) when the caller didn't say — keeps the
+/// HTTP API wire-compatible for the dashboard and direct REST consumers.
+/// The MCP forwarder explicitly passes `verbose: false` to opt into the
+/// compact shape on behalf of LLM clients.
+fn render_action_result(result: &ActionResult, verbose: Option<bool>) -> serde_json::Value {
+    if verbose.unwrap_or(true) {
+        serde_json::to_value(result).unwrap_or(serde_json::Value::Null)
+    } else {
+        crate::services::compact_response::compact(result)
+    }
 }
 
 /// Metadata from request resolution, used to derive the correct permission key type.
@@ -953,7 +981,7 @@ async fn call_action_impl(
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
-                result,
+                result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
             }),
         )
@@ -1009,7 +1037,7 @@ async fn call_action_impl(
         return Ok((
             StatusCode::OK,
             Json(CallResponse::Called {
-                result,
+                result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
             }),
         )
@@ -1205,7 +1233,7 @@ async fn call_action_impl(
     Ok((
         StatusCode::OK,
         Json(CallResponse::Called {
-            result,
+            result: render_action_result(&result, req.verbose),
             action_description: meta.description,
         }),
     )

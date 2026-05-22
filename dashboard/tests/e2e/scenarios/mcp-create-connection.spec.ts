@@ -139,7 +139,10 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 		const createServiceStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'create_service',
-			params: { template_key: 'github', name: serviceName }
+			params: { template_key: 'github', name: serviceName },
+			// MCP defaults to the compact shape; this spec JSON.parses
+			// `result.body` as a string, so opt back into the verbose shape.
+			verbose: true
 		});
 		expect(createServiceStep.kind).toBe('final');
 		if (createServiceStep.kind !== 'final') return;
@@ -156,7 +159,8 @@ test('agent bootstraps a service via MCP, gate enforces session match, and OAuth
 		const createConnStep = await mcp.callTool('overslash_call', {
 			service: 'overslash',
 			action: 'create_connection',
-			params: { provider: 'github' }
+			params: { provider: 'github' },
+			verbose: true
 		});
 		expect(createConnStep.kind).toBe('final');
 		if (createConnStep.kind !== 'final') return;
