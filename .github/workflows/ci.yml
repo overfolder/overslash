@@ -172,6 +172,21 @@ jobs:
       # Points oversla-sh integration tests at the valkey service above.
       VALKEY_URL: redis://localhost:6380
     steps:
+      # Free ~25 GB of pre-installed tooling we never use (Android SDK,
+      # .NET, Haskell, CodeQL, cached Docker images, etc.) so the
+      # combined footprint of the Rust target/ tree, llvm-cov .profraw
+      # files, and runner _diag logs doesn't push the disk to 100%.
+      # Without this, mid-run writes occasionally fail with
+      # `System.IO.IOException: No space left on device` from the runner's
+      # own log handle, which surfaces as a confusing job failure that
+      # has nothing to do with the tests themselves.
+      - name: Free disk space on runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
