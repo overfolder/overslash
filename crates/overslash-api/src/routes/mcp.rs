@@ -1146,6 +1146,7 @@ async fn dispatch_overslash_platform(
     require_risk: Option<&str>,
 ) -> Result<ForwardOutcome, String> {
     let params = args.get("params");
+    let verbose = verbose_flag(args);
     match action {
         "list_pending" => {
             let outcome = forward(
@@ -1201,7 +1202,7 @@ async fn dispatch_overslash_platform(
         "list_services" | "get_service" | "create_service" | "update_service"
         | "list_templates" | "get_template" | "create_template" | "import_template"
         | "delete_template" | "create_connection" | "request_secret" => {
-            forward_overslash_action(state, bearer, action, params, require_risk).await
+            forward_overslash_action(state, bearer, action, params, require_risk, verbose).await
         }
         other => Err(format!(
             "overslash platform action '{other}' is not callable via MCP"
@@ -1220,6 +1221,7 @@ async fn forward_overslash_action(
     action: &str,
     params: Option<&Value>,
     require_risk: Option<&str>,
+    verbose: bool,
 ) -> Result<ForwardOutcome, String> {
     let mut body = serde_json::Map::new();
     body.insert("service".into(), Value::String("overslash".into()));
@@ -1230,6 +1232,11 @@ async fn forward_overslash_action(
     if let Some(p) = params.filter(|v| !v.is_null()) {
         body.insert("params".into(), p.clone());
     }
+    // Same rationale as `dispatch_call` / `dispatch_read`: MCP picks the
+    // compact shape by default and the caller can flip `verbose: true` to
+    // opt back in. Without this stamp the inner handler would default to
+    // verbose for every `overslash` platform action.
+    body.insert("verbose".into(), Value::Bool(verbose));
     forward(
         state,
         bearer,
