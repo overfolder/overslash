@@ -29,6 +29,12 @@ use serde_json::{Map, Value, json};
 /// callers needing more can re-issue with `verbose: true`.
 pub const COMPACT_BUDGET_BYTES: usize = 8 * 1024;
 
+/// Conservative upper bound on the bytes the truncation marker
+/// (`"_truncated": true, "_hint": "…"`) adds to the serialized envelope.
+/// Subtracted from the working budget so the final output, marker
+/// included, still fits inside [`COMPACT_BUDGET_BYTES`].
+const MARKER_RESERVE_BYTES: usize = 128;
+
 const MAX_STRING_CHARS: usize = 200;
 const MAX_ARRAY_ITEMS: usize = 10;
 const MAX_OBJECT_KEYS: usize = 20;
@@ -42,7 +48,10 @@ pub fn compact(result: &ActionResult) -> Value {
     out.insert("body".into(), select_body(result));
 
     let mut value = Value::Object(out);
-    if shrink_to_budget(&mut value, COMPACT_BUDGET_BYTES) {
+    // Reserve room for the truncation marker upfront so its bytes can't
+    // push the final output back over `COMPACT_BUDGET_BYTES`.
+    let working_budget = COMPACT_BUDGET_BYTES.saturating_sub(MARKER_RESERVE_BYTES);
+    if shrink_to_budget(&mut value, working_budget) {
         if let Some(obj) = value.as_object_mut() {
             obj.insert("_truncated".into(), Value::Bool(true));
             obj.insert(
@@ -93,12 +102,17 @@ fn filtered_body_to_value(fb: &FilteredBody) -> Value {
 /// Reduce `value` in place until its compact JSON serialization fits in
 /// `budget` bytes. Returns `true` when at least one truncation step ran.
 ///
-/// Strategy: repeatedly tighten the limits on string length, array length,
-/// and object key count; rebuild after each pass and stop when the
-/// serialized size fits. As a final guardrail, if even the most aggressive
-/// limits leave us over budget (e.g. a single 50 KB string), the body is
-/// replaced with a placeholder. The function never panics or loops
-/// unboundedly.
+/// Strategy: snapshot the original body once, then on each pass apply
+/// increasingly aggressive limits to a *fresh clone* of that snapshot
+/// before swapping it back in. Cloning per pass means the sentinel
+/// markers added on pass N never pollute pass N+1's element counts —
+/// the dropped-count printed in `"…+N more items"` always reflects how
+/// many items were dropped from the *original* tree, not from the
+/// already-truncated tree.
+///
+/// As a final guardrail, if even the most aggressive limits leave us
+/// over budget (e.g. a single multi-MB string), the body is replaced
+/// with a placeholder. The function never panics or loops unboundedly.
 fn shrink_to_budget(value: &mut Value, budget: usize) -> bool {
     if serialized_len(value) <= budget {
         return false;
@@ -109,15 +123,19 @@ fn shrink_to_budget(value: &mut Value, budget: usize) -> bool {
         (100, 5, 10),
         (40, 3, 5),
     ];
+
+    let Some(original_body) = value.as_object().and_then(|m| m.get("body")).cloned() else {
+        return false;
+    };
+
     let mut touched = false;
     for &(max_str, max_arr, max_obj) in passes {
+        let mut candidate = original_body.clone();
+        let shrank = truncate(&mut candidate, max_str, max_arr, max_obj);
         if let Some(obj) = value.as_object_mut() {
-            if let Some(body) = obj.get_mut("body") {
-                if truncate(body, max_str, max_arr, max_obj) {
-                    touched = true;
-                }
-            }
+            obj.insert("body".into(), candidate);
         }
+        touched |= shrank;
         if serialized_len(value) <= budget {
             return touched;
         }
@@ -298,5 +316,60 @@ mod tests {
             "compact result was {serialized_len} bytes"
         );
         assert_eq!(v["_truncated"], true);
+    }
+
+    /// Regression — a body that's just barely over budget on pass 1 used
+    /// to overflow after the `_truncated` / `_hint` marker fields were
+    /// appended. Reserving marker bytes upfront keeps the final
+    /// serialization inside the budget.
+    #[test]
+    fn marker_does_not_push_output_back_over_budget() {
+        // Pick a size that lands the pass-1 truncated body just under the
+        // raw budget but would overflow once the ~80-byte marker is added.
+        let chunk = "a".repeat(180); // each item ~190 bytes serialized
+        let items: Vec<Value> = (0..100).map(|_| Value::String(chunk.clone())).collect();
+        let body = serde_json::to_string(&Value::Array(items)).unwrap();
+        let r = base(&body);
+        let v = compact(&r);
+        let final_len = serde_json::to_string(&v).unwrap().len();
+        assert!(
+            final_len <= COMPACT_BUDGET_BYTES,
+            "marker overflow regression: final {final_len} > budget {COMPACT_BUDGET_BYTES}"
+        );
+        assert_eq!(v["_truncated"], true);
+    }
+
+    /// Regression — when multiple shrink passes ran in sequence, the
+    /// per-pass mutation polluted the next pass's counts: the sentinel
+    /// items / `"…"` key inserted by pass N inflated pass N+1's
+    /// `dropped` counter, so the printed `+N more` was wrong. Cloning
+    /// the original body per pass keeps the dropped count accurate.
+    #[test]
+    fn dropped_count_reflects_original_size_across_passes() {
+        // 1000 small items, big enough to force a shrink beyond pass 1's
+        // limit of 10 items. We don't assert the exact pass that wins,
+        // only that the printed "+N more items" equals (original − kept)
+        // — never `kept + sentinel − new_kept`.
+        let items: Vec<Value> = (0..1_000).map(|i| json!({"id": i})).collect();
+        let body = serde_json::to_string(&Value::Array(items)).unwrap();
+        let r = base(&body);
+        let v = compact(&r);
+
+        let arr = v["body"].as_array().expect("body should still be an array");
+        // Last element is the sentinel.
+        let sentinel = arr.last().and_then(Value::as_str).expect("sentinel");
+        let dropped: usize = sentinel
+            .trim_start_matches('…')
+            .trim_start_matches('+')
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .expect("parseable dropped count");
+        let kept = arr.len() - 1; // minus sentinel
+        assert_eq!(
+            kept + dropped,
+            1_000,
+            "dropped({dropped}) + kept({kept}) must equal the original 1000"
+        );
     }
 }
