@@ -24,8 +24,6 @@ export function credentialStatus(
 ): CredentialStatus {
 	if (instance.connection_id) {
 		switch (instance.credentials_status) {
-			case 'ok':
-				return 'connected';
 			case 'needs_reconnect':
 				return 'needs-reconnect';
 			case 'partially_degraded':
@@ -35,10 +33,9 @@ export function credentialStatus(
 				// the backend asks for re-auth, so don't paint it connected.
 				return 'needs-setup';
 			default:
-				// Field absent: the backend couldn't classify (template resolution
-				// failed, or a non-OAuth template carries a connection). Fall through
-				// to the secret-name / needs-setup checks rather than masking it.
-				break;
+				// 'ok', or an absent field (template has no OAuth scheme to
+				// classify, or a benign gap): a bound connection is connected.
+				return 'connected';
 		}
 	}
 	if (instance.secret_name) return 'connected';
