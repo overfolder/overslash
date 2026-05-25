@@ -481,11 +481,13 @@ async fn test_approval_flow() {
 
     // Regression: `approval_url` must point at the dashboard deep-link page
     // (`/approvals/{id}`), not the old placeholder `/approve/{token}` that
-    // agents were suggesting to users and 404'd.
+    // agents were suggesting to users and 404'd. It also carries the approval's
+    // org as a `?org=` param so the dashboard can switch the recipient into that
+    // org before loading the approval (avoids the org-scoped "deleted" 404).
     let approval_url = body["approval_url"].as_str().unwrap();
     assert!(
-        approval_url.ends_with(&format!("/approvals/{approval_id}")),
-        "approval_url {approval_url:?} should end with /approvals/{approval_id}"
+        approval_url.contains(&format!("/approvals/{approval_id}?org=")),
+        "approval_url {approval_url:?} should contain /approvals/{approval_id}?org="
     );
     assert!(
         !approval_url.contains("/approve/"),

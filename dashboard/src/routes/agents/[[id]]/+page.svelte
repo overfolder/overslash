@@ -437,9 +437,18 @@
 	let lastLoadedApprovalId = $state<string | null>(null);
 	let autoSelectedForApproval = $state<string | null>(null);
 	const modalApprovalId = $derived($page.url.searchParams.get('approval'));
+	// Org the approval belongs to, carried by the deep-link (`?org=<id>`). When
+	// it differs from the active session org, fetching the approval would 404
+	// (org-scoped) and read as "deleted". Switch into that org first.
+	const modalApprovalOrg = $derived($page.url.searchParams.get('org'));
+	const activeOrgId = $derived(
+		($page.data as { user?: { org_id?: string } })?.user?.org_id ?? null
+	);
 
 	$effect(() => {
 		const id = modalApprovalId;
+		const org = modalApprovalOrg;
+		const active = activeOrgId;
 		if (id === lastLoadedApprovalId) return;
 		lastLoadedApprovalId = id;
 		if (!id) {
@@ -449,6 +458,34 @@
 		}
 		modalError = null;
 		void (async () => {
+			// If the deep-link targets a different org than the active session,
+			// switch into it first, then land back on the approval. The
+			// post-switch URL drops `?org=` so this branch is skipped on reload
+			// (the JWT org now matches) — avoiding a switch loop. Mirrors the
+			// OrgSwitcher's `redirect_to` handling (apex for personal orgs,
+			// subdomain for shared orgs; falls back to current origin).
+			if (org && org !== active) {
+				try {
+					const res = await session.post<{ redirect_to?: string }>('/auth/switch-org', {
+						org_id: org
+					});
+					if (modalApprovalId !== id) return;
+					const dest = new URL(res?.redirect_to ?? window.location.origin);
+					dest.pathname = '/agents';
+					dest.search = `?approval=${encodeURIComponent(id)}`;
+					window.location.href = dest.toString();
+				} catch (e) {
+					if (modalApprovalId !== id) return;
+					modalApproval = null;
+					modalError =
+						e instanceof ApiError && e.status === 403
+							? "You don't have access to this approval's organization."
+							: e instanceof ApiError
+								? `Failed to open approval (${e.status}).`
+								: 'Network error loading approval.';
+				}
+				return;
+			}
 			try {
 				const fetched = await session.get<ApprovalResponse>(`/v1/approvals/${id}`);
 				// Staleness check: the user may have closed the modal or
