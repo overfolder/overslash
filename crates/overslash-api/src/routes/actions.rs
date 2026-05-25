@@ -921,9 +921,15 @@ async fn call_action_impl(
                     });
                 }
 
-                let approval_url = state
-                    .config
-                    .dashboard_url_for(&format!("/approvals/{}", approval.id));
+                // Carry the approval's org in the deep-link so the dashboard can
+                // switch the recipient's session into that org before loading the
+                // approval. Without it, a recipient whose active session is a
+                // different org (e.g. their personal org after a root login) gets
+                // an org-scoped 404 that reads as "approval deleted".
+                let approval_url = state.config.dashboard_url_for(&format!(
+                    "/approvals/{}?org={}",
+                    approval.id, approval.org_id
+                ));
                 let approval_url =
                     crate::services::short_url::mint(&state, &approval_url, expires_at)
                         .await
