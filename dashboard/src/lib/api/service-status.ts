@@ -23,9 +23,23 @@ export function credentialStatus(
 	_connections: ConnectionSummary[] | Set<string>
 ): CredentialStatus {
 	if (instance.connection_id) {
-		if (instance.credentials_status === 'needs_reconnect') return 'needs-reconnect';
-		if (instance.credentials_status === 'partially_degraded') return 'partially-degraded';
-		return 'connected';
+		switch (instance.credentials_status) {
+			case 'ok':
+				return 'connected';
+			case 'needs_reconnect':
+				return 'needs-reconnect';
+			case 'partially_degraded':
+				return 'partially-degraded';
+			case 'needs_authentication':
+				// Connection bound but unresolvable org-scoped (dangling/deleted) —
+				// the backend asks for re-auth, so don't paint it connected.
+				return 'needs-setup';
+			default:
+				// Field absent: the backend couldn't classify (template resolution
+				// failed, or a non-OAuth template carries a connection). Fall through
+				// to the secret-name / needs-setup checks rather than masking it.
+				break;
+		}
 	}
 	if (instance.secret_name) return 'connected';
 	return 'needs-setup';
