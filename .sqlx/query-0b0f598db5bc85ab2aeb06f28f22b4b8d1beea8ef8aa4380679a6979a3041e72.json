@@ -6,17 +6,35 @@
       {
         "ordinal": 0,
         "name": "archived_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "archived_at"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "parent_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "parent_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "subagent_archive_retention_days",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "subagent_archive_retention_days"
+          }
+        }
       }
     ],
     "parameters": {

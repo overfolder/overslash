@@ -6,47 +6,101 @@
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "user_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "user_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "org_name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "org_name"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "org_slug",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "org_slug"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "seats",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "seats"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "currency",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "currency"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "expires_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "expires_at"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "fulfilled_org_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "pending_checkouts",
+            "name": "fulfilled_org_id"
+          }
+        }
       }
     ],
     "parameters": {
