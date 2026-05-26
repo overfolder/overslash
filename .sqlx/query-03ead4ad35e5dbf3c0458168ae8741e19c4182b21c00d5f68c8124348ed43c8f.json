@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "allow_overslash_managed_signin",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_overslash_managed_signin"
+          }
+        }
       }
     ],
     "parameters": {

@@ -58,9 +58,9 @@ pub async fn test_pool() -> PgPool {
     let admin_pool = PgPool::connect(&base_url).await.unwrap();
     let mut retries = 0u32;
     loop {
-        match sqlx::query(&format!(
+        match sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE DATABASE \"{test_db}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-        ))
+        )))
         .execute(&admin_pool)
         .await
         {
@@ -95,9 +95,9 @@ pub async fn test_pool_bootstrapped() -> (PgPool, BootstrapFixtures) {
     // sessions right after ensure_bootstrapped returns.  Retry a few times.
     let mut retries = 0u32;
     loop {
-        match sqlx::query(&format!(
+        match sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE DATABASE \"{test_db}\" TEMPLATE \"{BOOTSTRAPPED_DB_NAME}\""
-        ))
+        )))
         .execute(&admin_pool)
         .await
         {
@@ -202,9 +202,11 @@ extern "C" fn run_cleanup() {
                 continue;
             };
             for db in names {
-                let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))
-                    .execute(&pool)
-                    .await;
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"
+                )))
+                .execute(&pool)
+                .await;
             }
             pool.close().await;
         }
@@ -258,10 +260,12 @@ async fn ensure_template(base_url: &str) {
         .unwrap();
 
     if !db_exists_conn(&mut conn, TEMPLATE_DB_NAME).await {
-        sqlx::query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
-            .execute(&mut conn)
-            .await
-            .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE \"{TEMPLATE_DB_NAME}\""
+        )))
+        .execute(&mut conn)
+        .await
+        .unwrap();
         let tpl_url = replace_db_name(base_url, TEMPLATE_DB_NAME);
         let tpl_pool = PgPool::connect(&tpl_url).await.unwrap();
         overslash_db::MIGRATOR.run(&tpl_pool).await.unwrap();
@@ -311,9 +315,9 @@ async fn ensure_bootstrapped(base_url: &str) {
 
     if !db_exists_conn(&mut conn, BOOTSTRAPPED_DB_NAME).await {
         // Clone from migration template
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE DATABASE \"{BOOTSTRAPPED_DB_NAME}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-        ))
+        )))
         .execute(&mut conn)
         .await
         .unwrap();
@@ -354,10 +358,10 @@ async fn ensure_bootstrapped(base_url: &str) {
         // Close our pool, then terminate the server's lingering connections
         // so Postgres allows using this DB as a template.
         bs_pool.close().await;
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
              WHERE datname = '{BOOTSTRAPPED_DB_NAME}' AND pid <> pg_backend_pid()"
-        ))
+        )))
         .execute(&mut conn)
         .await
         .unwrap();
