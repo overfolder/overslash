@@ -35,7 +35,8 @@ use crate::{
     services::{jwt, oauth_as, session},
 };
 use overslash_db::repos::{
-    identity, mcp_client_agent_binding, mcp_refresh_token, oauth_mcp_client, org_idp_config,
+    identity, mcp_client_agent_binding, mcp_refresh_token, membership, oauth_mcp_client, org,
+    org_idp_config,
 };
 use overslash_db::scopes::OrgScope;
 
@@ -67,6 +68,10 @@ pub fn consent_router() -> Router<AppState> {
         .route(
             "/v1/oauth/consent/{request_id}/finish",
             post(consent_finish),
+        )
+        .route(
+            "/v1/oauth/consent/{request_id}/switch-org",
+            post(consent_switch_org),
         )
 }
 
@@ -552,6 +557,12 @@ struct ConsentReauthTarget {
 struct ConsentContextResponse {
     request_id: String,
     user_email: String,
+    /// The org the new agent will be created in — locked at `/oauth/authorize`
+    /// time. Surfaced so the consent card can show it unmistakably and offer a
+    /// switcher (see `consent_switch_org`).
+    org_id: Uuid,
+    org_name: String,
+    org_slug: String,
     client: ConsentClientInfo,
     connection: ConsentConnectionInfo,
     mode: &'static str,
@@ -587,6 +598,21 @@ struct ConsentFinishRequest {
 #[derive(Serialize)]
 struct ConsentFinishResponse {
     redirect_uri: String,
+}
+
+#[derive(Deserialize)]
+struct ConsentSwitchOrgRequest {
+    org_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct ConsentSwitchOrgResponse {
+    /// Fresh pending request bound to the target org. The dashboard navigates
+    /// to `/oauth/consent?request_id=<this>`.
+    request_id: String,
+    /// Absolute URL (honoring per-org subdomain) the dashboard should load so
+    /// the new session cookie and `request_id` are both valid on that host.
+    redirect_to: String,
 }
 
 // Slugify a human-typed name into an `agent:<slug>` identifier the way the
@@ -662,6 +688,10 @@ async fn consent_context(
             "signed in to a different org than started this authorization".into(),
         ));
     }
+
+    let org_row = org::get_by_id(state.db(&ext), pending.org_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("organization no longer exists".into()))?;
 
     let client = oauth_mcp_client::get_by_client_id(state.db(&ext), &pending.client_id)
         .await?
@@ -772,6 +802,9 @@ async fn consent_context(
     Ok(Json(ConsentContextResponse {
         request_id: request_id.clone(),
         user_email: session_claims.email.clone(),
+        org_id: org_row.id,
+        org_name: org_row.name.clone(),
+        org_slug: org_row.slug.clone(),
         client: ConsentClientInfo {
             client_name: client.client_name.clone(),
             software_id: client.software_id.clone(),
@@ -789,6 +822,136 @@ async fn consent_context(
     }))
 }
 
+/// POST /v1/oauth/consent/{request_id}/switch-org — re-bind a paused consent
+/// request to a different org the user belongs to.
+///
+/// The consent flow is org-locked at `/oauth/authorize` time (`pending.org_id`
+/// is captured from the session and both `consent_context` and
+/// `consent_finish` reject a mismatched session org). So switching can't be a
+/// cookie flip — we mint a *new* pending request that is born bound to the
+/// target org, mint a session cookie for that org, and hand the dashboard the
+/// URL to reload onto. The old pending record is left to expire so a failed
+/// navigation still falls back to the original org.
+///
+/// Like the rest of the in-process stores, the cloned pending record only
+/// lives in the process that handled this call. Under horizontal scaling a
+/// cross-host `redirect_to` could miss it — the same v1 limitation documented
+/// in `services/oauth_as.rs`; a Redis-backed store would lift it.
+async fn consent_switch_org(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    Json(body): Json<ConsentSwitchOrgRequest>,
+) -> Result<Response, AppError> {
+    let session_claims = session::extract_session(&state, &headers)
+        .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
+
+    // Peek (don't consume): a failed switch must leave the original request
+    // intact so the user can still finish in the org they started in.
+    let pending = state
+        .pending_authorize_store(&ext)
+        .get(&request_id)
+        .ok_or_else(|| AppError::NotFound("authorization request expired".into()))?;
+
+    // Same human as started the flow — we're changing the org, not the user.
+    if pending.user_identity_id != session_claims.sub {
+        return Err(AppError::Forbidden(
+            "signed in as a different user than started this authorization".into(),
+        ));
+    }
+
+    // Resolve the cross-org user_id. The pending record only carries an
+    // org-scoped identity; membership is keyed by user_id.
+    let user_id = match session_claims.user_id {
+        Some(uid) => uid,
+        None => {
+            let scope = OrgScope::new(pending.org_id, state.db_pool(&ext));
+            scope
+                .get_identity(pending.user_identity_id)
+                .await?
+                .and_then(|i| i.user_id)
+                .ok_or_else(|| {
+                    AppError::Unauthorized("session has no resolvable user; sign in again".into())
+                })?
+        }
+    };
+
+    // Membership guard — only orgs the user actually belongs to.
+    membership::find(state.db(&ext), user_id, body.org_id)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("not a member of that org".into()))?;
+
+    let target_org = org::get_by_id(state.db(&ext), body.org_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+
+    // The user's identity in the target org (one per (org, user) by migration
+    // 040's partial UNIQUE).
+    let target_identity = identity::find_by_org_and_user(state.db(&ext), body.org_id, user_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(
+                "membership exists but no user identity in target org (invariant violation)".into(),
+            )
+        })?;
+
+    // Clone the client params into a fresh request bound to the target org.
+    let new_request_id = oauth_as::generate_auth_code();
+    let claim_email = target_identity
+        .email
+        .clone()
+        .unwrap_or_else(|| pending.email.clone());
+    state.pending_authorize_store(&ext).insert(
+        new_request_id.clone(),
+        oauth_as::PendingAuthorize {
+            client_id: pending.client_id.clone(),
+            redirect_uri: pending.redirect_uri.clone(),
+            code_challenge: pending.code_challenge.clone(),
+            state_param: pending.state_param.clone(),
+            user_identity_id: target_identity.id,
+            org_id: target_org.id,
+            email: claim_email.clone(),
+            issued_at: Instant::now(),
+        },
+    );
+
+    // Mint a session cookie scoped to the target org (mirrors `switch_org`).
+    let jwt_secret = crate::routes::auth::signing_key_bytes(&state.config.signing_key);
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let new_claims = jwt::Claims {
+        sub: target_identity.id,
+        org: target_org.id,
+        email: claim_email,
+        aud: jwt::AUD_SESSION.into(),
+        iat: now,
+        exp: now + 7 * 24 * 3600,
+        user_id: Some(user_id),
+        mcp_client_id: None,
+    };
+    let new_token = jwt::mint(&jwt_secret, &new_claims)
+        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+
+    // `build_org_redirect` returns an absolute URL ending in `/`. The
+    // request_id is URL-safe base64 (no padding), so it needs no escaping.
+    let base = crate::routes::auth::build_org_redirect(&state, &target_org);
+    let redirect_to = format!("{base}oauth/consent?request_id={new_request_id}");
+
+    let mut resp_headers = HeaderMap::new();
+    resp_headers.insert(
+        header::SET_COOKIE,
+        crate::routes::auth::session_cookie(&state, &new_token)?,
+    );
+    Ok((
+        resp_headers,
+        Json(ConsentSwitchOrgResponse {
+            request_id: new_request_id,
+            redirect_to,
+        }),
+    )
+        .into_response())
+}
+
 async fn consent_finish(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -802,8 +965,8 @@ async fn consent_finish(
     // Consume the pending record up front — consent is single-use, and a
     // replayable `request_id` would let a second finish call create a
     // duplicate agent and a second auth code. If any downstream lookup
-    // fails the user re-starts the flow; the 60s TTL is short enough that
-    // this is acceptable.
+    // fails the user re-starts the flow; the short `CONSENT_TTL` keeps the
+    // window for that small.
     let pending = state
         .pending_authorize_store(&ext)
         .take(&request_id)

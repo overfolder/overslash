@@ -1,6 +1,7 @@
 //! Shared helpers for the MCP OAuth Authorization Server:
 //!
-//! - In-memory authorization-code store (60s TTL, single-use).
+//! - In-memory authorization-code store (60s TTL, single-use) and
+//!   pending-consent store (longer `CONSENT_TTL` for the interactive step).
 //! - PKCE S256 verification.
 //! - Refresh-token random generation and hashing.
 //!
@@ -33,8 +34,10 @@ pub struct AuthCodeRecord {
 }
 
 /// A paused `/oauth/authorize` request awaiting the user's consent at
-/// `/oauth/consent`. The `issued_at` Instant drives the same 60s TTL as auth
-/// codes — the consent step should feel instantaneous to the user.
+/// `/oauth/consent`. The `issued_at` Instant drives `CONSENT_TTL` (longer than
+/// the 60s auth-code TTL): the consent screen is an interactive surface — the
+/// user reads which org the agent lands in and may switch orgs before clicking
+/// Connect — so it needs more headroom than a machine-redeemed auth code.
 ///
 /// All client + session validation has already happened at authorize time;
 /// consent_finish only needs to replay the session cookie check for
@@ -52,6 +55,10 @@ pub struct PendingAuthorize {
 }
 
 pub const AUTH_CODE_TTL: Duration = Duration::from_secs(60);
+/// TTL for a paused consent request. Longer than `AUTH_CODE_TTL` because a
+/// human reads the consent card and may switch orgs before finishing; the
+/// redeemable auth code minted *after* consent stays on the 60s TTL.
+pub const CONSENT_TTL: Duration = Duration::from_secs(300);
 pub const REFRESH_TOKEN_TTL_SECS: i64 = 30 * 24 * 3600; // 30 days
 pub const ACCESS_TOKEN_TTL_SECS: i64 = 3600; // 1 hour
 
@@ -108,7 +115,7 @@ impl PendingAuthorizeStore {
     pub fn get(&self, request_id: &str) -> Option<PendingAuthorize> {
         let mut map = self.inner.lock().expect("pending authorize store poisoned");
         let rec = map.get(request_id)?.clone();
-        if rec.issued_at.elapsed() > AUTH_CODE_TTL {
+        if rec.issued_at.elapsed() > CONSENT_TTL {
             map.remove(request_id);
             return None;
         }
@@ -121,14 +128,14 @@ impl PendingAuthorizeStore {
     pub fn take(&self, request_id: &str) -> Option<PendingAuthorize> {
         let mut map = self.inner.lock().expect("pending authorize store poisoned");
         let rec = map.remove(request_id)?;
-        if rec.issued_at.elapsed() > AUTH_CODE_TTL {
+        if rec.issued_at.elapsed() > CONSENT_TTL {
             return None;
         }
         Some(rec)
     }
 
     fn prune_locked(map: &mut std::collections::HashMap<String, PendingAuthorize>) {
-        map.retain(|_, r| r.issued_at.elapsed() <= AUTH_CODE_TTL);
+        map.retain(|_, r| r.issued_at.elapsed() <= CONSENT_TTL);
     }
 }
 

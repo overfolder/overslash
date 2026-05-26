@@ -18,10 +18,13 @@
 
 mod common;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use overslash_api::services::jwt;
-use overslash_db::repos::{identity, membership, user as user_repo};
+use overslash_db::repos::{identity, membership, org_bootstrap, user as user_repo};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -1019,4 +1022,232 @@ async fn set_creator_user_id_is_idempotent() {
         .await
         .unwrap();
     assert_eq!(actual, Some(first.id));
+}
+
+// ---------------------------------------------------------------------------
+// Org switching from the OAuth consent page
+//
+// The consent flow is org-locked at /oauth/authorize time, so switching can't
+// be a cookie flip — POST /v1/oauth/consent/{request_id}/switch-org clones the
+// pending request into the target org and re-mints the session cookie.
+// ---------------------------------------------------------------------------
+
+fn pkce() -> (String, String) {
+    let verifier = URL_SAFE_NO_PAD.encode(b"pkce-verifier-0123456789abcdefghij");
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+async fn register_mcp_client(client: &reqwest::Client, base: &str, redirect_uri: &str) -> String {
+    let resp = client
+        .post(format!("{base}/oauth/register"))
+        .json(&json!({
+            "client_name": "switch-org-client",
+            "redirect_uris": [redirect_uri],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "DCR must return 201");
+    let body: Value = resp.json().await.unwrap();
+    body["client_id"].as_str().unwrap().to_string()
+}
+
+/// Seed a second org for an existing user: bootstrap it, create the user-kind
+/// identity, link it via user_id, and add an admin membership.
+async fn seed_extra_org(pool: &PgPool, user_id: Uuid, label: &str) -> (Uuid, Uuid) {
+    let org_id: Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ($1, $2) RETURNING id")
+            .bind(label)
+            .bind(format!(
+                "{}-{}",
+                label.to_lowercase(),
+                Uuid::new_v4().simple()
+            ))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    org_bootstrap::bootstrap_org(pool, org_id, None)
+        .await
+        .unwrap();
+    let ident = identity::create_with_email(
+        pool,
+        org_id,
+        "Alice",
+        "user",
+        None,
+        Some("alice@multiorg.test"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    identity::set_user_id(pool, org_id, ident.id, Some(user_id))
+        .await
+        .unwrap();
+    membership::create(pool, user_id, org_id, membership::ROLE_ADMIN)
+        .await
+        .unwrap();
+    (org_id, ident.id)
+}
+
+/// Drive /oauth/authorize with a forged session cookie and return the
+/// `request_id` from the consent redirect.
+async fn authorize_to_request_id(
+    base: &str,
+    cookie: &str,
+    client_id: &str,
+    redirect: &str,
+    challenge: &str,
+) -> String {
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let url = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp&state=abc",
+        urlencoding::encode(client_id),
+        urlencoding::encode(redirect),
+        urlencoding::encode(challenge),
+    );
+    let resp = no_redirect
+        .get(&url)
+        .header("cookie", format!("oss_session={cookie}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "authorize → consent");
+    let loc = resp.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let request_id = loc
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .expect("consent redirect missing request_id");
+    urlencoding::decode(request_id).unwrap().into_owned()
+}
+
+#[tokio::test]
+async fn consent_switch_org_rebinds_to_target_org() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+    let (org_b, _ident_b) = seed_extra_org(&pool, user_id, "Beta").await;
+
+    let redirect = "http://127.0.0.1:9999/callback";
+    let client_id = register_mcp_client(&client, &base, redirect).await;
+    let (_v, challenge) = pkce();
+    let cookie_a = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+
+    let request_id =
+        authorize_to_request_id(&base, &cookie_a, &client_id, redirect, &challenge).await;
+
+    // Switch to org B.
+    let resp = client
+        .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
+        .header("cookie", format!("oss_session={cookie_a}"))
+        .json(&json!({ "org_id": org_b }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let new_cookie = resp
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| c.split(';').next())
+        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .expect("switch-org must re-mint the session cookie")
+        .to_string();
+    let body: Value = resp.json().await.unwrap();
+    let new_request_id = body["request_id"]
+        .as_str()
+        .expect("new request_id")
+        .to_string();
+    assert_ne!(
+        new_request_id, request_id,
+        "switch issues a fresh request_id"
+    );
+    assert!(
+        body["redirect_to"]
+            .as_str()
+            .unwrap()
+            .contains("/oauth/consent?request_id="),
+        "redirect_to points back to the consent page"
+    );
+
+    // The fresh request, fetched with the new cookie, is bound to org B.
+    let ctx: Value = client
+        .get(format!("{base}/v1/oauth/consent/{new_request_id}"))
+        .header("cookie", format!("oss_session={new_cookie}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ctx["org_id"].as_str().unwrap(), org_b.to_string());
+}
+
+#[tokio::test]
+async fn consent_switch_org_rejects_non_member() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+
+    // An org the user is NOT a member of.
+    let stranger_org: Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ('Stranger', $1) RETURNING id")
+            .bind(format!("stranger-{}", Uuid::new_v4().simple()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let redirect = "http://127.0.0.1:9999/callback";
+    let client_id = register_mcp_client(&client, &base, redirect).await;
+    let (_v, challenge) = pkce();
+    let cookie_a = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+    let request_id =
+        authorize_to_request_id(&base, &cookie_a, &client_id, redirect, &challenge).await;
+
+    let resp = client
+        .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
+        .header("cookie", format!("oss_session={cookie_a}"))
+        .json(&json!({ "org_id": stranger_org }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn consent_switch_org_rejects_different_user() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+    let (org_b, _ident_b) = seed_extra_org(&pool, user_id, "Beta").await;
+
+    let redirect = "http://127.0.0.1:9999/callback";
+    let client_id = register_mcp_client(&client, &base, redirect).await;
+    let (_v, challenge) = pkce();
+    let cookie_a = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+    let request_id =
+        authorize_to_request_id(&base, &cookie_a, &client_id, redirect, &challenge).await;
+
+    // A session for a different identity (sub) in the same org tries to switch
+    // the pending request — rejected before any org work.
+    let other_cookie = mint_session_cookie_with_user(org_a, Uuid::new_v4(), Some(user_id));
+    let resp = client
+        .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
+        .header("cookie", format!("oss_session={other_cookie}"))
+        .json(&json!({ "org_id": org_b }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }

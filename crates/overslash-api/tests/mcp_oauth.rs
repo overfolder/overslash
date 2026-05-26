@@ -2440,3 +2440,102 @@ async fn mcp_overslash_call_rejects_mixed_approval_and_service_args() {
         "expected mutually-exclusive error, got {msg:?}"
     );
 }
+
+/// Decode the `org` claim from an `oss_session=<jwt>` cookie without verifying
+/// the signature — tests only need the payload to cross-check the consent
+/// context against the session that minted it.
+fn jwt_org_claim(session_cookie: &str) -> Uuid {
+    let token = session_cookie
+        .strip_prefix("oss_session=")
+        .unwrap_or(session_cookie);
+    let payload_b64 = token.split('.').nth(1).expect("jwt payload segment");
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .expect("jwt payload b64");
+    let claims: Value = serde_json::from_slice(&payload).expect("jwt payload json");
+    claims["org"]
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .expect("org claim is a uuid")
+}
+
+/// The consent context names the org the new agent will land in — surfaced so
+/// the dashboard can show it and offer a switcher. It must match the org the
+/// session cookie carries (the org locked in at /oauth/authorize time).
+#[tokio::test]
+async fn consent_context_includes_org() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let redirect = "http://127.0.0.1:9999/callback";
+    let client_id = register_client(&client, &base, redirect).await;
+    let (_verifier, challenge) = pkce();
+
+    let login = client
+        .get(format!("{base}/auth/dev/token"))
+        .send()
+        .await
+        .unwrap();
+    let session_cookie = login
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|v| v.to_str().ok().filter(|s| s.starts_with("oss_session=")))
+        .and_then(|c| c.split(';').next())
+        .unwrap()
+        .to_string();
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let authorize_url = format!(
+        "{base}/oauth/authorize?response_type=code&client_id={}\
+         &redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=mcp&state=abc",
+        urlencoding::encode(&client_id),
+        urlencoding::encode(redirect),
+        urlencoding::encode(&challenge),
+    );
+    let resp = no_redirect
+        .get(&authorize_url)
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap();
+    let consent_loc = resp.headers()[reqwest::header::LOCATION]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let request_id = consent_loc
+        .split(&['?', '&'][..])
+        .find_map(|p| p.strip_prefix("request_id="))
+        .expect("consent redirect missing request_id");
+    let request_id = urlencoding::decode(request_id).unwrap().into_owned();
+
+    let ctx: Value = client
+        .get(format!(
+            "{base}/v1/oauth/consent/{}",
+            urlencoding::encode(&request_id)
+        ))
+        .header("cookie", &session_cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let org_id = ctx["org_id"].as_str().expect("org_id present");
+    assert_eq!(
+        Uuid::parse_str(org_id).unwrap(),
+        jwt_org_claim(&session_cookie),
+        "consent org must match the session that started the flow"
+    );
+    assert!(
+        !ctx["org_name"].as_str().unwrap_or("").is_empty(),
+        "org_name must be non-empty"
+    );
+    assert!(
+        !ctx["org_slug"].as_str().unwrap_or("").is_empty(),
+        "org_slug must be non-empty"
+    );
+}

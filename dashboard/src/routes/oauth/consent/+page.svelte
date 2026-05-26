@@ -13,6 +13,7 @@
 	let groupNames = $state<string[]>([]);
 	let elicitationEnabled = $state(false);
 	let submitting = $state(false);
+	let switching = $state(false);
 	let errorMsg = $state<string | null>(null);
 
 	let nameInput: HTMLInputElement | undefined = $state();
@@ -96,6 +97,37 @@
 	function cancel() {
 		window.location.assign('/agents');
 	}
+
+	async function switchOrg(event: Event) {
+		if (data.state !== 'ready') return;
+		const target = event.currentTarget as HTMLSelectElement;
+		const orgId = target.value;
+		if (orgId === data.context.org_id) return;
+		switching = true;
+		errorMsg = null;
+		try {
+			// The consent flow is org-locked at authorize time, so switching
+			// re-binds the request to a fresh one in the target org and re-mints
+			// the session cookie server-side. A full navigation guarantees the
+			// new cookie is read and the consent context reloads under the new
+			// org — and it carries us to the right subdomain when orgs differ.
+			const res = await session.post<{ request_id: string; redirect_to: string }>(
+				`/v1/oauth/consent/${encodeURIComponent(data.context.request_id)}/switch-org`,
+				{ org_id: orgId }
+			);
+			window.location.assign(res.redirect_to);
+		} catch (e) {
+			switching = false;
+			// Reset the select back to the current org so the UI stays honest.
+			target.value = data.context.org_id;
+			if (e instanceof ApiError) {
+				const body = e.body as { error?: string } | undefined;
+				errorMsg = body?.error ?? `Couldn't switch org (${e.status}).`;
+			} else {
+				errorMsg = 'Unexpected error switching org.';
+			}
+		}
+	}
 </script>
 
 <svelte:head>
@@ -148,6 +180,32 @@
 						A new agent will be created for this client.
 					{/if}
 				</div>
+			</div>
+
+			<!-- Organization -->
+			<div class="org-box">
+				<div class="org-label">ORGANIZATION</div>
+				{#if data.memberships.length > 1}
+					<label class="sr-only" for="org-switch">Organization</label>
+					<select
+						id="org-switch"
+						class="org-select"
+						value={ctx.org_id}
+						disabled={switching || submitting}
+						onchange={switchOrg}
+					>
+						{#each data.memberships as m (m.org_id)}
+							<option value={m.org_id}>
+								{m.name}{m.is_personal ? ' (personal)' : ''}
+							</option>
+						{/each}
+					</select>
+					{#if switching}
+						<span class="org-switching">Switching…</span>
+					{/if}
+				{:else}
+					<div class="org-name">{ctx.org_name}</div>
+				{/if}
 			</div>
 
 			<!-- Client identity -->
@@ -422,6 +480,63 @@
 	.sub {
 		font-size: 13px;
 		color: var(--color-text-muted);
+	}
+	.org-box {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
+		background: var(--color-sidebar);
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		padding: 10px 12px;
+	}
+	.org-label {
+		font: var(--text-label-sm);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.org-name {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--color-text-heading);
+	}
+	.org-select {
+		flex: 1;
+		min-width: 0;
+		padding: 7px 10px;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		font-size: 14px;
+		font-weight: 500;
+		background: var(--color-surface);
+		color: var(--color-text-heading);
+		font-family: inherit;
+	}
+	.org-select:focus {
+		outline: 2px solid var(--color-primary);
+		outline-offset: -1px;
+		border-color: var(--color-primary);
+	}
+	.org-select:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+	.org-switching {
+		font-size: 12px;
+		color: var(--color-text-muted);
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 	.client-box {
 		background: var(--color-sidebar);
