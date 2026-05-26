@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "allow_unsigned_secret_provide",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_unsigned_secret_provide"
+          }
+        }
       }
     ],
     "parameters": {

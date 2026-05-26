@@ -223,7 +223,7 @@ async fn reencrypt_target(
     );
 
     loop {
-        let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(&sql)
+        let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(after)
             .bind(opts.batch as i64)
             .fetch_all(pool)
@@ -284,7 +284,7 @@ async fn reencrypt_target(
                 tbl = target.table,
                 col = target.column,
             );
-            match sqlx::query(&update_sql)
+            match sqlx::query(sqlx::AssertSqlSafe(update_sql.as_str()))
                 .bind(&new_blob)
                 .bind(id)
                 .bind(blob)

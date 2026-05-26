@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "allow_user_templates",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "allow_user_templates"
+          }
+        }
       }
     ],
     "parameters": {

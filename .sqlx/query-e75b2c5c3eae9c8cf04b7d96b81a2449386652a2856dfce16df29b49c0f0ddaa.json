@@ -6,42 +6,90 @@
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "identity_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "identity_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "org_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "org_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "upstream_resource",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "upstream_resource"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "upstream_client_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "upstream_client_id"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "status",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "status"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "last_refreshed_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "mcp_upstream_connections",
+            "name": "last_refreshed_at"
+          }
+        }
       }
     ],
     "parameters": {

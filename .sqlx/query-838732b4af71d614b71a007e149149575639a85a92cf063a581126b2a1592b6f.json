@@ -6,62 +6,134 @@
       {
         "ordinal": 0,
         "name": "org_id",
-        "type_info": "Uuid"
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "org_id"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "stripe_subscription_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "stripe_subscription_id"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "stripe_customer_id",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "stripe_customer_id"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "plan",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "plan"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "seats",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "seats"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "status",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "status"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "currency",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "currency"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "current_period_start",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "current_period_start"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "current_period_end",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "current_period_end"
+          }
+        }
       },
       {
         "ordinal": 9,
         "name": "cancel_at_period_end",
-        "type_info": "Bool"
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "cancel_at_period_end"
+          }
+        }
       },
       {
         "ordinal": 10,
         "name": "created_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "created_at"
+          }
+        }
       },
       {
         "ordinal": 11,
         "name": "updated_at",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_subscriptions",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {
