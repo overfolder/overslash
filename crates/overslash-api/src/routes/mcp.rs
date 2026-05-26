@@ -893,6 +893,16 @@ fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
         .cloned()
         .unwrap_or_else(|| Value::Array(vec![]));
 
+    // Surface the descriptive render-form fields the envelope now carries so
+    // the elicitation dialog can show *what* is being approved (the labeled
+    // disclosure summary + risk class), mirroring the dashboard review card.
+    // Both read straight off the in-hand outcome — no extra work.
+    let disclosed_fields = pending_outcome
+        .get("disclosed_fields")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(vec![]));
+    let risk = pending_outcome.get("risk").cloned().unwrap_or(Value::Null);
+
     json!({
         "message": format!("Allow this agent to: {}?", action_summary),
         "requestedSchema": {
@@ -925,7 +935,9 @@ fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
             "required": ["decision"]
         },
         "_meta": {
-            "io.overslash/suggested_tiers": suggested
+            "io.overslash/suggested_tiers": suggested,
+            "io.overslash/disclosed_fields": disclosed_fields,
+            "io.overslash/risk": risk
         }
     })
 }

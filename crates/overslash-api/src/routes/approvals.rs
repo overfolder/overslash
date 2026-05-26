@@ -234,11 +234,43 @@ fn derive_risk_class(registry: &ServiceRegistry, derived_keys: &[DerivedKey]) ->
         .get(&first.service)
         .and_then(|svc| svc.actions.get(&first.action))
         .map(|action| action.risk);
+    risk_class(risk)
+}
+
+/// Map an action's risk level to the dashboard-facing class string
+/// (`"low" | "med" | "high"`). `None` → `"med"`, the same cautious default
+/// `derive_risk_class` falls back to. Shared so the inline `pending_approval`
+/// envelope (built in `routes::actions`) and the `GET /v1/approvals/{id}` read
+/// path produce identical risk strings for the same action.
+pub(crate) fn risk_class(risk: Option<Risk>) -> String {
     match risk {
-        Some(Risk::Read) => "low".to_string(),
-        Some(Risk::Write) => "med".to_string(),
-        Some(Risk::Delete) => "high".to_string(),
-        None => "med".to_string(),
+        Some(Risk::Read) => "low",
+        Some(Risk::Write) => "med",
+        Some(Risk::Delete) => "high",
+        None => "med",
+    }
+    .to_string()
+}
+
+/// Pretty-print a stored `action_detail` JSONB blob for the wire, truncating
+/// at `MAX_ACTION_DETAIL_BYTES` on a UTF-8 boundary. Returns
+/// `(rendered, truncated, full_size_bytes)` — `(None, false, 0)` when there
+/// is no detail. Shared between `ApprovalResponse::from_row` and the inline
+/// `pending_approval` envelope so the two can't drift on truncation rules.
+pub(crate) fn render_action_detail(
+    detail: Option<&serde_json::Value>,
+) -> (Option<String>, bool, usize) {
+    match detail.and_then(|v| serde_json::to_string_pretty(v).ok()) {
+        Some(full) => {
+            let size = full.len();
+            if size > MAX_ACTION_DETAIL_BYTES {
+                let trimmed = truncate_utf8(&full, MAX_ACTION_DETAIL_BYTES).to_string();
+                (Some(trimmed), true, size)
+            } else {
+                (Some(full), false, size)
+            }
+        }
+        None => (None, false, 0),
     }
 }
 
@@ -266,22 +298,8 @@ impl ApprovalResponse {
         let derived_keys = overslash_core::permissions::derive_keys(&r.permission_keys);
         let suggested_tiers = overslash_core::permissions::suggest_tiers(&r.permission_keys);
         let risk = derive_risk_class(registry, &derived_keys);
-        let (action_detail, action_detail_truncated, action_detail_size_bytes) = match r
-            .action_detail
-            .as_ref()
-            .and_then(|v| serde_json::to_string_pretty(v).ok())
-        {
-            Some(full) => {
-                let size = full.len();
-                if size > MAX_ACTION_DETAIL_BYTES {
-                    let trimmed = truncate_utf8(&full, MAX_ACTION_DETAIL_BYTES).to_string();
-                    (Some(trimmed), true, size)
-                } else {
-                    (Some(full), false, size)
-                }
-            }
-            None => (None, false, 0),
-        };
+        let (action_detail, action_detail_truncated, action_detail_size_bytes) =
+            render_action_detail(r.action_detail.as_ref());
         Self {
             id: r.id,
             identity_id: r.identity_id,

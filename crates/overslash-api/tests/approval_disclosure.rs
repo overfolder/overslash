@@ -162,6 +162,33 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
     );
     let approval_id = exec["approval_id"].as_str().unwrap();
 
+    // The inline pending_approval envelope now carries the render-form fields
+    // a white-label integration needs to draw the approval card without a
+    // second GET /v1/approvals/{id}. Assert the same disclosed/risk/keys/detail
+    // shape lands here.
+    let inline_disclosed = exec["disclosed_fields"]
+        .as_array()
+        .expect("inline disclosed_fields present");
+    assert_eq!(inline_disclosed.len(), 2);
+    assert_eq!(inline_disclosed[0]["label"].as_str(), Some("Channel"));
+    assert_eq!(inline_disclosed[0]["value"].as_str(), Some("#general"));
+    // Action risk is `write` → "med" class.
+    assert_eq!(exec["risk"].as_str(), Some("med"));
+    assert!(
+        !exec["permission_keys"]
+            .as_array()
+            .expect("inline permission_keys present")
+            .is_empty(),
+        "expected at least one permission key in inline envelope: {exec:?}"
+    );
+    let inline_detail = exec["action_detail"]
+        .as_str()
+        .expect("inline action_detail present");
+    assert!(
+        inline_detail.contains("[REDACTED]") && !inline_detail.contains("sk_SENSITIVE_123"),
+        "inline action_detail should be redacted:\n{inline_detail}"
+    );
+
     // Fetch the approval back and verify the disclosed + redacted shape.
     let approval: Value = client
         .get(format!("{base}/v1/approvals/{approval_id}"))
@@ -200,6 +227,23 @@ async fn approval_carries_disclosed_fields_and_redacts_action_detail() {
     assert!(
         !raw.contains("sk_SENSITIVE_123"),
         "plaintext api_key leaked into action_detail:\n{raw}"
+    );
+
+    // Parity: the inline envelope and the GET read path are rendered through
+    // the same helpers, so risk + action_detail must be byte-identical for the
+    // same approval. Guards against the two paths drifting.
+    assert_eq!(exec["risk"], approval["risk"], "inline vs GET risk drift");
+    assert_eq!(
+        exec["action_detail"], approval["action_detail"],
+        "inline vs GET action_detail drift"
+    );
+    assert_eq!(
+        exec["disclosed_fields"], approval["disclosed_fields"],
+        "inline vs GET disclosed_fields drift"
+    );
+    assert_eq!(
+        exec["permission_keys"], approval["permission_keys"],
+        "inline vs GET permission_keys drift"
     );
 }
 
