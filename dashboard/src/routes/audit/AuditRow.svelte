@@ -1,5 +1,6 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
+	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
 	import type { AuditEntry } from './types';
 
 	let {
@@ -11,6 +12,11 @@
 		expanded: boolean;
 		ontoggle: () => void;
 	} = $props();
+
+	// Split the actor's identity path into its owning user and leaf agent so the
+	// table can show them in separate columns. `units.user`/`units.leaf` are null
+	// when the path lacks that segment (e.g. a human acting directly has no agent).
+	const units = $derived(identityUnits(entry.identity_path, entry.identity_path_ids));
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -93,13 +99,32 @@
 >
 	<td class="ts" title={fullTime(entry.created_at)}>{relativeTime(entry.created_at)}</td>
 	<td class="identity">
-		{#if entry.identity_id && entry.identity_name}
+		{#if units.user}
+			<a
+				class="identity-link"
+				href={units.user.href}
+				onclick={(e) => e.stopPropagation()}
+			>{units.user.name}</a>
+		{:else}
+			<span class="muted">—</span>
+		{/if}
+	</td>
+	<td class="identity">
+		{#if units.leaf}
+			<a
+				class="identity-link"
+				href={units.leaf.href}
+				title={formatIdentityPath(entry.identity_path)}
+				onclick={(e) => e.stopPropagation()}
+			>{units.leaf.name}</a>
+		{:else if !entry.identity_path && entry.identity_id && entry.identity_name}
+			<!-- Chain unresolved: fall back to the bare leaf identity. -->
 			<a
 				class="identity-link"
 				href={`/agents/${entry.identity_id}`}
 				onclick={(e) => e.stopPropagation()}
 			>{entry.identity_name}</a>
-		{:else if entry.identity_name}
+		{:else if !entry.identity_path && entry.identity_name}
 			<span class="mono">{entry.identity_name}</span>
 		{:else}
 			<span class="muted">—</span>
@@ -124,7 +149,7 @@
 </tr>
 {#if expanded}
 	<tr class="detail-row">
-		<td colspan="6">
+		<td colspan="7">
 			<div class="detail">
 				<dl>
 					<dt>Event ID</dt>

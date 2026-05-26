@@ -218,7 +218,8 @@
 				<thead>
 					<tr>
 						<th>Timestamp</th>
-						<th>Identity</th>
+						<th>User</th>
+						<th>Agent</th>
 						<th>Event</th>
 						<th>Resource</th>
 						<th>Description</th>
@@ -235,7 +236,7 @@
 							/>
 							{#snippet failed(error)}
 								<tr>
-									<td colspan="6" class="muted">
+									<td colspan="7" class="muted">
 										Failed to render entry {entry.id}: {String(
 											(error as { message?: string })?.message ?? error
 										)}
