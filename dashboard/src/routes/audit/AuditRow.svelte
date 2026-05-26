@@ -6,17 +6,23 @@
 	let {
 		entry,
 		expanded,
-		ontoggle
+		ontoggle,
+		currentUserId
 	}: {
 		entry: AuditEntry;
 		expanded: boolean;
 		ontoggle: () => void;
+		/** Identity id of the logged-in user, so their own rows show a "Me" pill. */
+		currentUserId?: string | null;
 	} = $props();
 
 	// Split the actor's identity path into its owning user and leaf agent so the
 	// table can show them in separate columns. `units.user`/`units.leaf` are null
 	// when the path lacks that segment (e.g. a human acting directly has no agent).
 	const units = $derived(identityUnits(entry.identity_path, entry.identity_path_ids));
+	// Match on identity id, not name: similarly-named users across the org are
+	// exactly the ambiguity this column split exists to resolve.
+	const isMe = $derived(!!currentUserId && units.user?.id === currentUserId);
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -99,7 +105,14 @@
 >
 	<td class="ts" title={fullTime(entry.created_at)}>{relativeTime(entry.created_at)}</td>
 	<td class="identity">
-		{#if units.user}
+		{#if units.user && isMe}
+			<a
+				class="me-pill"
+				href={units.user.href}
+				title={units.user.name}
+				onclick={(e) => e.stopPropagation()}
+			>Me</a>
+		{:else if units.user}
 			<a
 				class="identity-link"
 				href={units.user.href}
@@ -296,6 +309,20 @@
 	.identity-link:hover {
 		color: var(--color-primary);
 		text-decoration: underline;
+	}
+	.me-pill {
+		display: inline-block;
+		padding: 1px 8px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-primary, #3b82f6) 14%, transparent);
+		color: var(--color-primary, #3b82f6);
+		font-size: 0.75rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-decoration: none;
+	}
+	.me-pill:hover {
+		background: color-mix(in srgb, var(--color-primary, #3b82f6) 24%, transparent);
 	}
 	.mono {
 		font-family: var(--font-mono, monospace);

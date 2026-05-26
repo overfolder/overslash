@@ -198,6 +198,7 @@
 							entry={anchor}
 							expanded={expandedId === anchor.id}
 							ontoggle={() => toggleExpand(anchor!.id)}
+							currentUserId={data.user?.identity_id}
 						/>
 					</tbody>
 				</table>
@@ -233,6 +234,7 @@
 								{entry}
 								expanded={expandedId === entry.id}
 								ontoggle={() => toggleExpand(entry.id)}
+								currentUserId={data.user?.identity_id}
 							/>
 							{#snippet failed(error)}
 								<tr>

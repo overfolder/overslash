@@ -46,24 +46,33 @@ export function parseIdentityPath(path: string, ids: string[] = []): IdentitySeg
 export interface IdentityUnit {
 	name: string;
 	href: string;
+	/** Identity UUID for this unit, when the caller supplied aligned `ids`.
+	 *  User units are name-keyed for their href but still carry an id here so
+	 *  callers can match against a known identity (e.g. the logged-in user). */
+	id: string | null;
 }
 
 /** Split a path into the owning user unit and the leaf actor unit.
  *  - `user`: first `user` unit (the owner), else null.
  *  - `leaf`: the last unit when it is an agent/sub-agent, else null (so a
- *    user-only path — a human acting directly — yields `leaf: null`). */
+ *    user-only path — a human acting directly — yields `leaf: null`).
+ *
+ *  `ids` align with the `(kind, name)` units in order, so each unit's id is
+ *  `ids[unitIndex]`. */
 export function identityUnits(
 	path: string | null,
 	ids: string[] = []
 ): { user: IdentityUnit | null; leaf: IdentityUnit | null } {
 	if (!path) return { user: null, leaf: null };
 	const units = parseIdentityPath(path, ids).filter((s) => s.type === 'unit');
-	const user = units.find((u) => u.kind === 'user') ?? null;
-	const last = units.length > 0 ? units[units.length - 1] : null;
+	const userIdx = units.findIndex((u) => u.kind === 'user');
+	const user = userIdx >= 0 ? units[userIdx] : null;
+	const lastIdx = units.length - 1;
+	const last = lastIdx >= 0 ? units[lastIdx] : null;
 	const leaf = last && last.kind !== 'user' ? last : null;
 	return {
-		user: user ? { name: user.name, href: user.href } : null,
-		leaf: leaf ? { name: leaf.name, href: leaf.href } : null
+		user: user ? { name: user.name, href: user.href, id: ids[userIdx] ?? null } : null,
+		leaf: leaf ? { name: leaf.name, href: leaf.href, id: ids[lastIdx] ?? null } : null
 	};
 }
 
