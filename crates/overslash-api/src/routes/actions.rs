@@ -487,6 +487,33 @@ enum CallResponse {
         /// approval is granted. Surfaced so MCP clients can choose whether
         /// to wait or to issue an explicit follow-up.
         auto_call_on_approve: bool,
+        // ── Render-form fields ───────────────────────────────────────────
+        // White-label integrations (Telegram/WhatsApp/web bots) render an
+        // approval prompt straight off this envelope. The four fields below
+        // mirror the matching `ApprovalResponse` fields the dashboard's
+        // `ApprovalResolver` renders from, so a caller can draw the same card
+        // without a second `GET /v1/approvals/{id}` round-trip.
+        /// Labeled, human-readable slice of the resolved request extracted via
+        /// the template's `x-overslash-disclose` filters. Omitted when the
+        /// template declared none. Same shape as
+        /// `ApprovalResponse.disclosed_fields`.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        disclosed_fields: Vec<disclosure::DisclosedField>,
+        /// Risk class for the gated action: `"low" | "med" | "high"`. Drives
+        /// the approval card's severity styling. Mirrors `ApprovalResponse.risk`
+        /// (defaults to `"med"` for verb/http shapes with no declared risk).
+        risk: String,
+        /// Permission key(s) being requested — what the approver grants.
+        /// Mirrors `ApprovalResponse.permission_keys`.
+        permission_keys: Vec<String>,
+        /// Redacted, pretty-printed request payload (`x-overslash-redact`
+        /// applied), truncated at the same 100 KB UTF-8 boundary as the read
+        /// path. Omitted when no detail was stored. Mirrors
+        /// `ApprovalResponse.action_detail` + its truncation companions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action_detail: Option<String>,
+        action_detail_truncated: bool,
+        action_detail_size_bytes: usize,
     },
     #[serde(rename = "denied")]
     Denied { reason: String },
@@ -793,6 +820,12 @@ async fn call_action_impl(
                 let (disclosed_fields, redacted_detail) =
                     compute_approval_detail(&meta, &action_req, filter_timeout).await;
 
+                // Render the redacted payload for the inline envelope using the
+                // exact pretty-print + truncation rules the GET read path uses,
+                // before `redacted_detail` is moved into `create_approval`.
+                let (response_action_detail, action_detail_truncated, action_detail_size_bytes) =
+                    super::approvals::render_action_detail(redacted_detail.as_ref());
+
                 // Raw replay payload (full ActionRequest + side-channel fields)
                 // stored separately from action_detail so the replay at
                 // POST /v1/approvals/{id}/call reproduces the agent's
@@ -949,6 +982,12 @@ async fn call_action_impl(
                         relationship: "self".into(),
                         suggested_tiers: suggest_tiers(&keys),
                         auto_call_on_approve: identity.auto_call_on_approve,
+                        risk: super::approvals::risk_class(meta.risk),
+                        permission_keys: keys.clone(),
+                        action_detail: response_action_detail,
+                        action_detail_truncated,
+                        action_detail_size_bytes,
+                        disclosed_fields,
                     }),
                 )
                     .into_response());

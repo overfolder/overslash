@@ -1,6 +1,6 @@
 // Mirrors backend Rust types from overslash-core and overslash-api
 
-import type { SuggestedTier } from './session';
+import type { DisclosedField, SuggestedTier } from './session';
 
 export interface OrgInfo {
   id: string;
@@ -601,6 +601,31 @@ export type CallResponse =
        *  without a second round-trip. Mirrors
        *  ApprovalResponse.suggested_tiers. */
       suggested_tiers: SuggestedTier[];
+      /** Mirrors the requesting agent's identities.auto_call_on_approve.
+       *  When true (default), allow/allow_remember auto-replays the call and
+       *  the result lands via webhook/audit; when false the caller must replay
+       *  explicitly. Backend may omit on older builds — treat undefined as
+       *  true. */
+      auto_call_on_approve?: boolean;
+      /** Render-form fields mirroring ApprovalResponse so a white-label caller
+       *  can draw the same approval card the dashboard does without a second
+       *  GET /v1/approvals/{id}. */
+      /** Labeled, human-readable slice of the resolved request (the
+       *  x-overslash-disclose summary). Omitted when the template declared
+       *  none. Same shape as ApprovalResponse.disclosed_fields. */
+      disclosed_fields?: DisclosedField[];
+      /** Risk class for the gated action; drives card severity styling.
+       *  Mirrors ApprovalResponse.risk. */
+      risk: 'low' | 'med' | 'high';
+      /** Permission key(s) being requested. Mirrors
+       *  ApprovalResponse.permission_keys. */
+      permission_keys: string[];
+      /** Redacted, pretty-printed request payload, truncated at 100 KB.
+       *  Omitted when no detail was stored. Mirrors
+       *  ApprovalResponse.action_detail + its truncation companions. */
+      action_detail?: string;
+      action_detail_truncated: boolean;
+      action_detail_size_bytes: number;
     }
   | { status: 'denied'; reason: string };
 
