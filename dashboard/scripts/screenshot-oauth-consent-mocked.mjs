@@ -25,6 +25,9 @@ function consentContext({ mode, elicitationSupported, reauthElicitation }) {
 	const base = {
 		request_id: REQUEST_ID,
 		user_email: 'alice@acme.co',
+		org_id: ME_AUTH.org_id,
+		org_name: 'Acme Inc',
+		org_slug: 'acme',
 		client: {
 			client_name: 'Claude Desktop',
 			software_id: 'com.anthropic.claude',
@@ -105,12 +108,32 @@ async function waitForServer() {
 	throw new Error(`vite did not start. logs:\n${devOut}`);
 }
 
-async function installMocks(ctx, contextFixture) {
+async function installMocks(ctx, contextFixture, memberships = []) {
 	await ctx.route('**/auth/me', jsonRoute(ME_AUTH));
 	await ctx.route('**/auth/me/identity', jsonRoute({}));
 	await ctx.route('**/auth/me/preferences', jsonRoute({ theme: 'light', time_display: 'relative' }));
+	await ctx.route('**/v1/account/memberships', jsonRoute({ memberships }));
 	await ctx.route(`**/v1/oauth/consent/${REQUEST_ID}`, jsonRoute(contextFixture));
 }
+
+// Two team orgs + a personal org → the consent header renders a switcher.
+const MEMBERSHIPS_MULTI = [
+	{ org_id: ME_AUTH.org_id, slug: 'acme', name: 'Acme Inc', role: 'admin', is_personal: false },
+	{
+		org_id: '00000000-0000-0000-0000-000000000088',
+		slug: 'globex',
+		name: 'Globex Corp',
+		role: 'member',
+		is_personal: false
+	},
+	{
+		org_id: '00000000-0000-0000-0000-000000000077',
+		slug: 'alice',
+		name: 'Alice (personal)',
+		role: 'admin',
+		is_personal: true
+	}
+];
 
 async function shot(page, name) {
 	const out = resolve(OUT_DIR, `${name}.png`);
@@ -142,6 +165,15 @@ const SCENARIOS = [
 			elicitationSupported: true,
 			reauthElicitation: true
 		})
+	},
+	{
+		name: 'oauth-consent-org-switcher',
+		fixture: consentContext({
+			mode: 'new',
+			elicitationSupported: true,
+			reauthElicitation: false
+		}),
+		memberships: MEMBERSHIPS_MULTI
 	}
 ];
 
@@ -152,7 +184,7 @@ try {
 
 	for (const scenario of SCENARIOS) {
 		const ctx = await browser.newContext({ viewport: { width: 720, height: 900 } });
-		await installMocks(ctx, scenario.fixture);
+		await installMocks(ctx, scenario.fixture, scenario.memberships ?? []);
 		const page = await ctx.newPage();
 		await page.goto(`${BASE}/oauth/consent?request_id=${REQUEST_ID}`, {
 			waitUntil: 'networkidle'

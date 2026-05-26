@@ -40,6 +40,9 @@ export interface ConsentReauthTarget {
 export interface ConsentContext {
 	request_id: string;
 	user_email: string;
+	org_id: string;
+	org_name: string;
+	org_slug: string;
 	client: ConsentClientInfo;
 	connection: ConsentConnectionInfo;
 	mode: 'new' | 'reauth';
@@ -49,8 +52,16 @@ export interface ConsentContext {
 	groups: ConsentGroupOption[];
 }
 
+export interface MembershipSummary {
+	org_id: string;
+	slug: string;
+	name: string;
+	role: string;
+	is_personal: boolean;
+}
+
 type LoadResult =
-	| { state: 'ready'; context: ConsentContext }
+	| { state: 'ready'; context: ConsentContext; memberships: MembershipSummary[] }
 	| { state: 'expired' }
 	| { state: 'error'; message: string };
 
@@ -66,7 +77,18 @@ export const load: PageLoad = async ({ url }): Promise<LoadResult> => {
 		const context = await session.get<ConsentContext>(
 			`/v1/oauth/consent/${encodeURIComponent(request_id)}`
 		);
-		return { state: 'ready', context };
+		// Memberships drive the org switcher. A failure here is non-fatal —
+		// degrade to display-only (single-membership behaviour).
+		let memberships: MembershipSummary[] = [];
+		try {
+			const res = await session.get<{ memberships: MembershipSummary[] }>(
+				'/v1/account/memberships'
+			);
+			memberships = res.memberships ?? [];
+		} catch {
+			memberships = [];
+		}
+		return { state: 'ready', context, memberships };
 	} catch (e) {
 		if (e instanceof ApiError) {
 			if (e.status === 404) return { state: 'expired' };
