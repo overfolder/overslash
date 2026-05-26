@@ -1,9 +1,15 @@
+import { identityUnits } from '$lib/identityPath';
 import type { AuditEntry } from './types';
 
 const COLUMNS: Array<{ key: string; get: (e: AuditEntry) => string }> = [
 	{ key: 'timestamp', get: (e) => e.created_at },
 	{ key: 'identity_id', get: (e) => e.identity_id ?? '' },
-	{ key: 'identity', get: (e) => e.identity_name ?? '' },
+	{ key: 'user', get: (e) => identityUnits(e.identity_path, e.identity_path_ids).user?.name ?? '' },
+	{
+		key: 'agent',
+		get: (e) =>
+			identityUnits(e.identity_path, e.identity_path_ids).leaf?.name ?? e.identity_name ?? ''
+	},
 	{ key: 'action', get: (e) => e.action },
 	{ key: 'resource_type', get: (e) => e.resource_type ?? '' },
 	{ key: 'resource_id', get: (e) => e.resource_id ?? '' },

@@ -198,6 +198,7 @@
 							entry={anchor}
 							expanded={expandedId === anchor.id}
 							ontoggle={() => toggleExpand(anchor!.id)}
+							currentUserId={data.user?.identity_id}
 						/>
 					</tbody>
 				</table>
@@ -218,7 +219,8 @@
 				<thead>
 					<tr>
 						<th>Timestamp</th>
-						<th>Identity</th>
+						<th>User</th>
+						<th>Agent</th>
 						<th>Event</th>
 						<th>Resource</th>
 						<th>Description</th>
@@ -232,10 +234,11 @@
 								{entry}
 								expanded={expandedId === entry.id}
 								ontoggle={() => toggleExpand(entry.id)}
+								currentUserId={data.user?.identity_id}
 							/>
 							{#snippet failed(error)}
 								<tr>
-									<td colspan="6" class="muted">
+									<td colspan="7" class="muted">
 										Failed to render entry {entry.id}: {String(
 											(error as { message?: string })?.message ?? error
 										)}
