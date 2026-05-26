@@ -4,8 +4,11 @@
 //! `x-overslash-disclose`) and runs each jq filter against a structured
 //! projection of the resolved request (built via
 //! [`overslash_core::disclosure::build_jq_input`]). Returns one
-//! [`DisclosedField`] per declared entry — failures are isolated per-filter
-//! so one bad expression never poisons the rest of the summary.
+//! [`DisclosedField`] per declared entry that yields a value — failures are
+//! isolated per-filter so one bad expression never poisons the rest of the
+//! summary. A filter that yields *zero* values (the canonical
+//! `.foo // empty` idiom for an optional field) is "nothing to disclose" and
+//! is omitted entirely rather than surfaced as an error.
 //!
 //! All filters for a given action run in a single `spawn_blocking` task:
 //! each individual invocation is a microsecond-scale jq compile+eval, and
@@ -70,8 +73,9 @@ const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_BATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run every filter in `fields` against `input`, returning one
-/// [`DisclosedField`] per entry in declaration order. Empty `fields` →
-/// empty vec (cheap fast-path).
+/// [`DisclosedField`] per entry that yields a value, in declaration order.
+/// Filters yielding zero values are omitted (see [`run_one`]). Empty `fields`
+/// → empty vec (cheap fast-path).
 ///
 /// The batch wall-clock budget is `per_filter_timeout × fields.len()`,
 /// clamped at `MAX_BATCH_TIMEOUT`. Scaling linearly avoids the silent
@@ -95,7 +99,7 @@ pub async fn run_disclosures(
     let join = tokio::task::spawn_blocking(move || {
         owned
             .into_iter()
-            .map(|f| run_one(&f, &input_str))
+            .filter_map(|f| run_one(&f, &input_str))
             .collect::<Vec<_>>()
     });
 
@@ -108,16 +112,17 @@ pub async fn run_disclosures(
     }
 }
 
-fn run_one(field: &DisclosureField, input_str: &str) -> DisclosedField {
+/// Evaluate one filter. Returns `None` when the filter yields zero values so
+/// the field is omitted from the summary: a filter producing no output is the
+/// author's "nothing to disclose" signal (typically `.foo // empty` for an
+/// optional field), not an error worth showing the reviewer. A filter that
+/// *errors* (type mismatch, overflow) still yields `Some` with `error` set so
+/// the failure surfaces inline.
+fn run_one(field: &DisclosureField, input_str: &str) -> Option<DisclosedField> {
     match run_jq_blocking(&field.filter, input_str) {
         Ok((values, _bytes)) => {
             if values.is_empty() {
-                DisclosedField {
-                    label: field.label.clone(),
-                    value: None,
-                    error: Some("filter produced no values".into()),
-                    truncated: false,
-                }
+                None
             } else {
                 // Disclosure filters should yield exactly one value; take the
                 // first and flag `truncated` if more were emitted.
@@ -125,26 +130,26 @@ fn run_one(field: &DisclosureField, input_str: &str) -> DisclosedField {
                 let first = values.into_iter().next().expect("checked non-empty");
                 let rendered = stringify_value(&first);
                 let (clamped, clamp_truncated) = clamp(&rendered, field.max_chars);
-                DisclosedField {
+                Some(DisclosedField {
                     label: field.label.clone(),
                     value: Some(clamped),
                     error: None,
                     truncated: clamp_truncated || emitted_more,
-                }
+                })
             }
         }
-        Err(JqErr::BodyNotJson(msg)) | Err(JqErr::RuntimeError(msg)) => DisclosedField {
+        Err(JqErr::BodyNotJson(msg)) | Err(JqErr::RuntimeError(msg)) => Some(DisclosedField {
             label: field.label.clone(),
             value: None,
             error: Some(cap_message(msg)),
             truncated: false,
-        },
-        Err(JqErr::OutputOverflow(n)) => DisclosedField {
+        }),
+        Err(JqErr::OutputOverflow(n)) => Some(DisclosedField {
             label: field.label.clone(),
             value: None,
             error: Some(format!("filter produced more than {n} values")),
             truncated: true,
-        },
+        }),
     }
 }
 
@@ -266,6 +271,54 @@ mod tests {
             out[1].error.is_some(),
             "expected runtime error on bad indexing"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_yielding_filter_is_omitted_not_errored() {
+        // `.arguments.reply_to_id // empty` is the canonical idiom for an
+        // optional field: when the argument is absent the filter yields zero
+        // values. That field must be dropped from the summary entirely — not
+        // rendered as "extract failed" — while sibling fields still resolve.
+        let input = json!({
+            "runtime": "mcp",
+            "tool": "send_message",
+            "arguments": {"recipient": "34619683806@s.whatsapp.net", "text": "hi"}
+        });
+        let out = run_disclosures(
+            &[
+                f("Recipient", ".arguments.recipient"),
+                f("Message", ".arguments.text"),
+                f("Reply to", ".arguments.reply_to_id // empty"),
+            ],
+            &input,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.len(), 2, "absent optional field should be omitted");
+        assert_eq!(out[0].label, "Recipient");
+        assert_eq!(out[1].label, "Message");
+        assert!(out.iter().all(|f| f.error.is_none()));
+    }
+
+    #[tokio::test]
+    async fn empty_yielding_filter_renders_when_present() {
+        // When the optional argument *is* supplied, the same filter yields the
+        // value and the field appears as normal.
+        let input = json!({
+            "runtime": "mcp",
+            "tool": "send_message",
+            "arguments": {"recipient": "x@s.whatsapp.net", "text": "hi", "reply_to_id": "ABC123"}
+        });
+        let out = run_disclosures(
+            &[f("Reply to", ".arguments.reply_to_id // empty")],
+            &input,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].value.as_deref(), Some("ABC123"));
     }
 
     #[tokio::test]
