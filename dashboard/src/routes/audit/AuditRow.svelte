@@ -51,6 +51,15 @@
 		truncated: boolean;
 	}
 
+	// Legacy sentinel: before the disclosure runner learned to omit fields
+	// whose filter yields zero values, an absent optional field (the canonical
+	// `.foo // empty` idiom) was recorded with this exact error and shows up as
+	// a useless "extract failed" row. The runner no longer emits it, but it's
+	// frozen into older audit_log.detail rows — drop it at read time so history
+	// renders cleanly. Genuine extraction errors carry a different message and
+	// are still shown.
+	const LEGACY_NO_VALUES_ERROR = 'filter produced no values';
+
 	// Extract the labeled disclosure slice from `detail.disclosed` if present.
 	// Runs for both approval.created (where the slice lives alongside summary)
 	// and action.executed / action.streamed (where it's the main add-on).
@@ -58,9 +67,12 @@
 		if (!detail || typeof detail !== 'object') return [];
 		const d = (detail as Record<string, unknown>).disclosed;
 		if (!Array.isArray(d)) return [];
-		return d.filter((e): e is DisclosedField =>
-			!!e && typeof e === 'object' && typeof (e as DisclosedField).label === 'string'
-		);
+		return d
+			.filter(
+				(e): e is DisclosedField =>
+					!!e && typeof e === 'object' && typeof (e as DisclosedField).label === 'string'
+			)
+			.filter((e) => e.error !== LEGACY_NO_VALUES_ERROR);
 	}
 
 	const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
