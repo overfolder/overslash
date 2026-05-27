@@ -94,16 +94,8 @@ fn entry<'a>(
 fn filter(org_id: Uuid) -> AuditFilter {
     AuditFilter {
         org_id,
-        action: None,
-        resource_type: None,
-        identity_id: None,
-        since: None,
-        until: None,
-        q: None,
-        event_id: None,
-        uuid: None,
         limit: 100,
-        offset: 0,
+        ..Default::default()
     }
 }
 
@@ -931,11 +923,13 @@ async fn test_audit_approval_resolved() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
-    let admin_key = fx.org_key.clone();
+    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    // Resolve as the admin *user* (identity-bound key) so the event records a
+    // distinct resolver. The org-level key is unbound and would carry no
+    // identity. Admins can resolve any approval in their org.
+    let admin_key = fx.admin_key.clone();
+    let admin_identity = fx.user_ids[0];
     let mock_addr = start_mock().await;
-    // The bootstrap helper already returns an org-level admin key — agents
-    // are not allowed to resolve their own approvals, so we use that one.
 
     // Create an approval
     client
@@ -961,7 +955,7 @@ async fn test_audit_approval_resolved() {
     let body: Value = resp.json().await.unwrap();
     let approval_id = body["approval_id"].as_str().unwrap();
 
-    // Resolve the approval (using the org-level admin key)
+    // Resolve the approval as the admin user.
     client
         .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
@@ -975,6 +969,149 @@ async fn test_audit_approval_resolved() {
     assert_eq!(entries[0]["resource_type"], "approval");
     assert_eq!(entries[0]["detail"]["resolution"], "allow");
     assert!(entries[0]["detail"]["action_summary"].is_string());
+    // The event is attributed to the approval's *subject* (the agent), not the
+    // resolver — so the agent shows even though the admin user resolved it.
+    assert_eq!(entries[0]["identity_id"], json!(ident_id));
+    // The resolver (approver) is recorded distinctly and enriched.
+    assert_eq!(
+        entries[0]["detail"]["resolved_by_identity_id"],
+        json!(admin_identity)
+    );
+    assert!(entries[0]["detail"]["resolved_by_name"].is_string());
+    assert_eq!(entries[0]["detail"]["resolved_by_kind"], "user");
+    assert!(
+        entries[0]["detail"]["resolved_by_path"]
+            .as_str()
+            .unwrap()
+            .starts_with("spiffe://")
+    );
+}
+
+/// Per-column `=`/`~` filters added for the audit search bar keys.
+#[tokio::test]
+async fn test_audit_column_filters() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    // An agent and a user, so we can exercise the kind-scoped name filter.
+    async fn insert_named(pool: &PgPool, org_id: Uuid, name: &str, kind: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO identities (id, org_id, name, kind) VALUES ($1, $2, $3, $4)")
+            .bind(id)
+            .bind(org_id)
+            .bind(name)
+            .bind(kind)
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+    let agent_id = insert_named(&pool, org_id, "henry", "agent").await;
+    let user_id = insert_named(&pool, org_id, "alice", "user").await;
+
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+    // Row 1: agent actor, action.executed / secret, "fetched token", 10.0.0.1
+    scope
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(agent_id),
+            action: "action.executed",
+            resource_type: Some("secret"),
+            resource_id: None,
+            detail: json!({}),
+            description: Some("fetched token"),
+            ip_address: Some("10.0.0.1"),
+        })
+        .await
+        .unwrap();
+    // Row 2: user actor, approval.resolved / approval, "approved call", 192.168.1.5
+    scope
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(user_id),
+            action: "approval.resolved",
+            resource_type: Some("approval"),
+            resource_id: None,
+            detail: json!({}),
+            description: Some("approved call"),
+            ip_address: Some("192.168.1.5"),
+        })
+        .await
+        .unwrap();
+
+    let only = |mut f: overslash_db::repos::audit::AuditFilter| async {
+        f.org_id = org_id;
+        scope.query_audit_log(f).await.unwrap()
+    };
+    let base = || filter(org_id);
+
+    // event ~ → action_contains
+    let r = only(AuditFilter {
+        action_contains: Some("exec".into()),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].action, "action.executed");
+
+    // resource ~ → resource_type_contains
+    let r = only(AuditFilter {
+        resource_type_contains: Some("appro".into()),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].resource_type.as_deref(), Some("approval"));
+
+    // description = (exact) and ~ (contains)
+    let r = only(AuditFilter {
+        description: Some("approved call".into()),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    let r = only(AuditFilter {
+        description_contains: Some("token".into()),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].description.as_deref(), Some("fetched token"));
+
+    // ip = (exact) and ~ (contains)
+    let r = only(AuditFilter {
+        ip_address: Some("10.0.0.1".into()),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    let r = only(AuditFilter {
+        ip_address_contains: Some("192.168".into()),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].ip_address.as_deref(), Some("192.168.1.5"));
+
+    // agent ~ : name substring scoped to agent kinds → only the agent row
+    let r = only(AuditFilter {
+        identity_name_contains: Some("en".into()),
+        identity_kinds: Some(vec!["agent".into(), "sub_agent".into()]),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].identity_id, Some(agent_id));
+
+    // user ~ : same name fragment but user kind → only the user row
+    let r = only(AuditFilter {
+        identity_name_contains: Some("lic".into()),
+        identity_kinds: Some(vec!["user".into()]),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].identity_id, Some(user_id));
 }
 
 // ===========================================================================

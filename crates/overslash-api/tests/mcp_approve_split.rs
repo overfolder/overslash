@@ -404,6 +404,12 @@ async fn agent_self_approve_allowed_when_flag_on() {
         detail.0["binding_id"].as_str(),
         Some(fx.agent_binding_id.to_string().as_str())
     );
+    // Self-approval: the resolver recorded in detail is the agent itself (which
+    // is also the approval's subject / event identity_id).
+    assert_eq!(
+        detail.0["resolved_by_identity_id"].as_str(),
+        Some(fx.agent_id.to_string().as_str())
+    );
 }
 
 /// (d) The sibling agent — neither requester nor ancestor — gets
