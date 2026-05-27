@@ -1313,6 +1313,23 @@ pub async fn start_api_with_registry(
     pool: PgPool,
     host_override: Option<(&str, String)>,
 ) -> (String, Client) {
+    start_api_with_registry_customized(pool, host_override, |_| {}).await
+}
+
+/// Like [`start_api_with_registry`] but applies a `customize` closure to the
+/// `Config` before the server boots — e.g. to set
+/// `connection_return_url_allowed_hosts` for the reactive-flow return_url
+/// tests, which need both the bundled registry (for templates like `x`) and a
+/// non-empty allow-list (which `start_api_with`'s closure controls but its
+/// empty-registry boot can't satisfy).
+pub async fn start_api_with_registry_customized<F>(
+    pool: PgPool,
+    host_override: Option<(&str, String)>,
+    customize: F,
+) -> (String, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
     let enc_key_hex = "ab".repeat(32);
     let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1337,7 +1354,7 @@ pub async fn start_api_with_registry(
     // `localhost:3000` would silently route to a non-existent host.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let config = overslash_api::config::Config {
+    let mut config = overslash_api::config::Config {
         host: "127.0.0.1".into(),
         port: 0,
         database_url: String::new(),
@@ -1388,6 +1405,7 @@ pub async fn start_api_with_registry(
         overslash_env: None,
         connection_return_url_allowed_hosts: Vec::new(),
     };
+    customize(&mut config);
 
     let state = overslash_api::AppState {
         db: pool,
