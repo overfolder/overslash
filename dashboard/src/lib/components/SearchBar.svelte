@@ -60,15 +60,26 @@
 		onchange: (next: SearchValue) => void;
 	} = $props();
 
+	// A `key` suggestion carries its `key`/`op` directly so selecting it can set
+	// the pending operator without re-parsing a label. A `value` suggestion
+	// carries the value to insert in `insert`.
+	type Suggestion =
+		| { kind: 'key'; label: string; key: SearchKey; op: Operator }
+		| { kind: 'value'; label: string; insert: string };
+
 	let inputEl: HTMLInputElement | undefined = $state();
 	let draft = $state(value.freeText);
-	let suggestions = $state<{ kind: 'key' | 'value'; label: string; insert: string }[]>([]);
+	let suggestions = $state<Suggestion[]>([]);
 	let showSuggestions = $state(false);
 	let activeIndex = $state(0);
 	let pendingKey = $state<SearchKey | null>(null);
 	let pendingOp = $state<Operator>('=');
 	let pendingValues = $state<string[]>([]);
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	// Fires ~2s after the (empty) input is focused to reveal the full key list,
+	// helping users discover what's filterable without typing first.
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	const IDLE_KEYS_DELAY = 2000;
 
 	const knownKeyNames = $derived(keys.map((k) => k.name));
 
@@ -106,6 +117,20 @@
 		}
 	}
 
+	/** One suggestion per (key × operator) so users can pick the operator too —
+	 *  e.g. `user` offers both `user = …` and `user ~ …`. */
+	function keySuggestions(matches: SearchKey[]): Suggestion[] {
+		return matches.flatMap((k) => {
+			const ops = k.operators?.length ? k.operators : (['='] as Operator[]);
+			return ops.map((op) => ({
+				kind: 'key' as const,
+				label: k.hint ? `${k.name} ${op} …  · ${k.hint}` : `${k.name} ${op} …`,
+				key: k,
+				op
+			}));
+		});
+	}
+
 	async function recompute() {
 		// If we're in "value entry" mode for a key, show value suggestions.
 		if (pendingKey) {
@@ -120,9 +145,9 @@
 			activeIndex = 0;
 			return;
 		}
-		// Key autocomplete after 3+ chars matching a known key prefix.
+		// Key (+ operator) autocomplete from the first character of a key prefix.
 		const trimmed = draft.trimStart();
-		if (trimmed.length < 3) {
+		if (trimmed.length < 1) {
 			suggestions = [];
 			showSuggestions = false;
 			return;
@@ -134,13 +159,28 @@
 			showSuggestions = false;
 			return;
 		}
-		suggestions = matches.map((k) => ({
-			kind: 'key',
-			label: k.hint ? `${k.name} = …  · ${k.hint}` : `${k.name} = …`,
-			insert: `${k.name} = `
-		}));
+		suggestions = keySuggestions(matches);
 		showSuggestions = true;
 		activeIndex = 0;
+	}
+
+	/** Reveal the full key list (every key × operator) — fired ~2s after the
+	 *  empty input is focused, so the bar is self-documenting. */
+	function showAllKeys() {
+		if (pendingKey || draft.trim() !== '') return;
+		suggestions = keySuggestions(keys);
+		showSuggestions = suggestions.length > 0;
+		activeIndex = 0;
+	}
+
+	function scheduleIdleKeys() {
+		clearIdleKeys();
+		idleTimer = setTimeout(showAllKeys, IDLE_KEYS_DELAY);
+	}
+
+	function clearIdleKeys() {
+		if (idleTimer) clearTimeout(idleTimer);
+		idleTimer = undefined;
 	}
 
 	function scheduleRecompute() {
@@ -149,16 +189,23 @@
 	}
 
 	async function onInput() {
+		// Typing supersedes the idle key-list reveal.
+		clearIdleKeys();
 		scheduleRecompute();
+	}
+
+	function onFocus() {
+		recompute();
+		scheduleIdleKeys();
 	}
 
 	async function selectSuggestion(i: number) {
 		const s = suggestions[i];
 		if (!s) return;
+		clearIdleKeys();
 		if (s.kind === 'key') {
-			const key = keys.find((k) => k.name === s.insert.split(' ')[0])!;
-			pendingKey = key;
-			pendingOp = key.operators?.[0] ?? '=';
+			pendingKey = s.key;
+			pendingOp = s.op;
 			pendingValues = [];
 			draft = '';
 			await tick();
@@ -223,6 +270,7 @@
 	}
 
 	function onBlur() {
+		clearIdleKeys();
 		// Commit free text on blur so URL stays in sync.
 		commitFromInput();
 		// Delay hiding so click on suggestion still fires.
@@ -267,7 +315,7 @@
 			oninput={onInput}
 			onkeydown={onKeydown}
 			onblur={onBlur}
-			onfocus={recompute}
+			onfocus={onFocus}
 			{placeholder}
 			autocomplete="off"
 			spellcheck="false"

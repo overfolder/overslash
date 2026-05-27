@@ -51,6 +51,11 @@ export interface AuditFilters {
 	identity_name_contains?: string;
 	/** Comma-separated identity kinds (e.g. `user` or `agent,sub_agent`). */
 	identity_kind?: string;
+	/** Owning user (root of the actor's chain): matches the user acting directly
+	 * or any agent they own. Powers `user =` / `user = me`. */
+	owner_user_id?: string;
+	/** Substring on the owning user's name. Powers `user ~`. */
+	owner_user_contains?: string;
 }
 
 export const PAGE_LIMIT = 50;
@@ -77,6 +82,8 @@ export function buildQuery(filters: AuditFilters, limit: number, offset: number)
 	if (filters.identity_name_contains)
 		p.set('identity_name_contains', filters.identity_name_contains);
 	if (filters.identity_kind) p.set('identity_kind', filters.identity_kind);
+	if (filters.owner_user_id) p.set('owner_user_id', filters.owner_user_id);
+	if (filters.owner_user_contains) p.set('owner_user_contains', filters.owner_user_contains);
 	return p.toString();
 }
 
@@ -97,7 +104,9 @@ export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 		'ip_address',
 		'ip_address_contains',
 		'identity_name_contains',
-		'identity_kind'
+		'identity_kind',
+		'owner_user_id',
+		'owner_user_contains'
 	] as const;
 	for (const k of keys) {
 		const v = params.get(k);

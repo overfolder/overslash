@@ -77,6 +77,12 @@ struct AuditQuery {
     /// Comma-separated identity kinds the actor must match (e.g. `user` or
     /// `agent,sub_agent`). Scopes the kind split for the `agent`/`user` keys.
     identity_kind: Option<String>,
+    /// Owning user (root of the actor's chain): matches the user acting directly
+    /// or any of their agents. Powers `user =` (the subtree-wide variant, vs the
+    /// exact-actor `identity_id`).
+    owner_user_id: Option<Uuid>,
+    /// Substring on the owning user's name. Powers `user ~`.
+    owner_user_contains: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     since: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
@@ -133,6 +139,8 @@ async fn query_audit(
         ip_address_contains: params.ip_address_contains.and_then(empty),
         identity_name_contains: params.identity_name_contains.and_then(empty),
         identity_kinds: identity_kinds.filter(|v| !v.is_empty()),
+        owner_user_id: params.owner_user_id,
+        owner_user_contains: params.owner_user_contains.and_then(empty),
         limit: params.limit,
         offset: params.offset,
     };
