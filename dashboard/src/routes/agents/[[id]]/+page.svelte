@@ -108,6 +108,26 @@
 
 	const meIdentityId = $derived(($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null);
 
+	const isAdmin = $derived(
+		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
+	);
+	// `?user=<id>` (admin-only) scopes the forest to one user's subtree. Set when
+	// an admin drills in from the Users list. Ignored for non-admins or an
+	// unknown id — the page then shows the full org forest as before.
+	const userFilter = $derived($page.url.searchParams.get('user'));
+	const scopedUser = $derived(
+		userFilter && isAdmin
+			? identities.find((i) => i.id === userFilter && i.kind === 'user') ?? null
+			: null
+	);
+	const displayRoots = $derived(scopedUser ? [scopedUser] : roots);
+
+	function clearUserFilter() {
+		const url = new URL($page.url);
+		url.searchParams.delete('user');
+		void goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+	}
+
 	function kindLabel(kind: string): string {
 		return kind === 'sub_agent' ? 'sub-agent' : kind;
 	}
@@ -667,17 +687,27 @@
 		<div class="error-bar">{loadError}</div>
 	{/if}
 
+	{#if scopedUser}
+		<div class="filter-banner">
+			<span
+				>Viewing agents owned by <strong>{scopedUser.name}</strong>{#if scopedUser.email}
+					· {scopedUser.email}{/if}</span
+			>
+			<button type="button" onclick={clearUserFilter}>Clear</button>
+		</div>
+	{/if}
+
 	<div class="panels" data-mobile-pane={selected ? 'detail' : 'tree'}>
 		<!-- Left: Agent tree -->
 		<aside class="tree-panel">
 			<div class="tree-head">Agents</div>
 			{#if loading && identities.length === 0}
 				<p class="muted tree-empty">Loading…</p>
-			{:else if roots.length === 0}
+			{:else if displayRoots.length === 0}
 				<p class="muted tree-empty">No agents found.</p>
 			{:else}
 				<div class="tree">
-					{#each roots as root (root.id)}
+					{#each displayRoots as root (root.id)}
 						{@render treeNode(root, 0)}
 					{/each}
 				</div>
@@ -1116,6 +1146,26 @@
 	}
 	.page-header {
 		display: none;
+	}
+
+	.filter-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3, 0.75rem);
+		padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+		margin: 0 0 var(--space-3, 0.75rem);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md, 8px);
+		background: color-mix(in srgb, var(--color-primary, #6366f1) 8%, transparent);
+		font-size: 0.85rem;
+	}
+	.filter-banner button {
+		padding: 4px 10px;
+		border: 1px solid var(--color-border);
+		background: var(--color-bg);
+		border-radius: var(--radius-sm, 4px);
+		cursor: pointer;
 	}
 
 	.error-bar {

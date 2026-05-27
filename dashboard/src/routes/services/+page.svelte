@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError, session } from '$lib/session';
@@ -58,6 +58,11 @@
 	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 
+	// `?user=<id>` (admin-only) scopes the list to a single user's accessible
+	// services — set when an admin drills in from the Users list. The backend
+	// ignores it for non-admins.
+	const userFilter = $derived($page.url.searchParams.get('user'));
+
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
 	let identities = $state<Identity[]>([]);
@@ -70,6 +75,18 @@
 	let showAllUsers = $state(false);
 
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
+
+	// Display name for the active `?user=` filter banner; falls back to the raw
+	// id until/unless the identity list resolves it.
+	const userFilterName = $derived(
+		userFilter ? (identityById.get(userFilter)?.name ?? userFilter) : null
+	);
+
+	function clearUserFilter() {
+		const url = new URL($page.url);
+		url.searchParams.delete('user');
+		goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+	}
 
 	let pendingDelete = $state<ServiceInstanceSummary | null>(null);
 
@@ -141,7 +158,7 @@
 		error = null;
 		try {
 			const [s, c, ids] = await Promise.all([
-				listServices({ includeUserLevel: showAllUsers }),
+				listServices({ includeUserLevel: showAllUsers, user: userFilter ?? undefined }),
 				listConnections(),
 				// Identity list is used to map owner UUIDs to display names. Soft-fail
 				// if it can't load so the services view is still usable.
@@ -186,7 +203,14 @@
 		}
 	}
 
-	onMount(load);
+	// Reload on mount and whenever the `?user=` filter changes (client-side
+	// nav from the Users list keeps the same route, so onMount alone would not
+	// refire). `untrack` keeps `load`'s internal state reads out of the
+	// effect's dependency set so it only re-runs on `userFilter` changes.
+	$effect(() => {
+		userFilter;
+		untrack(() => load());
+	});
 </script>
 
 <svelte:head><title>Services - Overslash</title></svelte:head>
@@ -243,6 +267,13 @@
 			<div class="error">{error}</div>
 		{/if}
 
+		{#if userFilter}
+			<div class="filter-banner">
+				<span>Showing services accessible to <strong>{userFilterName}</strong></span>
+				<button type="button" onclick={clearUserFilter}>Clear</button>
+			</div>
+		{/if}
+
 		{#if !loading && (services.length > 0 || showAllUsers || isAdmin)}
 			<div class="filters">
 				<SearchBar
@@ -251,7 +282,7 @@
 					placeholder="Search services… (try status=active)"
 					onchange={(next) => (searchValue = next)}
 				/>
-				{#if isAdmin}
+				{#if isAdmin && !userFilter}
 					<label class="admin-toggle" for="show-all-users">
 						<ToggleSwitch
 							id="show-all-users"
@@ -382,6 +413,25 @@
 <style>
 	.page {
 		max-width: 1100px;
+	}
+	.filter-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-3);
+		margin-bottom: var(--space-3, 0.75rem);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md, 8px);
+		background: color-mix(in srgb, var(--color-primary, #6366f1) 8%, transparent);
+		font-size: 0.85rem;
+	}
+	.filter-banner button {
+		padding: 4px 10px;
+		border: 1px solid var(--color-border);
+		background: var(--color-bg);
+		border-radius: var(--radius-sm, 4px);
+		cursor: pointer;
 	}
 	.tabs {
 		display: flex;
