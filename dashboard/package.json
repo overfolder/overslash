@@ -13,10 +13,15 @@
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
+    "@storybook/addon-docs": "^10.4.1",
+    "@storybook/addon-svelte-csf": "^5.1.2",
+    "@storybook/sveltekit": "^10.4.1",
     "@sveltejs/adapter-auto": "^7.0.1",
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.60.1",
@@ -25,6 +30,7 @@
     "@types/node": "^25.9.1",
     "autoprefixer": "^10.5.0",
     "playwright": "^1.59.1",
+    "storybook": "^10.4.1",
     "svelte": "^5.55.9",
     "svelte-check": "^4.4.8",
     "tailwindcss": "^4.2.2",
