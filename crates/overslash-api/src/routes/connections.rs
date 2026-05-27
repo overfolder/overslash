@@ -794,9 +794,9 @@ async fn set_connection_default(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-    let identity_id = acl
-        .identity_id
-        .ok_or_else(|| AppError::BadRequest("set_default requires an identity-bound API key".into()))?;
+    let identity_id = acl.identity_id.ok_or_else(|| {
+        AppError::BadRequest("set_default requires an identity-bound API key".into())
+    })?;
 
     let updated = UserScope::new(acl.org_id, identity_id, state.db_pool(&ext))
         .set_my_connection_default(id)

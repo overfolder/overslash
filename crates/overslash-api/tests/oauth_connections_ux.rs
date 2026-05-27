@@ -430,7 +430,12 @@ async fn make_google_service(
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "service create failed: {:?}", resp.text().await);
+    assert_eq!(
+        resp.status(),
+        200,
+        "service create failed: {:?}",
+        resp.text().await
+    );
 }
 
 #[tokio::test]
@@ -450,8 +455,16 @@ async fn get_connection_returns_detail_with_used_by() {
         Some("alice@example.com"),
     )
     .await;
-    make_google_service(&base, &client, &admin_key, &api_key, "gthing", "calendar-work", conn_id)
-        .await;
+    make_google_service(
+        &base,
+        &client,
+        &admin_key,
+        &api_key,
+        "gthing",
+        "calendar-work",
+        conn_id,
+    )
+    .await;
 
     let detail: Value = client
         .get(format!("{base}/v1/connections/{conn_id}"))
@@ -526,10 +539,24 @@ async fn set_default_promotes_target_and_demotes_sibling() {
 
     // Two google connections for the same identity. The first becomes the
     // default (no prior default); the second does not.
-    let first = seed_connection(&pool, org_id, ident_id, "google", &["openid"], Some("a@x.com"))
-        .await;
-    let second = seed_connection(&pool, org_id, ident_id, "google", &["openid"], Some("b@x.com"))
-        .await;
+    let first = seed_connection(
+        &pool,
+        org_id,
+        ident_id,
+        "google",
+        &["openid"],
+        Some("a@x.com"),
+    )
+    .await;
+    let second = seed_connection(
+        &pool,
+        org_id,
+        ident_id,
+        "google",
+        &["openid"],
+        Some("b@x.com"),
+    )
+    .await;
     assert!(get_is_default(&base, &client, &api_key, first).await);
     assert!(!get_is_default(&base, &client, &api_key, second).await);
 
@@ -595,12 +622,44 @@ async fn services_list_connection_filter_narrows() {
         common::bootstrap_org_identity(&base, &client).await;
 
     // Two connections, two services — one bound to each.
-    let conn_a = seed_connection(&pool, org_id, ident_id, "google", &["openid"], Some("a@x.com"))
-        .await;
-    let conn_b = seed_connection(&pool, org_id, ident_id, "google", &["openid"], Some("b@x.com"))
-        .await;
-    make_google_service(&base, &client, &admin_key, &api_key, "svc_a", "service-a", conn_a).await;
-    make_google_service(&base, &client, &admin_key, &api_key, "svc_b", "service-b", conn_b).await;
+    let conn_a = seed_connection(
+        &pool,
+        org_id,
+        ident_id,
+        "google",
+        &["openid"],
+        Some("a@x.com"),
+    )
+    .await;
+    let conn_b = seed_connection(
+        &pool,
+        org_id,
+        ident_id,
+        "google",
+        &["openid"],
+        Some("b@x.com"),
+    )
+    .await;
+    make_google_service(
+        &base,
+        &client,
+        &admin_key,
+        &api_key,
+        "svc_a",
+        "service-a",
+        conn_a,
+    )
+    .await;
+    make_google_service(
+        &base,
+        &client,
+        &admin_key,
+        &api_key,
+        "svc_b",
+        "service-b",
+        conn_b,
+    )
+    .await;
 
     let filtered: Vec<Value> = client
         .get(format!("{base}/v1/services?connection={conn_a}"))
@@ -612,7 +671,11 @@ async fn services_list_connection_filter_narrows() {
         .await
         .unwrap();
 
-    assert_eq!(filtered.len(), 1, "filter should return one service: {filtered:?}");
+    assert_eq!(
+        filtered.len(),
+        1,
+        "filter should return one service: {filtered:?}"
+    );
     assert_eq!(filtered[0]["name"], "service-a");
     assert_eq!(filtered[0]["connection_id"], conn_a.to_string());
 }
