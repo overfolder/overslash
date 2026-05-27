@@ -19,6 +19,7 @@
 		TemplateSummary
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
+	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
 	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
@@ -308,45 +309,31 @@
 				ctrl.signal
 			);
 			if (ctrl.signal.aborted) return;
-			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
-			if (!popup) {
-				error = 'Pop-up blocked. Allow pop-ups and try again.';
+			let fresh: ConnectionSummary | null;
+			try {
+				fresh = await connectViaPopup({
+					authUrl: resp.auth_url,
+					provider: oauthProvider.provider,
+					beforeIds,
+					signal: ctrl.signal,
+					// Keep the reuse picker fresh as rows arrive.
+					onPoll: (rows) => {
+						connections = rows;
+					}
+				});
+			} catch (e) {
+				if (e instanceof PopupBlockedError) {
+					error = e.message;
+					return;
+				}
+				throw e;
+			}
+			if (ctrl.signal.aborted) return;
+			if (fresh) {
+				connectionId = fresh.id;
 				return;
 			}
-			const deadline = Date.now() + 90_000;
-			while (Date.now() < deadline) {
-				if (ctrl.signal.aborted) {
-					try {
-						popup.close();
-					} catch {
-						/* ignore */
-					}
-					return;
-				}
-				await new Promise((r) => setTimeout(r, 1500));
-				if (ctrl.signal.aborted) return;
-				try {
-					connections = await listConnections(ctrl.signal);
-				} catch {
-					if (ctrl.signal.aborted) return;
-				}
-				const fresh = connections.find(
-					(c) => !beforeIds.has(c.id) && c.provider_key === oauthProvider.provider
-				);
-				if (fresh) {
-					connectionId = fresh.id;
-					try {
-						popup.close();
-					} catch {
-						/* ignore */
-					}
-					return;
-				}
-				if (popup.closed) break;
-			}
-			if (!ctrl.signal.aborted) {
-				error = 'OAuth did not complete in time. Try again.';
-			}
+			error = 'OAuth did not complete in time. Try again.';
 		} catch (e) {
 			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `OAuth failed (${e.status})` : 'OAuth failed';

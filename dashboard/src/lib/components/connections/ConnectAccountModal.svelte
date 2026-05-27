@@ -12,11 +12,8 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { ApiError } from '$lib/session';
-	import {
-		createByocCredential,
-		initiateOAuth,
-		listConnections
-	} from '$lib/api/services';
+	import { createByocCredential, initiateOAuth } from '$lib/api/services';
+	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
 	import type { ConnectionSummary, OAuthProviderInfo } from '$lib/types';
 	import ByocSection from '$lib/components/services/ByocSection.svelte';
 	import ProviderTile from './ProviderTile.svelte';
@@ -86,54 +83,35 @@
 				}
 			}
 
-			// 2. Start the OAuth flow and open the gated authorize URL in a popup.
+			// 2. Start the OAuth flow and complete it in a popup, polling for the
+			//    new connection row (shared mechanics — see $lib/oauth-connect).
 			const beforeIds = new Set(existing.map((c) => c.id));
 			const resp = await initiateOAuth(
 				{ provider, scopes: defaultScopesFor(provider), byoc_credential_id: byocCredentialId },
 				ctrl.signal
 			);
 			if (ctrl.signal.aborted) return;
-			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
-			if (!popup) {
-				error = 'Pop-up blocked. Allow pop-ups and try again.';
+			let fresh: ConnectionSummary | null;
+			try {
+				fresh = await connectViaPopup({
+					authUrl: resp.auth_url,
+					provider,
+					beforeIds,
+					signal: ctrl.signal
+				});
+			} catch (e) {
+				if (e instanceof PopupBlockedError) {
+					error = e.message;
+					return;
+				}
+				throw e;
+			}
+			if (ctrl.signal.aborted) return;
+			if (fresh) {
+				onConnected(fresh.id);
 				return;
 			}
-
-			// 3. Poll for the new connection row, then close the popup.
-			const deadline = Date.now() + 90_000;
-			while (Date.now() < deadline) {
-				if (ctrl.signal.aborted) {
-					try {
-						popup.close();
-					} catch {
-						/* ignore */
-					}
-					return;
-				}
-				await new Promise((r) => setTimeout(r, 1500));
-				if (ctrl.signal.aborted) return;
-				let rows: ConnectionSummary[];
-				try {
-					rows = await listConnections(ctrl.signal);
-				} catch {
-					if (ctrl.signal.aborted) return;
-					continue;
-				}
-				const fresh = rows.find((c) => !beforeIds.has(c.id) && c.provider_key === provider);
-				if (fresh) {
-					try {
-						popup.close();
-					} catch {
-						/* ignore */
-					}
-					onConnected(fresh.id);
-					return;
-				}
-				if (popup.closed) break;
-			}
-			if (!ctrl.signal.aborted) {
-				error = 'OAuth did not complete in time. Try again.';
-			}
+			error = 'OAuth did not complete in time. Try again.';
 		} catch (e) {
 			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `Connect failed (${e.status})` : 'Connect failed';
