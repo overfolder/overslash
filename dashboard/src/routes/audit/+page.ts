@@ -14,6 +14,7 @@ export const prerender = false;
 interface IdentitySummary {
 	id: string;
 	name: string;
+	kind: string;
 }
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;

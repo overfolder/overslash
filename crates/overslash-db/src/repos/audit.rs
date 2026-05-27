@@ -57,7 +57,7 @@ pub(crate) async fn log(
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AuditFilter {
     pub org_id: Uuid,
     pub action: Option<String>,
@@ -77,6 +77,24 @@ pub struct AuditFilter {
     /// `detail` keys `execution_id` / `replayed_from_approval`. Powers the
     /// `uuid =` search bar key.
     pub uuid: Option<Uuid>,
+    // ── Per-column `~` (contains) + `=` (match) filters. Each powers a
+    // search-bar key; substrings are matched case-insensitively (ILIKE).
+    /// Substring on `action`. Powers `event ~`.
+    pub action_contains: Option<String>,
+    /// Substring on `resource_type`. Powers `resource ~`.
+    pub resource_type_contains: Option<String>,
+    /// Exact / substring on `description`. Powers `description =` / `~`.
+    pub description: Option<String>,
+    pub description_contains: Option<String>,
+    /// Exact / substring on `ip_address`. Powers `ip =` / `~`.
+    pub ip_address: Option<String>,
+    pub ip_address_contains: Option<String>,
+    /// Substring on the joined actor identity name. Powers `agent ~` /
+    /// `user ~` / `identity ~`.
+    pub identity_name_contains: Option<String>,
+    /// Restrict the actor's identity kind (e.g. `['user']` or
+    /// `['agent','sub_agent']`). Scopes the kind split for `agent`/`user`.
+    pub identity_kinds: Option<Vec<String>>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -85,9 +103,27 @@ pub(crate) async fn query_filtered(
     pool: &PgPool,
     filter: &AuditFilter,
 ) -> Result<Vec<AuditRow>, sqlx::Error> {
-    // Build a `%term%` pattern once so the query plan can short-circuit when
-    // q is None. The LEFT JOIN keeps rows whose identity has been deleted.
+    // Build `%term%` patterns once so the query plan can short-circuit when a
+    // filter is None. The LEFT JOIN keeps rows whose identity has been deleted.
     let like = filter.q.as_deref().map(|q| format!("%{q}%"));
+    let action_like = filter.action_contains.as_deref().map(|q| format!("%{q}%"));
+    let resource_like = filter
+        .resource_type_contains
+        .as_deref()
+        .map(|q| format!("%{q}%"));
+    let desc_like = filter
+        .description_contains
+        .as_deref()
+        .map(|q| format!("%{q}%"));
+    let ip_like = filter
+        .ip_address_contains
+        .as_deref()
+        .map(|q| format!("%{q}%"));
+    let name_like = filter
+        .identity_name_contains
+        .as_deref()
+        .map(|q| format!("%{q}%"));
+    let kinds = filter.identity_kinds.as_deref();
     sqlx::query_as!(
         AuditRow,
         "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id
@@ -114,6 +150,14 @@ pub(crate) async fn query_filtered(
                 OR CASE WHEN a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'
                         THEN (a.detail->>'replayed_from_approval')::uuid = $9
                         ELSE FALSE END)
+           AND ($12::text IS NULL OR a.action ILIKE $12)
+           AND ($13::text IS NULL OR a.resource_type ILIKE $13)
+           AND ($14::text IS NULL OR a.description = $14)
+           AND ($15::text IS NULL OR a.description ILIKE $15)
+           AND ($16::text IS NULL OR a.ip_address = $16)
+           AND ($17::text IS NULL OR a.ip_address ILIKE $17)
+           AND ($18::text IS NULL OR i.name ILIKE $18)
+           AND ($19::text[] IS NULL OR i.kind = ANY($19))
          ORDER BY a.created_at DESC
          LIMIT $10 OFFSET $11",
         filter.org_id,
@@ -127,6 +171,14 @@ pub(crate) async fn query_filtered(
         filter.uuid,
         filter.limit,
         filter.offset,
+        action_like,
+        resource_like,
+        filter.description,
+        desc_like,
+        filter.ip_address,
+        ip_like,
+        name_like,
+        kinds,
     )
     .fetch_all(pool)
     .await
