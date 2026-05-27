@@ -19,6 +19,8 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SortableHeader from '$lib/components/SortableHeader.svelte';
+	import { compareBy, type SortDir } from '$lib/sort';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import TemplateCatalog from '$lib/components/templates/TemplateCatalog.svelte';
 	import ApiExplorer from '$lib/components/api-explorer/ApiExplorer.svelte';
@@ -134,6 +136,30 @@
 				(s.owner_identity_id ?? '').toLowerCase().includes(q)
 			);
 		})
+	);
+
+	type SortKey = 'name' | 'template' | 'status' | 'owner';
+	let sortKey = $state<SortKey>('name');
+	let sortDir = $state<SortDir>('asc');
+
+	function sortBy(key: string) {
+		if (key === sortKey) {
+			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key as SortKey;
+			sortDir = 'asc';
+		}
+	}
+
+	const sortAccessor: Record<SortKey, (s: ServiceInstanceSummary) => string> = {
+		name: (s) => s.name,
+		template: (s) => s.template_key,
+		status: (s) => s.status,
+		owner: (s) => ownerLabel(s)
+	};
+
+	const sorted = $derived(
+		[...filtered].sort((a, b) => compareBy(a, b, sortAccessor[sortKey], sortDir))
 	);
 
 	async function load() {
@@ -286,17 +312,17 @@
 				<table>
 					<thead>
 						<tr>
-							<th>Name</th>
-							<th>Template</th>
-							<th>Status</th>
+							<SortableHeader label="Name" column="name" active={sortKey} dir={sortDir} onsort={sortBy} />
+							<SortableHeader label="Template" column="template" active={sortKey} dir={sortDir} onsort={sortBy} />
+							<SortableHeader label="Status" column="status" active={sortKey} dir={sortDir} onsort={sortBy} />
 							<th>Credentials</th>
-							<th>Owner</th>
+							<SortableHeader label="Owner" column="owner" active={sortKey} dir={sortDir} onsort={sortBy} />
 							<th>Groups</th>
 							<th class="actions-col"></th>
 						</tr>
 					</thead>
 					<tbody>
-						{#each filtered as s (s.id)}
+						{#each sorted as s (s.id)}
 							<tr>
 								<td>
 									<a href={`/services/${s.id}`} class="link">{s.name}</a>
