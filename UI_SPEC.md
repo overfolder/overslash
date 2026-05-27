@@ -270,7 +270,7 @@ A unified search component used across Services, Template Catalog, Audit Log, an
 ```
 
 **Available keys** vary by context:
-- **Services**: `owner`, `name`, `template`, `status`
+- **Services**: `owner`, `name`, `template`, `status`, `connection`
 - **Template Catalog**: `source`, `name`, `category`
 - **Audit Log**: `identity`, `event`, `service`, `result`, `time`
 - **Org Users**: `name`, `email`, `group`, `role`, `status`
@@ -370,7 +370,7 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 All the following pages have this structure.
 There is a collapsable navigation menu on the left bar on desktop, when expanded shows labels and icons, when contracted only icons. On mobile this bar can be shown and hidden using swipes.
 
-Nav items: **Agents**, **Services**, **Secrets**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
+Nav items: **Agents**, **Services**, **Secrets**, **Connections**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
 
 Under an "ADMIN" label (org-admins only): **Users**, **Groups**.
 
@@ -897,6 +897,60 @@ Clicking a version row (or `[Reveal]` button) opens a modal showing:
 - `[Restore this version]` if not the current version — calls `POST /v1/secrets/{name}/versions/{version}/restore`, which creates a new version pointing to the old value. Audit-logged as `secret.restored`.
 
 This modal is the dashboard-only privilege for viewing secret values.
+
+## Connections view
+
+A dedicated nav item at `/connections`, sibling to Secrets. Manages the user's OAuth account links — the stored bindings to external providers (Google, GitHub, Slack, X, Eventbrite) that service instances consume. Users see only connections in their own subtree; agents create them at the owner-user level via `on_behalf_of`, so all of a user's agents share one connection per account. Org admins see connections across the org.
+
+Connections are credentials the user owns, like Secrets — which is why this is a top-level nav item rather than a tab under Services. The Services Manage panel pins or defaults to one of these connections; this view is where the accounts themselves are linked and revoked.
+
+### Connection list (`/connections`)
+
+Uses the **Search Bar** (see Design System) with keys: `provider`, `account`. Rows are grouped by provider (provider icon + name as a group header).
+
+```
+Provider / Account              Scopes              Default    Used by   Connected
+──────────────────────────────────────────────────────────────────────────────────
+Google
+  alice@gmail.com               calendar, drive.ro  ● default  3         2d ago
+  alice@work.com                gmail.send          ○          1         5h ago
+GitHub
+  alice                         repo, read:org      ● default  2         1w ago
+```
+
+- **Account** — `account_email` from the provider (the connected identity).
+- **Scopes** — granted scopes as pills; overflow collapses to "+N".
+- **Default** — the `is_default` connection for that provider, used when a service instance doesn't pin a specific connection. Click the empty radio on another row to promote it (immediate + toast, no confirmation).
+- **Used by** — count of service instances referencing this connection. Clicking navigates to `/services?connection=<id>` — the Services Search Bar gains a `connection` key, and the URL filter resolves the id to the account label for the rendered pill (`connection = alice@gmail.com`). Zero shows as a muted "0".
+- **Connected** — `created_at` / last refresh, relative.
+
+`[+ Connect account]` opens a provider picker, then starts the OAuth redirect (`POST /v1/connections`) with `return_url` back to `/connections`. A collapsible **"Use your own OAuth app"** section (BYOC) mirrors the create-service flow — Client ID + Client Secret inputs that get stored as the user's `OAUTH_{PROVIDER}_CLIENT_ID` / `_SECRET` secrets and used for the redirect. On return the new connection appears in the list with a brief highlight.
+
+Empty state: "No connections yet" with a `[+ Connect your first account]` button.
+
+### Connection detail (`/connections/{id}`)
+
+- **Provider + account** — page title (provider icon, account email).
+- **Scopes** — full granted-scope list.
+- **Default** — toggle to make this the provider default.
+- **Used by** — list of service instances whose `connection_id` matches, each linking to `/services/{name}`. Empty state: "No services use this connection yet."
+- **`[Reconnect]`** — re-runs the OAuth flow on this connection in place (refreshes tokens / re-consents), via `POST /v1/connections` with `upgrade_connection_id`. Granular scope upgrades happen in the service-instance Manage flow, not here — context-free there is no menu of which scopes to add.
+- **`[Delete]`** — danger button (`DELETE /v1/connections/{id}`). Confirmation modal warns which service instances will lose access: "Delete Google (alice@gmail.com)? 3 services use this connection and will need reconnection." — `[Cancel]` / `[Delete]` (red).
+
+### Actions summary
+
+| Action | Where | API | Confirmation |
+|--------|-------|-----|--------------|
+| Connect account | List `[+ Connect account]` → provider picker | `POST /v1/connections` (`return_url=/connections`) | none — redirect intentional |
+| Use your own OAuth app (BYOC) | Collapsible inside Connect flow | same, using user `OAUTH_{PROVIDER}_*` secrets | none |
+| Set as default | List row radio + detail toggle | `POST /v1/connections/{id}/set_default` | none — low-risk, immediate + toast |
+| Reconnect | Detail `[Reconnect]` | `POST /v1/connections` with `upgrade_connection_id` | none — redirect intentional |
+| Delete | Detail `[Delete]` (danger) | `DELETE /v1/connections/{id}` | modal — warns used-by services |
+| Used by → | List "Used by N" + detail list | navigates to `/services?connection=<id>` | n/a |
+| View detail | Click list row | `GET /v1/connections/{id}` | n/a |
+| Search / filter | List Search Bar (`provider`, `account`) | client-side over `GET /v1/connections` | n/a |
+
+Scope upgrade is deliberately absent from this view — it lives in the service-instance Manage flow, where the required scopes are computed from the service's actions.
 
 ## Services view
 
