@@ -958,7 +958,7 @@ A single nav item covering both **service templates** (API blueprints) and **ser
 
 ### My Services
 
-Uses the **Search Bar** (see Design System) with keys: `name`, `template`, `owner`, `status`.
+Uses the **Search Bar** (see Design System) with keys: `name`, `template`, `owner`, `status`, `connection`.
 
 Shows the user's service instances — both org-provided and user-created:
 
