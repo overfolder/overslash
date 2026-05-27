@@ -159,6 +159,10 @@
 	});
 	type ConnectionChoice = 'existing' | 'new';
 	let connectionChoice = $state<ConnectionChoice>('new');
+	// One-shot guard: the default-selection effect below should pick an initial
+	// choice once per configure-step entry, never reactively override the user's
+	// manual radio selection (setting connectionId would otherwise re-trigger it).
+	let connectionDefaultsApplied = $state(false);
 	function connectionLabel(c: ConnectionSummary): string {
 		if (c.account_email) return c.account_email;
 		return `Unlabeled (${c.id.slice(0, 8)}…)`;
@@ -194,9 +198,11 @@
 	// default to the existing-connection path and pre-select the best match.
 	$effect(() => {
 		if (step !== 'configure' || !oauthProvider) return;
+		if (connectionDefaultsApplied) return;
+		connectionDefaultsApplied = true;
 		if (matchingConnections.length > 0) {
 			connectionChoice = 'existing';
-			if (!connectionId && preferredConnection) {
+			if (preferredConnection) {
 				connectionId = preferredConnection.id;
 			}
 		} else {
@@ -241,6 +247,9 @@
 		selectedKey = t.key;
 		loadingDetail = true;
 		resetByoc();
+		// New template → recompute the connection default on next configure entry.
+		connectionDefaultsApplied = false;
+		connectionId = '';
 		try {
 			selectedDetail = await getTemplate(t.key);
 			nameInput = t.key;
@@ -642,6 +651,7 @@
 					onclick={() => {
 						oauthAbort?.abort();
 						step = 'pick';
+						connectionDefaultsApplied = false;
 					}}>Back</button
 				>
 				<button
