@@ -255,6 +255,19 @@ async fn oauth_providers_lists_known_providers() {
             "row {row}: expected has_user_byoc_credential=false on fresh user"
         );
         assert!(row["supports_pkce"].is_boolean());
+        // BYOC setup values: redirect URI ends in the OAuth callback path and
+        // the JS origin is its origin prefix. Same value for every provider.
+        let redirect = row["oauth_redirect_uri"].as_str().unwrap();
+        let origin = row["oauth_js_origin"].as_str().unwrap();
+        assert!(
+            redirect.ends_with("/v1/oauth/callback"),
+            "row {row}: unexpected redirect URI {redirect}"
+        );
+        assert_eq!(
+            redirect,
+            format!("{origin}/v1/oauth/callback"),
+            "row {row}: redirect URI should be js origin + callback path"
+        );
     }
 }
 

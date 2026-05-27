@@ -580,6 +580,9 @@
 								defaultExpanded={byocRequired}
 								disabled={connectingOAuth}
 								alreadyConfigured={providerInfo?.has_user_byoc_credential ?? false}
+								scopes={oauthProvider?.scopes ?? []}
+								redirectUri={providerInfo?.oauth_redirect_uri ?? ''}
+								jsOrigin={providerInfo?.oauth_js_origin ?? ''}
 								bind:clientId={byocClientId}
 								bind:clientSecret={byocClientSecret}
 							/>

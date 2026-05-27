@@ -434,6 +434,10 @@ export interface OAuthProviderInfo {
   has_org_credential: boolean;
   has_system_credential: boolean;
   has_user_byoc_credential: boolean;
+  /** Authorized redirect URI the user must register in their own OAuth app. */
+  oauth_redirect_uri: string;
+  /** Authorized JavaScript origin to register alongside the redirect URI. */
+  oauth_js_origin: string;
 }
 
 export interface CreateByocCredentialRequest {

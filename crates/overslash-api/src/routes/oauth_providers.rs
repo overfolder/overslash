@@ -41,6 +41,13 @@ struct ProviderRow {
     /// don't demand the user re-paste creds they configured on a prior
     /// service for the same provider.
     has_user_byoc_credential: bool,
+    /// Authorized redirect URI the user must register in their own OAuth app
+    /// when bringing their own credentials. Mirrors the value used at token
+    /// exchange (`{public_url}/v1/oauth/callback`). Same for every provider.
+    oauth_redirect_uri: String,
+    /// Authorized JavaScript origin to register alongside the redirect URI —
+    /// the public origin Overslash is served from. Same for every provider.
+    oauth_js_origin: String,
 }
 
 async fn list_providers(
@@ -52,6 +59,12 @@ async fn list_providers(
     let providers = oauth_provider::list_all(state.db(&ext)).await?;
     let env_fallback_enabled =
         std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
+
+    // BYOC setup values the user pastes into their own OAuth app. Provider-
+    // independent: the redirect URI matches the one used at token exchange
+    // (connections.rs), and the JS origin is the public origin we're served on.
+    let js_origin = state.config.public_url.trim_end_matches('/').to_string();
+    let redirect_uri = format!("{js_origin}/v1/oauth/callback");
 
     // Pre-compute the set of providers for which the caller already has a BYOC
     // credential. BYOC is identity-bound; if there's no identity on the ACL
@@ -92,6 +105,8 @@ async fn list_providers(
             has_org_credential,
             has_system_credential,
             has_user_byoc_credential,
+            oauth_redirect_uri: redirect_uri.clone(),
+            oauth_js_origin: js_origin.clone(),
         });
     }
 
