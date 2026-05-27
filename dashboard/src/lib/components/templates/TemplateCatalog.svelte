@@ -13,6 +13,8 @@
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, { type SearchKey, type SearchValue } from '$lib/components/SearchBar.svelte';
+	import SortableHeader from '$lib/components/SortableHeader.svelte';
+	import { compareBy, type SortDir } from '$lib/sort';
 
 	let { isAdmin = false }: { isAdmin?: boolean } = $props();
 
@@ -92,6 +94,30 @@
 				(t.description ?? '').toLowerCase().includes(q)
 			);
 		})
+	);
+
+	type SortKey = 'template' | 'tier' | 'category' | 'actions';
+	let sortKey = $state<SortKey>('template');
+	let sortDir = $state<SortDir>('asc');
+
+	function sortBy(key: string) {
+		if (key === sortKey) {
+			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key as SortKey;
+			sortDir = 'asc';
+		}
+	}
+
+	const sortAccessor: Record<SortKey, (t: TemplateSummary) => string | number> = {
+		template: (t) => t.display_name,
+		tier: (t) => t.tier,
+		category: (t) => t.category ?? '',
+		actions: (t) => t.action_count
+	};
+
+	const sorted = $derived(
+		[...filtered].sort((a, b) => compareBy(a, b, sortAccessor[sortKey], sortDir))
 	);
 
 	async function load() {
@@ -269,15 +295,15 @@
 			<table>
 				<thead>
 					<tr>
-						<th>Template</th>
-						<th>Tier</th>
-						<th>Category</th>
-						<th>Actions</th>
+						<SortableHeader label="Template" column="template" active={sortKey} dir={sortDir} onsort={sortBy} />
+						<SortableHeader label="Tier" column="tier" active={sortKey} dir={sortDir} onsort={sortBy} />
+						<SortableHeader label="Category" column="category" active={sortKey} dir={sortDir} onsort={sortBy} />
+						<SortableHeader label="Actions" column="actions" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<th class="actions-col"></th>
 					</tr>
 				</thead>
 				<tbody>
-					{#each filtered as t (t.key + ':' + t.tier)}
+					{#each sorted as t (t.key + ':' + t.tier)}
 						<tr>
 							<td>
 								<a
