@@ -213,8 +213,11 @@ export function filtersToSearch(
 		expressions.push({ key: 'ip', op: '~', value: filters.ip_address_contains });
 	if (filters.identity_id) {
 		const match = identities.find((i) => i.id === filters.identity_id);
-		// Reverse to the most specific key we can given the identity's kind.
-		const key = !match ? 'identity' : AGENT_KINDS.includes(match.kind) ? 'agent' : 'user';
+		// `identity_id` is an exact-actor filter (from `agent =` or `identity =`).
+		// Reverse agents to `agent`; everything else to `identity` — never to
+		// `user`, which now means the owning-user subtree (owner_user_id) and
+		// would silently broaden an exact-actor filter on the next edit.
+		const key = match && AGENT_KINDS.includes(match.kind) ? 'agent' : 'identity';
 		expressions.push({ key, op: '=', value: match?.name ?? filters.identity_id });
 	}
 	if (filters.identity_name_contains) {
