@@ -163,8 +163,8 @@ module "cloud_run" {
   rust_log               = var.rust_log
 
   # oversla.sh client
-  enable_shortener_client    = var.enable_shortener_client
-  oversla_sh_base_url        = var.oversla_sh_base_url
+  enable_shortener_client     = var.enable_shortener_client
+  oversla_sh_base_url         = var.oversla_sh_base_url
   shortener_api_key_secret_id = module.secret_manager.shortener_api_key_secret_id
 
   depends_on = [
