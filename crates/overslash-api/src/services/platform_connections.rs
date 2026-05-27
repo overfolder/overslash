@@ -435,6 +435,7 @@ pub async fn mint_initial_auth_url(
     provider: &str,
     scopes: &[String],
     on_behalf_of: Option<Uuid>,
+    return_url: Option<&str>,
 ) -> Result<AuthRecoveryUrls, AppError> {
     let ctx = ctx_from_state(state, org_id, Some(caller_identity_id));
     let response = kernel_create_connection(
@@ -445,10 +446,12 @@ pub async fn mint_initial_auth_url(
             byoc_credential_id: None,
             on_behalf_of,
             upgrade_connection_id: None,
-            // Action-handler auth-recovery doesn't surface a tenant
-            // return_url today; the URL the agent hands the user lands
-            // back on the default JSON response.
-            return_url: None,
+            // Carries the caller's `CallRequest.return_url` hint when the
+            // reactive first-connect flow is minted during a failed action
+            // call, so the OAuth callback 303s the user back to the partner
+            // instead of landing on the default JSON response. The host is
+            // re-validated against the allow-list at callback time.
+            return_url: return_url.map(str::to_string),
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -473,12 +476,20 @@ pub async fn mint_initial_auth_url(
 /// preserve the old ones anyway, but sending the full union makes
 /// non-Google providers work too. Mirrors `merge_scopes` in
 /// `routes/connections.rs::upgrade_connection_scopes`.
+///
+/// `return_url` carries the caller's `CallRequest.return_url` hint (already
+/// format-validated at the request boundary). It's stamped onto the minted
+/// flow row so the OAuth callback can 303 the user back to the partner app
+/// once consent completes — the same redirect the first-connect path gets.
+/// The host is re-checked against the allow-list at callback time; an
+/// off-list host silently falls back to the JSON response.
 pub async fn mint_upgrade_auth_url(
     state: &AppState,
     org_id: Uuid,
     caller_identity_id: Uuid,
     conn: &ConnectionRow,
     extra_scopes: &[String],
+    return_url: Option<&str>,
 ) -> Result<AuthRecoveryUrls, AppError> {
     let scopes = merge_scopes(&conn.scopes, extra_scopes);
     let scope = OrgScope::new(org_id, state.db.clone());
@@ -510,7 +521,7 @@ pub async fn mint_upgrade_auth_url(
                 byoc_credential_id: conn.byoc_credential_id,
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
-                return_url: None,
+                return_url: return_url.map(str::to_string),
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -541,7 +552,7 @@ pub async fn mint_upgrade_auth_url(
                 byoc_credential_id: conn.byoc_credential_id,
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
-                return_url: None,
+                return_url: return_url.map(str::to_string),
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -568,7 +579,7 @@ pub async fn mint_upgrade_auth_url(
             byoc_credential_id: conn.byoc_credential_id,
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
-            return_url: None,
+            return_url: return_url.map(str::to_string),
             service_instance_id: None,
         },
         RequestMeta::default(),
