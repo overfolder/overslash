@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name FROM identities WHERE org_id = $1 AND id = ANY($2)",
+  "query": "SELECT id, name, kind FROM identities WHERE org_id = $1 AND id = ANY($2)",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "name"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "kind"
+          }
+        }
       }
     ],
     "parameters": {
@@ -34,8 +45,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "412fb22cd6aacc1cbe070c9a174fb592327239f731c2cc4952737bac30c3384e"
+  "hash": "cf7b6f8dc94a7bb814f6880d69d4a52448e9b28035f536adfa53c1b4a3782dc6"
 }

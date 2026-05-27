@@ -63,6 +63,20 @@ struct AuditQuery {
     /// resource id, and the JSONB `detail` keys `execution_id` and
     /// `replayed_from_approval`. Powers the `uuid =` search bar key.
     uuid: Option<Uuid>,
+    // ── Per-column `~` (contains) + `=` (match) filters driving the search
+    // bar keys. `*_contains` are case-insensitive substrings (ILIKE).
+    action_contains: Option<String>,
+    resource_type_contains: Option<String>,
+    description: Option<String>,
+    description_contains: Option<String>,
+    ip_address: Option<String>,
+    ip_address_contains: Option<String>,
+    /// Substring on the actor identity name (powers `agent ~` / `user ~` /
+    /// `identity ~`), optionally scoped by `identity_kind`.
+    identity_name_contains: Option<String>,
+    /// Comma-separated identity kinds the actor must match (e.g. `user` or
+    /// `agent,sub_agent`). Scopes the kind split for the `agent`/`user` keys.
+    identity_kind: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     since: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
@@ -94,6 +108,13 @@ async fn query_audit(
     scope: OrgScope,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>> {
+    let empty = |s: String| if s.is_empty() { None } else { Some(s) };
+    let identity_kinds = params.identity_kind.and_then(empty).map(|s| {
+        s.split(',')
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .collect::<Vec<_>>()
+    });
     let filter = AuditFilter {
         org_id: scope.org_id(),
         action: params.action,
@@ -101,35 +122,66 @@ async fn query_audit(
         identity_id: params.identity_id,
         since: params.since,
         until: params.until,
-        q: params.q.filter(|s| !s.is_empty()),
+        q: params.q.and_then(empty),
         event_id: params.event_id,
         uuid: params.uuid,
+        action_contains: params.action_contains.and_then(empty),
+        resource_type_contains: params.resource_type_contains.and_then(empty),
+        description: params.description.and_then(empty),
+        description_contains: params.description_contains.and_then(empty),
+        ip_address: params.ip_address.and_then(empty),
+        ip_address_contains: params.ip_address_contains.and_then(empty),
+        identity_name_contains: params.identity_name_contains.and_then(empty),
+        identity_kinds: identity_kinds.filter(|v| !v.is_empty()),
         limit: params.limit,
         offset: params.offset,
     };
 
     let rows = scope.query_audit_log(filter).await?;
 
-    // Batch-resolve identity names for both actor and impersonator in one shot.
+    // The `approval.resolved` (and self-approve) event carries the resolver in
+    // `detail.resolved_by_identity_id` — the row's `identity_id` is the
+    // approval's *subject*. Pull the resolver id out so we enrich it alongside
+    // the actor/impersonator below and render it distinctly in the dashboard.
+    let resolved_by = |detail: &serde_json::Value| -> Option<Uuid> {
+        detail
+            .get("resolved_by_identity_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+    };
+
+    // Batch-resolve identity names + kinds for actor, impersonator, and resolver.
     let all_ids: Vec<Uuid> = rows
         .iter()
-        .flat_map(|r| [r.identity_id, r.impersonated_by_identity_id])
+        .flat_map(|r| {
+            [
+                r.identity_id,
+                r.impersonated_by_identity_id,
+                resolved_by(&r.detail),
+            ]
+        })
         .flatten()
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let name_map: HashMap<Uuid, String> = if all_ids.is_empty() {
-        HashMap::new()
+    let (name_map, kind_map): (HashMap<Uuid, String>, HashMap<Uuid, String>) = if all_ids.is_empty()
+    {
+        (HashMap::new(), HashMap::new())
     } else {
-        scope
+        let rows = scope
             .get_identity_names_by_ids(&all_ids)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("failed to resolve identity names for audit response: {e}");
                 Vec::new()
-            })
-            .into_iter()
-            .collect()
+            });
+        let mut names = HashMap::new();
+        let mut kinds = HashMap::new();
+        for (id, name, kind) in rows {
+            names.insert(id, name);
+            kinds.insert(id, kind);
+        }
+        (names, kinds)
     };
 
     // Resolve the SPIFFE path for each unique identity referenced on the page.
@@ -172,6 +224,24 @@ async fn query_audit(
                         .and_then(|v| v.as_str())
                         .map(String::from)
                 });
+                // Enrich the resolver inline in `detail` (approval.resolved):
+                // name/kind/path let the dashboard render the approver
+                // distinctly from the subject. No-op for other events.
+                let mut detail = r.detail;
+                if let Some(rid) = resolved_by(&detail) {
+                    if let Some(obj) = detail.as_object_mut() {
+                        if let Some(n) = name_map.get(&rid) {
+                            obj.insert("resolved_by_name".into(), serde_json::json!(n));
+                        }
+                        if let Some(k) = kind_map.get(&rid) {
+                            obj.insert("resolved_by_kind".into(), serde_json::json!(k));
+                        }
+                        if let Some((p, ids)) = path_map.get(&rid) {
+                            obj.insert("resolved_by_path".into(), serde_json::json!(p));
+                            obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
+                        }
+                    }
+                }
                 AuditEntry {
                     id: r.id,
                     identity_id: r.identity_id,
@@ -182,7 +252,7 @@ async fn query_audit(
                     description,
                     resource_type: r.resource_type,
                     resource_id: r.resource_id,
-                    detail: r.detail,
+                    detail,
                     ip_address: r.ip_address,
                     created_at: r.created_at,
                     impersonated_by_identity_id: r.impersonated_by_identity_id,

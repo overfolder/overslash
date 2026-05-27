@@ -38,6 +38,19 @@ export interface AuditFilters {
 	/** Match a UUID across `id`, `identity_id`, `resource_id`, and the JSONB
 	 * `detail` keys `execution_id` / `replayed_from_approval`. */
 	uuid?: string;
+	// Per-column `~` (contains) + `=` (match) filters. `*_contains` are
+	// case-insensitive substrings.
+	action_contains?: string;
+	resource_type_contains?: string;
+	description?: string;
+	description_contains?: string;
+	ip_address?: string;
+	ip_address_contains?: string;
+	/** Substring on the actor identity name; powers `agent ~` / `user ~` /
+	 * `identity ~`, scoped by `identity_kind`. */
+	identity_name_contains?: string;
+	/** Comma-separated identity kinds (e.g. `user` or `agent,sub_agent`). */
+	identity_kind?: string;
 }
 
 export const PAGE_LIMIT = 50;
@@ -54,12 +67,38 @@ export function buildQuery(filters: AuditFilters, limit: number, offset: number)
 	if (filters.q) p.set('q', filters.q);
 	if (filters.event_id) p.set('event_id', filters.event_id);
 	if (filters.uuid) p.set('uuid', filters.uuid);
+	if (filters.action_contains) p.set('action_contains', filters.action_contains);
+	if (filters.resource_type_contains)
+		p.set('resource_type_contains', filters.resource_type_contains);
+	if (filters.description) p.set('description', filters.description);
+	if (filters.description_contains) p.set('description_contains', filters.description_contains);
+	if (filters.ip_address) p.set('ip_address', filters.ip_address);
+	if (filters.ip_address_contains) p.set('ip_address_contains', filters.ip_address_contains);
+	if (filters.identity_name_contains)
+		p.set('identity_name_contains', filters.identity_name_contains);
+	if (filters.identity_kind) p.set('identity_kind', filters.identity_kind);
 	return p.toString();
 }
 
 export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 	const f: AuditFilters = {};
-	const keys = ['identity_id', 'action', 'resource_type', 'since', 'until', 'q', 'uuid'] as const;
+	const keys = [
+		'identity_id',
+		'action',
+		'resource_type',
+		'since',
+		'until',
+		'q',
+		'uuid',
+		'action_contains',
+		'resource_type_contains',
+		'description',
+		'description_contains',
+		'ip_address',
+		'ip_address_contains',
+		'identity_name_contains',
+		'identity_kind'
+	] as const;
 	for (const k of keys) {
 		const v = params.get(k);
 		if (v) f[k] = v;

@@ -81,6 +81,32 @@
 		const v = (detail as Record<string, unknown>)[key];
 		return typeof v === 'string' && UUID_RE.test(v) ? v : null;
 	}
+	function detailStr(detail: unknown, key: string): string | null {
+		if (!detail || typeof detail !== 'object') return null;
+		const v = (detail as Record<string, unknown>)[key];
+		return typeof v === 'string' ? v : null;
+	}
+	function detailStrArr(detail: unknown, key: string): string[] {
+		if (!detail || typeof detail !== 'object') return [];
+		const v = (detail as Record<string, unknown>)[key];
+		return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+	}
+
+	// `approval.resolved` carries the resolver (approver) in `detail.resolved_by_*`,
+	// enriched by the audit API. The row's own identity is the approval's
+	// *subject* (approvee). When the approver is itself an agent, surface it
+	// inline in the Agent column as "approvee (approver)"; a user resolver is
+	// shown only in the expanded "Resolved by" row.
+	const AGENT_KINDS = ['agent', 'sub_agent'];
+	const resolvedById = $derived(detailUuid(entry.detail, 'resolved_by_identity_id'));
+	const resolvedByName = $derived(detailStr(entry.detail, 'resolved_by_name'));
+	const resolvedByPath = $derived(detailStr(entry.detail, 'resolved_by_path'));
+	const resolvedByPathIds = $derived(detailStrArr(entry.detail, 'resolved_by_path_ids'));
+	const approverAgentName = $derived(
+		AGENT_KINDS.includes(detailStr(entry.detail, 'resolved_by_kind') ?? '')
+			? (resolvedByName ?? resolvedById)
+			: null
+	);
 
 	// Collect cross-event references that warrant their own clickable link in
 	// the expanded pane. Each link goes to a destination the user can navigate
@@ -154,6 +180,9 @@
 		{:else}
 			<span class="muted">—</span>
 		{/if}
+		{#if approverAgentName}
+			<span class="approver" title="resolved by agent {approverAgentName}">({approverAgentName})</span>
+		{/if}
 		{#if entry.impersonated_by_identity_id}
 			<span class="via-imp" title="via impersonation by {entry.impersonated_by_name ?? entry.impersonated_by_identity_id}">imp</span>
 		{/if}
@@ -211,6 +240,21 @@
 						<dt>Impersonated by</dt>
 						<dd class="mono impersonation-badge" title={entry.impersonated_by_identity_id}>
 							{entry.impersonated_by_name ?? entry.impersonated_by_identity_id}
+						</dd>
+					{/if}
+					{#if resolvedByPath}
+						<dt>Resolved by</dt>
+						<dd>
+							<IdentityPath path={resolvedByPath} pathIds={resolvedByPathIds} />
+						</dd>
+					{:else if resolvedById}
+						<dt>Resolved by</dt>
+						<dd>
+							<a
+								class="identity-link"
+								href={`/agents/${resolvedById}`}
+								onclick={(e) => e.stopPropagation()}
+							>{resolvedByName ?? resolvedById}</a>
 						</dd>
 					{/if}
 					{#if entry.description}
@@ -414,5 +458,11 @@
 	}
 	.impersonation-badge {
 		color: var(--color-warning, #b45309);
+	}
+	.approver {
+		margin-left: 4px;
+		color: var(--color-text-muted, #64748b);
+		font-size: 0.85em;
+		cursor: help;
 	}
 </style>

@@ -433,7 +433,10 @@ pub async fn cascade_resolve(
         let _ = scope
             .log_audit(AuditEntry {
                 org_id: scope.org_id(),
-                identity_id: None,
+                // Attribute to the approval's subject (the agent it's about),
+                // consistent with `approval.resolved`. There is no human
+                // resolver here — `resolved_by` is the cascade itself.
+                identity_id: Some(approval.identity_id),
                 action: "approval.cascade_resolved",
                 resource_type: Some("approval"),
                 resource_id: Some(approval.id),

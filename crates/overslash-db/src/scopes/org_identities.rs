@@ -112,20 +112,21 @@ impl OrgScope {
         identity::get_ancestor_chain(self.db(), self.org_id(), identity_id).await
     }
 
-    /// Resolve display names for a batch of identity ids, bounded to this org.
-    /// Ids belonging to other tenants are silently dropped from the result.
+    /// Resolve display names + kinds for a batch of identity ids, bounded to
+    /// this org. Ids belonging to other tenants are silently dropped from the
+    /// result. Returns `(id, name, kind)` tuples.
     pub async fn get_identity_names_by_ids(
         &self,
         ids: &[Uuid],
-    ) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    ) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
         let rows = sqlx::query!(
-            "SELECT id, name FROM identities WHERE org_id = $1 AND id = ANY($2)",
+            "SELECT id, name, kind FROM identities WHERE org_id = $1 AND id = ANY($2)",
             self.org_id(),
             ids,
         )
         .fetch_all(self.db())
         .await?;
-        Ok(rows.into_iter().map(|r| (r.id, r.name)).collect())
+        Ok(rows.into_iter().map(|r| (r.id, r.name, r.kind)).collect())
     }
 
     /// Update an identity's display name + metadata, scoped to this org.

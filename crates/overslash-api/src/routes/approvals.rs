@@ -950,6 +950,17 @@ async fn resolve_approval(
         "execution_id": execution.as_ref().map(|e| e.id),
         "relationship": relationship.map(|r| r.as_str()),
     });
+    // Record who actually resolved it, separate from the approval's subject
+    // (`identity_id` below). The audit read path enriches this into a
+    // name/kind/path so the dashboard can render the approver distinctly.
+    if let Some(resolver) = auth.identity_id {
+        if let Some(obj) = audit_detail.as_object_mut() {
+            obj.insert(
+                "resolved_by_identity_id".into(),
+                serde_json::json!(resolver),
+            );
+        }
+    }
     if let ApprovalRelationship::SelfApproval =
         relationship.unwrap_or(ApprovalRelationship::NotInYourChain)
     {
@@ -966,7 +977,11 @@ async fn resolve_approval(
     let _ = scope
         .log_audit(AuditEntry {
             org_id: auth.org_id,
-            identity_id: auth.identity_id,
+            // The event is *about* the approval's subject (the agent whose
+            // action was pending), not the resolver — so it carries the
+            // subject's user→agent path even when a user resolved it. The
+            // resolver is in `detail.resolved_by_identity_id`.
+            identity_id: Some(approval_pre.identity_id),
             action: "approval.resolved",
             resource_type: Some("approval"),
             resource_id: Some(id),
