@@ -3,6 +3,7 @@ node_modules/*
 .svelte-kit/
 build/
 dist/
+storybook-static/
 .env
 .env.*
 !.env.example
