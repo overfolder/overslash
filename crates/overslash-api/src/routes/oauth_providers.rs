@@ -63,8 +63,15 @@ async fn list_providers(
     // BYOC setup values the user pastes into their own OAuth app. Provider-
     // independent: the redirect URI matches the one used at token exchange
     // (connections.rs), and the JS origin is the public origin we're served on.
-    let js_origin = state.config.public_url.trim_end_matches('/').to_string();
-    let redirect_uri = format!("{js_origin}/v1/oauth/callback");
+    // The redirect URI keeps any configured subpath (e.g. behind a reverse
+    // proxy at `https://host/overslash`), but a JS origin must be scheme + host
+    // + port with no path, so derive it from the parsed URL's origin.
+    let public_url = state.config.public_url.trim_end_matches('/');
+    let redirect_uri = format!("{public_url}/v1/oauth/callback");
+    let js_origin = url::Url::parse(public_url)
+        .ok()
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_else(|| public_url.to_string());
 
     // Pre-compute the set of providers for which the caller already has a BYOC
     // credential. BYOC is identity-bound; if there's no identity on the ACL
