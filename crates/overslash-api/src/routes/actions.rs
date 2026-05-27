@@ -444,6 +444,16 @@ struct CallRequest {
     // on the tool args.
     #[serde(default)]
     verbose: Option<bool>,
+
+    // Optional URL the OAuth callback redirects the user back to if this
+    // call triggers a reactive auth flow (reauth_required / missing_scopes /
+    // needs_authentication). Mirrors `return_url` on the connect endpoint
+    // (`routes/connections.rs::InitiateConnectionRequest`); validated by
+    // `parse_return_url` at the request boundary and gated at callback time
+    // by `OVERSLASH_CONNECTION_RETURN_URL_HOSTS` — when the host isn't on the
+    // allow-list the callback falls back to the historical JSON response.
+    #[serde(default)]
+    return_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2065,6 +2075,17 @@ async fn resolve_request(
     req: &CallRequest,
     pre_resolved_mode_c: Option<ResolvedModeC>,
 ) -> Result<(ActionRequest, ResolvedMeta), AppError> {
+    // Parse the optional `return_url` hint once, at the request boundary.
+    // Doing it here (rather than relying on the kernel's re-validation deep
+    // in the mint path) means a malformed hint fails fast with 400 instead
+    // of surfacing as a 500 from `needs_authentication_for_service` (which
+    // maps mint errors to `Internal`) or being silently dropped by
+    // `check_required_scopes`. The validated value threads into every
+    // reactive mint site so the OAuth callback can 303 the user back to the
+    // partner. Host allow-listing still happens at callback time.
+    let return_url_hint = platform_connections::parse_return_url(req.return_url.as_deref())?;
+    let return_url_hint = return_url_hint.as_deref();
+
     // Service + HTTP verb (SPEC §8): caller-supplied method + path/url
     // against a service instance. Auth is auto-injected from the binding;
     // `svc.hosts` bounds where the bearer can land.
@@ -2112,6 +2133,7 @@ async fn resolve_request(
                 &svc,
                 &req.secrets,
                 &mut headers,
+                return_url_hint,
             )
             .await?
         } else {
@@ -2123,6 +2145,7 @@ async fn resolve_request(
                 &svc,
                 &req.secrets,
                 &mut headers,
+                return_url_hint,
             )
             .await?
         };
@@ -2452,7 +2475,16 @@ async fn resolve_request(
         // `missing_scopes` with the upgrade URL *before* the outgoing call
         // happens. This is the fail-fast path promised by SPEC §9 — we don't
         // want the provider's 403 to surface as a generic upstream error.
-        check_required_scopes(state, scope, identity_id, instance.as_ref(), &svc, action).await?;
+        check_required_scopes(
+            state,
+            scope,
+            identity_id,
+            instance.as_ref(),
+            &svc,
+            action,
+            return_url_hint,
+        )
+        .await?;
 
         // Auth resolution: if instance has a bound connection/secret, use that;
         // otherwise fall back to auto-resolve from the template's auth config.
@@ -2469,6 +2501,7 @@ async fn resolve_request(
                 &svc,
                 &req.secrets,
                 &mut headers,
+                return_url_hint,
             )
             .await?
         } else {
@@ -2480,6 +2513,7 @@ async fn resolve_request(
                 &svc,
                 &req.secrets,
                 &mut headers,
+                return_url_hint,
             )
             .await?
         };
@@ -2506,6 +2540,7 @@ async fn resolve_request(
                 action,
                 instance.as_ref(),
                 service_key,
+                return_url_hint,
             )
             .await?
             {
@@ -2611,10 +2646,20 @@ async fn oauth_error_to_app_error(
     caller_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     err: OAuthError,
+    return_url_hint: Option<&str>,
 ) -> AppError {
     match classify_oauth(&err) {
         OAuthOutcome::Reauth(reason) => {
-            reauth_required_envelope(state, org_id, caller_identity_id, conn, reason, &err).await
+            reauth_required_envelope(
+                state,
+                org_id,
+                caller_identity_id,
+                conn,
+                reason,
+                &err,
+                return_url_hint,
+            )
+            .await
         }
         OAuthOutcome::Internal => {
             tracing::error!("OAuth internal error on connection {}: {err}", conn.id);
@@ -2638,10 +2683,20 @@ async fn oauth_error_to_app_error_or_continue(
     caller_identity_id: Uuid,
     conn: &overslash_db::repos::connection::ConnectionRow,
     err: OAuthError,
+    return_url_hint: Option<&str>,
 ) -> Option<AppError> {
     match classify_oauth(&err) {
         OAuthOutcome::Reauth(reason) => Some(
-            reauth_required_envelope(state, org_id, caller_identity_id, conn, reason, &err).await,
+            reauth_required_envelope(
+                state,
+                org_id,
+                caller_identity_id,
+                conn,
+                reason,
+                &err,
+                return_url_hint,
+            )
+            .await,
         ),
         OAuthOutcome::Internal => {
             tracing::error!("OAuth internal error on connection {}: {err}", conn.id);
@@ -2672,9 +2727,17 @@ async fn reauth_required_envelope(
     conn: &overslash_db::repos::connection::ConnectionRow,
     reason: &'static str,
     underlying: &OAuthError,
+    return_url_hint: Option<&str>,
 ) -> AppError {
-    match platform_connections::mint_upgrade_auth_url(state, org_id, caller_identity_id, conn, &[])
-        .await
+    match platform_connections::mint_upgrade_auth_url(
+        state,
+        org_id,
+        caller_identity_id,
+        conn,
+        &[],
+        return_url_hint,
+    )
+    .await
     {
         Ok(urls) => AppError::ReauthRequired {
             connection_id: conn.id,
@@ -2713,6 +2776,7 @@ async fn reauth_required_envelope(
 ///   no-op happy path for free templates and ApiKey-only templates).
 /// - `Err(_)` — an internal failure during URL mint (DB, crypto).
 ///   Surfaced so the caller can decide whether to wrap or bail.
+#[allow(clippy::too_many_arguments)]
 async fn needs_authentication_for_service(
     state: &AppState,
     org_id: Uuid,
@@ -2721,6 +2785,7 @@ async fn needs_authentication_for_service(
     action: &overslash_core::types::ServiceAction,
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     service_key: &str,
+    return_url_hint: Option<&str>,
 ) -> Result<Option<AppError>, AppError> {
     // First OAuth provider declared by the template. If the template has
     // multiple OAuth providers (rare), we pick the first — that mirrors
@@ -2757,6 +2822,7 @@ async fn needs_authentication_for_service(
         &provider,
         &action.required_scopes,
         None,
+        return_url_hint,
     )
     .await
     {
@@ -2791,6 +2857,7 @@ async fn needs_authentication_for_service(
 /// resolver errors (crypto/db/provider lookup) keep the legacy
 /// fall-through behavior — they don't have a clean "click here to fix"
 /// recovery shape.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_service_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -2799,6 +2866,7 @@ async fn resolve_service_auth(
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     headers: &mut HashMap<String, String>,
+    return_url_hint: Option<&str>,
 ) -> Result<(Vec<SecretRef>, bool), AppError> {
     if !explicit_secrets.is_empty() {
         return Ok((explicit_secrets.to_vec(), false));
@@ -2896,9 +2964,15 @@ async fn resolve_service_auth(
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    if let Some(err) =
-                        oauth_error_to_app_error_or_continue(state, org_id, identity_id, &conn, e)
-                            .await
+                    if let Some(err) = oauth_error_to_app_error_or_continue(
+                        state,
+                        org_id,
+                        identity_id,
+                        &conn,
+                        e,
+                        return_url_hint,
+                    )
+                    .await
                     {
                         return Err(err);
                     }
@@ -2941,6 +3015,7 @@ async fn check_required_scopes(
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     svc: &overslash_core::types::ServiceDefinition,
     action: &overslash_core::types::ServiceAction,
+    return_url_hint: Option<&str>,
 ) -> Result<(), AppError> {
     if action.required_scopes.is_empty() {
         return Ok(());
@@ -3011,6 +3086,7 @@ async fn check_required_scopes(
         identity_id,
         &connection,
         &missing,
+        return_url_hint,
     )
     .await
     {
@@ -3050,6 +3126,7 @@ async fn resolve_instance_auth(
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
     headers: &mut HashMap<String, String>,
+    return_url_hint: Option<&str>,
 ) -> Result<(Vec<SecretRef>, bool), AppError> {
     if !explicit_secrets.is_empty() {
         return Ok((explicit_secrets.to_vec(), false));
@@ -3148,9 +3225,15 @@ async fn resolve_instance_auth(
                     // resolve_service_auth on a transient OAuth error
                     // would hide the real failure behind a misleading
                     // `needs_authentication` 401.
-                    return Err(
-                        oauth_error_to_app_error(state, org_id, identity_id, &conn, e).await,
-                    );
+                    return Err(oauth_error_to_app_error(
+                        state,
+                        org_id,
+                        identity_id,
+                        &conn,
+                        e,
+                        return_url_hint,
+                    )
+                    .await);
                 }
             }
         }
@@ -3189,6 +3272,7 @@ async fn resolve_instance_auth(
         svc,
         explicit_secrets,
         headers,
+        return_url_hint,
     )
     .await
 }
