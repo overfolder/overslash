@@ -6,6 +6,7 @@ import { ApiError, session } from '$lib/session';
 import type {
 	ActionSummary,
 	ByocCredentialSummary,
+	ConnectionDetail,
 	ConnectionSummary,
 	CreateByocCredentialRequest,
 	CreateServiceRequest,
@@ -101,12 +102,17 @@ export async function validateTemplate(yaml: string): Promise<ValidationResult |
 
 // -- Service instances --
 
-export const listServices = (opts: { includeUserLevel?: boolean; user?: string } = {}) => {
+export const listServices = (
+	opts: { includeUserLevel?: boolean; user?: string; connection?: string } = {}
+) => {
 	const p = new URLSearchParams();
 	// `user=` (admin-only) lists the target user's accessible set and takes
 	// precedence over `include_user_level` on the backend; send only one.
 	if (opts.user) p.set('user', opts.user);
 	else if (opts.includeUserLevel) p.set('include_user_level', 'true');
+	// `connection=` subsets the listing to instances bound to that connection —
+	// the Connections view's "Used by" cross-link.
+	if (opts.connection) p.set('connection', opts.connection);
 	const qs = p.toString();
 	return session.get<ServiceInstanceSummary[]>(`/v1/services${qs ? `?${qs}` : ''}`);
 };
@@ -146,10 +152,20 @@ export const listServiceGroups = (serviceId: string, signal?: AbortSignal) =>
 export const listConnections = (signal?: AbortSignal) =>
 	session.get<ConnectionSummary[]>('/v1/connections', signal);
 
+export const getConnection = (id: string, signal?: AbortSignal) =>
+	session.get<ConnectionDetail>(`/v1/connections/${id}`, signal);
+
 export const initiateOAuth = (req: InitiateConnectionRequest, signal?: AbortSignal) =>
 	session.post<InitiateConnectionResponse>('/v1/connections', req, signal);
 
 export const deleteConnection = (id: string) => session.delete<void>(`/v1/connections/${id}`);
+
+/**
+ * Promote a connection to be the default for its provider. Low-risk + idempotent
+ * — the list radio and detail toggle fire this with no confirmation.
+ */
+export const setConnectionDefault = (id: string) =>
+	session.post<{ is_default: boolean }>(`/v1/connections/${id}/set_default`, {});
 
 export interface UpgradeScopesResponse {
 	auth_url: string;

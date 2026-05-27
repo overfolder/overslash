@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,\n         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,\n                   encrypted_refresh_token, token_expires_at, scopes, account_email,\n                   byoc_credential_id, is_default, created_at, updated_at",
+  "query": "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,\n                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,\n                    c.byoc_credential_id, c.is_default, c.created_at, c.updated_at\n             FROM connections c\n             JOIN identities i ON i.id = c.identity_id\n             WHERE c.id = $1 AND c.identity_id = $2 AND i.org_id = $3",
   "describe": {
     "columns": [
       {
@@ -151,12 +151,6 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Text",
-        "Bytea",
-        "Bytea",
-        "Timestamptz",
-        "TextArray",
-        "Text",
         "Uuid"
       ]
     },
@@ -176,5 +170,5 @@
       false
     ]
   },
-  "hash": "caaf0abce1fcea1c1eef429ea85ce3e2ddbd2a88b14912357c642dd767ccc153"
+  "hash": "f81f47c79670eac46a6cb0d3bc8a340ab0e4c30ae3a4e76617529860ab32861c"
 }

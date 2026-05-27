@@ -31,6 +31,26 @@ impl UserScope {
         .await
     }
 
+    /// Fetch one of the caller's own connections by id, scoped to this org.
+    /// Returns `None` when the id isn't owned by the caller (or belongs to
+    /// another org) — the same ownership gate as `delete_my_connection`.
+    pub async fn get_my_connection(&self, id: Uuid) -> Result<Option<ConnectionRow>, sqlx::Error> {
+        sqlx::query_as!(
+            ConnectionRow,
+            "SELECT c.id, c.org_id, c.identity_id, c.provider_key, c.encrypted_access_token,
+                    c.encrypted_refresh_token, c.token_expires_at, c.scopes, c.account_email,
+                    c.byoc_credential_id, c.is_default, c.created_at, c.updated_at
+             FROM connections c
+             JOIN identities i ON i.id = c.identity_id
+             WHERE c.id = $1 AND c.identity_id = $2 AND i.org_id = $3",
+            id,
+            self.user_id(),
+            self.org_id(),
+        )
+        .fetch_optional(self.db())
+        .await
+    }
+
     /// Find the caller's connection for a given provider in this org. Used
     /// by the auto-resolve path when executing service actions on behalf of
     /// the user.
@@ -53,6 +73,13 @@ impl UserScope {
         )
         .fetch_optional(self.db())
         .await
+    }
+
+    /// Promote one of the caller's own connections to be the default for its
+    /// provider, demoting any sibling that held the flag. Returns `false` if
+    /// the id is not owned by the caller (or belongs to another org).
+    pub async fn set_my_connection_default(&self, id: Uuid) -> Result<bool, sqlx::Error> {
+        crate::repos::connection::set_default(self.db(), self.org_id(), self.user_id(), id).await
     }
 
     /// Delete one of the caller's own connections. Returns `false` if the id

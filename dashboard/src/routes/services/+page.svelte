@@ -65,6 +65,12 @@
 	// ignores it for non-admins.
 	const userFilter = $derived($page.url.searchParams.get('user'));
 
+	// `?connection=<id>` filters the list to instances bound to one connection —
+	// the cross-link target from the Connections view's "Used by" column. The
+	// backend filters precisely by id; the pill resolves the id to the account
+	// label once the connections list loads.
+	const connectionFilter = $derived($page.url.searchParams.get('connection'));
+
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
 	let identities = $state<Identity[]>([]);
@@ -84,9 +90,23 @@
 		userFilter ? (identityById.get(userFilter)?.name ?? userFilter) : null
 	);
 
+	// Account label for the active connection pill; falls back to the raw id
+	// until the connections list resolves it.
+	const connectionFilterLabel = $derived(
+		connectionFilter
+			? (connections.find((c) => c.id === connectionFilter)?.account_email ?? connectionFilter)
+			: null
+	);
+
 	function clearUserFilter() {
 		const url = new URL($page.url);
 		url.searchParams.delete('user');
+		goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+	}
+
+	function clearConnectionFilter() {
+		const url = new URL($page.url);
+		url.searchParams.delete('connection');
 		goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
 	}
 
@@ -184,7 +204,11 @@
 		error = null;
 		try {
 			const [s, c, ids] = await Promise.all([
-				listServices({ includeUserLevel: showAllUsers, user: userFilter ?? undefined }),
+				listServices({
+					includeUserLevel: showAllUsers,
+					user: userFilter ?? undefined,
+					connection: connectionFilter ?? undefined
+				}),
 				listConnections(),
 				// Identity list is used to map owner UUIDs to display names. Soft-fail
 				// if it can't load so the services view is still usable.
@@ -242,6 +266,7 @@
 	// by hand.
 	$effect(() => {
 		userFilter;
+		connectionFilter;
 		untrack(() => {
 			showAllUsers = false;
 			load();
@@ -307,6 +332,15 @@
 			<div class="filter-banner">
 				<span>Showing services accessible to <strong>{userFilterName}</strong></span>
 				<button type="button" onclick={clearUserFilter}>Clear</button>
+			</div>
+		{/if}
+
+		{#if connectionFilter}
+			<div class="filter-banner">
+				<span>
+					<span class="filter-pill">connection = <strong>{connectionFilterLabel}</strong></span>
+				</span>
+				<button type="button" onclick={clearConnectionFilter}>Clear</button>
 			</div>
 		{/if}
 
@@ -468,6 +502,13 @@
 		background: var(--color-bg);
 		border-radius: var(--radius-sm, 4px);
 		cursor: pointer;
+	}
+	.filter-pill {
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+	}
+	.filter-pill strong {
+		color: var(--color-primary);
 	}
 	.tabs {
 		display: flex;

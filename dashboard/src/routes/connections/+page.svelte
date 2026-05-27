@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { ApiError, type MeIdentity } from '$lib/session';
-	import { listConnections } from '$lib/api/services';
+	import { listConnections, setConnectionDefault } from '$lib/api/services';
 	import type { ConnectionSummary, OAuthProviderInfo } from '$lib/types';
 	import { compareBy, type SortDir } from '$lib/sort';
 	import { relativeTime, absoluteTime } from '$lib/utils/time';
@@ -136,6 +137,27 @@
 		highlightTimer = setTimeout(() => (highlightId = null), 2400);
 	}
 
+	function openDetail(id: string) {
+		void goto(`/connections/${id}`);
+	}
+
+	// Promote a connection to its provider's default. Optimistic: flip the flag
+	// locally (and clear the sibling that held it) so the radio responds
+	// instantly; reload from the server on failure to undo.
+	async function makeDefault(c: ConnectionSummary) {
+		if (c.is_default) return;
+		const prev = connections;
+		connections = connections.map((x) =>
+			x.provider_key === c.provider_key ? { ...x, is_default: x.id === c.id } : x
+		);
+		try {
+			await setConnectionDefault(c.id);
+		} catch {
+			connections = prev;
+			error = 'Failed to set default connection';
+		}
+	}
+
 	onMount(load);
 </script>
 
@@ -195,11 +217,16 @@
 						<SortableHeader label="Default" column="default" active={sortKey} dir={sortDir} onsort={sortBy} />
 						<SortableHeader label="Used by" column="usedby" active={sortKey} dir={sortDir} onsort={sortBy} align="right" />
 						<SortableHeader label="Connected" column="connected" active={sortKey} dir={sortDir} onsort={sortBy} align="right" />
+						<th aria-hidden="true" class="chev-col"></th>
 					</tr>
 				</thead>
 				<tbody>
 					{#each sorted as c (c.id)}
-						<tr class:is-new={c.id === highlightId}>
+						<tr
+							class:is-new={c.id === highlightId}
+							class="clickable"
+							onclick={() => openDetail(c.id)}
+						>
 							<td data-label="Provider">
 								<span class="cell-provider">
 									<ProviderTile provider={c.provider_key} size={22} label={displayName(c.provider_key)} />
@@ -224,24 +251,37 @@
 							</td>
 							<td data-label="Default" class="default-cell">
 								<span class="card-label">Default</span>
-								{#if c.is_default}
-									<span class="default-badge">default</span>
-								{:else}
-									<span class="muted">—</span>
-								{/if}
+								<button
+									type="button"
+									class="radio"
+									class:checked={c.is_default}
+									title={c.is_default
+										? `Default for ${displayName(c.provider_key)}`
+										: `Make default for ${displayName(c.provider_key)}`}
+									aria-pressed={c.is_default}
+									onclick={(e) => {
+										e.stopPropagation();
+										void makeDefault(c);
+									}}
+								>
+									<span class="radio-dot"></span>
+									{#if c.is_default}<span class="radio-label">default</span>{/if}
+								</button>
 							</td>
 							<td data-label="Used by" class="usedby-cell">
 								<span class="card-label">Used by</span>
 								{#if c.used_by_service_templates.length > 0}
-									<span
-										class="usedby"
-										title="{c.used_by_service_templates.length} service{c.used_by_service_templates
-											.length === 1
+									<a
+										href="/services?connection={c.id}"
+										class="usedby-link"
+										title="View {c.used_by_service_templates.length} service{c
+											.used_by_service_templates.length === 1
 											? ''
-											: 's'} use this connection"
+											: 's'} using this connection"
+										onclick={(e) => e.stopPropagation()}
 									>
 										{c.used_by_service_templates.length}
-									</span>
+									</a>
 								{:else}
 									<span class="muted">0</span>
 								{/if}
@@ -250,6 +290,7 @@
 								<span class="card-label">Connected</span>
 								<span class="when" title={absoluteTime(c.created_at)}>{relativeTime(c.created_at)}</span>
 							</td>
+							<td class="chev" aria-hidden="true">›</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -358,8 +399,22 @@
 	tbody tr:last-child td {
 		border-bottom: 0;
 	}
+	tbody tr.clickable {
+		cursor: pointer;
+	}
+	tbody tr.clickable:hover td {
+		background: var(--color-primary-bg);
+	}
 	tbody tr.is-new td {
 		animation: flash 2.4s ease-out;
+	}
+	.chev-col {
+		width: 24px;
+	}
+	.chev {
+		text-align: right;
+		color: var(--color-text-muted);
+		font-size: 18px;
 	}
 	@keyframes flash {
 		0% {
@@ -416,26 +471,65 @@
 		font-family: var(--font-sans);
 	}
 
-	.default-badge {
+	/* default radio — click an empty dot to promote that connection */
+	.radio {
 		display: inline-flex;
 		align-items: center;
-		padding: 2px 8px;
-		border-radius: 999px;
+		gap: 6px;
+		background: transparent;
+		border: 0;
+		cursor: pointer;
+		padding: 4px 8px 4px 4px;
+		border-radius: 9999px;
+	}
+	.radio:hover {
+		background: rgba(0, 0, 0, 0.04);
+	}
+	.radio-dot {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		border: 1.5px solid var(--neutral-400);
+		background: var(--color-surface);
+		flex: none;
+		position: relative;
+		transition:
+			border-color 0.1s,
+			background 0.1s;
+	}
+	.radio.checked .radio-dot {
+		border-color: var(--color-primary);
+		background: var(--color-primary);
+	}
+	.radio.checked .radio-dot::after {
+		content: '';
+		position: absolute;
+		inset: 3px;
+		background: #fff;
+		border-radius: 50%;
+	}
+	.radio-label {
 		font-size: 11px;
+		color: var(--color-primary);
 		font-weight: 600;
-		background: rgba(34, 197, 94, 0.12);
-		color: #15803d;
-		border: 1px solid rgba(34, 197, 94, 0.3);
 	}
 
 	.usedby-cell,
 	.connected-cell {
 		text-align: right;
 	}
-	.usedby {
+	.usedby-link {
+		display: inline-block;
 		font-size: 13px;
 		font-weight: 500;
-		color: var(--color-text);
+		color: var(--color-primary);
+		text-decoration: none;
+		padding: 2px 8px;
+		border-radius: 4px;
+		background: var(--color-primary-bg);
+	}
+	.usedby-link:hover {
+		background: rgba(99, 89, 217, 0.18);
 	}
 	.when {
 		color: var(--color-text-muted);
@@ -473,13 +567,33 @@
 			padding: 12px 14px;
 			background: var(--color-surface);
 			display: grid;
-			grid-template-columns: minmax(0, 1fr);
-			gap: 6px;
+			grid-template-columns: minmax(0, 1fr) auto;
+			grid-template-areas:
+				'provider chev'
+				'account  account'
+				'scopes   scopes'
+				'default  default'
+				'usedby   usedby'
+				'when     when';
+			gap: 6px 10px;
+			align-items: center;
+		}
+		tbody tr.clickable:hover td {
+			background: transparent;
 		}
 		td {
 			border: 0;
 			padding: 0;
 			text-align: left !important;
+		}
+		td[data-label='Provider'] {
+			grid-area: provider;
+		}
+		td[data-label='Account'] {
+			grid-area: account;
+		}
+		td[data-label='Scopes'] {
+			grid-area: scopes;
 		}
 		.default-cell,
 		.usedby-cell,
@@ -490,8 +604,19 @@
 			font-size: 12px;
 		}
 		.default-cell {
+			grid-area: default;
 			padding-top: 8px;
 			border-top: 1px dashed var(--color-border-subtle);
+		}
+		.usedby-cell {
+			grid-area: usedby;
+		}
+		.connected-cell {
+			grid-area: when;
+		}
+		.chev {
+			grid-area: chev;
+			align-self: center;
 		}
 		.card-label {
 			display: inline-block;
