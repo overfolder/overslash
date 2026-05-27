@@ -70,6 +70,14 @@ infra_scheduler_start_cron = "0 7 * * *"
 enable_valkey = false
 enable_dns    = false
 
+# Use the prod oversla.sh shortener instead of spinning up a local one.
+# The API key is copied from prod:
+#   gcloud secrets versions access latest --secret=overslash-prod-shortener-api-key --project=overslash | \
+#     gcloud secrets versions add overslash-dev-shortener-api-key --project=overslash-dev --data-file=-
+enable_shortener_client         = true
+oversla_sh_base_url             = "https://oversla.sh"
+read_oauth_credentials_from_env = true
+
 # Billing — disabled in dev; enable for billing testing
 cloud_billing = true
 # Lookup keys default to overslash_seat_eur / overslash_seat_usd

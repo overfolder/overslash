@@ -80,3 +80,5 @@ connection_return_url_hosts = "api.overfolder.com"
 pagerduty_enabled = true
 alert_email       = "alert@overslash.com"
 
+read_oauth_credentials_from_env = false
+
