@@ -48,10 +48,12 @@
 
 	const label = $derived(providerDisplayName || provider);
 
-	// Internal docs guide on creating your own OAuth app per provider. Relative
-	// `/docs/...` path so it resolves against whichever host the dashboard runs
-	// under (matches the convention used elsewhere in the dashboard).
-	const DOCS_URL = '/docs/guide/connections/bring-your-own-oauth';
+	// Per-provider how-to guide on the docs site for linking your own OAuth
+	// app, e.g. .../how-to/link-google-services.html. Provider-specific so the
+	// page matches the service the user is connecting.
+	const docsUrl = $derived(
+		`https://www.overslash.com/docs/guide/how-to/link-${provider}-services.html`
+	);
 
 	const placeholders: Record<string, string> = {
 		google: 'e.g. 1234567890-abc.apps.googleusercontent.com',
@@ -213,11 +215,11 @@
 
 			<a
 				class="help"
-				href={DOCS_URL}
+				href={docsUrl}
 				target="_blank"
 				rel="noopener noreferrer"
 			>
-				How to set up your own OAuth app →
+				How to set up your own {label} OAuth app →
 			</a>
 		</div>
 	{/if}
