@@ -101,11 +101,14 @@ export async function validateTemplate(yaml: string): Promise<ValidationResult |
 
 // -- Service instances --
 
-export const listServices = (opts: { includeUserLevel?: boolean } = {}) => {
-	const path = opts.includeUserLevel
-		? '/v1/services?include_user_level=true'
-		: '/v1/services';
-	return session.get<ServiceInstanceSummary[]>(path);
+export const listServices = (opts: { includeUserLevel?: boolean; user?: string } = {}) => {
+	const p = new URLSearchParams();
+	// `user=` (admin-only) lists the target user's accessible set and takes
+	// precedence over `include_user_level` on the backend; send only one.
+	if (opts.user) p.set('user', opts.user);
+	else if (opts.includeUserLevel) p.set('include_user_level', 'true');
+	const qs = p.toString();
+	return session.get<ServiceInstanceSummary[]>(`/v1/services${qs ? `?${qs}` : ''}`);
 };
 
 export const getService = (name: string, signal?: AbortSignal) =>

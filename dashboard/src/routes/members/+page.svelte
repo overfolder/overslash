@@ -139,6 +139,7 @@
 						<th>Email</th>
 						<th>IdP</th>
 						<th class="num">Agents</th>
+						<th>Services</th>
 						<th class="num">API keys</th>
 						<th>Created</th>
 					</tr>
@@ -163,7 +164,20 @@
 							<td>
 								<span class={providerClass(u.provider)}>{providerLabel(u.provider)}</span>
 							</td>
-							<td class="num">{agentCountByUser.get(u.id) ?? 0}</td>
+							<td class="num">
+								<a
+									class="cell-link"
+									href={`/agents?user=${u.id}`}
+									onclick={(e) => e.stopPropagation()}>{agentCountByUser.get(u.id) ?? 0}</a
+								>
+							</td>
+							<td>
+								<a
+									class="cell-link"
+									href={`/services?user=${u.id}`}
+									onclick={(e) => e.stopPropagation()}>View →</a
+								>
+							</td>
 							<td class="num">{apiKeyCountByUser.get(u.id) ?? 0}</td>
 							<td class="muted">{fmtDate(u.created_at)}</td>
 						</tr>
@@ -207,7 +221,14 @@
 			<dd class="mono small">{selected.id}</dd>
 
 			<dt>Agents</dt>
-			<dd>{agentCountByUser.get(selected.id) ?? 0}</dd>
+			<dd>
+				<a class="cell-link" href={`/agents?user=${selected.id}`}
+					>{agentCountByUser.get(selected.id) ?? 0} · view</a
+				>
+			</dd>
+
+			<dt>Services</dt>
+			<dd><a class="cell-link" href={`/services?user=${selected.id}`}>View accessible services →</a></dd>
 
 			<dt>API keys</dt>
 			<dd>
@@ -305,6 +326,19 @@
 	}
 	.muted {
 		color: var(--color-text-secondary);
+	}
+	.cell-link {
+		color: var(--color-primary);
+		text-decoration: none;
+		font: var(--text-body-medium);
+		border-radius: var(--radius-sm);
+	}
+	.cell-link:hover {
+		text-decoration: underline;
+	}
+	.cell-link:focus-visible {
+		outline: 2px solid var(--color-primary);
+		outline-offset: 2px;
 	}
 	.email {
 		color: var(--color-text);

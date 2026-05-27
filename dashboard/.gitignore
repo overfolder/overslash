@@ -1,6 +1,7 @@
 node_modules/*
 !node_modules/.gitkeep
 .svelte-kit/
+.svelte-kit-wt/
 build/
 dist/
 .env
