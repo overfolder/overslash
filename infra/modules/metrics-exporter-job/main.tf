@@ -168,6 +168,8 @@ resource "google_cloud_run_v2_job" "exporter" {
     # pipeline. Same approach as the API service.
     ignore_changes = [
       template[0].template[0].containers[0].image,
+      client,
+      client_version,
     ]
   }
 }
