@@ -207,9 +207,19 @@
 	// nav from the Users list keeps the same route, so onMount alone would not
 	// refire). `untrack` keeps `load`'s internal state reads out of the
 	// effect's dependency set so it only re-runs on `userFilter` changes.
+	//
+	// Reset the admin "show all users" override on every filter transition:
+	// SvelteKit preserves component state across same-route navigation, so
+	// without this an admin who flips the toggle on, drills into a `?user=`
+	// view, then clears it would silently keep seeing every user's services —
+	// and the toggle is hidden while a filter is active, so it can't be reset
+	// by hand.
 	$effect(() => {
 		userFilter;
-		untrack(() => load());
+		untrack(() => {
+			showAllUsers = false;
+			load();
+		});
 	});
 </script>
 
