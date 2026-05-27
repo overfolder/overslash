@@ -1114,6 +1114,104 @@ async fn test_audit_column_filters() {
     assert_eq!(r[0].identity_id, Some(user_id));
 }
 
+/// `user =` (owner_user_id) / `user ~` (owner_user_contains) match the owning
+/// user *subtree*: the user acting directly plus any agent they own — wider
+/// than the exact-actor `identity_id` used by `agent`/`identity`.
+#[tokio::test]
+async fn test_audit_owner_user_filter() {
+    let pool = common::test_pool().await;
+    let org_id = insert_org(&pool).await;
+
+    async fn insert_id(
+        pool: &PgPool,
+        org_id: Uuid,
+        name: &str,
+        kind: &str,
+        owner_id: Option<Uuid>,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO identities (id, org_id, name, kind, owner_id) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id)
+        .bind(org_id)
+        .bind(name)
+        .bind(kind)
+        .bind(owner_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    // alice owns agent henry; bob is an unrelated user.
+    let alice = insert_id(&pool, org_id, "alice", "user", None).await;
+    let henry = insert_id(&pool, org_id, "henry", "agent", Some(alice)).await;
+    let bob = insert_id(&pool, org_id, "bob", "user", None).await;
+
+    let scope = overslash_db::OrgScope::new(org_id, pool.clone());
+    for (actor, action) in [
+        (alice, "alice.direct"),
+        (henry, "henry.acted"),
+        (bob, "bob.direct"),
+    ] {
+        scope
+            .log_audit(AuditEntry {
+                org_id,
+                identity_id: Some(actor),
+                action,
+                resource_type: None,
+                resource_id: None,
+                detail: json!({}),
+                description: None,
+                ip_address: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let only = |mut f: overslash_db::repos::audit::AuditFilter| async {
+        f.org_id = org_id;
+        scope.query_audit_log(f).await.unwrap()
+    };
+    let base = || filter(org_id);
+    let actors = |rows: &[overslash_db::repos::audit::AuditRow]| {
+        rows.iter()
+            .filter_map(|r| r.identity_id)
+            .collect::<std::collections::HashSet<_>>()
+    };
+
+    // user = alice → alice's own row + her agent henry's row (not bob's).
+    let r = only(AuditFilter {
+        owner_user_id: Some(alice),
+        ..base()
+    })
+    .await;
+    let a = actors(&r);
+    assert_eq!(r.len(), 2);
+    assert!(a.contains(&alice) && a.contains(&henry) && !a.contains(&bob));
+
+    // Contrast: exact identity_id (the `agent`/`identity` path) → alice only.
+    let r = only(AuditFilter {
+        identity_id: Some(alice),
+        ..base()
+    })
+    .await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].identity_id, Some(alice));
+
+    // user ~ "lic" → owner_user_contains matches alice (own name) + henry
+    // (owner's name), excludes bob.
+    let r = only(AuditFilter {
+        owner_user_contains: Some("lic".into()),
+        ..base()
+    })
+    .await;
+    let a = actors(&r);
+    assert_eq!(r.len(), 2);
+    assert!(a.contains(&alice) && a.contains(&henry) && !a.contains(&bob));
+}
+
 // ===========================================================================
 // Audit events: secret.put + secret.deleted
 // ===========================================================================

@@ -44,12 +44,30 @@ const RESOURCE_VALUES = [
 
 const AGENT_KINDS = ['agent', 'sub_agent'];
 
-export function buildAuditSearchKeys(identities: IdentitySummary[]): SearchKey[] {
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** The logged-in user, used to resolve the special `user = me` value. */
+export interface CurrentUser {
+	id: string;
+	name: string;
+}
+
+export function buildAuditSearchKeys(
+	identities: IdentitySummary[],
+	currentUser?: CurrentUser
+): SearchKey[] {
 	const agentNames = identities.filter((i) => AGENT_KINDS.includes(i.kind)).map((i) => i.name);
 	const userNames = identities.filter((i) => i.kind === 'user').map((i) => i.name);
+	// `me` is offered first so it surfaces at the top of the value dropdown.
+	const userValues = currentUser ? ['me', ...userNames] : userNames;
 	return [
 		{ name: 'agent', operators: ['=', '~'], values: agentNames, hint: 'agent name' },
-		{ name: 'user', operators: ['=', '~'], values: userNames, hint: 'user name' },
+		{
+			name: 'user',
+			operators: ['=', '~'],
+			values: userValues,
+			hint: currentUser ? 'owning user · me = you' : 'owning user'
+		},
 		{
 			name: 'identity',
 			operators: ['=', '~'],
@@ -79,18 +97,26 @@ export function buildAuditSearchKeys(identities: IdentitySummary[]): SearchKey[]
  * - `description = / ~`     → description / description_contains
  * - `ip = / ~`              → ip_address / ip_address_contains
  * - `agent = NAME`          → identity_id of the agent named NAME (kind-scoped)
- * - `user = NAME`           → identity_id of the user named NAME
- * - `agent ~` / `user ~`    → identity_name_contains + identity_kind (kind scope)
+ * - `agent ~ NAME`          → identity_name_contains + identity_kind=agent,sub_agent
+ * - `user = NAME` / `me`    → owner_user_id (the owning-user subtree: the user
+ *                             acting directly OR any agent they own)
+ * - `user ~ NAME`           → owner_user_contains (substring on owning-user name)
  * - `identity = NAME`       → identity_id=<resolved UUID> (any kind), else q
  * - `identity ~ NAME`       → identity_name_contains (any kind)
+ * - `<key> = <uuid>`        → the id field directly, skipping name resolution
  * - `time = preset`         → since/until window
  * - free text               → folded into q
  *
- * Exact `agent`/`user`/`identity` match resolves NAME → identity_id (the actor
- * column). The identities list is org-scoped by the API (`GET /v1/identities`
- * enforces `OrgAcl`), so name→id resolution can never leak across tenants.
+ * Exact `agent`/`identity` resolve NAME → identity_id (the actor column); `user`
+ * resolves NAME → owner_user_id. A literal UUID value is used as-is. The
+ * identities list is org-scoped by the API (`GET /v1/identities` enforces
+ * `OrgAcl`), so name→id resolution can never leak across tenants.
  */
-export function searchToFilters(value: SearchValue, identities: IdentitySummary[]): AuditFilters {
+export function searchToFilters(
+	value: SearchValue,
+	identities: IdentitySummary[],
+	currentUser?: CurrentUser
+): AuditFilters {
 	const filters: AuditFilters = {};
 	const qTerms: string[] = [];
 	if (value.freeText) qTerms.push(value.freeText);
@@ -113,23 +139,42 @@ export function searchToFilters(value: SearchValue, identities: IdentitySummary[
 		} else if (expr.key === 'ip') {
 			if (expr.op === '~') filters.ip_address_contains = expr.value;
 			else filters.ip_address = expr.value;
-		} else if (expr.key === 'agent' || expr.key === 'user') {
-			const kinds = expr.key === 'agent' ? AGENT_KINDS : ['user'];
-			if (expr.op === '=') {
-				const id = resolveId(expr.value, kinds);
+		} else if (expr.key === 'user') {
+			// `user` matches the owning user *subtree*: the user acting directly
+			// or any of their agents (backed by identities.owner_id), so it lines
+			// up with the audit table's "User" column.
+			if (expr.op === '~') {
+				filters.owner_user_contains = expr.value;
+			} else if (expr.value === 'me' && currentUser) {
+				filters.owner_user_id = currentUser.id;
+			} else if (UUID_RE.test(expr.value)) {
+				filters.owner_user_id = expr.value;
+			} else {
+				const id = resolveId(expr.value, ['user']);
+				if (id) filters.owner_user_id = id;
+				else filters.owner_user_contains = expr.value;
+			}
+		} else if (expr.key === 'agent') {
+			// `agent` stays exact-actor (the specific agent that acted).
+			if (expr.op === '~') {
+				filters.identity_name_contains = expr.value;
+				filters.identity_kind = AGENT_KINDS.join(',');
+			} else if (UUID_RE.test(expr.value)) {
+				filters.identity_id = expr.value;
+			} else {
+				const id = resolveId(expr.value, AGENT_KINDS);
 				if (id) filters.identity_id = id;
 				else qTerms.push(expr.value);
-			} else {
-				filters.identity_name_contains = expr.value;
-				filters.identity_kind = kinds.join(',');
 			}
 		} else if (expr.key === 'identity') {
-			if (expr.op === '=') {
+			if (expr.op === '~') {
+				filters.identity_name_contains = expr.value;
+			} else if (UUID_RE.test(expr.value)) {
+				filters.identity_id = expr.value;
+			} else {
 				const id = resolveId(expr.value);
 				if (id) filters.identity_id = id;
 				else qTerms.push(expr.value);
-			} else {
-				filters.identity_name_contains = expr.value;
 			}
 		} else if (expr.key === 'uuid') {
 			filters.uuid = expr.value;
@@ -146,7 +191,11 @@ export function searchToFilters(value: SearchValue, identities: IdentitySummary[
 }
 
 /** Inverse mapping for hydrating the SearchBar from URL query state on load. */
-export function filtersToSearch(filters: AuditFilters, identities: IdentitySummary[]): SearchValue {
+export function filtersToSearch(
+	filters: AuditFilters,
+	identities: IdentitySummary[],
+	currentUser?: CurrentUser
+): SearchValue {
 	const expressions: Expression[] = [];
 	if (filters.action) expressions.push({ key: 'event', op: '=', value: filters.action });
 	if (filters.action_contains)
@@ -170,12 +219,20 @@ export function filtersToSearch(filters: AuditFilters, identities: IdentitySumma
 	}
 	if (filters.identity_name_contains) {
 		const kinds = filters.identity_kind?.split(',') ?? [];
-		const key = kinds.includes('user')
-			? 'user'
-			: kinds.some((k) => AGENT_KINDS.includes(k))
-				? 'agent'
-				: 'identity';
+		// `user ~` now maps to owner_user_contains, so a kind=user substring here
+		// can only be a legacy/identity match — never reverse it to `user`.
+		const key = kinds.some((k) => AGENT_KINDS.includes(k)) ? 'agent' : 'identity';
 		expressions.push({ key, op: '~', value: filters.identity_name_contains });
+	}
+	if (filters.owner_user_id) {
+		const value =
+			currentUser && filters.owner_user_id === currentUser.id
+				? 'me'
+				: (identities.find((i) => i.id === filters.owner_user_id)?.name ?? filters.owner_user_id);
+		expressions.push({ key: 'user', op: '=', value });
+	}
+	if (filters.owner_user_contains) {
+		expressions.push({ key: 'user', op: '~', value: filters.owner_user_contains });
 	}
 	if (filters.uuid) expressions.push({ key: 'uuid', op: '=', value: filters.uuid });
 	// We can't reliably reverse `time` from since/until alone (presets are

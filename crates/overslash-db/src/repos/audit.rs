@@ -95,6 +95,15 @@ pub struct AuditFilter {
     /// Restrict the actor's identity kind (e.g. `['user']` or
     /// `['agent','sub_agent']`). Scopes the kind split for `agent`/`user`.
     pub identity_kinds: Option<Vec<String>>,
+    /// Owning user (root of the actor's identity chain). Matches rows where the
+    /// actor *is* this user (acting directly) or is one of the user's agents
+    /// (`identities.owner_id`). Powers the `user =` search bar key — a wider
+    /// match than the exact-actor `identity_id`, consistent with the audit
+    /// table's "User" column.
+    pub owner_user_id: Option<Uuid>,
+    /// Substring (case-insensitive) on the owning user's name — the actor's own
+    /// name when they are a user, else their `owner_id`'s name. Powers `user ~`.
+    pub owner_user_contains: Option<String>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -123,12 +132,17 @@ pub(crate) async fn query_filtered(
         .identity_name_contains
         .as_deref()
         .map(|q| format!("%{q}%"));
+    let owner_name_like = filter
+        .owner_user_contains
+        .as_deref()
+        .map(|q| format!("%{q}%"));
     let kinds = filter.identity_kinds.as_deref();
     sqlx::query_as!(
         AuditRow,
         "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id
          FROM audit_log a
          LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id
+         LEFT JOIN identities owner ON owner.id = i.owner_id AND owner.org_id = a.org_id
          WHERE a.org_id = $1
            AND ($2::text IS NULL OR a.action = $2)
            AND ($3::text IS NULL OR a.resource_type = $3)
@@ -158,6 +172,10 @@ pub(crate) async fn query_filtered(
            AND ($17::text IS NULL OR a.ip_address ILIKE $17)
            AND ($18::text IS NULL OR i.name ILIKE $18)
            AND ($19::text[] IS NULL OR i.kind = ANY($19))
+           AND ($20::uuid IS NULL OR a.identity_id = $20 OR i.owner_id = $20)
+           AND ($21::text IS NULL
+                OR (i.kind = 'user' AND i.name ILIKE $21)
+                OR owner.name ILIKE $21)
          ORDER BY a.created_at DESC
          LIMIT $10 OFFSET $11",
         filter.org_id,
@@ -179,6 +197,8 @@ pub(crate) async fn query_filtered(
         ip_like,
         name_like,
         kinds,
+        filter.owner_user_id,
+        owner_name_like,
     )
     .fetch_all(pool)
     .await

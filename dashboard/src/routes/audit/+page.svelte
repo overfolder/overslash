@@ -22,9 +22,14 @@
 	let filters = $state<AuditFilters>(data.filters);
 	// svelte-ignore state_referenced_locally
 	const identities = data.identities;
-	const searchKeys = buildAuditSearchKeys(identities);
+	// The logged-in user, so `user = me` resolves to their identity (and reverses
+	// back to `me` when hydrating filters from the URL).
+	const currentUser = data.user
+		? { id: data.user.identity_id, name: data.user.name }
+		: undefined;
+	const searchKeys = buildAuditSearchKeys(identities, currentUser);
 	// svelte-ignore state_referenced_locally
-	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities));
+	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities, currentUser));
 	// svelte-ignore state_referenced_locally
 	let offset = $state(data.entries.length);
 	// svelte-ignore state_referenced_locally
@@ -111,7 +116,7 @@
 
 	function onSearchChange(next: SearchValue) {
 		searchValue = next;
-		applyFilters(searchToFilters(next, identities));
+		applyFilters(searchToFilters(next, identities, currentUser));
 	}
 
 	function refresh() {
