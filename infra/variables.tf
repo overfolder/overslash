@@ -207,6 +207,18 @@ variable "valkey_memory_size_gb" {
 
 # --- oversla.sh shortener ---
 
+variable "enable_shortener_client" {
+  description = "Wire OVERSLA_SH_BASE_URL + OVERSLA_SH_API_KEY into the API Cloud Run service so it can mint short links. Set oversla_sh_base_url to the target shortener (e.g. https://oversla.sh for prod). The secret must be populated via gcloud before apply."
+  type        = bool
+  default     = false
+}
+
+variable "oversla_sh_base_url" {
+  description = "Base URL of the oversla.sh shortener the API client calls (e.g. https://oversla.sh). Only used when enable_shortener_client=true."
+  type        = string
+  default     = ""
+}
+
 variable "enable_shortener" {
   description = "Deploy the oversla.sh URL shortener Cloud Run service. Requires enable_valkey=true and use_private_vpc=true."
   type        = bool
