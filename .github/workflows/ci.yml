@@ -276,6 +276,8 @@ jobs:
         run: npm run check
       - name: Build (strict — fails on any warning)
         run: npm run build:strict
+      - name: Build Storybook (component workbench → components.overslash.com)
+        run: npm run build-storybook
 
   e2e:
     name: E2E (Playwright)
