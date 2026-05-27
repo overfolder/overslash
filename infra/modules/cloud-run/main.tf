@@ -234,6 +234,12 @@ variable "enable_metrics_sidecar" {
   description = "Run an OTel collector sidecar that scrapes /internal/metrics and ships to Google Managed Prometheus. Required for the Prometheus-backed dashboards and alerts."
 }
 
+variable "read_oauth_credentials_from_env" {
+  type        = bool
+  default     = false
+  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1, enabling the tier-4 env-var fallback in the OAuth credential cascade (OAUTH_GOOGLE_* picked up from Cloud Run env). Safe in dev; must be false in prod."
+}
+
 variable "enable_shortener_client" {
   type        = bool
   default     = false
@@ -277,14 +283,9 @@ locals {
       HOST                      = "0.0.0.0"
       # Structured JSON logs so `make logs` can surface message/span fields
       # via `jsonPayload.*` instead of falling back to ANSI-coded textPayload.
-      LOG_FORMAT = "json"
-      # Enables tier-4 env-var fallback in the services OAuth cascade so the
-      # overslash-managed default Google services client (OAUTH_GOOGLE_*) is
-      # picked up when an org hasn't set its own credentials. Org-level BYO
-      # via POST /v1/org/oauth-credentials/google still takes precedence.
-      OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS = "1"
-      RUST_LOG                                       = var.rust_log
-      SERVICES_DIR                                   = "/app/services"
+      LOG_FORMAT   = "json"
+      RUST_LOG     = var.rust_log
+      SERVICES_DIR = "/app/services"
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
@@ -307,6 +308,7 @@ locals {
     var.overslash_env != "" ? { OVERSLASH_ENV = var.overslash_env } : {},
     var.vercel_preview_origin_regex != "" ? { PREVIEW_ORIGIN_ALLOWLIST = var.vercel_preview_origin_regex } : {},
     var.connection_return_url_hosts != "" ? { OVERSLASH_CONNECTION_RETURN_URL_HOSTS = var.connection_return_url_hosts } : {},
+    var.read_oauth_credentials_from_env ? { OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS = "1" } : {},
     var.enable_shortener_client && var.oversla_sh_base_url != "" ? { OVERSLA_SH_BASE_URL = var.oversla_sh_base_url } : {},
   )
 

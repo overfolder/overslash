@@ -74,8 +74,9 @@ enable_dns    = false
 # The API key is copied from prod:
 #   gcloud secrets versions access latest --secret=overslash-prod-shortener-api-key --project=overslash | \
 #     gcloud secrets versions add overslash-dev-shortener-api-key --project=overslash-dev --data-file=-
-enable_shortener_client = true
-oversla_sh_base_url     = "https://oversla.sh"
+enable_shortener_client         = true
+oversla_sh_base_url             = "https://oversla.sh"
+read_oauth_credentials_from_env = true
 
 # Billing — disabled in dev; enable for billing testing
 cloud_billing = true

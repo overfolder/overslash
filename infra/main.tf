@@ -162,6 +162,8 @@ module "cloud_run" {
   enable_metrics_sidecar = var.enable_metrics_sidecar
   rust_log               = var.rust_log
 
+  read_oauth_credentials_from_env = var.read_oauth_credentials_from_env
+
   # oversla.sh client
   enable_shortener_client     = var.enable_shortener_client
   oversla_sh_base_url         = var.oversla_sh_base_url
