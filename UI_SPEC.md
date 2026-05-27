@@ -270,7 +270,7 @@ A unified search component used across Services, Template Catalog, Audit Log, an
 ```
 
 **Available keys** vary by context:
-- **Services**: `owner`, `name`, `template`, `status`
+- **Services**: `owner`, `name`, `template`, `status`, `connection`
 - **Template Catalog**: `source`, `name`, `category`
 - **Audit Log**: `identity`, `event`, `service`, `result`, `time`
 - **Org Users**: `name`, `email`, `group`, `role`, `status`
