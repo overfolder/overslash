@@ -59,6 +59,13 @@ struct ListServicesQuery {
     /// not start 403'ing when an admin flag is revoked.
     #[serde(default)]
     include_user_level: bool,
+    /// Admin-only: list the services accessible to this user (owned +
+    /// group-shared) instead of the caller's own set. Powers the Users-list
+    /// "Services" link, which deep-links an admin to a user's accessible
+    /// services. Takes precedence over `include_user_level`. Silently ignored
+    /// for non-admin callers, mirroring `include_user_level`.
+    #[serde(default)]
+    user: Option<Uuid>,
 }
 
 // -- Helpers --
@@ -132,24 +139,42 @@ async fn list_services(
 
     let identity_id = auth.identity_id.unwrap();
 
-    // Admin-only opt-in: when an org admin explicitly asks for the full org
-    // view, skip the group-ceiling filter. We read `is_org_admin` directly
-    // from the identity row instead of relying on `AdminAcl`, because
-    // `AdminAcl` requires `AccessLevel::Admin` on the overslash service
-    // grant — we want the flag-based admin check (same approach as the
-    // dashboard secrets list, see `routes/secrets.rs`). Non-admins requesting
-    // the flag get the standard ceiling-gated listing without an error so a
-    // tab open across an admin-flag revocation does not start 403'ing.
-    let admin_view_all = q.include_user_level
-        && scope
+    // Both `include_user_level` and `user=` are admin-only. We read
+    // `is_org_admin` directly from the identity row instead of relying on
+    // `AdminAcl`, because `AdminAcl` requires `AccessLevel::Admin` on the
+    // overslash service grant — we want the flag-based admin check (same
+    // approach as the dashboard secrets list, see `routes/secrets.rs`).
+    // Non-admins passing either flag get the standard ceiling-gated listing
+    // without an error so a tab open across an admin-flag revocation does not
+    // start 403'ing.
+    let is_admin = if q.include_user_level || q.user.is_some() {
+        scope
             .get_identity(identity_id)
             .await?
             .map(|i| i.is_org_admin)
-            .unwrap_or(false);
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    // `user=<id>` (admin-only) lists the services accessible to that user by
+    // running the kernel as their identity — the kernel resolves a user's
+    // ceiling to itself, so the result is the user's owned + group-shared set.
+    // Takes precedence over `include_user_level`. The target must be a real
+    // identity in this org (cross-tenant ids resolve to `None` and are ignored).
+    let target_user = match q.user {
+        Some(uid) if is_admin => scope.get_identity(uid).await?.map(|i| i.id),
+        _ => None,
+    };
+    let effective_identity = target_user.unwrap_or(identity_id);
+
+    // Full-org view only when explicitly requested and no per-user filter is
+    // active (the per-user view is itself ceiling-scoped to that user).
+    let admin_view_all = q.include_user_level && is_admin && target_user.is_none();
 
     let ctx = PlatformCallContext {
         org_id: auth.org_id,
-        identity_id: auth.identity_id,
+        identity_id: Some(effective_identity),
         access_level: overslash_core::permissions::AccessLevel::Read,
         db: state.db_pool(&ext),
         registry: state.registry.clone(),
