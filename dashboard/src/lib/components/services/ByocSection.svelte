@@ -13,7 +13,10 @@
 		alreadyConfigured = false,
 		clientId = $bindable(''),
 		clientSecret = $bindable(''),
-		providerDisplayName = ''
+		providerDisplayName = '',
+		scopes = [],
+		redirectUri = '',
+		jsOrigin = ''
 	}: {
 		provider: string;
 		required?: boolean;
@@ -26,6 +29,13 @@
 		clientId?: string;
 		clientSecret?: string;
 		providerDisplayName?: string;
+		/** Service-level scope union the OAuth app's consent screen will
+		 * request. Shown so the user knows what their app must authorize. */
+		scopes?: string[];
+		/** Authorized redirect URI the user must register in their OAuth app. */
+		redirectUri?: string;
+		/** Authorized JavaScript origin to register alongside the redirect URI. */
+		jsOrigin?: string;
 	} = $props();
 
 	let expanded = $state(false);
@@ -38,14 +48,12 @@
 
 	const label = $derived(providerDisplayName || provider);
 
-	const helpLinks: Record<string, { url: string; text: string }> = {
-		google: { url: 'https://support.google.com/cloud/answer/6158849', text: 'Create a Google Cloud OAuth app' },
-		github: { url: 'https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app', text: 'Create a GitHub OAuth app' },
-		slack: { url: 'https://api.slack.com/authentication/oauth-v2', text: 'Create a Slack app' },
-		microsoft: { url: 'https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app', text: 'Register a Microsoft Entra app' },
-		spotify: { url: 'https://developer.spotify.com/documentation/web-api/concepts/apps', text: 'Create a Spotify app' },
-	};
-	const help = $derived(helpLinks[provider] ?? null);
+	// Per-provider how-to guide on the docs site for linking your own OAuth
+	// app, e.g. .../how-to/link-google-services.html. Provider-specific so the
+	// page matches the service the user is connecting.
+	const docsUrl = $derived(
+		`https://www.overslash.com/docs/guide/how-to/link-${provider}-services.html`
+	);
 
 	const placeholders: Record<string, string> = {
 		google: 'e.g. 1234567890-abc.apps.googleusercontent.com',
@@ -54,6 +62,21 @@
 		microsoft: 'e.g. 12345678-abcd-1234-abcd-123456789abc',
 	};
 	const clientIdPlaceholder = $derived(placeholders[provider] ?? 'Paste client ID');
+
+	// Track which setup value was most recently copied so we can flash a
+	// confirmation on its button. Cleared after a short delay.
+	let copied = $state<string | null>(null);
+	async function copy(value: string, key: string) {
+		try {
+			await navigator.clipboard.writeText(value);
+			copied = key;
+			setTimeout(() => {
+				if (copied === key) copied = null;
+			}, 1500);
+		} catch {
+			/* clipboard unavailable — user can still select the text manually */
+		}
+	}
 
 	// When the caller already has a BYOC credential for this provider we render
 	// a read-only confirmation card instead of the paste form. Replacing a
@@ -106,6 +129,53 @@
 				{/if}
 			</p>
 
+			{#if scopes.length}
+				<div class="scopes">
+					<span class="label">Scopes this connection will request</span>
+					<ul>
+						{#each scopes as s}
+							<li><code>{s}</code></li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
+
+			{#if redirectUri || jsOrigin}
+				<div class="setup">
+					<span class="label">Configure your OAuth app with these values</span>
+					{#if redirectUri}
+						<div class="setup-row">
+							<span class="setup-key">Authorized redirect URI</span>
+							<div class="setup-val">
+								<code>{redirectUri}</code>
+								<button
+									type="button"
+									class="copy"
+									onclick={() => copy(redirectUri, 'redirect')}
+								>
+									{copied === 'redirect' ? 'Copied' : 'Copy'}
+								</button>
+							</div>
+						</div>
+					{/if}
+					{#if jsOrigin}
+						<div class="setup-row">
+							<span class="setup-key">Authorized JavaScript origin</span>
+							<div class="setup-val">
+								<code>{jsOrigin}</code>
+								<button
+									type="button"
+									class="copy"
+									onclick={() => copy(jsOrigin, 'origin')}
+								>
+									{copied === 'origin' ? 'Copied' : 'Copy'}
+								</button>
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			<label class="field">
 				<span class="label">Client ID</span>
 				<input
@@ -143,16 +213,14 @@
 				</div>
 			</label>
 
-			{#if help}
-				<a
-					class="help"
-					href={help.url}
-					target="_blank"
-					rel="noopener noreferrer"
-				>
-					{help.text} →
-				</a>
-			{/if}
+			<a
+				class="help"
+				href={docsUrl}
+				target="_blank"
+				rel="noopener noreferrer"
+			>
+				How to set up your own {label} OAuth app →
+			</a>
 		</div>
 	{/if}
 </section>
@@ -222,6 +290,64 @@
 		margin: 0;
 		font-size: 0.8rem;
 		color: var(--color-text-muted);
+	}
+	.scopes {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.scopes ul {
+		margin: 0;
+		padding-left: 1.1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+	.scopes li {
+		font-size: 0.78rem;
+		color: var(--color-text-muted);
+	}
+	.scopes code {
+		font-size: 0.76rem;
+		word-break: break-all;
+	}
+	.setup {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+	.setup-row {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+	.setup-key {
+		font-size: 0.74rem;
+		color: var(--color-text-muted);
+	}
+	.setup-val {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.35rem 0.5rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-surface);
+	}
+	.setup-val code {
+		font-size: 0.78rem;
+		word-break: break-all;
+		flex: 1;
+	}
+	.copy {
+		background: none;
+		border: none;
+		font: inherit;
+		font-size: 0.74rem;
+		color: var(--color-primary, #6366f1);
+		cursor: pointer;
+		padding: 0.1rem 0.3rem;
+		flex-shrink: 0;
 	}
 	.field {
 		display: flex;
