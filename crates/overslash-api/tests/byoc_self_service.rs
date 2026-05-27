@@ -255,18 +255,24 @@ async fn oauth_providers_lists_known_providers() {
             "row {row}: expected has_user_byoc_credential=false on fresh user"
         );
         assert!(row["supports_pkce"].is_boolean());
-        // BYOC setup values: redirect URI ends in the OAuth callback path and
-        // the JS origin is its origin prefix. Same value for every provider.
+        // BYOC setup values, same for every provider. The redirect URI ends in
+        // the OAuth callback path and sits under the public URL — it may carry
+        // a configured subpath, so don't assume it equals origin + path. The JS
+        // origin must be scheme://host[:port] with no path component.
         let redirect = row["oauth_redirect_uri"].as_str().unwrap();
         let origin = row["oauth_js_origin"].as_str().unwrap();
         assert!(
             redirect.ends_with("/v1/oauth/callback"),
             "row {row}: unexpected redirect URI {redirect}"
         );
+        assert!(
+            redirect.starts_with(origin),
+            "row {row}: redirect {redirect} should sit under origin {origin}"
+        );
         assert_eq!(
-            redirect,
-            format!("{origin}/v1/oauth/callback"),
-            "row {row}: redirect URI should be js origin + callback path"
+            origin.matches('/').count(),
+            2,
+            "row {row}: js origin {origin} must not contain a path"
         );
     }
 }
