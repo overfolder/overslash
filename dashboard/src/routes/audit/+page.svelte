@@ -24,6 +24,7 @@
 	const identities = data.identities;
 	// The logged-in user, so `user = me` resolves to their identity (and reverses
 	// back to `me` when hydrating filters from the URL).
+	// svelte-ignore state_referenced_locally
 	const currentUser = data.user
 		? { id: data.user.identity_id, name: data.user.name }
 		: undefined;
