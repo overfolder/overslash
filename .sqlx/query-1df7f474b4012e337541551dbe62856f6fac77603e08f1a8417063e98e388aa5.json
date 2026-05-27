@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id\n         FROM audit_log a\n         LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id\n         WHERE a.org_id = $1\n           AND ($2::text IS NULL OR a.action = $2)\n           AND ($3::text IS NULL OR a.resource_type = $3)\n           AND ($4::uuid IS NULL OR a.identity_id = $4)\n           AND ($5::timestamptz IS NULL OR a.created_at >= $5)\n           AND ($6::timestamptz IS NULL OR a.created_at <= $6)\n           AND ($7::text IS NULL\n                OR a.action ILIKE $7\n                OR a.description ILIKE $7\n                OR i.name ILIKE $7)\n           AND ($8::uuid IS NULL OR a.id = $8)\n           AND ($9::uuid IS NULL\n                OR a.id = $9\n                OR a.identity_id = $9\n                OR a.resource_id = $9\n                OR CASE WHEN a.detail->>'execution_id' ~ '^[0-9a-fA-F-]{36}$'\n                        THEN (a.detail->>'execution_id')::uuid = $9\n                        ELSE FALSE END\n                OR CASE WHEN a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'\n                        THEN (a.detail->>'replayed_from_approval')::uuid = $9\n                        ELSE FALSE END)\n           AND ($12::text IS NULL OR a.action ILIKE $12)\n           AND ($13::text IS NULL OR a.resource_type ILIKE $13)\n           AND ($14::text IS NULL OR a.description = $14)\n           AND ($15::text IS NULL OR a.description ILIKE $15)\n           AND ($16::text IS NULL OR a.ip_address = $16)\n           AND ($17::text IS NULL OR a.ip_address ILIKE $17)\n           AND ($18::text IS NULL OR i.name ILIKE $18)\n           AND ($19::text[] IS NULL OR i.kind = ANY($19))\n         ORDER BY a.created_at DESC\n         LIMIT $10 OFFSET $11",
+  "query": "SELECT a.id, a.org_id, a.identity_id, a.action, a.resource_type, a.resource_id, a.detail, a.description, a.ip_address, a.created_at, a.impersonated_by_identity_id\n         FROM audit_log a\n         LEFT JOIN identities i ON i.id = a.identity_id AND i.org_id = a.org_id\n         LEFT JOIN identities owner ON owner.id = i.owner_id AND owner.org_id = a.org_id\n         WHERE a.org_id = $1\n           AND ($2::text IS NULL OR a.action = $2)\n           AND ($3::text IS NULL OR a.resource_type = $3)\n           AND ($4::uuid IS NULL OR a.identity_id = $4)\n           AND ($5::timestamptz IS NULL OR a.created_at >= $5)\n           AND ($6::timestamptz IS NULL OR a.created_at <= $6)\n           AND ($7::text IS NULL\n                OR a.action ILIKE $7\n                OR a.description ILIKE $7\n                OR i.name ILIKE $7)\n           AND ($8::uuid IS NULL OR a.id = $8)\n           AND ($9::uuid IS NULL\n                OR a.id = $9\n                OR a.identity_id = $9\n                OR a.resource_id = $9\n                OR CASE WHEN a.detail->>'execution_id' ~ '^[0-9a-fA-F-]{36}$'\n                        THEN (a.detail->>'execution_id')::uuid = $9\n                        ELSE FALSE END\n                OR CASE WHEN a.detail->>'replayed_from_approval' ~ '^[0-9a-fA-F-]{36}$'\n                        THEN (a.detail->>'replayed_from_approval')::uuid = $9\n                        ELSE FALSE END)\n           AND ($12::text IS NULL OR a.action ILIKE $12)\n           AND ($13::text IS NULL OR a.resource_type ILIKE $13)\n           AND ($14::text IS NULL OR a.description = $14)\n           AND ($15::text IS NULL OR a.description ILIKE $15)\n           AND ($16::text IS NULL OR a.ip_address = $16)\n           AND ($17::text IS NULL OR a.ip_address ILIKE $17)\n           AND ($18::text IS NULL OR i.name ILIKE $18)\n           AND ($19::text[] IS NULL OR i.kind = ANY($19))\n           AND ($20::uuid IS NULL OR a.identity_id = $20 OR i.owner_id = $20)\n           AND ($21::text IS NULL\n                OR (i.kind = 'user' AND i.name ILIKE $21)\n                OR owner.name ILIKE $21)\n         ORDER BY a.created_at DESC\n         LIMIT $10 OFFSET $11",
   "describe": {
     "columns": [
       {
@@ -145,7 +145,9 @@
         "Text",
         "Text",
         "Text",
-        "TextArray"
+        "TextArray",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -162,5 +164,5 @@
       true
     ]
   },
-  "hash": "b1772581cc51e4e155adade12f1aadc80ce0d3e971ea5aa0cfc0f4f4aeb00272"
+  "hash": "1df7f474b4012e337541551dbe62856f6fac77603e08f1a8417063e98e388aa5"
 }
