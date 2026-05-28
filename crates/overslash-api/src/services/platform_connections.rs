@@ -280,6 +280,15 @@ async fn kernel_create_connection_for_identity(
     // 400-on-failure shape that flows out of `initiate_connection`.
     let return_url = parse_return_url(input.return_url.as_deref())?;
 
+    // Always include the provider's identity scopes. Without them the
+    // callback's `fetch_account_email` call against `userinfo_endpoint`
+    // returns 401 and the connection lands with a NULL `account_email`,
+    // so the dashboard can't show which account is connected. Declared
+    // per-provider in the `oauth_providers` row so this fix covers every
+    // initiate path: REST, MCP, the Create-Service wizard, and the
+    // action-handler's `needs_authentication` minter.
+    let scopes = merge_scopes(&input.scopes, &provider.default_identity_scopes);
+
     // The OAuth `state` parameter is the opaque base62 flow id. The
     // callback resolves it back to this row and reads every other field
     // (org, identity, provider, byoc, PKCE verifier, actor, upgrade
@@ -291,7 +300,7 @@ async fn kernel_create_connection_for_identity(
         &provider,
         &creds.client_id,
         &redirect_uri,
-        &input.scopes,
+        &scopes,
         &oauth_state,
         pkce.as_ref().map(|p| p.challenge.as_str()),
     );
@@ -312,7 +321,7 @@ async fn kernel_create_connection_for_identity(
             actor_identity_id: caller_identity_id,
             provider_key: &input.provider,
             byoc_credential_id: byoc_id,
-            scopes: &input.scopes,
+            scopes: &scopes,
             pkce_code_verifier: pkce_verifier,
             upstream_authorize_url: &raw_authorize_url,
             expires_at,

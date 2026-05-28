@@ -438,6 +438,13 @@ export interface OAuthProviderInfo {
   oauth_redirect_uri: string;
   /** Authorized JavaScript origin to register alongside the redirect URI. */
   oauth_js_origin: string;
+  /**
+   * Scopes the backend always merges into any initiate/upgrade flow for this
+   * provider so the OAuth callback can resolve `account_email` via the
+   * provider's userinfo endpoint. Rendered alongside service-specific scopes
+   * as fixed (non-removable) chips.
+   */
+  default_identity_scopes: string[];
 }
 
 export interface CreateByocCredentialRequest {

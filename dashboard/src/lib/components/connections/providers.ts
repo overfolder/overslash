@@ -1,13 +1,13 @@
 /**
  * Presentational metadata for OAuth providers shown in the Connections view.
  *
- * The API's `OAuthProviderInfo` carries no brand colour or default scope set,
- * so the dashboard keeps a small static map for the provider tiles and for the
- * scopes a connection requests when it's created outside a service context
- * (the Connections "Connect account" flow has no template to derive scopes
- * from). Both are purely client-side; the backend remains the source of truth
- * for which providers actually exist (`GET /v1/oauth-providers`).
+ * The API's `OAuthProviderInfo` carries the runtime data the dashboard needs
+ * (`default_identity_scopes` for the scope chips, redirect/origin for BYOC),
+ * so this module only owns brand colours — values that aren't worth a
+ * round-trip and don't change per-tenant.
  */
+
+import type { OAuthProviderInfo } from '$lib/types';
 
 export interface ProviderBrand {
 	/** Single glyph shown in the brand tile. */
@@ -40,19 +40,11 @@ export function brandFor(providerKey: string): ProviderBrand {
 }
 
 /**
- * Default scope set requested when linking an account from the Connections view
- * (no service/template is involved, so there's nothing to derive scopes from).
- * Mirrors the design prototype. Unknown providers request no extra scopes and
- * fall back to whatever the provider's OAuth app defaults to.
+ * Identity scopes the backend always injects for this provider (`openid email
+ * profile` for Google, `read:user user:email` for GitHub, …). Sourced from
+ * `GET /v1/oauth-providers` so the dashboard never drifts from the
+ * `oauth_providers.default_identity_scopes` column.
  */
-export const DEFAULT_SCOPES: Record<string, string[]> = {
-	google: ['openid', 'email', 'profile'],
-	github: ['read:user'],
-	slack: ['users:read'],
-	x: ['users.read'],
-	eventbrite: ['event_read']
-};
-
-export function defaultScopesFor(providerKey: string): string[] {
-	return DEFAULT_SCOPES[providerKey] ?? [];
+export function defaultScopesFor(provider: OAuthProviderInfo | null | undefined): string[] {
+	return provider?.default_identity_scopes ?? [];
 }

@@ -48,6 +48,12 @@ struct ProviderRow {
     /// Authorized JavaScript origin to register alongside the redirect URI —
     /// the public origin Overslash is served from. Same for every provider.
     oauth_js_origin: String,
+    /// Identity scopes the backend always merges into any initiate/upgrade
+    /// flow for this provider so the OAuth callback can resolve
+    /// `account_email` via the provider's userinfo endpoint. The dashboard
+    /// renders these as fixed (non-removable) chips alongside the
+    /// service-specific scopes the user picks.
+    default_identity_scopes: Vec<String>,
 }
 
 async fn list_providers(
@@ -114,6 +120,7 @@ async fn list_providers(
             has_user_byoc_credential,
             oauth_redirect_uri: redirect_uri.clone(),
             oauth_js_origin: js_origin.clone(),
+            default_identity_scopes: p.default_identity_scopes,
         });
     }
 
