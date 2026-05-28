@@ -1,9 +1,11 @@
-// Real-stack screenshots for the Connections view (Slices 1 + 2).
+// Real-stack screenshots for the Connections view.
 //
 // Seeds real `connections` rows by running the dashboard's own Connect flow
 // against the fake authorization server (via `connectGithubService`), then
-// captures the provider-grouped list and the Connect-account modal from the
-// actually-rendered UI — no route interception.
+// captures the provider-grouped list, the Connect-account modal, the
+// connection detail page (scopes / used-by / lifecycle), and the delete
+// confirmation modal — all from the actually-rendered UI, no route
+// interception.
 //
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/connections-*.png.
 
@@ -20,10 +22,13 @@ const snap = await makeSnapper(session);
 try {
 	// Seed a couple of real connections via the popup OAuth dance against the
 	// fake AS. Each call creates a GitHub service and binds a fresh connection.
+	// Keep the first connection id so we can open its detail page below.
+	let detailConnId;
 	{
 		const { ctx, page } = await snap.page();
-		await connectGithubService(session, page, { suffix: 'list-a' });
+		const a = await connectGithubService(session, page, { suffix: 'list-a' });
 		await connectGithubService(session, page, { suffix: 'list-b' });
+		detailConnId = a.connection_id;
 		await ctx.close();
 	}
 
@@ -50,12 +55,52 @@ try {
 			}
 		});
 		await page.getByRole('button', { name: /Connect Account/i }).click();
-		await page.getByRole('dialog').waitFor({ timeout: 10_000 });
+		const dialog = page.getByRole('dialog');
+		await dialog.waitFor({ timeout: 10_000 });
 		// Pick GitHub to reveal the BYOC ("use your own OAuth app") section.
-		await page.getByRole('button', { name: /GitHub/i }).first().click();
+		// Scope to the dialog: the list rows behind it now carry a "Make default
+		// for <provider>" radio whose accessible name also matches /GitHub/.
+		await dialog.getByRole('button', { name: /GitHub/i }).first().click();
 		await page.getByText('Use your own OAuth app').waitFor({ timeout: 10_000 });
 		await wait(200);
 		await snap.snap(page, 'connections-connect-modal', { fullPage: false });
+		await ctx.close();
+	}
+
+	// 3. Connection detail — scopes, used-by, lifecycle — light + dark.
+	for (const theme of /** @type {const} */ (['light', 'dark'])) {
+		const { ctx } = await snap.navigateAndSnap(
+			`connections-detail-${theme}`,
+			`/connections/${detailConnId}`,
+			{
+				theme,
+				fullPage: false,
+				viewport: { width: 1440, height: 900 },
+				waitFor: async (p) => {
+					await p.getByRole('heading', { name: /Granted scopes/i }).waitFor({ timeout: 15_000 });
+				}
+			}
+		);
+		await ctx.close();
+	}
+
+	// 4. Delete confirmation modal — blast-radius warning naming the bound service.
+	{
+		const { page, ctx } = await snap.navigateAndSnap(
+			'connections-delete-modal',
+			`/connections/${detailConnId}`,
+			{
+				viewport: { width: 1440, height: 900 },
+				fullPage: false,
+				waitFor: async (p) => {
+					await p.getByRole('button', { name: /^Delete$/ }).first().waitFor({ timeout: 15_000 });
+				}
+			}
+		);
+		await page.getByRole('button', { name: /^Delete$/ }).first().click();
+		await page.getByRole('dialog').waitFor({ timeout: 10_000 });
+		await wait(200);
+		await snap.snap(page, 'connections-delete-modal', { fullPage: false });
 		await ctx.close();
 	}
 

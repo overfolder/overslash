@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE connections SET is_default = false, updated_at = now()\n         WHERE org_id = $1 AND identity_id = $2\n           AND provider_key = (\n               SELECT provider_key FROM connections\n               WHERE id = $3 AND org_id = $1 AND identity_id = $2\n           )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0720cb50cca95f93ecca0897e4dcb8d5862baf2478919a7839f99c31bc609e3c"
+}
