@@ -527,6 +527,26 @@ export interface ConnectionSummary {
   created_at: string;
 }
 
+/** A service instance bound to a connection, for the detail "Used by" list. */
+export interface UsedByService {
+  id: string;
+  name: string;
+  template_key: string;
+}
+
+/** Full connection detail from `GET /v1/connections/{id}`. */
+export interface ConnectionDetail {
+  id: string;
+  provider_key: string;
+  account_email: string | null;
+  scopes: string[];
+  is_default: boolean;
+  created_at: string;
+  /** Advances on an in-place reconnect — the detail page polls it. */
+  updated_at: string;
+  used_by: UsedByService[];
+}
+
 export interface SecretRef {
   name: string;
   inject_as: 'header' | 'query';

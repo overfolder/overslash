@@ -66,6 +66,12 @@ struct ListServicesQuery {
     /// for non-admin callers, mirroring `include_user_level`.
     #[serde(default)]
     user: Option<Uuid>,
+    /// Narrow the listing to instances bound to this connection. Powers the
+    /// Connections view's "Used by" cross-link (`/services?connection=<id>`).
+    /// Applied after the ceiling-gated listing, so it can only ever subset what
+    /// the caller could already see — never a visibility escalation.
+    #[serde(default)]
+    connection: Option<Uuid>,
 }
 
 // -- Helpers --
@@ -134,6 +140,9 @@ async fn list_services(
             summary.credentials_status = credentials_status;
             summaries.push(summary);
         }
+        if let Some(conn) = q.connection {
+            summaries.retain(|s| s.connection_id == Some(conn));
+        }
         return Ok(Json(summaries));
     }
 
@@ -181,7 +190,10 @@ async fn list_services(
         config: state.config.clone(),
         http_client: state.http_client.clone(),
     };
-    let summaries = platform_services::kernel_list_services(ctx, admin_view_all).await?;
+    let mut summaries = platform_services::kernel_list_services(ctx, admin_view_all).await?;
+    if let Some(conn) = q.connection {
+        summaries.retain(|s| s.connection_id == Some(conn));
+    }
     Ok(Json(summaries))
 }
 

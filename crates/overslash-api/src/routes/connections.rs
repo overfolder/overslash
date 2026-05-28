@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -41,7 +41,14 @@ pub fn router() -> Router<AppState> {
             "/v1/connections",
             post(initiate_connection).get(list_connections),
         )
-        .route("/v1/connections/{id}", delete(delete_connection))
+        .route(
+            "/v1/connections/{id}",
+            get(get_connection).delete(delete_connection),
+        )
+        .route(
+            "/v1/connections/{id}/set_default",
+            post(set_connection_default),
+        )
         .route(
             "/v1/connections/{id}/upgrade_scopes",
             post(upgrade_connection_scopes),
@@ -718,6 +725,101 @@ async fn list_connections(scope: UserScope) -> Result<Json<Vec<ConnectionSummary
             })
             .collect(),
     ))
+}
+
+/// A service instance bound to a connection, for the detail page's "Used by"
+/// list. `name` is what the dashboard links to (`/services/{name}`).
+#[derive(Serialize)]
+struct UsedByService {
+    id: Uuid,
+    name: String,
+    template_key: String,
+}
+
+/// Full connection detail returned by `GET /v1/connections/{id}`. Superset of
+/// `ConnectionSummary`: adds `updated_at` (so the dashboard can detect an
+/// in-place reconnect by polling) and the resolved `used_by` instance list
+/// (vs the summary's bare template-key array).
+#[derive(Serialize)]
+struct ConnectionDetail {
+    id: Uuid,
+    provider_key: String,
+    account_email: Option<String>,
+    scopes: Vec<String>,
+    is_default: bool,
+    created_at: String,
+    updated_at: String,
+    used_by: Vec<UsedByService>,
+}
+
+async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<ConnectionDetail>> {
+    let conn = scope
+        .get_my_connection(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
+
+    // Usage lookup is org-scoped; downgrade to OrgScope like `list_connections`.
+    let used_by = scope
+        .org()
+        .connection_usage_instances(id)
+        .await?
+        .into_iter()
+        .map(|(id, name, template_key)| UsedByService {
+            id,
+            name,
+            template_key,
+        })
+        .collect();
+
+    Ok(Json(ConnectionDetail {
+        id: conn.id,
+        provider_key: conn.provider_key,
+        account_email: conn.account_email,
+        scopes: conn.scopes,
+        is_default: conn.is_default,
+        created_at: fmt_time(conn.created_at),
+        updated_at: fmt_time(conn.updated_at),
+        used_by,
+    }))
+}
+
+/// Promote a connection to be the default for its (identity, provider). Demotes
+/// any sibling that held the flag. Identity-scoped: the caller must own the
+/// connection. Low-risk + idempotent — the dashboard fires it from a radio /
+/// toggle with no confirmation.
+async fn set_connection_default(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    WriteAcl(acl): WriteAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>> {
+    let identity_id = acl.identity_id.ok_or_else(|| {
+        AppError::BadRequest("set_default requires an identity-bound API key".into())
+    })?;
+
+    let updated = UserScope::new(acl.org_id, identity_id, state.db_pool(&ext))
+        .set_my_connection_default(id)
+        .await?;
+
+    if !updated {
+        return Err(AppError::NotFound("connection not found".into()));
+    }
+
+    let _ = OrgScope::new(acl.org_id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "connection.set_default",
+            resource_type: Some("connection"),
+            resource_id: Some(id),
+            detail: serde_json::json!({}),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(serde_json::json!({ "is_default": true })))
 }
 
 #[derive(Deserialize)]

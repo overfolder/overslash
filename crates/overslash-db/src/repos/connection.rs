@@ -37,11 +37,23 @@ pub(crate) async fn create(
     pool: &PgPool,
     input: &CreateConnection<'_>,
 ) -> Result<ConnectionRow, sqlx::Error> {
+    // `is_default` is computed, not defaulted: a new connection becomes the
+    // provider default only when the identity has none yet. The column's
+    // `DEFAULT true` (migration 009) predates the single-default invariant
+    // (migration 075) — inserting a second account for a provider that already
+    // has a default would otherwise hit `is_default = true` and violate the
+    // partial unique index `idx_connections_one_default`, breaking the
+    // multi-account-per-provider flow this very value supports.
     sqlx::query_as!(
         ConnectionRow,
         "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,
-         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         encrypted_refresh_token, token_expires_at, scopes, account_email, byoc_credential_id,
+         is_default)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                 NOT EXISTS (
+                     SELECT 1 FROM connections
+                     WHERE identity_id = $2 AND provider_key = $3 AND is_default
+                 ))
          RETURNING id, org_id, identity_id, provider_key, encrypted_access_token,
                    encrypted_refresh_token, token_expires_at, scopes, account_email,
                    byoc_credential_id, is_default, created_at, updated_at",
@@ -204,6 +216,79 @@ pub(crate) async fn usage_by_template(
         .into_iter()
         .map(|r| (r.connection_id, r.template_key))
         .collect())
+}
+
+/// Service instances (id, name, template_key) actively bound to a single
+/// connection, scoped to its org. Powers the connection-detail "Used by" list,
+/// which links each row to `/services/{name}`. Distinct from
+/// [`usage_by_template`], which returns only template keys for the list view's
+/// reuse heuristic — the detail page needs the instance id and name too.
+pub(crate) async fn usage_instances_by_connection(
+    pool: &PgPool,
+    org_id: Uuid,
+    connection_id: Uuid,
+) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT id, name, template_key
+         FROM service_instances
+         WHERE org_id = $1 AND connection_id = $2 AND status = 'active'
+         ORDER BY name",
+        org_id,
+        connection_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.id, r.name, r.template_key))
+        .collect())
+}
+
+/// Promote one connection to be the default for its (identity, provider),
+/// demoting any sibling that held the flag. Scoped to both org and identity so
+/// a forged id from another tenant or another user is a no-op. Returns `false`
+/// when the target row doesn't exist / isn't owned by the identity.
+///
+/// Runs in a transaction with "demote siblings, then promote target" ordering
+/// so the partial unique index `idx_connections_one_default` (one default per
+/// identity+provider) is never transiently violated mid-statement.
+pub(crate) async fn set_default(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Demote every connection sharing this connection's (identity, provider).
+    // The subquery also enforces org + identity ownership of the target id, so
+    // a foreign id selects no provider_key and demotes nothing.
+    sqlx::query!(
+        "UPDATE connections SET is_default = false, updated_at = now()
+         WHERE org_id = $1 AND identity_id = $2
+           AND provider_key = (
+               SELECT provider_key FROM connections
+               WHERE id = $3 AND org_id = $1 AND identity_id = $2
+           )",
+        org_id,
+        identity_id,
+        id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let promoted = sqlx::query!(
+        "UPDATE connections SET is_default = true, updated_at = now()
+         WHERE id = $1 AND org_id = $2 AND identity_id = $3",
+        id,
+        org_id,
+        identity_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(promoted.rows_affected() > 0)
 }
 
 /// Delete a connection scoped to org — for org-admin.

@@ -99,6 +99,16 @@ impl OrgScope {
         connection::usage_by_template(self.db(), self.org_id(), connection_ids).await
     }
 
+    /// Active service instances (id, name, template_key) bound to a single
+    /// connection, scoped to this org. Powers the connection-detail "Used by"
+    /// list. See [`connection::usage_instances_by_connection`].
+    pub async fn connection_usage_instances(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
+        connection::usage_instances_by_connection(self.db(), self.org_id(), connection_id).await
+    }
+
     /// Delete a connection by id, scoped to this org. Returns `false` if the
     /// id belongs to another tenant. Used by org-admin connection deletion.
     pub async fn delete_connection(&self, id: Uuid) -> Result<bool, sqlx::Error> {
