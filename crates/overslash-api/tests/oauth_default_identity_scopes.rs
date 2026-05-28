@@ -68,6 +68,76 @@ async fn initiate_merges_provider_default_identity_scopes_onto_flow_row() {
 }
 
 #[tokio::test]
+async fn upgrade_scopes_response_includes_provider_identity_scopes() {
+    use overslash_core::crypto;
+
+    let pool = common::test_pool().await;
+    // SAFETY: test-only env wiring, before the server boots.
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_GOOGLE_CLIENT_ID", "g_upgrade_client");
+        std::env::set_var("OAUTH_GOOGLE_CLIENT_SECRET", "g_upgrade_secret");
+    }
+
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (org_id, ident_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
+
+    // Seed a google connection that's missing the identity scopes entirely —
+    // mirrors the bad state existing emailless rows are in. The upgrade
+    // handler must surface the identity scopes back so the UI's
+    // `requested_scopes` matches what the OAuth popup will actually request.
+    let enc_key = crypto::Keyring::test();
+    let access = crypto::encrypt(&enc_key, b"mock_access_token").unwrap();
+    let conn_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO connections (org_id, identity_id, provider_key,
+             encrypted_access_token, scopes, account_email, is_default)
+         VALUES ($1, $2, 'google', $3,
+                 ARRAY['https://www.googleapis.com/auth/calendar']::text[],
+                 NULL, true)
+         RETURNING id",
+    )
+    .bind(org_id)
+    .bind(ident_id)
+    .bind(&access)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let resp: Value = client
+        .post(format!("{base}/v1/connections/{conn_id}/upgrade_scopes"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let requested: std::collections::BTreeSet<&str> = resp["requested_scopes"]
+        .as_array()
+        .expect("requested_scopes on response")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    for required in [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ] {
+        assert!(
+            requested.contains(required),
+            "requested_scopes missing {required}: {requested:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn oauth_providers_route_exposes_default_identity_scopes() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (api_addr, client, _guard) = common::start_api_shared(pool.clone()).await;
