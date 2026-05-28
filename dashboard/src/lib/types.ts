@@ -534,6 +534,16 @@ export interface UsedByService {
   template_key: string;
 }
 
+/**
+ * What OAuth client credentials a connection will use on its next refresh.
+ * Mirrors the `client_credentials::resolve()` cascade against current state.
+ */
+export type CredentialSource =
+  | { kind: 'byoc' }
+  | { kind: 'org_secret' }
+  | { kind: 'system' }
+  | { kind: 'missing' };
+
 /** Full connection detail from `GET /v1/connections/{id}`. */
 export interface ConnectionDetail {
   id: string;
@@ -545,6 +555,7 @@ export interface ConnectionDetail {
   /** Advances on an in-place reconnect — the detail page polls it. */
   updated_at: string;
   used_by: UsedByService[];
+  credential_source: CredentialSource;
 }
 
 export interface SecretRef {

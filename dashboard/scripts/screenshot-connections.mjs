@@ -67,17 +67,20 @@ try {
 		await ctx.close();
 	}
 
-	// 3. Connection detail — scopes, used-by, lifecycle — light + dark.
+	// 3. Connection detail — scopes, credential source, used-by, lifecycle — light + dark.
 	for (const theme of /** @type {const} */ (['light', 'dark'])) {
 		const { ctx } = await snap.navigateAndSnap(
 			`connections-detail-${theme}`,
 			`/connections/${detailConnId}`,
 			{
 				theme,
-				fullPage: false,
+				fullPage: true,
 				viewport: { width: 1440, height: 900 },
 				waitFor: async (p) => {
 					await p.getByRole('heading', { name: /Granted scopes/i }).waitFor({ timeout: 15_000 });
+					// Wait for the credential-source section to render so the
+					// PR screenshot captures the new chip.
+					await p.getByRole('heading', { name: /Credential source/i }).waitFor({ timeout: 5_000 });
 				}
 			}
 		);
