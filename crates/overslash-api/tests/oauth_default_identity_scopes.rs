@@ -93,6 +93,13 @@ async fn oauth_providers_route_exposes_default_identity_scopes() {
         ("github", &["read:user", "user:email"]),
         ("slack", &["users:read", "users:read.email"]),
         ("spotify", &["user-read-email", "user-read-private"]),
+        // X's userinfo endpoint requires users.read and the authorize
+        // endpoint rejects empty scope outright.
+        ("x", &["users.read"]),
+        // Eventbrite doesn't enforce scopes on userinfo, but a token
+        // with none can't do anything else — preserve the old dashboard
+        // default of event_read.
+        ("eventbrite", &["event_read"]),
     ];
     for (key, expected) in want {
         let row = list

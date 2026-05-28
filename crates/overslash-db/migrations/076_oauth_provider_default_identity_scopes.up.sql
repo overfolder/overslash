@@ -22,3 +22,16 @@ UPDATE oauth_providers SET default_identity_scopes = '{users:read,users:read.ema
     WHERE key = 'slack';
 UPDATE oauth_providers SET default_identity_scopes = '{user-read-email,user-read-private}'
     WHERE key = 'spotify';
+-- X (Twitter): `users.read` is required by the userinfo endpoint
+-- `/2/users/me` and the authorize endpoint rejects empty scope. Email is
+-- not exposed via OAuth 2.0 there; the `id`/`username` from userinfo is
+-- what we label the connection with.
+UPDATE oauth_providers SET default_identity_scopes = '{users.read}'
+    WHERE key = 'x';
+-- Eventbrite: `event_read` is the minimum scope the dashboard's old
+-- `DEFAULT_SCOPES` map sent for the no-template Connect-account flow, so
+-- include it to preserve that behaviour. Eventbrite doesn't enforce
+-- scopes on `/v3/users/me/`, but a token with no scope can't do anything
+-- else useful.
+UPDATE oauth_providers SET default_identity_scopes = '{event_read}'
+    WHERE key = 'eventbrite';

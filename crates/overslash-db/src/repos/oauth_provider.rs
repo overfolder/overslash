@@ -18,13 +18,15 @@ pub struct OAuthProviderRow {
     pub is_builtin: bool,
     pub issuer_url: Option<String>,
     pub jwks_uri: Option<String>,
-    /// Scopes the OAuth callback needs the provider to grant in order to
-    /// resolve `account_email` via `userinfo_endpoint`. Always unioned into
-    /// every connection-initiate/upgrade flow so the connection lands with a
-    /// human-readable label (`openid email profile` for OIDC providers,
-    /// `read:user user:email` for GitHub, etc.). Empty for providers that
-    /// don't need extra identity scopes (X) or have no userinfo wired
-    /// (Eventbrite).
+    /// Per-provider minimum scope set the kernel unions into every
+    /// connection-initiate/upgrade flow. The dominant use is letting the
+    /// OAuth callback resolve `account_email` from `userinfo_endpoint`
+    /// (`openid email profile` for OIDC providers, `read:user user:email`
+    /// for GitHub, `users.read` for X). It also pins a sane minimum for
+    /// providers whose OAuth design doesn't enforce scopes but whose
+    /// tokens are useless without one (Eventbrite's `event_read`). Seeded
+    /// in migration 076; surfaced on `GET /v1/oauth-providers` so the
+    /// dashboard renders the chips before consent.
     pub default_identity_scopes: Vec<String>,
     pub created_at: OffsetDateTime,
 }
