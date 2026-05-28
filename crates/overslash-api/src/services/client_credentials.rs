@@ -28,14 +28,15 @@ pub struct ClientCredentials {
 /// Resolve OAuth client credentials for a provider.
 ///
 /// Resolution cascade (first match wins — SPEC §7 three-tier cascade):
-/// 1. Explicit `pinned_byoc_id` (hard pin — errors if missing).
-/// 2. Connection's stored `byoc_credential_id` (soft preference — falls
-///    through to the next tier if the BYOC row has since been deleted).
-/// 3. Identity-level BYOC credential.
-/// 4. Org-level OAuth App Credentials — org secrets named
-///    `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET`.
-/// 5. System env vars (only if `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS` is set).
-/// 6. Error.
+///
+/// - Tier 1: explicit `pinned_byoc_id` argument (hard pin — errors if missing).
+/// - Tier 1a: connection's stored `byoc_credential_id` (soft preference —
+///   falls through to the next tier if the BYOC row has since been deleted).
+/// - Tier 2: identity-level BYOC credential.
+/// - Tier 3: org-level OAuth App Credentials — org secrets named
+///   `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET`.
+/// - Tier 4: system env vars (only if `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS` is set).
+/// - Otherwise: error.
 pub async fn resolve(
     pool: &PgPool,
     enc_key: &crypto::Keyring,
