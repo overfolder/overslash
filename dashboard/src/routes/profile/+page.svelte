@@ -4,6 +4,8 @@
 	import { formatTime, ttlRemaining } from '$lib/utils/time';
 	import { goto, invalidateAll } from '$app/navigation';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import { deleteByocCredential } from '$lib/api/services';
+	import type { ByocCredentialSummary, OAuthProviderInfo } from '$lib/types';
 
 	let { data } = $props<{
 		data: {
@@ -11,8 +13,18 @@
 			secrets: SecretMetadata[];
 			permissions: PermissionRule[];
 			preferences: UserPreferences;
+			byoc: ByocCredentialSummary[];
+			providers: OAuthProviderInfo[];
 		};
 	}>();
+
+	const providerByKey = $derived(new Map(data.providers.map((p: OAuthProviderInfo) => [p.key, p])));
+	// For org admins, list_byoc returns BYOC for all identities in the org.
+	// Filter client-side so "My OAuth apps" honestly means the caller's own —
+	// org-wide auditing belongs on the Secrets page (which shows the Owner column).
+	const myByoc = $derived(
+		data.byoc.filter((b: ByocCredentialSummary) => b.identity_id === data.user.identity_id)
+	);
 
 	const profile = $derived(data.user);
 	const initials = $derived(
@@ -50,6 +62,9 @@
 		try {
 			await confirmAction();
 			confirmOpen = false;
+		} catch {
+			// Keep the modal open so the user can see their action didn't go
+			// through; the callback surfaces the message via the page error banner.
 		} finally {
 			confirmBusy = false;
 		}
@@ -68,6 +83,28 @@
 					await invalidateAll();
 				} catch (e) {
 					error = `Failed to delete secret: ${(e as Error).message}`;
+				} finally {
+					busy = null;
+				}
+			}
+		);
+	}
+
+	function deleteByoc(entry: ByocCredentialSummary) {
+		const label = (providerByKey.get(entry.provider_key) as OAuthProviderInfo | undefined)?.display_name ?? entry.provider_key;
+		openConfirm(
+			`Delete your custom ${label} OAuth app?`,
+			'Connections using it will keep working until their token expires, then fail to refresh.',
+			'Delete',
+			async () => {
+				busy = `byoc:${entry.id}`;
+				error = null;
+				try {
+					await deleteByocCredential(entry.id);
+					await invalidateAll();
+				} catch (e) {
+					error = `Failed to delete OAuth app: ${(e as Error).message}`;
+					throw e;
 				} finally {
 					busy = null;
 				}
@@ -179,7 +216,39 @@
 		{/if}
 	</div>
 
-	<!-- 3. Remembered approvals -->
+	<!-- 3. My OAuth apps -->
+	{#if myByoc.length > 0}
+		<div class="card">
+			<h2>My OAuth apps</h2>
+			<p class="muted small">
+				Custom OAuth client credentials (BYOC). Client secrets are stored encrypted and never displayed.
+			</p>
+			<ul class="list">
+				{#each myByoc as entry (entry.id)}
+					<li class="row">
+						<div class="row-main">
+							<div class="row-title">
+								{(providerByKey.get(entry.provider_key) as OAuthProviderInfo | undefined)?.display_name ?? entry.provider_key}
+								<span class="mono inline-key">{entry.provider_key}</span>
+							</div>
+							<div class="row-sub">
+								<span>Created {formatTime(entry.created_at)}</span>
+							</div>
+						</div>
+						<button
+							class="btn btn-danger"
+							disabled={busy === `byoc:${entry.id}`}
+							onclick={() => deleteByoc(entry)}
+						>
+							Delete
+						</button>
+					</li>
+				{/each}
+			</ul>
+		</div>
+	{/if}
+
+	<!-- 4. Remembered approvals -->
 	<div class="card">
 		<h2>Remembered approvals</h2>
 		<p class="muted small">"Allow &amp; remember" rules — auto-approve matching actions.</p>
@@ -210,7 +279,7 @@
 		{/if}
 	</div>
 
-	<!-- 4. Settings -->
+	<!-- 5. Settings -->
 	<div class="card">
 		<h2>Settings</h2>
 		<div class="settings-grid">
@@ -389,6 +458,11 @@
 	.mono {
 		font-family: var(--font-mono);
 		font-size: 0.85rem;
+	}
+	.inline-key {
+		color: var(--color-text-muted);
+		margin-left: 0.5rem;
+		font-size: 0.78rem;
 	}
 
 	/* Badges */
