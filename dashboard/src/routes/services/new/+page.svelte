@@ -213,6 +213,20 @@
 	const providerInfo = $derived(
 		oauthProvider ? providers.find((p) => p.key === oauthProvider.provider) ?? null : null
 	);
+	/**
+	 * The scope set the OAuth flow will actually request: the template's
+	 * service-specific scopes plus the provider's identity scopes (always
+	 * merged on the backend so the callback can resolve account_email).
+	 * Surfaced here so the user sees the full request before clicking Connect.
+	 */
+	const effectiveOAuthScopes = $derived(
+		Array.from(
+			new Set<string>([
+				...((oauthProvider?.scopes ?? []) as string[]),
+				...(providerInfo?.default_identity_scopes ?? [])
+			])
+		)
+	);
 	const hasFallback = $derived(
 		providerInfo
 			? providerInfo.has_org_credential
@@ -312,7 +326,7 @@
 			const resp = await initiateOAuth(
 				{
 					provider: oauthProvider.provider,
-					scopes: oauthProvider.scopes ?? [],
+					scopes: effectiveOAuthScopes,
 					byoc_credential_id: byocCredentialId
 				},
 				ctrl.signal
@@ -576,7 +590,7 @@
 								defaultExpanded={byocRequired}
 								disabled={connectingOAuth}
 								alreadyConfigured={providerInfo?.has_user_byoc_credential ?? false}
-								scopes={oauthProvider?.scopes ?? []}
+								scopes={effectiveOAuthScopes}
 								redirectUri={providerInfo?.oauth_redirect_uri ?? ''}
 								jsOrigin={providerInfo?.oauth_js_origin ?? ''}
 								bind:clientId={byocClientId}

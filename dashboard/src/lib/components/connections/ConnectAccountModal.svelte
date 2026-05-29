@@ -87,7 +87,7 @@
 			//    new connection row (shared mechanics — see $lib/oauth-connect).
 			const beforeIds = new Set(existing.map((c) => c.id));
 			const resp = await initiateOAuth(
-				{ provider, scopes: defaultScopesFor(provider), byoc_credential_id: byocCredentialId },
+				{ provider, scopes: defaultScopesFor(pickedProvider), byoc_credential_id: byocCredentialId },
 				ctrl.signal
 			);
 			if (ctrl.signal.aborted) return;
@@ -179,7 +179,7 @@
 						providerDisplayName={pickedProvider.display_name}
 						required={false}
 						alreadyConfigured={pickedProvider.has_user_byoc_credential}
-						scopes={defaultScopesFor(pickedProvider.key)}
+						scopes={defaultScopesFor(pickedProvider)}
 						redirectUri={pickedProvider.oauth_redirect_uri}
 						jsOrigin={pickedProvider.oauth_js_origin}
 						bind:clientId
