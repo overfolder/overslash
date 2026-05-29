@@ -1,6 +1,7 @@
 use overslash_core::crypto;
 use overslash_db::OrgScope;
 use overslash_db::repos::{byoc_credential, connection::ConnectionRow};
+use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -27,12 +28,15 @@ pub struct ClientCredentials {
 /// Resolve OAuth client credentials for a provider.
 ///
 /// Resolution cascade (first match wins — SPEC §7 three-tier cascade):
-/// 1. Explicit `pinned_byoc_id` or connection's pinned `byoc_credential_id`
-/// 2. Identity-level BYOC credential
-/// 3. Org-level OAuth App Credentials — org secrets named
-///    `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET`
-/// 4. System env vars (only if OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS is set)
-/// 5. Error
+///
+/// - Tier 1: explicit `pinned_byoc_id` argument (hard pin — errors if missing).
+/// - Tier 1a: connection's stored `byoc_credential_id` (soft preference —
+///   falls through to the next tier if the BYOC row has since been deleted).
+/// - Tier 2: identity-level BYOC credential.
+/// - Tier 3: org-level OAuth App Credentials — org secrets named
+///   `OAUTH_{PROVIDER}_CLIENT_ID` / `OAUTH_{PROVIDER}_CLIENT_SECRET`.
+/// - Tier 4: system env vars (only if `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS` is set).
+/// - Otherwise: error.
 pub async fn resolve(
     pool: &PgPool,
     enc_key: &crypto::Keyring,
@@ -42,12 +46,11 @@ pub async fn resolve(
     connection: Option<&ConnectionRow>,
     pinned_byoc_id: Option<Uuid>,
 ) -> Result<ClientCredentials, AppError> {
-    // 1. Check explicit pin first, then connection's pinned BYOC credential.
-    //    If a pinned credential was specified but no longer exists, error immediately
-    //    rather than silently falling through to a different credential.
-    let pinned = pinned_byoc_id.or_else(|| connection.and_then(|c| c.byoc_credential_id));
     let scope = OrgScope::new(org_id, pool.clone());
-    if let Some(byoc_id) = pinned {
+
+    // 1. Explicit pin — the caller asked for this specific BYOC credential.
+    //    If it's gone, error rather than silently switching to a different one.
+    if let Some(byoc_id) = pinned_byoc_id {
         let row = scope.get_byoc_credential(byoc_id).await?.ok_or_else(|| {
             AppError::BadRequest(format!(
                 "pinned BYOC credential '{byoc_id}' not found — \
@@ -55,6 +58,15 @@ pub async fn resolve(
             ))
         })?;
         return decrypt_byoc(&row, enc_key);
+    }
+
+    // 1a. Connection's stored BYOC — a soft preference. If the row still
+    //     exists, use it; if it's been deleted, fall through to the cascade
+    //     so the next refresh recovers instead of breaking the connection.
+    if let Some(byoc_id) = connection.and_then(|c| c.byoc_credential_id) {
+        if let Some(row) = scope.get_byoc_credential(byoc_id).await? {
+            return decrypt_byoc(&row, enc_key);
+        }
     }
 
     // 2. Identity-level BYOC. BYOC requires an identity-bound caller.
@@ -158,4 +170,79 @@ fn decrypt_byoc(
         client_secret,
         byoc_credential_id: Some(row.id),
     })
+}
+
+/// What OAuth client credentials a connection will use on its next refresh.
+/// Mirrors the tiers of `resolve()` but reports the resolution without
+/// decrypting anything — safe to expose via the API.
+///
+/// Note on a missing branch: deleting a BYOC row auto-nulls
+/// `connections.byoc_credential_id` (FK `ON DELETE SET NULL`), so the
+/// "row pinned but credential gone" case never reaches this enum — the
+/// cascade simply continues into the next tier on its own.
+#[derive(Serialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CredentialSource {
+    /// A BYOC credential (the connection's stored pin OR an identity-level
+    /// BYOC discovered via tier 2) will be used.
+    Byoc,
+    /// Org-level `OAUTH_{PROVIDER}_CLIENT_ID` / `..._CLIENT_SECRET` are set.
+    OrgSecret,
+    /// Env-var fallback is active (requires `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS`).
+    System,
+    /// Nothing resolves — the next refresh will fail.
+    Missing,
+}
+
+/// Compute the `CredentialSource` that `resolve()` would produce, without
+/// decrypting any secret. Used by `GET /v1/connections/{id}` to surface the
+/// credential posture in the dashboard.
+///
+/// Mirrors every tier of `resolve()`: connection's stored BYOC (tier 1a) →
+/// identity-level BYOC (tier 2) → org OAuth app secrets (tier 3) → env-var
+/// fallback (tier 4) → `Missing`. Tier 1 (explicit `pinned_byoc_id`) is not
+/// represented here because it's a per-request argument, not a property of
+/// a stored connection.
+pub async fn describe_source(
+    scope: &OrgScope,
+    provider_key: &str,
+    identity_id: Option<Uuid>,
+    connection_byoc_id: Option<Uuid>,
+) -> Result<CredentialSource, AppError> {
+    // Tier 1a: connection's stored BYOC pin. The FK auto-nulls the column
+    // when the BYOC row is deleted, so an `Option::None` lookup here would
+    // be a cross-org filter mismatch; either way we just fall through.
+    if let Some(byoc_id) = connection_byoc_id {
+        if scope.get_byoc_credential(byoc_id).await?.is_some() {
+            return Ok(CredentialSource::Byoc);
+        }
+    }
+
+    // Tier 2: any identity-level BYOC for this provider — what `resolve()`
+    // would pick next.
+    if let Some(identity_id) = identity_id {
+        if scope
+            .resolve_byoc_credential(identity_id, provider_key)
+            .await?
+            .is_some()
+        {
+            return Ok(CredentialSource::Byoc);
+        }
+    }
+
+    let (id_name, secret_name) = oauth_secret_names(provider_key);
+    let id_present = scope.get_secret_by_name(&id_name).await?.is_some();
+    let secret_present = scope.get_secret_by_name(&secret_name).await?.is_some();
+    if id_present && secret_present {
+        return Ok(CredentialSource::OrgSecret);
+    }
+
+    if std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok()
+        && std::env::var(&id_name).is_ok()
+        && std::env::var(&secret_name).is_ok()
+    {
+        return Ok(CredentialSource::System);
+    }
+
+    Ok(CredentialSource::Missing)
 }
