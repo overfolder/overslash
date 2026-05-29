@@ -874,6 +874,17 @@ async fn upgrade_connection_scopes(
     // non-Google providers work.
     let merged: Vec<String> = merge_scopes(&existing.scopes, &req.scopes);
 
+    // Mirror what `kernel_create_connection_for_identity` will do: union in
+    // the provider's identity scopes so `requested_scopes` on the response
+    // matches the actual consent the user is about to grant.
+    let provider =
+        overslash_db::repos::oauth_provider::get_by_key(state.db(&ext), &existing.provider_key)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("provider '{}' not found", existing.provider_key))
+            })?;
+    let effective_scopes: Vec<String> = merge_scopes(&merged, &provider.default_identity_scopes);
+
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok());
@@ -910,7 +921,7 @@ async fn upgrade_connection_scopes(
         auth_url: response.auth_url,
         state: response.state,
         connection_id: id,
-        requested_scopes: merged,
+        requested_scopes: effective_scopes,
     }))
 }
 

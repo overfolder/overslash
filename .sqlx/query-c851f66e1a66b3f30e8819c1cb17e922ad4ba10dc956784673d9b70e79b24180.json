@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at\n         FROM oauth_providers WHERE key = $1",
+  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                default_identity_scopes, created_at\n         FROM oauth_providers ORDER BY display_name",
   "describe": {
     "columns": [
       {
@@ -159,6 +159,17 @@
       },
       {
         "ordinal": 14,
+        "name": "default_identity_scopes",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "default_identity_scopes"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -170,9 +181,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -189,8 +198,9 @@
       false,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "1806fc254add2bd07767ef389204ff4d514cf59bc364b188eda6d358f12b826c"
+  "hash": "c851f66e1a66b3f30e8819c1cb17e922ad4ba10dc956784673d9b70e79b24180"
 }

@@ -18,6 +18,16 @@ pub struct OAuthProviderRow {
     pub is_builtin: bool,
     pub issuer_url: Option<String>,
     pub jwks_uri: Option<String>,
+    /// Per-provider minimum scope set the kernel unions into every
+    /// connection-initiate/upgrade flow. The dominant use is letting the
+    /// OAuth callback resolve `account_email` from `userinfo_endpoint`
+    /// (`openid email profile` for OIDC providers, `read:user user:email`
+    /// for GitHub, `users.read` for X). It also pins a sane minimum for
+    /// providers whose OAuth design doesn't enforce scopes but whose
+    /// tokens are useless without one (Eventbrite's `event_read`). Seeded
+    /// in migration 076; surfaced on `GET /v1/oauth-providers` so the
+    /// dashboard renders the chips before consent.
+    pub default_identity_scopes: Vec<String>,
     pub created_at: OffsetDateTime,
 }
 
@@ -26,7 +36,8 @@ pub async fn get_by_key(pool: &PgPool, key: &str) -> Result<Option<OAuthProvider
         OAuthProviderRow,
         "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
-                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at
+                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
+                default_identity_scopes, created_at
          FROM oauth_providers WHERE key = $1",
         key,
     )
@@ -39,7 +50,8 @@ pub async fn list_all(pool: &PgPool) -> Result<Vec<OAuthProviderRow>, sqlx::Erro
         OAuthProviderRow,
         "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
-                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at
+                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
+                default_identity_scopes, created_at
          FROM oauth_providers ORDER BY display_name",
     )
     .fetch_all(pool)
@@ -81,7 +93,8 @@ pub async fn create_custom(
             token_auth_method = EXCLUDED.token_auth_method
          RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
                    userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
-                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri, created_at",
+                   extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
+                   default_identity_scopes, created_at",
         key,
         display_name,
         authorization_endpoint,
