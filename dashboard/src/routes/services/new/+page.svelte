@@ -380,6 +380,19 @@
 		submitting = true;
 		error = null;
 		try {
+			// "Connect a new account" path: run OAuth as part of submit so the
+			// service is created already bound to a connection. Otherwise the
+			// user would need a separate click on "+ Connect new" first and the
+			// service lands in "Needs Setup".
+			if (usesOAuth && connectionChoice === 'new' && !connectionId) {
+				await startOAuth();
+				if (!connectionId) {
+					// startOAuth already set `error` on popup-blocked / timeout /
+					// abort / BYOC-missing. Don't create a half-bound service.
+					submitting = false;
+					return;
+				}
+			}
 			const created = await createService({
 				template_key: selectedDetail.key,
 				name: nameInput.trim() || undefined,
@@ -659,9 +672,17 @@
 					type="button"
 					class="btn primary"
 					onclick={submit}
-					disabled={submitting}
+					disabled={submitting || connectingOAuth}
 				>
-					{submitting ? 'Creating…' : 'Create service'}
+					{#if connectingOAuth}
+						Waiting for authorization…
+					{:else if submitting}
+						Creating…
+					{:else if usesOAuth && connectionChoice === 'new' && !connectionId}
+						Connect & create
+					{:else}
+						Create service
+					{/if}
 				</button>
 			</div>
 		</div>
