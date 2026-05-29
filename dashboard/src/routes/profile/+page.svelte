@@ -62,6 +62,9 @@
 		try {
 			await confirmAction();
 			confirmOpen = false;
+		} catch {
+			// Keep the modal open so the user can see their action didn't go
+			// through; the callback surfaces the message via the page error banner.
 		} finally {
 			confirmBusy = false;
 		}
@@ -101,6 +104,7 @@
 					await invalidateAll();
 				} catch (e) {
 					error = `Failed to delete OAuth app: ${(e as Error).message}`;
+					throw e;
 				} finally {
 					busy = null;
 				}
