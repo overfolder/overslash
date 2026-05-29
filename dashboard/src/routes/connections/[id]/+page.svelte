@@ -220,6 +220,37 @@
 			{/if}
 		</section>
 
+		<!-- credential source -->
+		<section class="section">
+			<div class="section-head">
+				<h2>Credential source</h2>
+				<span class="section-hint">
+					Which OAuth client credentials this connection will use on its next refresh.
+				</span>
+			</div>
+			{#if conn.credential_source.kind === 'byoc'}
+				<div class="cred-row">
+					<span class="cred-chip">BYOC</span>
+					<span class="cred-desc">Using a bring-your-own-credentials OAuth app pinned to this connection.</span>
+				</div>
+			{:else if conn.credential_source.kind === 'org_secret'}
+				<div class="cred-row">
+					<span class="cred-chip">Org default</span>
+					<span class="cred-desc">Using this org's OAuth app credentials configured in <span class="mono">OAUTH_{conn.provider_key.toUpperCase()}_CLIENT_ID</span> / <span class="mono">…_CLIENT_SECRET</span>.</span>
+				</div>
+			{:else if conn.credential_source.kind === 'system'}
+				<div class="cred-row">
+					<span class="cred-chip muted">System</span>
+					<span class="cred-desc">Falling back to system env-var credentials (<span class="mono">OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS</span>).</span>
+				</div>
+			{:else if conn.credential_source.kind === 'missing'}
+				<div class="cred-row warn">
+					<span class="cred-chip warn">Missing</span>
+					<span class="cred-desc">No OAuth client credentials are configured for this provider. The next token refresh will fail.</span>
+				</div>
+			{/if}
+		</section>
+
 		<!-- used by -->
 		<section class="section">
 			<div class="section-head">
@@ -489,6 +520,46 @@
 		text-align: center;
 		color: var(--color-text-muted);
 		font-size: 13px;
+	}
+
+	/* credential source */
+	.cred-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		padding: 10px 12px;
+		border: 1px solid var(--color-border-subtle);
+		border-radius: 10px;
+		background: var(--color-surface);
+	}
+	.cred-row.warn {
+		border-color: rgba(229, 56, 54, 0.3);
+		background: rgba(229, 56, 54, 0.04);
+	}
+	.cred-chip {
+		display: inline-flex;
+		align-items: center;
+		padding: 2px 8px;
+		border-radius: 4px;
+		background: var(--color-primary-bg);
+		color: var(--color-primary);
+		font-size: 11px;
+		font-weight: 600;
+		white-space: nowrap;
+		flex: none;
+	}
+	.cred-chip.muted {
+		background: var(--neutral-100, var(--color-primary-bg));
+		color: var(--color-text-muted);
+	}
+	.cred-chip.warn {
+		background: rgba(229, 56, 54, 0.1);
+		color: var(--color-danger);
+	}
+	.cred-desc {
+		font-size: 13px;
+		color: var(--color-text);
+		line-height: 1.45;
 	}
 
 	.usedby-list {

@@ -750,6 +750,10 @@ struct ConnectionDetail {
     created_at: String,
     updated_at: String,
     used_by: Vec<UsedByService>,
+    /// What OAuth client credentials the next refresh will use. Mirrors the
+    /// `client_credentials::resolve()` cascade against current state (the
+    /// connection's stored BYOC may have been deleted out from under it).
+    credential_source: client_credentials::CredentialSource,
 }
 
 async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<ConnectionDetail>> {
@@ -759,8 +763,8 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
 
     // Usage lookup is org-scoped; downgrade to OrgScope like `list_connections`.
-    let used_by = scope
-        .org()
+    let org = scope.org();
+    let used_by = org
         .connection_usage_instances(id)
         .await?
         .into_iter()
@@ -771,6 +775,14 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         })
         .collect();
 
+    let credential_source = client_credentials::describe_source(
+        &org,
+        &conn.provider_key,
+        Some(conn.identity_id),
+        conn.byoc_credential_id,
+    )
+    .await?;
+
     Ok(Json(ConnectionDetail {
         id: conn.id,
         provider_key: conn.provider_key,
@@ -780,6 +792,7 @@ async fn get_connection(scope: UserScope, Path(id): Path<Uuid>) -> Result<Json<C
         created_at: fmt_time(conn.created_at),
         updated_at: fmt_time(conn.updated_at),
         used_by,
+        credential_source,
     }))
 }
 
