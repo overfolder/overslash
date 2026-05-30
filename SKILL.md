@@ -130,6 +130,88 @@ callback flips it). The user has clicked through.
 (no confirmation prompt) and `overslash_call` for everything else; both go
 through the standard approval flow described below.
 
+## Configuring a new service (no template exists yet)
+
+If `overslash_search` returns **neither** a live `service` **nor** a `template`
+for the API you need, author the template yourself, then instantiate it as in
+the section above. Requires your identity to hold `overslash:manage_templates_own:*`.
+
+A service is an **OpenAPI 3.1 YAML** document plus a few `x-overslash-*` vendor
+extensions that tell the gateway how to gate and authenticate each action (the
+unprefixed aliases shown here are also accepted):
+
+```yaml
+openapi: 3.1.0
+info:
+  title: Acme
+  key: acme                      # unique template key, ^[a-z][a-z0-9_-]*$
+  category: Productivity
+servers:
+  - url: https://api.acme.com    # calls are bounded to this host
+components:
+  securitySchemes:
+    # API-key style — Overslash injects a vault secret:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: acme_key
+    # …or OAuth style instead:
+    # oauth:
+    #   type: oauth2
+    #   provider: acme            # credential-cascade resolver key
+    #   flows: { authorizationCode: { authorizationUrl: …, tokenUrl: …, scopes: {…} } }
+paths:
+  /v1/messages:
+    post:
+      operationId: send_message
+      summary: "Send a message to {channel}"   # templated into approval prompts
+      risk: write                               # read | write | delete — gates approval/auto-approve
+      scope_param: channel                      # binds the permission/approval scope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, text]
+              properties:
+                channel: { type: string }
+                text:    { type: string }
+```
+
+**Create it (atomic).** Validates strictly and goes live immediately, or returns
+`validation_failed` with the errors to fix:
+
+```
+overslash_call {
+  "service": "overslash",
+  "action": "create_template",
+  "params": { "openapi": "<the full YAML above>", "user_level": true }
+}
+```
+
+Then follow **Bootstrapping a service from a template** above — `create_service`
+with `template_key: "acme"`, bind a connection/secret, and call it.
+
+**Messy or third-party spec?** Use `import_template` instead — it persists a
+**draft** even when validation warns, so you can refine it:
+
+```
+overslash_call {
+  "service": "overslash",
+  "action": "import_template",
+  "params": { "openapi": "<spec>", "include_operations": ["send_message"], "key": "acme" }
+}
+```
+
+Editing and **promoting** a draft to active is REST-only today (no MCP action):
+`PUT /v1/templates/drafts/{id}` then `POST /v1/templates/drafts/{id}/promote`
+(both `Authorization: Bearer …`). See `SPEC.md` for the full `x-overslash-*`
+extension table (`risk`, `scope_param`, `resolve`, `provider`,
+`default_secret_name`).
+
 ## Handling pending approvals
 
 When `overslash_call` hits a permission gap it does not execute — it returns:
