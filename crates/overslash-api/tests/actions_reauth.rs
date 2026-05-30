@@ -161,6 +161,166 @@ async fn mode_c_no_connection_returns_needs_authentication() {
     );
 }
 
+/// When the template declares OAuth but the org has **no OAuth client at all**
+/// (no managed client, no org-level OAuth App Credentials, no BYOC), minting the
+/// recovery `auth_url` fails inside the credential cascade with a `BadRequest`
+/// ("no OAuth client credentials configured…"). That is a caller-actionable
+/// config problem — the action handler must surface it as the same 4xx the
+/// documented `create_connection` path returns, **not** bury it behind an opaque
+/// 500. Uses `google` (no `OAUTH_GOOGLE_*` env is ever set in this binary) so the
+/// cascade falls through to its terminal error regardless of the env flags the
+/// sibling tests above toggle for the `x` provider.
+#[tokio::test]
+async fn mode_c_no_oauth_client_configured_returns_actionable_4xx() {
+    let pool = common::test_pool().await;
+
+    // Deliberately do NOT set OAUTH_GOOGLE_CLIENT_ID/SECRET or the danger flag:
+    // we want the credential cascade to find nothing and return its terminal
+    // "no OAuth client credentials configured" BadRequest.
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (_org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    // Org-level google_calendar instance, no connection and no client creds.
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "google_calendar",
+            "name": "google-calendar",
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        create_resp.status().is_success(),
+        "service create failed: {} {:?}",
+        create_resp.status(),
+        create_resp.text().await
+    );
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "google_calendar:*:*"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&api_key).0, common::auth(&api_key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_calendars",
+            "params": {},
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    // The actionable 4xx, never a 5xx. Before the fix this path wrapped the
+    // cascade's BadRequest as `Internal` (500).
+    assert!(
+        status.is_client_error(),
+        "expected a 4xx for missing OAuth client, got {status}: {body}"
+    );
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert!(
+        body.contains("no OAuth client credentials configured"),
+        "expected the cascade's actionable message, got: {body}"
+    );
+}
+
+/// The other half of the mint-error fork: when the failure is *not*
+/// caller-actionable — here the provider's `oauth_providers` row is missing,
+/// so `mint_initial_auth_url` bottoms out in `NotFound` — the handler must
+/// keep wrapping it as `Internal` (500). A raw 404 on `/v1/actions/call`
+/// would read as "the action doesn't exist" rather than "provider not set
+/// up for this org", so only `BadRequest` is passed through verbatim.
+#[tokio::test]
+async fn mode_c_missing_provider_row_stays_internal_500() {
+    let pool = common::test_pool().await;
+
+    // Client creds are present, so the cascade itself would succeed — the
+    // failure we want comes earlier, from the missing provider row, which
+    // `kernel_create_connection` looks up before resolving credentials.
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", "x_test_client");
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
+    }
+
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (_org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "x",
+            "name": "x",
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        create_resp.status().is_success(),
+        "service create failed: {} {:?}",
+        create_resp.status(),
+        create_resp.text().await
+    );
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "x:*:*"}))
+        .send()
+        .await
+        .unwrap();
+
+    // Delete the seeded provider row so the URL mint fails with `NotFound`
+    // (the `oauth_provider::get_by_key` lookup returns None) rather than a
+    // caller-actionable `BadRequest` from the credential cascade.
+    sqlx::query("DELETE FROM oauth_providers WHERE key = 'x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&api_key).0, common::auth(&api_key).1)
+        .json(&json!({
+            "service": "x",
+            "action": "get_me",
+            "params": {},
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    // NotFound is wrapped as Internal — never surfaced as a raw 404.
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "missing provider row should be a 500, got {status}: {body}"
+    );
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a raw 404 here reads as 'action not found': {body}"
+    );
+}
+
 /// REST sibling of `mcp_call_expired_no_refresh_returns_typed_reauth_required`:
 /// the action-call REST envelope for `reauth_required` must include the
 /// gated `auth_url` AND the upstream provider `raw` URL. The MCP forwarder

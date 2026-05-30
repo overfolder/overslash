@@ -206,12 +206,19 @@ pub(super) async fn needs_authentication_for_service(
     // then being bounced through `missing_scopes` for the real set). When
     // the action declares no scopes, the empty vec is what we want anyway.
     //
-    // If the URL mint fails (most commonly: provider row is missing from
-    // the DB so the `oauth_provider::get_by_key` lookup 404s, but also
-    // crypto/DB hiccups), don't propagate the raw NotFound — the client
-    // would see a 404 on `/v1/actions/call` and think the *action* is
-    // missing. Surface as Internal so operators can spot the misconfig,
-    // and stop trying to mint a URL the user can't act on anyway.
+    // If the URL mint fails, distinguish the *caller-actionable* failure
+    // from server-side misconfig. No OAuth client at all (no managed
+    // client, no org creds, no BYOC) surfaces from the credential cascade
+    // as `BadRequest("no OAuth client credentials configured…")` — that
+    // should reach the agent verbatim so it gets the same "configure org
+    // OAuth / create a BYOC credential" guidance the documented
+    // `create_connection` path already returns; wrapping it as `Internal`
+    // would bury the fix behind an opaque 500 and make the same root cause
+    // read differently depending on whether the agent went through
+    // `create_connection` or straight to the action. A missing provider
+    // row (`NotFound`) or crypto/DB hiccups are operator-side problems the
+    // agent can't act on — those stay wrapped as `Internal` so a raw 404
+    // doesn't read as "the action doesn't exist". See the match below.
     let urls = match platform_connections::mint_initial_auth_url(
         state,
         org_id,
@@ -228,9 +235,21 @@ pub(super) async fn needs_authentication_for_service(
             tracing::error!(
                 "needs_authentication: failed to mint initial auth url for provider '{provider}': {mint_err}"
             );
-            return Err(AppError::Internal(format!(
-                "OAuth provider '{provider}' is not configured for this org: {mint_err}"
-            )));
+            return Err(match mint_err {
+                // Caller-actionable: the credential cascade exhausted with no
+                // OAuth client (no managed client, no org creds, no BYOC) or a
+                // deleted pinned BYOC — both `BadRequest`. Surface verbatim so
+                // the agent gets the same "configure org OAuth / create a BYOC
+                // credential" guidance the `create_connection` path returns.
+                err @ AppError::BadRequest(_) => err,
+                // Everything else (a missing `oauth_provider` row → `NotFound`,
+                // crypto/DB hiccups) is a server-side misconfig the agent can't
+                // fix. Keep the `Internal` wrap: a raw 404 here would read as
+                // "the action doesn't exist" rather than "provider not set up".
+                other => AppError::Internal(format!(
+                    "OAuth provider '{provider}' is not configured for this org: {other}"
+                )),
+            });
         }
     };
 
