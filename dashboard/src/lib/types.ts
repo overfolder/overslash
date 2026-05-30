@@ -132,6 +132,15 @@ export interface McpConnection {
    * docs/design/agent-self-management.md §2.
    */
   self_approve_enabled: boolean;
+  /**
+   * When true, the `overslash_approve` MCP tool (resolve a *descendant's*
+   * pending approval) is visible in `tools/list` for this connection. The
+   * default is class-based and materialized at connect time: human-on-the-
+   * screen clients (claude.ai, Claude Code, ...) default `true`, autonomous
+   * agents (openclaw, unknown) default `false`. Overridable here per
+   * connection.
+   */
+  approve_enabled: boolean;
 }
 
 /**

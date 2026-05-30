@@ -461,8 +461,10 @@ async fn sibling_agent_gets_not_in_your_chain_from_either_tool() {
 
 /// (e) Visibility filter on `tools/list`: `overslash_approve_self` is
 /// hidden by default and surfaces once the binding flag flips on.
-/// `overslash_approve` is always present — both regardless of
-/// the flag.
+/// `overslash_approve` is present here because the binding's
+/// `approve_enabled` defaults on (see case (g) for the gate itself; the
+/// bootstrap binding is created by a plain upsert that takes the column
+/// default `true`).
 #[tokio::test]
 async fn tools_list_filters_self_approve_by_binding_flag() {
     let fx = bootstrap().await;
@@ -511,6 +513,125 @@ async fn tools_list_filters_self_approve_by_binding_flag() {
         names.contains(&"overslash_approve_self".to_string()),
         "approve_self should appear after flag flips on: {names:?}"
     );
+}
+
+/// (g) Visibility filter on `tools/list` for `overslash_approve` itself,
+/// driven by the binding's `approve_enabled` flag. Flipping it via the
+/// dashboard PATCH endpoint (`/v1/identities/{id}/mcp-connection`) hides /
+/// reveals the tool and is reflected in the connection DTO. `self` stays
+/// hidden throughout (independent flag).
+#[tokio::test]
+async fn tools_list_filters_approve_by_binding_flag() {
+    let fx = bootstrap().await;
+
+    let list = || async {
+        let resp: Value = fx
+            .client
+            .post(format!("{}/mcp", fx.base))
+            .header("Authorization", format!("Bearer {}", fx.agent_mcp_token))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {}
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    // PATCH the per-agent toggle via the dashboard API; returns the DTO.
+    async fn patch_approve(fx: &Fx, enabled: bool) -> Value {
+        fx.client
+            .patch(format!(
+                "{}/v1/identities/{}/mcp-connection",
+                fx.base, fx.agent_id
+            ))
+            .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+            .json(&json!({ "approve_enabled": enabled }))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    }
+
+    // Default (plain upsert → column default true): approve is listed.
+    assert!(
+        list().await.contains(&"overslash_approve".to_string()),
+        "approve listed by default"
+    );
+
+    // Turn it off → tool disappears, DTO reflects it, self stays hidden.
+    let dto = patch_approve(&fx, false).await;
+    assert_eq!(dto["connection"]["approve_enabled"].as_bool(), Some(false));
+    let names = list().await;
+    assert!(
+        !names.contains(&"overslash_approve".to_string()),
+        "approve hidden once flag off: {names:?}"
+    );
+    assert!(!names.contains(&"overslash_approve_self".to_string()));
+
+    // Turn it back on → tool returns.
+    let dto = patch_approve(&fx, true).await;
+    assert_eq!(dto["connection"]["approve_enabled"].as_bool(), Some(true));
+    assert!(list().await.contains(&"overslash_approve".to_string()));
+}
+
+/// (h) The class-based default classifier: human-on-the-screen clients
+/// (claude.ai, Claude Code, ...) materialize `approve_enabled = true`,
+/// autonomous / unknown clients (openclaw) materialize `false`. We assert
+/// the classifier directly against representative client rows since the
+/// full enrollment flow that calls it lives in the OAuth consent path.
+#[tokio::test]
+async fn human_on_screen_classifier_drives_default() {
+    let fx = bootstrap().await;
+
+    // Helper: register a client with the given identity fields and read back
+    // the row so we can ask the classifier.
+    let classify = |client_name: Option<&'static str>, software_id: Option<&'static str>| {
+        let pool = fx.pool.clone();
+        async move {
+            let cid = format!("osc_{}", Uuid::new_v4().simple());
+            db::oauth_mcp_client::create(
+                &pool,
+                &db::oauth_mcp_client::CreateOauthMcpClient {
+                    client_id: &cid,
+                    client_name,
+                    redirect_uris: &["http://127.0.0.1:0/cb".to_string()],
+                    software_id,
+                    software_version: None,
+                    created_ip: None,
+                    created_user_agent: None,
+                },
+            )
+            .await
+            .unwrap();
+            db::oauth_mcp_client::get_by_client_id(&pool, &cid)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_human_on_screen()
+        }
+    };
+
+    assert!(classify(Some("Claude Code"), None).await, "Claude Code");
+    assert!(classify(None, Some("ai.claude.desktop")).await, "claude.ai");
+    assert!(classify(Some("ChatGPT"), None).await, "ChatGPT");
+    assert!(classify(Some("Codex CLI"), None).await, "Codex");
+    assert!(!classify(Some("openclaw"), None).await, "openclaw");
+    assert!(!classify(None, None).await, "anonymous → autonomous");
+    assert!(!classify(Some("some-random-bot"), None).await, "unknown");
 }
 
 /// (f) The agent's `GET /v1/approvals?scope=mine` view of its own

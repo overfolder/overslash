@@ -389,7 +389,16 @@ async fn tools_list_response(
     // only surfaces when the operator flips `self_approve_enabled` on the
     // MCP binding for this client. See docs/design/agent-self-management.md
     // §2 + §4.
+    //
+    // `overslash_approve` (the always-safe downstream-only tool) is gated the
+    // same way, but its binding flag carries a class-based default
+    // materialized at enrollment: human-on-the-screen clients (claude.ai,
+    // Claude Code, ...) default on, autonomous agents (openclaw, unknown)
+    // default off. The flag lives on the same binding row, so one lookup
+    // feeds both gates. No binding → both stay hidden (an un-enrolled caller
+    // shouldn't see either resolve tool).
     let mut self_approve_visible = false;
+    let mut approve_visible = false;
     if let (Some(identity_id), Some(client_id)) = (auth.identity_id, auth.mcp_client_id.as_deref())
     {
         if let Ok(Some(binding)) =
@@ -401,6 +410,7 @@ async fn tools_list_response(
             .await
         {
             self_approve_visible = binding.self_approve_enabled;
+            approve_visible = binding.approve_enabled;
         }
     }
 
@@ -536,10 +546,13 @@ async fn tools_list_response(
                 "openWorldHint": false
             }
         }),
-        json!({
+    ];
+
+    if approve_visible {
+        tools.push(json!({
             "name": "overslash_approve",
             "title": "Approve a downstream agent's pending action",
-            "description": "Resolve a pending approval that was requested by a *descendant* of the caller (delegation). Forwards to POST /v1/approvals/{approval_id}/resolve. The server classifies caller↔requester relationship and rejects if the caller is not an ancestor of the requester — the tool name is for permission scoping in clients like Claude Code, not the security boundary. Use the `approval_id` from the `pending_approval` envelope returned by an earlier `overslash_call`; the envelope's `relationship` field tells you whether to use this tool (`\"downstream\"`) or `overslash_approve_self` (`\"self\"`).",
+            "description": "Resolve a pending approval that was requested by a *descendant* of the caller (delegation). Only available when this MCP connection has downstream approvals enabled — on by default for human-on-the-screen clients (claude.ai, Claude Code, ...), off by default for autonomous agents; the operator can flip it per connection. Forwards to POST /v1/approvals/{approval_id}/resolve. The server classifies caller↔requester relationship and rejects if the caller is not an ancestor of the requester — the tool name is for permission scoping in clients like Claude Code, not the security boundary. Use the `approval_id` from the `pending_approval` envelope returned by an earlier `overslash_call`; the envelope's `relationship` field tells you whether to use this tool (`\"downstream\"`) or `overslash_approve_self` (`\"self\"`).",
             "inputSchema": approve_input_schema,
             "annotations": {
                 "readOnlyHint": false,
@@ -547,8 +560,8 @@ async fn tools_list_response(
                 "idempotentHint": true,
                 "openWorldHint": false
             }
-        }),
-    ];
+        }));
+    }
 
     if self_approve_visible {
         tools.push(json!({

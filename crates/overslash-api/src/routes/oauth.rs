@@ -1160,6 +1160,25 @@ async fn consent_finish(
     )
     .await?;
 
+    // `approve_enabled` (visibility of the `overslash_approve` MCP tool) has a
+    // *class-based* default: human-on-the-screen clients (claude.ai, Claude
+    // Code, ...) get it on, autonomous agents (openclaw, unknown) off. We
+    // materialize the concrete value on first connect so the column never
+    // holds NULL; reauth under a re-registered client_id preserves whatever
+    // the operator last saved so a dashboard override survives. Fan out to
+    // keep every binding under the agent in lockstep (the tools/list gate is
+    // keyed on the calling client's binding).
+    let resolved_approve = match prior_binding.as_ref() {
+        Some(b) => b.approve_enabled,
+        None => client.is_human_on_screen(),
+    };
+    mcp_client_agent_binding::set_approve_enabled_for_agent(
+        state.db(&ext),
+        agent_identity_id,
+        resolved_approve,
+    )
+    .await?;
+
     // Fetch the agent's email (if any) so the access-token JWT carries a
     // sensible `email` claim. Agents usually inherit the owner's email
     // address for display purposes.

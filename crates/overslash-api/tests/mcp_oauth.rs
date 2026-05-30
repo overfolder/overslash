@@ -352,16 +352,22 @@ async fn authorize_full_flow_issues_code_and_token() {
     assert_eq!(frame["jsonrpc"], "2.0");
     assert_eq!(frame["id"], 1);
     let tools = frame["result"]["tools"].as_array().unwrap();
-    // 5 tools by default: search, read, call, auth, approve.
-    // approve_self is binding-flag-gated and stays hidden until the
-    // operator flips `self_approve_enabled` on the MCP binding.
-    assert_eq!(tools.len(), 5);
+    // 4 tools by default for this client: search, read, call, auth.
+    // `register_client` registers as "test-client" (no software_id), which is
+    // not in the human-on-the-screen allowlist, so consent materializes
+    // `approve_enabled = false` and `overslash_approve` stays hidden.
+    // `overslash_approve_self` is independently gated on `self_approve_enabled`
+    // and also hidden by default.
+    assert_eq!(tools.len(), 4);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"overslash_search"));
     assert!(names.contains(&"overslash_read"));
     assert!(names.contains(&"overslash_call"));
     assert!(names.contains(&"overslash_auth"));
-    assert!(names.contains(&"overslash_approve"));
+    assert!(
+        !names.contains(&"overslash_approve"),
+        "overslash_approve must stay hidden for a non-human-on-screen client until approve_enabled is flipped on"
+    );
     assert!(
         !names.contains(&"overslash_approve_self"),
         "overslash_approve_self must stay hidden until the binding's self_approve_enabled flag is on"

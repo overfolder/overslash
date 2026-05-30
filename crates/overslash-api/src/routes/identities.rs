@@ -577,6 +577,7 @@ struct McpConnectionDto {
     elicitation_enabled: bool,
     elicitation_supported: bool,
     self_approve_enabled: bool,
+    approve_enabled: bool,
 }
 
 async fn load_mcp_connection(
@@ -613,6 +614,7 @@ async fn load_mcp_connection(
         elicitation_enabled: binding.elicitation_enabled,
         elicitation_supported,
         self_approve_enabled: binding.self_approve_enabled,
+        approve_enabled: binding.approve_enabled,
     }))
 }
 
@@ -645,6 +647,7 @@ async fn get_mcp_connection(
 struct PatchMcpConnectionRequest {
     elicitation_enabled: Option<bool>,
     self_approve_enabled: Option<bool>,
+    approve_enabled: Option<bool>,
 }
 
 async fn patch_mcp_connection(
@@ -721,6 +724,40 @@ async fn patch_mcp_connection(
                 resource_id: Some(id),
                 detail: serde_json::json!({
                     "self_approve_enabled": enabled,
+                    "bindings_updated": updated,
+                }),
+                description: None,
+                ip_address: ip.0.as_deref(),
+            })
+            .await;
+    }
+
+    if let Some(enabled) = req.approve_enabled {
+        // Same fan-out rationale as `elicitation_enabled` / `self_approve_enabled`:
+        // the dashboard surfaces one per-agent toggle and the MCP visibility
+        // check (`routes/mcp.rs::tools_list_response`) reads the calling
+        // client's binding row, so every binding under the agent must stay in
+        // lockstep.
+        let updated = overslash_db::repos::mcp_client_agent_binding::set_approve_enabled_for_agent(
+            state.db(&ext),
+            id,
+            enabled,
+        )
+        .await?;
+        if updated == 0 {
+            return Err(AppError::NotFound(
+                "no MCP connection bound to this agent".into(),
+            ));
+        }
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id: acl.org_id,
+                identity_id: acl.identity_id,
+                action: "mcp_connection.approve_toggled",
+                resource_type: Some("identity"),
+                resource_id: Some(id),
+                detail: serde_json::json!({
+                    "approve_enabled": enabled,
                     "bindings_updated": updated,
                 }),
                 description: None,

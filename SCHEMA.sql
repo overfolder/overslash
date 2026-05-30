@@ -292,7 +292,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     elicitation_enabled boolean DEFAULT false NOT NULL,
-    self_approve_enabled boolean DEFAULT false NOT NULL
+    self_approve_enabled boolean DEFAULT false NOT NULL,
+    approve_enabled boolean DEFAULT true NOT NULL
 );
 
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE mcp_client_agent_bindings\n            SET self_approve_enabled = $2,\n                updated_at = now()\n          WHERE id = $1\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+  "query": "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,\n                created_at, updated_at, elicitation_enabled, self_approve_enabled, approve_enabled\n           FROM mcp_client_agent_bindings\n          WHERE agent_identity_id = $1\n          ORDER BY updated_at DESC\n          LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -101,12 +101,22 @@
             "name": "self_approve_enabled"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "approve_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "approve_enabled"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -118,8 +128,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "62576405bb437ddd4ce348cab9b832277ccd98cd2873b449398d7d6047b9853b"
+  "hash": "64a31be4184b3a29b800e5837293b86248bbc7b90a216ee60043725a12e45d31"
 }

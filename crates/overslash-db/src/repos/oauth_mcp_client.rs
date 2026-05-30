@@ -33,6 +33,35 @@ impl OauthMcpClientRow {
             .and_then(|c| c.get("elicitation"))
             .is_some()
     }
+
+    /// Is this a "human-on-the-screen" MCP client (claude.ai, ChatGPT, Codex,
+    /// Claude Code, ...) rather than an autonomous agent (openclaw, unknown)?
+    /// Used as the *default* for `overslash_approve` visibility: a human at the
+    /// keyboard can resolve a descendant's approval inline, but an autonomous
+    /// agent should not get a resolve tool unless explicitly enabled.
+    /// Default-deny — any client we don't recognise is treated as autonomous.
+    ///
+    /// Keep the allowlist in sync with the backfill in
+    /// migrations/077_mcp_binding_approve_enabled.up.sql.
+    pub fn is_human_on_screen(&self) -> bool {
+        const ALLOW: &[&str] = &["claude", "chatgpt", "codex", "openai"];
+        let info_name = self
+            .client_info
+            .as_ref()
+            .and_then(|c| c.get("name"))
+            .and_then(Value::as_str);
+        [
+            self.client_name.as_deref(),
+            self.software_id.as_deref(),
+            info_name,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|s| {
+            let s = s.to_lowercase();
+            ALLOW.iter().any(|needle| s.contains(needle))
+        })
+    }
 }
 
 pub struct CreateOauthMcpClient<'a> {

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO mcp_client_agent_bindings\n           (org_id, user_identity_id, client_id, agent_identity_id)\n         VALUES ($1, $2, $3, $4)\n         ON CONFLICT (user_identity_id, client_id)\n           DO UPDATE SET agent_identity_id = EXCLUDED.agent_identity_id,\n                         updated_at = now()\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+  "query": "DELETE FROM mcp_client_agent_bindings\n          WHERE agent_identity_id = $1\n         RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,\n                   created_at, updated_at, elicitation_enabled, self_approve_enabled, approve_enabled",
   "describe": {
     "columns": [
       {
@@ -101,13 +101,21 @@
             "name": "self_approve_enabled"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "approve_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "mcp_client_agent_bindings",
+            "name": "approve_enabled"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text",
         "Uuid"
       ]
     },
@@ -120,8 +128,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "057b7696fb4d0a772a5c89c322a3398e37786caec2092b54f519db7241766fb1"
+  "hash": "958e0cc548f023e150d486a3ef6a26ed433ff5260d96a17f9277850a86bad40c"
 }

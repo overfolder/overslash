@@ -49,6 +49,8 @@
 		elicitationError: string | null;
 		togglingSelfApprove: boolean;
 		selfApproveError: string | null;
+		togglingApprove: boolean;
+		approveError: string | null;
 		togglingAutoCall: boolean;
 		autoCallError: string | null;
 		confirmDisconnect: boolean;
@@ -71,6 +73,8 @@
 			elicitationError: null,
 			togglingSelfApprove: false,
 			selfApproveError: null,
+			togglingApprove: false,
+			approveError: null,
 			togglingAutoCall: false,
 			autoCallError: null,
 			confirmDisconnect: false,
@@ -318,6 +322,42 @@
 		} finally {
 			if (detail?.agentId === targetId) {
 				detail.togglingSelfApprove = false;
+			}
+		}
+	}
+
+	async function setApprove(next: boolean) {
+		if (!detail || !detail.mcp) return;
+		const targetId = detail.agentId;
+		detail.togglingApprove = true;
+		detail.approveError = null;
+		try {
+			const resp = await session.patch<{ connection: McpConnection | null }>(
+				`/v1/identities/${encodeURIComponent(targetId)}/mcp-connection`,
+				{ approve_enabled: next }
+			);
+			if (detail?.agentId === targetId) {
+				if (resp.connection) {
+					detail.mcp = resp.connection;
+				} else {
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+				}
+			}
+		} catch (e) {
+			if (detail?.agentId === targetId) {
+				if (e instanceof ApiError && e.status === 404) {
+					detail.mcp = null;
+					detail.mcpError = 'The MCP connection is no longer bound to this agent.';
+					detail.approveError = null;
+				} else {
+					detail.approveError =
+						e instanceof ApiError ? `Error ${e.status}` : 'Network error';
+				}
+			}
+		} finally {
+			if (detail?.agentId === targetId) {
+				detail.togglingApprove = false;
 			}
 		}
 	}
@@ -927,6 +967,27 @@
 									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
 									labelledby="opt-elicitation-label"
 									onchange={(v) => setElicitation(v)}
+								/>
+							</div>
+							<div class="mcp-option">
+								<div class="mcp-option-text">
+									<div class="opt-title" id="opt-approve-label">Allow downstream approvals</div>
+									<div class="opt-desc">
+										Lets the agent on this connection resolve approval requests
+										from its sub-agents. Surfaces the <code>overslash_approve</code>
+										MCP tool. On by default for human-on-the-screen clients
+										(claude.ai, Claude Code, …); off by default for autonomous
+										agents (openclaw and unrecognized clients).
+									</div>
+									{#if detail.approveError}
+										<div class="opt-warn">{detail.approveError}</div>
+									{/if}
+								</div>
+								<ToggleSwitch
+									checked={detail.mcp.approve_enabled}
+									disabled={detail.togglingApprove}
+									labelledby="opt-approve-label"
+									onchange={(v) => setApprove(v)}
 								/>
 							</div>
 							<div class="mcp-option">
