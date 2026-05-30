@@ -61,8 +61,10 @@
 	let runError = $state<string | null>(null);
 	let elapsedMs = $state<number | null>(null);
 
+	// `selectedService` holds a service id (UUID). Match by id; fall back to
+	// name so older links/bookmarks that carry a service name still resolve.
 	const selectedServiceRow = $derived(
-		services.find((s) => s.name === selectedService) ?? null
+		services.find((s) => s.id === selectedService || s.name === selectedService) ?? null
 	);
 
 	onMount(async () => {

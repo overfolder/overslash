@@ -751,3 +751,167 @@ async fn test_service_lookup_by_uuid_path() {
         .unwrap();
     assert_eq!(after.status(), 404);
 }
+
+/// Companion to `test_service_lookup_by_uuid_path` for the *call* path: the
+/// dashboard API Explorer addresses services by UUID in the `service` field
+/// of `/v1/actions/{validate,call}` too. A bare UUID must (a) resolve the
+/// exact instance and (b) derive permission keys + the group ceiling against
+/// the instance's *name*, not the raw id — otherwise a UUID-addressed call
+/// would miss every rule written against the name and force a needless
+/// approval. We probe via `/validate` (no upstream, no mock server) and
+/// assert UUID addressing is byte-for-byte equivalent to name addressing.
+#[tokio::test]
+async fn test_call_service_by_uuid_normalizes_to_name() {
+    let pool = common::test_pool().await;
+    let (base, client, _org_id, _ident_id, api_key, admin_key) = setup(pool).await;
+
+    // HTTP template with auth (so the call needs a gate) and a write action
+    // (so a fresh agent with no rule hits a permission gap that exposes the
+    // derived permission keys).
+    let yaml = r#"openapi: "3.1.0"
+info:
+  title: UUID Call Service
+  key: uuid-call-svc
+servers:
+  - url: https://uuid-call.example.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: uuid_call_token
+paths:
+  /items:
+    post:
+      operationId: create_item
+      summary: Create item
+      risk: write
+"#;
+    let tmpl = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "openapi": yaml, "user_level": false }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        tmpl.status(),
+        200,
+        "template create: {:?}",
+        tmpl.text().await
+    );
+
+    let create: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "template_key": "uuid-call-svc", "status": "active" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = create["id"].as_str().unwrap();
+    let name = create["name"].as_str().unwrap();
+
+    let by_name_resp = client
+        .post(format!("{base}/v1/actions/validate"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "service": name, "action": "create_item", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_name_resp.status(), 200);
+    let by_name: Value = by_name_resp.json().await.unwrap();
+
+    let by_uuid_resp = client
+        .post(format!("{base}/v1/actions/validate"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "service": id, "action": "create_item", "params": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        by_uuid_resp.status(),
+        200,
+        "UUID in the service field must resolve, not 404"
+    );
+    let by_uuid: Value = by_uuid_resp.json().await.unwrap();
+
+    // The fresh agent has no rule for a write action → permission gap.
+    assert_eq!(
+        by_name["permission"]["status"], "would_require_approval",
+        "expected a gap that exposes the derived keys: {by_name}"
+    );
+    // Addressing by id is indistinguishable from addressing by name.
+    assert_eq!(
+        by_uuid, by_name,
+        "UUID and name addressing must produce identical resolution"
+    );
+
+    // The derived permission keys must scope to the service *name*, never the
+    // raw UUID — that is the whole point of normalizing the scope key.
+    let keys = by_uuid["permission"]["uncovered_keys"]
+        .as_array()
+        .expect("uncovered_keys present on a gap");
+    assert!(!keys.is_empty());
+    assert!(
+        keys.iter().all(|k| !k.as_str().unwrap().contains(id)),
+        "permission keys must not carry the instance id: {keys:?}"
+    );
+    assert!(
+        keys.iter().any(|k| k.as_str().unwrap().contains(name)),
+        "permission keys must be scoped to the service name '{name}': {keys:?}"
+    );
+
+    // `/validate` and `/call` derive their permission keys on independent code
+    // paths (`resolve_action_metadata` vs `resolve_request`), so the call path
+    // must be checked directly: a UUID-addressed gap hits the permission walk
+    // *before* the upstream, returning 202 with `suggested_tiers` whose keys
+    // must mirror the name-addressed call — not be scoped to the raw id.
+    let call = |svc: &str| {
+        client
+            .post(format!("{base}/v1/actions/call"))
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&json!({ "service": svc, "action": "create_item", "params": {} }))
+            .send()
+    };
+    let call_by_name = call(name).await.unwrap();
+    assert_eq!(
+        call_by_name.status(),
+        202,
+        "expected pending_approval by name"
+    );
+    let call_by_name: Value = call_by_name.json().await.unwrap();
+
+    let call_by_uuid = call(id).await.unwrap();
+    assert_eq!(
+        call_by_uuid.status(),
+        202,
+        "UUID-addressed call must resolve and gap, not 404"
+    );
+    let call_by_uuid: Value = call_by_uuid.json().await.unwrap();
+
+    let tier_keys = |resp: &Value| -> Vec<String> {
+        resp["suggested_tiers"]
+            .as_array()
+            .expect("suggested_tiers present on pending_approval")
+            .iter()
+            .flat_map(|t| t["keys"].as_array().unwrap().clone())
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect()
+    };
+    let name_tier_keys = tier_keys(&call_by_name);
+    let uuid_tier_keys = tier_keys(&call_by_uuid);
+    assert!(!uuid_tier_keys.is_empty());
+    assert_eq!(
+        uuid_tier_keys, name_tier_keys,
+        "/call by UUID must derive the same permission keys as by name"
+    );
+    assert!(
+        uuid_tier_keys.iter().all(|k| !k.contains(id)),
+        "/call permission keys must not carry the instance id: {uuid_tier_keys:?}"
+    );
+}

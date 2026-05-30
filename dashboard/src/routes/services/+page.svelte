@@ -42,12 +42,12 @@
 		goto(`${url.pathname}${url.search}`, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
-	function openInExplorer(name: string) {
-		explorerInitialService = name;
+	function openInExplorer(id: string) {
+		explorerInitialService = id;
 		activeTab = 'api-explorer';
 		const url = new URL($page.url);
 		url.searchParams.set('tab', 'api-explorer');
-		url.searchParams.set('service', name);
+		url.searchParams.set('service', id);
 		goto(`${url.pathname}${url.search}`, { replaceState: false, keepFocus: true, noScroll: true });
 	}
 
@@ -335,7 +335,7 @@
 											type="button"
 											class="btn small"
 											title="Open in API Explorer"
-											onclick={() => openInExplorer(s.name)}
+											onclick={() => openInExplorer(s.id)}
 										>
 											⌘ Try it
 										</button>

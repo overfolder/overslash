@@ -1445,6 +1445,56 @@ struct ResolvedModeC {
     instance: Option<overslash_db::repos::service_instance::ServiceInstanceRow>,
 }
 
+/// Resolve a request's `service` field to a concrete instance.
+///
+/// A bare UUID resolves the exact instance by id (the dashboard's API
+/// Explorer sends ids so same-named instances stay unambiguous — the very
+/// case `resolve_by_name`'s user-shadows-org precedence cannot disambiguate).
+/// Anything else falls back to name resolution, leaving the synthetic `http`
+/// pseudo-service and registry-template names untouched.
+///
+/// The id path replicates `resolve_by_name`'s reachability so it can't widen
+/// visibility: only `active` instances that are org-level, caller-owned, or
+/// owned by the caller's ceiling user are returned. `get_service_instance`
+/// alone would expose any org row by id, including another user's private
+/// user-level instance.
+async fn resolve_service_instance_ref(
+    scope: &OrgScope,
+    identity_id: Option<Uuid>,
+    ceiling_user_id: Uuid,
+    service_key: &str,
+) -> Result<Option<overslash_db::repos::service_instance::ServiceInstanceRow>, AppError> {
+    if let Ok(id) = service_key.parse::<Uuid>() {
+        let inst = scope.get_service_instance(id).await?;
+        return Ok(inst.filter(|i| {
+            i.status == "active"
+                && match i.owner_identity_id {
+                    None => true,
+                    Some(owner) => Some(owner) == identity_id || owner == ceiling_user_id,
+                }
+        }));
+    }
+    Ok(scope
+        .resolve_service_instance_by_name(identity_id, Some(ceiling_user_id), service_key)
+        .await?)
+}
+
+/// The service string used for permission-key and group-ceiling derivation.
+///
+/// When the caller addressed the service by UUID (API Explorer), normalise to
+/// the resolved instance's name so derived keys (`{service}:{action}:{arg}`)
+/// match the rules and group grants written against the service name — callers
+/// never author rules keyed by instance id. The name path is left untouched.
+fn scope_key_for(
+    service_key: &str,
+    instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
+) -> String {
+    match instance {
+        Some(inst) if service_key.parse::<Uuid>().is_ok() => inst.name.clone(),
+        _ => service_key.to_string(),
+    }
+}
+
 /// Look up the service template + instance for a Service + HTTP verb call.
 /// Mirrors the (service, action) arm's resolution, minus the action lookup.
 async fn resolve_service_for_verb_shape(
@@ -1460,9 +1510,8 @@ async fn resolve_service_for_verb_shape(
     ),
     AppError,
 > {
-    let instance = scope
-        .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
-        .await?;
+    let instance =
+        resolve_service_instance_ref(scope, auth.identity_id, ceiling_user_id, service_key).await?;
 
     let svc = if let Some(ref inst) = instance {
         super::templates::resolve_template_definition(
@@ -1675,7 +1724,7 @@ async fn resolve_action_metadata(
         let metadata = ActionMetadata {
             validation_params: HashMap::new(),
             service_scope: Some(ServiceScope {
-                service_key: service_key.clone(),
+                service_key: scope_key_for(service_key, instance.as_ref()),
                 action_key: String::new(),
                 scope_param: None,
                 http_verb: Some(HttpVerb {
@@ -1694,9 +1743,9 @@ async fn resolve_action_metadata(
     // Service + defined action: load template, look up action, expose
     // schema + scope for validation and permission derivation.
     if let (Some(service_key), Some(action_key)) = (&req.service, &req.action) {
-        let instance = scope
-            .resolve_service_instance_by_name(auth.identity_id, Some(ceiling_user_id), service_key)
-            .await?;
+        let instance =
+            resolve_service_instance_ref(scope, auth.identity_id, ceiling_user_id, service_key)
+                .await?;
 
         let svc = if let Some(ref inst) = instance {
             super::templates::resolve_template_definition(
@@ -1783,7 +1832,7 @@ async fn resolve_action_metadata(
         let metadata = ActionMetadata {
             validation_params: action.params.clone(),
             service_scope: Some(ServiceScope {
-                service_key: service_key.clone(),
+                service_key: scope_key_for(service_key, instance.as_ref()),
                 action_key: perm_action_key,
                 scope_param: action.scope_param.clone(),
                 http_verb: None,
@@ -1905,7 +1954,7 @@ async fn resolve_request(
             ResolvedMeta {
                 description: Some(description),
                 service_scope: Some(ServiceScope {
-                    service_key: service_key.clone(),
+                    service_key: scope_key_for(service_key, instance.as_ref()),
                     action_key: String::new(),
                     scope_param: None,
                     http_verb: Some(HttpVerb {
@@ -1931,13 +1980,9 @@ async fn resolve_request(
         let (instance, svc) = if let Some(pre) = pre_resolved_mode_c {
             (pre.instance, pre.svc)
         } else {
-            let instance = scope
-                .resolve_service_instance_by_name(
-                    auth.identity_id,
-                    Some(ceiling_user_id),
-                    service_key,
-                )
-                .await?;
+            let instance =
+                resolve_service_instance_ref(scope, auth.identity_id, ceiling_user_id, service_key)
+                    .await?;
 
             let svc = if let Some(ref inst) = instance {
                 // Instance exists — resolve its template; propagate errors (don't fall back
@@ -2085,7 +2130,7 @@ async fn resolve_request(
                 ResolvedMeta {
                     description: Some(description),
                     service_scope: Some(ServiceScope {
-                        service_key: service_key.clone(),
+                        service_key: scope_key_for(service_key, instance.as_ref()),
                         action_key: action_key.clone(),
                         scope_param: action.scope_param.clone(),
                         http_verb: None,
@@ -2132,7 +2177,7 @@ async fn resolve_request(
                 ResolvedMeta {
                     description: Some(description),
                     service_scope: Some(ServiceScope {
-                        service_key: service_key.clone(),
+                        service_key: scope_key_for(service_key, instance.as_ref()),
                         action_key: perm_action_key,
                         scope_param: action.scope_param.clone(),
                         http_verb: None,
@@ -2300,7 +2345,7 @@ async fn resolve_request(
             ResolvedMeta {
                 description: Some(description),
                 service_scope: Some(ServiceScope {
-                    service_key: service_key.clone(),
+                    service_key: scope_key_for(service_key, instance.as_ref()),
                     action_key: action_key.clone(),
                     scope_param: action.scope_param.clone(),
                     http_verb: None,
