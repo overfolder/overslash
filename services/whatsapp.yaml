@@ -151,16 +151,32 @@ x-overslash-mcp:
             description: "Group JID (must end in `@g.us`)."
         required: [group_jid]
 
-    # ── chats (read-side, cache-backed) ──
-    - name: list_chats
+    # ── conversations (PREFERRED read surface) ──
+    # These two merge a contact's linked phone JID (…@s.whatsapp.net) and
+    # privacy LID (…@lid) automatically, so they answer the common questions in
+    # one call. Reach for these first; the per-chat/per-JID tools below are
+    # `[RAW]` power-user fallbacks.
+    - name: list_conversations
       risk: read
-      description: "List cached chats with optional search, type filter, sort, pagination, and last-message preview"
+      description: >-
+        List WhatsApp conversations cached locally — the de-duplicated overview and the
+        front door for "show me my recent conversations". Like list_chats but collapses a
+        contact's linked phone JID (…@s.whatsapp.net) and privacy LID (…@lid) direct chats into
+        ONE row (list_chats double-counts these as two), surfacing the merged identities as `jids`,
+        a summed `unread_count`, and the newest last-message preview across the merge. Groups and
+        newsletters pass through unchanged. Supports substring search (`query`, not `search`),
+        pagination (applied AFTER merging, so a split contact counts as one item), and sort_by
+        last_active (default) or name. To drill into one conversation's full timeline use
+        get_conversation.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
           query:
-            type: string
-            description: "Case-insensitive substring on chat name or JID."
+            type: [string, "null"]
+            description: "Case-insensitive substring match on the conversation's title or any of its merged JIDs. Like list_chats, 1:1 chats usually have no title, so searching a person's name here may miss their direct conversation — use search_contacts → get_conversation instead. query is for named groups."
           limit:
             type: integer
             minimum: 1
@@ -170,6 +186,7 @@ x-overslash-mcp:
             type: integer
             minimum: 0
             default: 0
+            description: "0-based page index. Pagination is applied AFTER linked identities are merged, so a split contact counts as one item."
           include_last_message:
             type: boolean
             default: true
@@ -177,6 +194,91 @@ x-overslash-mcp:
             type: string
             enum: [last_active, name]
             default: last_active
+            description: "Result ordering. Default 'last_active' => most-recently-active-first; 'name' => A-Z by title (untitled conversations last)."
+          chat_type:
+            type: [string, "null"]
+            enum: [direct, group, newsletter, community, null]
+            description: "Filter to a single chat type."
+        required: []
+
+    - name: get_conversation
+      risk: read
+      scope_param: contact
+      description: >-
+        get_conversation(contact): the canonical front door for "what's the latest with
+        this person?". Merges every chat for a contact across their phone JID (…@s.whatsapp.net)
+        and privacy LID (…@lid) into one newest-first timeline, de-duplicated, with resolved
+        sender names and delivered/read status on each message. Use this instead of
+        get_direct_chat_by_contact when you just want the full conversation; the lower-level
+        per-JID tools remain available for power use.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
+      input_schema:
+        type: object
+        properties:
+          contact:
+            type: string
+            minLength: 1
+            description: "Full JID (…@s.whatsapp.net or …@lid) or bare phone number of the contact."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+          page:
+            type: integer
+            minimum: 0
+            default: 0
+          before:
+            type: [string, "null"]
+            description: "ISO-8601 timestamp; only messages strictly before this are returned."
+          after:
+            type: [string, "null"]
+            description: "ISO-8601 timestamp; only messages strictly after this are returned."
+        required: [contact]
+
+    # ── chats (read-side, cache-backed) — [RAW] power-user fallbacks ──
+    - name: list_chats
+      risk: read
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        List WhatsApp chats cached locally. Supports substring search,
+        pagination, and optional inclusion of each chat's last message preview.
+        NOTE: query matches the chat's stored title only. 1:1 chats usually have
+        no title, so searching a person's name here WILL MISS their direct chat —
+        use search_contacts → get_contact_chats instead. query is for named groups.
+        The search arg is `query` (not `search`). Ordered most-recently-active-first
+        unless sort_by=name (A→Z by title).
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "The search argument (named 'query', NOT 'search'). Case-insensitive substring match on the chat's stored title (or JID). 1:1 chats usually have no title, so searching a person's name here WILL MISS their direct chat — use search_contacts then get_contact_chats instead. query is for named groups."
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+          page:
+            type: integer
+            minimum: 0
+            default: 0
+            description: "0-based page index."
+          include_last_message:
+            type: boolean
+            default: true
+          sort_by:
+            type: string
+            enum: [last_active, name]
+            default: last_active
+            description: "Result ordering. Default 'last_active' => most-recently-active-first (last_message_ts DESC); 'name' => A-Z by title (untitled chats last)."
           chat_type:
             type: string
             enum: [direct, group, newsletter, community]
@@ -186,7 +288,14 @@ x-overslash-mcp:
     - name: get_chat
       risk: read
       scope_param: chat_jid
-      description: "Fetch cached metadata for the chat at {chat_jid}, optionally including the last-message preview"
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        Fetch cached metadata for a single WhatsApp chat by JID, optionally including the last message preview.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
@@ -200,25 +309,39 @@ x-overslash-mcp:
 
     - name: list_messages
       risk: read
-      description: "List cached messages with filters (chat, sender, FTS query, timestamp range) and pagination"
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        List cached WhatsApp messages. Supports filtering by chat, sender,
+        full-text body search (FTS5 when `query` is set), and timestamp range.
+        is_from_me reflects the sending account/device, not the speaker's role.
+        With multi-device or business accounts the same person can send from multiple JIDs,
+        and an operator controlling both ends sees their own JID on both sides.
+        Don't infer who said what from message content — trust sender JID + is_from_me.
+        Always ordered newest-first; there is no sort parameter — use before/after for ranges.
+        The search arg is `query` (not `search`).
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
           chat_jid:
-            type: string
-            description: "Restrict to a single chat."
+            type: [string, "null"]
+            description: "Restrict to one chat key (a chat's JID). Distinct from contact_jid/sender_jid."
           sender_jid:
-            type: string
-            description: "Restrict to a single sender."
+            type: [string, "null"]
+            description: "Restrict to messages authored by this JID."
           query:
-            type: string
-            description: "Full-text search across message bodies (FTS5; LIKE fallback server-side)."
+            type: [string, "null"]
+            description: "The search argument (named 'query', NOT 'search'). Full-text search across message bodies (FTS5 when set; LIKE fallback handled server-side)."
           after:
-            type: string
-            description: "ISO-8601 timestamp; only messages strictly after this."
+            type: [string, "null"]
+            description: "ISO-8601 timestamp (a date/time string, NOT a count); only messages strictly after this are returned."
           before:
-            type: string
-            description: "ISO-8601 timestamp; only messages strictly before this."
+            type: [string, "null"]
+            description: "ISO-8601 timestamp (a date/time string, NOT a count); only messages strictly before this are returned."
           limit:
             type: integer
             minimum: 1
@@ -228,12 +351,22 @@ x-overslash-mcp:
             type: integer
             minimum: 0
             default: 0
+            description: "0-based page index. Results are always ordered newest-first; there is NO sort parameter — page through time with before/after."
         required: []
 
     - name: get_message_context
       risk: read
       scope_param: message_id
-      description: "Fetch the messages immediately before and after {message_id} within its chat"
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        Fetch the N messages immediately before and after a target message,
+        scoped to the same chat_jid as the target. before/after are integer counts
+        (window sizes), not timestamps; returned before/after arrays are chronological.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
@@ -245,17 +378,30 @@ x-overslash-mcp:
             minimum: 0
             maximum: 100
             default: 5
+            description: "Number of messages to fetch immediately BEFORE the target — an integer COUNT, not a timestamp (contrast list_messages, where before is an ISO date)."
           after:
             type: integer
             minimum: 0
             maximum: 100
             default: 5
+            description: "Number of messages to fetch immediately AFTER the target — an integer COUNT, not a timestamp."
         required: [message_id]
 
     - name: get_direct_chat_by_contact
       risk: read
       scope_param: contact_jid
-      description: "Resolve {contact_jid} (full JID or bare phone) to the corresponding 1:1 chat"
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        Resolve {contact_jid} to the 1:1 chat. NOTE: a contact can have
+        separate chats under their phone JID (…@s.whatsapp.net) and their privacy
+        LID (…@lid), and messages may split across both. This resolves to the
+        phone-JID chat only and can return an empty/stale thread even when an active
+        conversation exists under the LID. To see everything, call get_contact_chats first.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
@@ -268,7 +414,22 @@ x-overslash-mcp:
     - name: get_contact_chats
       risk: read
       scope_param: contact_jid
-      description: "List every cached chat (direct + groups) where {contact_jid} has sent a message or is the counterparty"
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        Find the full conversation with a contact. Use this to locate the conversation
+        when a contact may exist under multiple JIDs (phone JID + @lid privacy LID): it matches
+        both the direct chat keyed on the JID you pass AND every other chat where that JID is a
+        recorded sender, so you surface the contact's threads instead of having to guess the exact
+        chat key. Returns every cached chat (direct + groups) involving the given
+        contact JID, ordered most-recent-first, so the latest thread surfaces at the top. If you
+        only have one of a contact's identities, call this with it; pass the other JID in a
+        follow-up call to cover the remaining identity.
+        Keywords: conversation, thread, full history, all chats, latest message, did they reply.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
@@ -289,7 +450,20 @@ x-overslash-mcp:
     - name: get_last_interaction
       risk: read
       scope_param: contact_jid
-      description: "Return the most recent cached message exchanged with {contact_jid} (1:1 or group)"
+      description: >-
+        [RAW] Low-level single-chat/JID access — prefer list_conversations (overview) or
+        get_conversation (one person's full timeline), which merge a contact's phone JID + @lid
+        automatically. Use this only for power/precision access.
+        Return the most recent cached message exchanged with the contact —
+        either in the 1:1 chat keyed on their JID or any group where they were the sender.
+        is_from_me reflects the sending account/device, not the speaker's role.
+        With multi-device or business accounts the same person can send from multiple JIDs,
+        and an operator controlling both ends sees their own JID on both sides.
+        Don't infer who said what from message content — trust sender JID + is_from_me.
+        Returns only the single most recent message.
+        Served from local cache, which may lag live WhatsApp. An empty result can mean
+        'not yet synced,' not 'no message.' For a guaranteed-fresh read: cache_sync →
+        poll cache_sync_status until finished → read.
       input_schema:
         type: object
         properties:
