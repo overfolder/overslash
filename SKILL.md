@@ -96,8 +96,15 @@ same user pick it up immediately. The response carries
 
 | Value | Meaning | Next step |
 |---|---|---|
-| `needs_authentication` | OAuth template, no connection bound | go to step 3 |
+| `needs_authentication` | OAuth template with no connection bound, **or** an API-key / MCP-bearer template with no secret set | OAuth → step 3; API key → [Providing an API key](#providing-an-api-key-non-oauth-services) |
 | `ok` | secret/connection inferred from existing user state | skip to step 5 |
+| `partially_degraded` | a connection is bound but does not cover every action's scopes — uncovered actions return `403 missing_scopes` | click the upgrade `auth_url` returned in that 403 |
+| `needs_reconnect` | a connection is bound but covers none of the scope-bearing actions | re-run consent (step 3) |
+
+> `needs_authentication` means *no credential is bound yet* — it does **not**
+> tell you whether the underlying OAuth **client** even exists. If the org has
+> no OAuth client for the provider, you only find that out at step 3. See
+> [When the OAuth client itself is missing](#when-the-oauth-client-itself-is-missing).
 
 **Step 3 — start OAuth.**
 
@@ -111,7 +118,9 @@ overslash_call {
 
 Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim:
 *"Click here to authorize Google Calendar."* Overslash binds the resulting
-token to the service on its OAuth callback.
+token to the service on its OAuth callback. If instead this returns a `400`
+about *"no OAuth client credentials configured"*, the org has no OAuth client —
+see [When the OAuth client itself is missing](#when-the-oauth-client-itself-is-missing).
 
 **Step 4 — confirm ready.**
 
@@ -211,6 +220,64 @@ Editing and **promoting** a draft to active is REST-only today (no MCP action):
 (both `Authorization: Bearer …`). See `SPEC.md` for the full `x-overslash-*`
 extension table (`risk`, `scope_param`, `resolve`, `provider`,
 `default_secret_name`).
+
+## When credentials are missing
+
+`needs_authentication` and `ok` cover the happy path. Two other conditions need
+different handling — and in both, **provisioning the actual secret material is a
+human step you can only hand off, never perform yourself**: secret/credential
+*values* are never returned to an agent (bearer-token reads return names +
+metadata only; reveal is dashboard-session-only).
+
+### When the OAuth client itself is missing
+
+`needs_authentication` says "no user consent yet". A different failure is "there
+is no OAuth client at all" — no managed client, no org-level OAuth credentials,
+and no bring-your-own-client (BYOC). When that's the case, `create_connection`
+(step 3) returns a `400`:
+
+```json
+{ "error": "bad_request",
+  "message": "no OAuth client credentials configured for provider 'google'. Configure org-level OAuth App Credentials in Org Settings, or create a BYOC credential via POST /v1/byoc-credentials" }
+```
+
+You **cannot** fix this yourself — registering an OAuth client requires a
+`client_id` / `client_secret` an agent must not hold. Surface the message to the
+user and point them at the setup guide:
+[Linking Google services](https://www.overslash.com/docs/guide/how-to/link-google-services.md)
+(managed-client vs BYOC, Google Cloud Console steps, troubleshooting table).
+A related `400 "pinned BYOC credential '<id>' not found"` means the connection's
+BYOC client was deleted — tell the user to create a new connection.
+
+### Providing an API key (non-OAuth services)
+
+For API-key (or HMAC / inline-secret) services there is **no `auth_url`**. When
+the required secret is absent, calling the action returns a `400`:
+
+```json
+{ "error": "credential_missing",
+  "secret_name": "RESEND_API_KEY",
+  "service": "resend",
+  "hint_url": "https://app.overslash.com/secrets?name=RESEND_API_KEY" }
+```
+
+Mint a one-time provisioning link with the `request_secret` platform action and
+surface it to the user — they paste the value on the page; **you never see it**:
+
+```
+overslash_call {
+  "service": "overslash",
+  "action": "request_secret",
+  "params": { "secret_name": "RESEND_API_KEY", "purpose": "Send transactional email" }
+}
+```
+
+Returns `{ request_id, provide_url, short_url, expires_at }`. Show `short_url`
+(the oversla.sh link, present when the shortener is configured) or `provide_url`
+verbatim. This is the secret-bag analogue of `create_connection`'s `auth_url`.
+Once the user submits the value, retry the action. (The link's TTL is fixed at
+1h over MCP; use the REST endpoint `POST /v1/secrets/requests` if you need to
+override `ttl_seconds`.)
 
 ## Handling pending approvals
 
