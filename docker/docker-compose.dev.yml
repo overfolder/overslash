@@ -35,8 +35,16 @@ services:
       - ../crates/overslash-api/src:/app/crates/overslash-api/src:ro
       - ../crates/overslash-mcp/src:/app/crates/overslash-mcp/src:ro
       - ../crates/overslash-cli/src:/app/crates/overslash-cli/src:ro
+      # overslash-metrics is a (non-dev) dependency of overslash-api and has no
+      # explicit [lib], so cargo needs its src/lib.rs to even parse the manifest.
+      - ../crates/overslash-metrics/src:/app/crates/overslash-metrics/src:ro
       - ../tests/mock-target/src:/app/tests/mock-target/src:ro
       - ../services:/app/services:ro
+      # Compile-time assets pulled in via include_str! from outside src/:
+      #   overslash-core   -> templates/email/*.html
+      #   overslash-api    -> CARGO_MANIFEST_DIR/../../SKILL.md == /app/SKILL.md
+      - ../crates/overslash-core/templates:/app/crates/overslash-core/templates:ro
+      - ../SKILL.md:/app/SKILL.md:ro
       - cargo-cache:/usr/local/cargo/registry
     depends_on:
       postgres:
@@ -53,6 +61,11 @@ services:
     volumes:
       - ../dashboard:/app
       - dashboard-node-modules:/app/node_modules
+      # static/SKILL.md is a symlink to the repo-root SKILL.md (../../SKILL.md).
+      # Only ../dashboard is mounted, so that target resolves to /SKILL.md inside
+      # the container — mount the real file there so the symlink isn't dangling
+      # (otherwise svelte-kit sync's statSync throws ENOENT walking static/).
+      - ../SKILL.md:/SKILL.md:ro
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:
       - api

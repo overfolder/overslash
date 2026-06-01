@@ -14,17 +14,23 @@ COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
 COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
 COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
+COPY crates/overslash-mcp-puppet/Cargo.toml crates/overslash-mcp-puppet/Cargo.toml
+COPY crates/overslash-fakes/Cargo.toml crates/overslash-fakes/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 COPY crates/overslash-db/migrations crates/overslash-db/migrations
 COPY .sqlx .sqlx
 COPY services services
-# Stub sources so cargo-chef can resolve the workspace
-RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-api/src crates/overslash-mcp/src crates/overslash-cli/src crates/oversla-sh/src crates/overslash-metrics/src crates/overslash-metrics-exporter/src tests/mock-target/src && \
+# Stub sources so cargo-chef can resolve the workspace. overslash-fakes and
+# overslash-mcp-puppet each declare both a [lib] and a [[bin]] under src/bin/,
+# so they need a lib.rs plus a stub at the bin's declared path.
+RUN mkdir -p crates/overslash-core/src crates/overslash-db/src crates/overslash-api/src crates/overslash-mcp/src crates/overslash-cli/src crates/oversla-sh/src crates/overslash-metrics/src crates/overslash-metrics-exporter/src crates/overslash-mcp-puppet/src/bin crates/overslash-fakes/src/bin tests/mock-target/src && \
     echo "fn main() {}" > crates/overslash-cli/src/main.rs && \
     echo "fn main() {}" > crates/oversla-sh/src/main.rs && \
     echo "fn main() {}" > crates/overslash-metrics-exporter/src/main.rs && \
+    echo "fn main() {}" > crates/overslash-mcp-puppet/src/bin/overslash-mcp-puppet.rs && \
+    echo "fn main() {}" > crates/overslash-fakes/src/bin/overslash_fakes.rs && \
     echo "fn main() {}" > tests/mock-target/src/main.rs && \
-    touch crates/overslash-core/src/lib.rs crates/overslash-db/src/lib.rs crates/overslash-api/src/lib.rs crates/overslash-mcp/src/lib.rs crates/oversla-sh/src/lib.rs crates/overslash-metrics/src/lib.rs
+    touch crates/overslash-core/src/lib.rs crates/overslash-db/src/lib.rs crates/overslash-api/src/lib.rs crates/overslash-mcp/src/lib.rs crates/oversla-sh/src/lib.rs crates/overslash-metrics/src/lib.rs crates/overslash-mcp-puppet/src/lib.rs crates/overslash-fakes/src/lib.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: build dependencies (cached image layer)
@@ -69,6 +75,8 @@ COPY crates/overslash-cli/Cargo.toml crates/overslash-cli/Cargo.toml
 COPY crates/oversla-sh/Cargo.toml crates/oversla-sh/Cargo.toml
 COPY crates/overslash-metrics/Cargo.toml crates/overslash-metrics/Cargo.toml
 COPY crates/overslash-metrics-exporter/Cargo.toml crates/overslash-metrics-exporter/Cargo.toml
+COPY crates/overslash-mcp-puppet/Cargo.toml crates/overslash-mcp-puppet/Cargo.toml
+COPY crates/overslash-fakes/Cargo.toml crates/overslash-fakes/Cargo.toml
 COPY tests/mock-target/Cargo.toml tests/mock-target/Cargo.toml
 
 # Copy migrations, sqlx cache, services
