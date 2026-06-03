@@ -228,6 +228,10 @@ pub fn compile_service(
         }
     };
 
+    // Document root-level `security`, applied as the default required-scopes
+    // for every operation that doesn't declare its own (OpenAPI 3.1 semantics).
+    let root_security = root.get("security");
+
     let mut actions: HashMap<String, ServiceAction> = HashMap::new();
     if let Some(paths) = root.get("paths").and_then(Value::as_object) {
         for (path_key, path_item) in paths {
@@ -239,7 +243,14 @@ pub fn compile_service(
                 let Some(op) = path_obj.get(*method).and_then(Value::as_object) else {
                     continue;
                 };
-                match extract_http_action(path_key, method, op, path_level_params, &mut actions) {
+                match extract_http_action(
+                    path_key,
+                    method,
+                    op,
+                    path_level_params,
+                    root_security,
+                    &mut actions,
+                ) {
                     Ok(()) => {}
                     Err(mut es) => errors.append(&mut es),
                 }

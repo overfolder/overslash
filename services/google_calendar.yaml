@@ -5,6 +5,9 @@ info:
   category: Productivity
 servers:
   - url: https://www.googleapis.com
+security:
+  - oauth:
+      - https://www.googleapis.com/auth/calendar
 components:
   securitySchemes:
     oauth:
