@@ -17,11 +17,13 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
 
 	try {
 		const res = await fetch('/auth/me/identity', { credentials: 'include' });
-		if (res.status === 401) {
-			throw redirect(302, `/login?return_to=${encodeURIComponent(url.pathname + url.search)}`);
-		}
+		// This endpoint *is* the auth check, so any non-OK response means the
+		// caller isn't authenticated — send them to /login rather than rendering
+		// a userless shell that then 404s on every follow-up call. Covers 401
+		// (expired token) and 404 (token valid but identity gone, e.g. dev user
+		// after a DB reset).
 		if (!res.ok) {
-			return { user: null };
+			throw redirect(302, `/login?return_to=${encodeURIComponent(url.pathname + url.search)}`);
 		}
 		const user = (await res.json()) as MeIdentity;
 		return { user };

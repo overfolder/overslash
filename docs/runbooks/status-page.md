@@ -6,7 +6,16 @@ Public URL: <https://status.overslash.com>
 
 - **Vendor**: Better Stack.
 - **Components**: `api.overslash.com` and `app.overslash.com`, each backed by
-  an HTTPS uptime check on 60s cadence.
+  an HTTPS check on 180s cadence across the `eu`/`us`/`as`/`au` regions.
+- **Monitors** (managed in the Better Stack console, not IaC):
+  - `api.overslash.com/health` — plain `status` (HTTP up) check.
+  - `app.overslash.com` — `keyword` check for `_app/immutable`. The dashboard is
+    a SvelteKit SPA shell with no SSR text, so this marker confirms the real app
+    shell is served rather than a Fastly/router error page (e.g.
+    `ROUTER_EXTERNAL_TARGET_HANDSHAKE_ERROR`), which a bare status check misses.
+  - `api.overslash.com/auth/providers` — `keyword` check for `"key":"google"`.
+    Login config regressions return HTTP 200 with an empty `providers` list, so
+    only a keyword check catches "No identity providers are configured".
 - **Relationship to GCM**: Better Stack runs independent HTTPS probes from
   outside GCP. It is intentionally not driven by Google Cloud Monitoring alerts
   — if GCM itself has an outage the public page stays truthful.
