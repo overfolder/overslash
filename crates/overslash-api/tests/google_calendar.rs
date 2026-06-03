@@ -132,7 +132,7 @@ async fn test_google_calendar_three_modes() {
             encrypted_access_token: &encrypted_token,
             encrypted_refresh_token: None,
             token_expires_at: Some(future_time),
-            scopes: &[],
+            scopes: &["https://www.googleapis.com/auth/calendar".to_string()],
             account_email: None,
             byoc_credential_id: Some(byoc.id),
         })
