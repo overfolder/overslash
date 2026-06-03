@@ -47,19 +47,19 @@ s.close()'
 record_pid() { echo "$1" >> "$STATE_DIR/pids"; }
 
 # 1. Postgres. CI passes DATABASE_URL via the workflow's `services:` block;
-#    locally we reuse `make local` (worktree-aware) and read .env.local.
+#    locally we reuse `make local-db` (worktree-aware) and read .env.local.
 if [ -n "${DATABASE_URL:-}" ]; then
     log "using preset DATABASE_URL=$DATABASE_URL"
 else
-    log "starting Postgres via make local"
-    ( cd "$REPO_ROOT" && make local >/dev/null )
+    log "starting Postgres via make local-db"
+    ( cd "$REPO_ROOT" && make local-db >/dev/null )
     # shellcheck disable=SC1091
     [ -f "$REPO_ROOT/.env.local" ] && set -a && . "$REPO_ROOT/.env.local" && set +a
-    [ -n "${DATABASE_URL:-}" ] || fail "DATABASE_URL not set after make local — Postgres bring-up failed"
+    [ -n "${DATABASE_URL:-}" ] || fail "DATABASE_URL not set after make local-db — Postgres bring-up failed"
 fi
 
 # Migrations: the API doesn't run them on boot, so apply them once here. In CI
-# the Postgres service starts empty; locally `make local` also starts a clean
+# the Postgres service starts empty; locally `make local-db` also starts a clean
 # instance on the worktree's port, so this is correct in both cases.
 if command -v sqlx >/dev/null 2>&1; then
     log "running sqlx migrate"

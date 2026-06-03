@@ -109,12 +109,13 @@ no state outside Postgres.
 ### Quick start
 
 ```bash
-# 1. Start Postgres (and write .env.local if you're in a worktree)
+# Run the full dev stack (Postgres + API + dashboard, hot-reload). Creates the
+# shared `overfolder-shared` podman network, writes .env.local in worktrees, and
+# the API auto-runs database migrations on startup. `make dev` is an alias.
 make local
 
-# 2. Run the full dev stack (Postgres + API + dashboard, hot-reload).
-#    The API auto-runs database migrations on startup.
-make dev
+# Just need Postgres (e.g. to run the test suite)?
+make local-db
 ```
 
 That's it. The API and dashboard will be available on their default local
@@ -135,14 +136,15 @@ ports (see `docker/docker-compose.dev.yml`).
 
 | Command | What it does |
 |---|---|
-| `make local` | Start only Postgres |
-| `make dev` | Start everything (Postgres + API + dashboard) |
+| `make local` | Start everything (Postgres + API + dashboard); creates the shared `overfolder-shared` network |
+| `make dev` | Alias of `make local` |
+| `make local-db` | Start only Postgres |
 | `make dev-api` | Start Postgres + API only |
 | `make dev-dashboard` | Run the SvelteKit dev server (no container) |
 | `make migrate` | Apply database migrations (rarely needed — the API auto-migrates on boot) |
 | `make test` | Run the Rust test suite |
 | `make check` / `make fmt` / `make clippy` | Lint and formatting |
-| `make down` | Stop dev services |
+| `make local-down` / `make down` | Stop dev services |
 
 ### Running tests
 
@@ -150,14 +152,15 @@ ports (see `docker/docker-compose.dev.yml`).
 make test
 ```
 
-Integration tests need Postgres running (`make local` first). When running the
+Integration tests need Postgres running (`make local-db` first). When running the
 full suite directly with `cargo test`, pass `--test-threads=4` to avoid
 exhausting the Postgres connection pool.
 
 ### Worktree isolation
 
 If you work on Overslash from multiple git worktrees in parallel, `make local`
-auto-detects the worktree and spins up an isolated Postgres on a unique port.
+(and `make local-db`) auto-detects the worktree and spins up an isolated
+Postgres on a unique port.
 No manual config required. Tear down a worktree's containers with
 `make worktree-clean`.
 

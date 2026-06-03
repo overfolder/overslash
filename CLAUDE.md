@@ -50,7 +50,8 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 
 When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` automatically detects the worktree context and spins up an isolated Postgres on a unique port. No manual configuration needed.
 
-- `make local` — detects worktree, writes `.env.local`, starts isolated Postgres
+- `make local` — full dev stack (Postgres + API + dashboard); detects worktree, writes `.env.local`, creates the shared `overfolder-shared` network. `make dev` is an alias.
+- `make local-db` — Postgres only; detects worktree, writes `.env.local`, isolated port (used by `e2e-up.sh`)
 - `make worktree-clean` — tears down the worktree's containers and volumes
 - Main repo behavior is unchanged (port 55432)
 

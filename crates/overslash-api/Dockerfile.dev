@@ -91,5 +91,10 @@ COPY --from=deps /usr/local/cargo/registry /usr/local/cargo/registry
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
-# Source dirs are mounted as volumes at runtime; clear our crate fingerprints so cargo rebuilds them
-CMD ["sh", "-c", "rm -rf target/debug/.fingerprint/overslash* target/debug/.fingerprint/mock-target* 2>/dev/null; cargo watch -x 'run -p overslash-cli -- serve'"]
+# target/ is a persistent named volume seeded from this image (prebuilt deps +
+# stub-compiled overslash crates). The stub fingerprints must be cleared once so
+# cargo rebuilds those crates against the real, volume-mounted source — but only
+# on the first run after a fresh volume. A marker in the volume gates it, so
+# subsequent container recreations skip the wipe and cargo only rebuilds on
+# actual source changes (otherwise every `make dev` recompiles the world).
+CMD ["sh", "-c", "if [ ! -f target/.dev-stub-cleared ]; then rm -rf target/debug/.fingerprint/overslash* target/debug/.fingerprint/mock-target* 2>/dev/null; touch target/.dev-stub-cleared; fi; cargo watch -x 'run -p overslash-cli -- serve'"]

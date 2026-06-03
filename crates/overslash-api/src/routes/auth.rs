@@ -872,10 +872,16 @@ async fn me_identity(
     // `SessionAuth` enforces `jwt.org == subdomain.org` via
     // `check_subdomain_matches_jwt`.
     let scope = OrgScope::new(session.org_id, state.db_pool(&ext));
+    // A cryptographically-valid, unexpired session cookie can still point at an
+    // identity that no longer exists — e.g. the dev user after the Postgres
+    // volume is reset, or any identity deleted out from under a live session.
+    // `SessionAuth` only verifies the JWT, so the staleness surfaces here.
+    // Return 401 (not 404): the session is no longer valid, and 401 is what the
+    // dashboard treats as "redirect to /login".
     let ident = scope
         .get_identity(session.identity_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        .ok_or_else(|| AppError::Unauthorized("session identity no longer exists".into()))?;
     let is_org_admin = scope.is_identity_in_admins(ident.id).await?;
 
     let org_row = org::get_by_id(state.db(&ext), ident.org_id).await?;
