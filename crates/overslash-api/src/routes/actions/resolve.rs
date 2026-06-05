@@ -7,7 +7,7 @@ use uuid::Uuid;
 use overslash_db::scopes::OrgScope;
 
 use crate::{AppState, error::AppError, extractors::AuthContext, services::platform_connections};
-use overslash_core::types::{ActionRequest, McpAuth, Runtime};
+use overslash_core::types::{ActionRequest, McpAuth, ParamLocation, Runtime};
 
 use super::*;
 use super::{auth::*, errors::*, service_resolve::*};
@@ -609,13 +609,39 @@ pub(super) async fn resolve_request(
             };
             (url, None)
         } else {
-            // Non-path params become JSON body
-            let body = if non_path_params.is_empty() {
+            // Split non-path params: query-located ones (per the template's
+            // `in: query`) go to the query string, the rest become the JSON body.
+            let (query_params, body_params): (Vec<_>, Vec<_>) =
+                non_path_params.iter().partition(|(k, _)| {
+                    action
+                        .params
+                        .get(k.as_str())
+                        .map(|p| p.location == ParamLocation::Query)
+                        .unwrap_or(false)
+                });
+            let url = if query_params.is_empty() {
+                base_url
+            } else {
+                let qs = query_params
+                    .iter()
+                    .map(|(k, v)| {
+                        let val = v.as_str().unwrap_or(&v.to_string()).to_string();
+                        format!("{k}={}", urlencoding::encode(&val))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("&");
+                format!("{base_url}?{qs}")
+            };
+            let body = if body_params.is_empty() {
                 None
             } else {
-                Some(serde_json::to_string(&non_path_params).unwrap_or_default())
+                let map: serde_json::Map<String, serde_json::Value> = body_params
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                Some(serde_json::to_string(&map).unwrap_or_default())
             };
-            (base_url, body)
+            (url, body)
         };
 
         let mut headers = HashMap::new();

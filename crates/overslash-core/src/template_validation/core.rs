@@ -693,6 +693,7 @@ mod tests {
             enum_values: None,
             default: None,
             resolve: None,
+            location: crate::types::ParamLocation::Body,
         }
     }
 
@@ -998,6 +999,7 @@ mod tests {
                             enum_values: None,
                             default: None,
                             resolve: None,
+                            location: crate::types::ParamLocation::Body,
                         },
                     );
                     p
