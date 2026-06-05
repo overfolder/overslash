@@ -891,46 +891,14 @@ async fn resolve_approval(
             };
 
         if !elicitation_active && auto_call_enabled {
-            let state_c = state.clone();
-            let ext_c = ext.clone();
-            let approval_c = approval_pre.clone();
-            let resolver_identity = auth.identity_id;
-            let resolver_org_id = auth.org_id;
-            let ip_c = ip.0.clone();
-            tokio::spawn(async move {
-                let scope_c = OrgScope::new(approval_c.org_id, state_c.db_pool(&ext_c));
-                // Atomic claim with triggered_by="auto". Losing this claim
-                // is fine — it means a manual /call beat us to it.
-                let claim = match scope_c.claim_execution(approval_c.id, "auto").await {
-                    Ok(Some(row)) => row,
-                    Ok(None) => return,
-                    Err(e) => {
-                        tracing::warn!(
-                            approval_id = %approval_c.id,
-                            "auto-call claim failed: {e}"
-                        );
-                        return;
-                    }
-                };
-                if let Err(e) = execute_claimed_approval(
-                    &state_c,
-                    &ext_c,
-                    &scope_c,
-                    &approval_c,
-                    claim,
-                    "auto",
-                    ip_c.as_deref(),
-                    resolver_org_id,
-                    resolver_identity,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        approval_id = %approval_c.id,
-                        "auto-call execute failed: {e}"
-                    );
-                }
-            });
+            spawn_auto_call(
+                state.clone(),
+                ext.clone(),
+                approval_pre.clone(),
+                ip.0.clone(),
+                auth.org_id,
+                auth.identity_id,
+            );
         }
 
         Some(row)
@@ -1142,6 +1110,58 @@ async fn call_approval(
         .decorate_relationship(&scope, auth.identity_id)
         .await?;
     Ok(Json(response))
+}
+
+/// Spawn the background auto-call-on-approve task for `approval`: atomically
+/// claim its pending execution with `triggered_by="auto"` and run it to
+/// terminal state. Losing the claim is fine — it means a manual `/call` beat
+/// us to it. Shared between the `/resolve` path and cascade resolution.
+///
+/// Deliberately a plain fn (not `async`) that boxes the
+/// `execute_claimed_approval` future as `dyn Future`: cascade resolution makes
+/// `execute_claimed_approval` reach itself through this helper, and the type
+/// erasure is what stops the compiler from chasing an infinitely recursive
+/// opaque future type.
+fn spawn_auto_call(
+    state: AppState,
+    ext: axum::http::Extensions,
+    approval: overslash_db::repos::approval::ApprovalRow,
+    ip: Option<String>,
+    audit_org_id: Uuid,
+    audit_identity_id: Option<Uuid>,
+) {
+    tokio::spawn(async move {
+        let scope = OrgScope::new(approval.org_id, state.db_pool(&ext));
+        let claim = match scope.claim_execution(approval.id, "auto").await {
+            Ok(Some(row)) => row,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(
+                    approval_id = %approval.id,
+                    "auto-call claim failed: {e}"
+                );
+                return;
+            }
+        };
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<_>> + Send>> =
+            Box::pin(execute_claimed_approval(
+                &state,
+                &ext,
+                &scope,
+                &approval,
+                claim,
+                "auto",
+                ip.as_deref(),
+                audit_org_id,
+                audit_identity_id,
+            ));
+        if let Err(e) = fut.await {
+            tracing::warn!(
+                approval_id = %approval.id,
+                "auto-call execute failed: {e}"
+            );
+        }
+    });
 }
 
 /// Run a *claimed* execution to terminal state. Shared between the manual
@@ -1529,7 +1549,7 @@ async fn execute_claimed_approval(
         // that the new rules might now satisfy. Best-effort — never fail the
         // /call request just because the cascade hit a snag.
         if !keys_owned.is_empty() {
-            cascaded_approval_ids = match crate::services::permission_chain::cascade_resolve(
+            let cascaded = match crate::services::permission_chain::cascade_resolve(
                 state,
                 scope,
                 placement_id,
@@ -1537,7 +1557,7 @@ async fn execute_claimed_approval(
             )
             .await
             {
-                Ok(ids) => ids,
+                Ok(resolved) => resolved,
                 Err(e) => {
                     tracing::warn!(
                         approval_id = %id,
@@ -1546,6 +1566,79 @@ async fn execute_claimed_approval(
                     Vec::new()
                 }
             };
+
+            // Auto-call each cascaded approval whose *own* requesting agent
+            // has `auto_call_on_approve` set, mirroring the `/resolve` path.
+            // Cascaded executions carry `remember=false`, so these replays
+            // can never write rules or cascade further. Lookup failures
+            // degrade to manual-only, same as `/resolve`.
+            for c in &cascaded {
+                // No pending execution row (best-effort creation failed in
+                // the cascade) → nothing to claim.
+                if c.execution_id.is_none() {
+                    continue;
+                }
+                let auto_call_enabled = match overslash_db::repos::identity::get_by_id(
+                    state.db(ext),
+                    c.approval.org_id,
+                    c.approval.identity_id,
+                )
+                .await
+                {
+                    Ok(Some(i)) => i.auto_call_on_approve,
+                    Ok(None) => {
+                        tracing::warn!(
+                            approval_id = %c.approval.id,
+                            "cascade auto-call identity lookup returned no row"
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            approval_id = %c.approval.id,
+                            "cascade auto-call identity lookup failed: {e}"
+                        );
+                        false
+                    }
+                };
+                if !auto_call_enabled {
+                    continue;
+                }
+                // Same elicitation suppression as `/resolve`: an in-flight
+                // elicitation drives its own /resolve → /call round-trip.
+                let elicitation_active =
+                    match overslash_db::repos::mcp_elicitation::has_active_for_approval(
+                        state.db(ext),
+                        c.approval.id,
+                    )
+                    .await
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(
+                                approval_id = %c.approval.id,
+                                "cascade auto-call elicitation lookup failed: {e}"
+                            );
+                            false
+                        }
+                    };
+                if elicitation_active {
+                    continue;
+                }
+                // There is no human resolver here — attribute the execution
+                // audit to the cascaded approval's subject, consistent with
+                // `approval.cascade_resolved`.
+                spawn_auto_call(
+                    state.clone(),
+                    ext.clone(),
+                    c.approval.clone(),
+                    ip.map(str::to_string),
+                    c.approval.org_id,
+                    Some(c.approval.identity_id),
+                );
+            }
+
+            cascaded_approval_ids = cascaded.into_iter().map(|c| c.approval.id).collect();
         }
     }
 
