@@ -325,6 +325,14 @@ pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> 
     Ok(bubbled)
 }
 
+/// One approval auto-resolved by [`cascade_resolve`]. Carries the full row so
+/// the caller can drive follow-up work (auto-call-on-approve) without a
+/// re-fetch, plus the id of the pending execution if one was created.
+pub struct CascadeResolved {
+    pub approval: overslash_db::repos::approval::ApprovalRow,
+    pub execution_id: Option<Uuid>,
+}
+
 /// Re-evaluate pending approvals that the rules just placed at `placement_id`
 /// might satisfy, and auto-resolve the ones that are now structurally
 /// `Allowed`. Best-effort: per-approval errors are logged and skipped so a
@@ -344,18 +352,22 @@ pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> 
 ///   * the existing `approval.resolved` webhook is dispatched so listeners see
 ///     it through the normal channel.
 ///
-/// Returns the ids of the approvals that were resolved by this cascade.
+/// Auto-call-on-approve is deliberately *not* handled here — the executor
+/// lives in the routes layer, so the caller inspects the returned
+/// [`CascadeResolved`] rows and spawns the background replays itself.
+///
+/// Returns the approvals that were resolved by this cascade.
 pub async fn cascade_resolve(
     state: &AppState,
     scope: &OrgScope,
     placement_id: Uuid,
     triggering_approval_id: Uuid,
-) -> Result<Vec<Uuid>, AppError> {
+) -> Result<Vec<CascadeResolved>, AppError> {
     let candidates = scope
         .list_pending_approvals_for_descendants(placement_id)
         .await?;
 
-    let mut resolved_ids: Vec<Uuid> = Vec::new();
+    let mut resolved: Vec<CascadeResolved> = Vec::new();
     let ttl_secs = state.config.execution_pending_ttl_secs as i64;
 
     for approval in candidates {
@@ -488,10 +500,13 @@ pub async fn cascade_resolve(
             .await;
         });
 
-        resolved_ids.push(approval.id);
+        resolved.push(CascadeResolved {
+            execution_id: execution.as_ref().map(|e| e.id),
+            approval,
+        });
     }
 
-    Ok(resolved_ids)
+    Ok(resolved)
 }
 
 /// Returns true if `candidate` is `target` or any ancestor of `target`.
