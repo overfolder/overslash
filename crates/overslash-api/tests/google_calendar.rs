@@ -151,7 +151,11 @@ async fn test_google_calendar_three_modes() {
                 "summary": "Team Meeting",
                 "start": {"dateTime": "2026-03-27T10:00:00Z"},
                 "end": {"dateTime": "2026-03-27T11:00:00Z"},
-                "description": "Weekly sync"
+                "description": "Weekly sync",
+                "colorId": "5",
+                "recurrence": ["RRULE:FREQ=DAILY;COUNT=2"],
+                "reminders": {"useDefault": false, "overrides": [{"method": "email", "minutes": 30}]},
+                "sendUpdates": "all"
             }
         }))
         .send()
@@ -167,11 +171,23 @@ async fn test_google_calendar_three_modes() {
         uri.contains("/calendar/v3/calendars/primary/events"),
         "Mode C POST: URL should contain resolved path, got: {uri}"
     );
+    assert!(
+        uri.contains("sendUpdates=all"),
+        "Mode C POST: query-located param should be in the URL, got: {uri}"
+    );
 
     // Verify body contains non-path params as JSON
     let req_body: Value = serde_json::from_str(echo["body"].as_str().unwrap()).unwrap();
     assert_eq!(req_body["summary"], "Team Meeting");
     assert_eq!(req_body["description"], "Weekly sync");
+    assert_eq!(req_body["colorId"], "5");
+    assert_eq!(req_body["recurrence"][0], "RRULE:FREQ=DAILY;COUNT=2");
+    assert_eq!(req_body["reminders"]["useDefault"], false);
+    assert_eq!(req_body["reminders"]["overrides"][0]["minutes"], 30);
+    assert!(
+        req_body.get("sendUpdates").is_none(),
+        "Mode C POST: query-located param must NOT leak into the JSON body"
+    );
 
     // Verify auth was auto-resolved from the connection
     assert_eq!(
@@ -234,6 +250,81 @@ async fn test_google_calendar_three_modes() {
     assert!(
         uri.contains("/calendar/v3/users/me/calendarList"),
         "Mode C GET: list_calendars path should be correct, got: {uri}"
+    );
+
+    // ===== MODE C (PATCH): update_event — query param + body split =====
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "update_event",
+            "params": {
+                "calendarId": "primary",
+                "eventId": "evt123",
+                "description": "Rescheduled",
+                "reminders": {"useDefault": true},
+                "sendUpdates": "externalOnly"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/calendar/v3/calendars/primary/events/evt123"),
+        "Mode C PATCH: URL should contain resolved path, got: {uri}"
+    );
+    assert!(
+        uri.contains("sendUpdates=externalOnly"),
+        "Mode C PATCH: query-located param should be in the URL, got: {uri}"
+    );
+    let req_body: Value = serde_json::from_str(echo["body"].as_str().unwrap()).unwrap();
+    assert_eq!(req_body["description"], "Rescheduled");
+    assert_eq!(req_body["reminders"]["useDefault"], true);
+    assert!(
+        req_body.get("sendUpdates").is_none(),
+        "Mode C PATCH: query-located param must NOT leak into the JSON body"
+    );
+
+    // ===== MODE C (DELETE): delete_event — query param, no body =====
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "delete_event",
+            "params": {
+                "calendarId": "primary",
+                "eventId": "evt123",
+                "sendUpdates": "none"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/calendar/v3/calendars/primary/events/evt123"),
+        "Mode C DELETE: URL should contain resolved path, got: {uri}"
+    );
+    assert!(
+        uri.contains("sendUpdates=none"),
+        "Mode C DELETE: query-located param should be in the URL, got: {uri}"
+    );
+    assert_eq!(
+        echo["body"], "",
+        "Mode C DELETE: query-only write should send no body"
     );
 }
 

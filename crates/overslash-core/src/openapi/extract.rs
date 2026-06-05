@@ -20,8 +20,8 @@ use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, DisclosureField, McpAuth, McpSpec, ParamResolver, Risk, ServiceAction,
-    ServiceAuth, TokenInjection,
+    ActionParam, DisclosureField, McpAuth, McpSpec, ParamLocation, ParamResolver, Risk,
+    ServiceAction, ServiceAuth, TokenInjection,
 };
 
 // ── servers → hosts ──────────────────────────────────────────────────
@@ -465,6 +465,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     enum_values: None,
                     default: None,
                     resolve: None,
+                    location: ParamLocation::Body,
                 },
             ))
         })
@@ -859,6 +860,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 enum_values,
                 default,
                 resolve: None,
+                location: ParamLocation::Body,
             },
         );
     }
@@ -921,6 +923,12 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
 
         let resolve = obj.get("x-overslash-resolve").and_then(parse_resolver);
 
+        let location = match obj.get("in").and_then(Value::as_str) {
+            Some("query") => ParamLocation::Query,
+            Some("path") => ParamLocation::Path,
+            _ => ParamLocation::Body,
+        };
+
         out.insert(
             name.to_string(),
             ActionParam {
@@ -930,6 +938,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
                 enum_values,
                 default,
                 resolve,
+                location,
             },
         );
     }
@@ -986,6 +995,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
                 enum_values,
                 default,
                 resolve,
+                location: ParamLocation::Body,
             },
         );
     }
@@ -1619,6 +1629,39 @@ mod tests {
         assert!(a.params["id"].required);
         assert!(!a.params["q"].required);
         assert_eq!(a.params["id"].param_type, "string");
+    }
+
+    #[test]
+    fn parameter_location_from_in() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {
+                "/cal/{id}/events": {
+                    "post": {
+                        "operationId": "create_event",
+                        "parameters": [
+                            {"name": "id", "in": "path", "required": true,
+                             "schema": {"type": "string"}},
+                            {"name": "sendUpdates", "in": "query",
+                             "schema": {"type": "string"}}
+                        ],
+                        "requestBody": {
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "properties": {"summary": {"type": "string"}}
+                            }}}
+                        }
+                    }
+                }
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["create_event"];
+        assert_eq!(a.params["id"].location, ParamLocation::Path);
+        assert_eq!(a.params["sendUpdates"].location, ParamLocation::Query);
+        assert_eq!(a.params["summary"].location, ParamLocation::Body);
+        // Path template is unaffected by location tracking.
+        assert_eq!(a.path, "/cal/{id}/events");
     }
 
     #[test]
