@@ -52,3 +52,9 @@ The dashboard's approvals list shows the timestamp as `Requested Invalid Date`. 
 ## Reusing existing Google OAuth connections fails
 
 Choosing a previously-authorized Google connection on a newly-created Google service does not bind the service to the existing token; the connection stays unlinked and the service remains in `pending_credentials`. Suspected cause: the service-instance → connection mapping does not match by `(provider, subject)` — probably by `connection_id` only — so the dashboard's "reuse existing" picker writes a binding the backend doesn't honor. Relates to the broader 2026-04-20 review ask to support reusing connections across services sharing a provider. Tracked under card `c2575`.
+
+---
+
+## `x-overslash-hidden` is annotated but not enforced
+
+`services/github_legacy_oauth.yaml` carries `x-overslash-hidden: true` in its info block, but no loader/catalog code reads the extension yet — unknown `x-overslash-*` keys pass through alias normalization and compile untouched. Until hidden-template support lands, the legacy GitHub template shows up in `/v1/templates` and the dashboard catalog alongside the GitHub-App-based `github` template. When implementing: parse the flag in `compile_service` (info-level extension, plus an unprefixed `hidden:` alias in `INFO_ALIASES`), carry it on `ServiceDefinition`, and filter hidden templates from list/search surfaces while keeping `GET /v1/templates/{key}` and instantiation working for orgs that still need them.
