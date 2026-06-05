@@ -367,13 +367,23 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             state.config.public_url.clone(),
         ));
 
-        // Rate limit eviction loop (in-memory store only)
-        if let Some(store) = in_memory_store {
+        // Rate limit eviction loop. The config/billing caches always need
+        // eviction — their resolve paths only check TTL on read, so stale
+        // entries otherwise accumulate for the life of the process (slow
+        // memory growth on long-lived instances). The counter store is
+        // evicted too when running in-memory.
+        {
+            let rate_limit_cache = state.rate_limit_cache.clone();
+            let free_unlimited_cache = state.free_unlimited_cache.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     let start = std::time::Instant::now();
-                    store.evict_expired();
+                    if let Some(store) = &in_memory_store {
+                        store.evict_expired();
+                    }
+                    rate_limit_cache.evict_expired();
+                    free_unlimited_cache.evict_expired();
                     overslash_metrics::background::record_tick(
                         "rate_limit_evict",
                         "ok",
