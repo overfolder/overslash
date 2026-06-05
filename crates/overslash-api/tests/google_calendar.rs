@@ -326,6 +326,38 @@ async fn test_google_calendar_three_modes() {
         echo["body"], "",
         "Mode C DELETE: query-only write should send no body"
     );
+
+    // ===== MODE C (GET): list_events with calendarId OMITTED =====
+    // `calendarId` declares `default: primary` in the template. Omitting it
+    // must NOT 400 "missing required" — the default is applied before
+    // validation and resolution, so the path resolves to the primary calendar.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(common::auth(&key).0, common::auth(&key).1)
+        .json(&json!({
+            "service": "google_calendar",
+            "action": "list_events",
+            "params": {
+                "timeMin": "2026-03-27T00:00:00Z"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "omitting calendarId should succeed via its default, got: {}",
+        resp.text().await.unwrap()
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let uri = echo["uri"].as_str().unwrap();
+    assert!(
+        uri.contains("/calendar/v3/calendars/primary/events"),
+        "default calendarId=primary should be substituted into the path, got: {uri}"
+    );
 }
 
 // ============================================================================

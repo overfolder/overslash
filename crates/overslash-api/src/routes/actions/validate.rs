@@ -36,7 +36,7 @@ pub(super) async fn validate_action_impl(
     ReqExt(ext): ReqExt,
     auth: AuthContext,
     scope: OrgScope,
-    Json(req): Json<CallRequest>,
+    Json(mut req): Json<CallRequest>,
 ) -> Result<(Response, &'static str), AppError> {
     // Filter syntax — same gate as `/call`. A malformed expression is a
     // 400, not a wasted upstream burn.
@@ -73,6 +73,14 @@ pub(super) async fn validate_action_impl(
         req.service_id.is_some(),
     )
     .await?;
+
+    // Fill template-declared defaults before validating — mirrors `/call`
+    // so a defaulted-required param (e.g. `calendarId: primary`) omitted by
+    // the caller validates here exactly as it would execute there.
+    overslash_core::openapi::validate_input::apply_defaults(
+        &meta.validation_params,
+        &mut req.params,
+    );
 
     // Argument validation runs before the risk gate so a request with
     // both bad params and a wrong-risk assertion produces the same
