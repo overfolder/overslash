@@ -419,4 +419,64 @@ paths:
         let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
         assert!(!reg.is_empty(), "no shipped templates loaded");
     }
+
+    #[test]
+    fn shipped_github_templates_auth() {
+        use crate::types::ServiceAuth;
+
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+
+        // `github` targets GitHub App user-to-server tokens: no OAuth scopes
+        // (the app's permissions + installations govern access) plus an
+        // installation diagnostic action.
+        let gh = reg.get("github").expect("github template missing");
+        match gh
+            .auth
+            .iter()
+            .find(|a| matches!(a, ServiceAuth::OAuth { .. }))
+        {
+            Some(ServiceAuth::OAuth {
+                provider, scopes, ..
+            }) => {
+                assert_eq!(provider, "github");
+                assert!(
+                    scopes.is_empty(),
+                    "GitHub App template must not declare OAuth scopes, got {scopes:?}"
+                );
+            }
+            _ => panic!("github template must declare OAuth auth"),
+        }
+        assert!(gh.actions.contains_key("list_installations"));
+
+        // `github_legacy_oauth` keeps the classic OAuth App scopes and carries
+        // a forward-compat `x-overslash-hidden` info annotation — loading it
+        // proves the (currently ignored) extension doesn't break compile.
+        let legacy = reg
+            .get("github_legacy_oauth")
+            .expect("github_legacy_oauth template missing");
+        match legacy
+            .auth
+            .iter()
+            .find(|a| matches!(a, ServiceAuth::OAuth { .. }))
+        {
+            Some(ServiceAuth::OAuth {
+                provider, scopes, ..
+            }) => {
+                assert_eq!(provider, "github");
+                for s in ["repo", "read:user", "user:email"] {
+                    assert!(
+                        scopes.iter().any(|x| x == s),
+                        "legacy template missing scope {s}"
+                    );
+                }
+            }
+            _ => panic!("github_legacy_oauth template must declare OAuth auth"),
+        }
+    }
 }
