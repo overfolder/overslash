@@ -76,6 +76,12 @@ pub struct ServiceDefinition {
     pub hosts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Catalog visibility (`x-overslash-hidden`). Hidden templates are
+    /// omitted from agent-facing list/search surfaces (MCP discovery,
+    /// `/v1/search`, embeddings) but stay reachable by key and instantiable;
+    /// dashboard surfaces show them flagged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(default)]
     pub auth: Vec<ServiceAuth>,
     #[serde(default)]
@@ -519,6 +525,7 @@ mod tests {
             description: None,
             hosts: vec!["slack.com".into()],
             category: None,
+            hidden: false,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Http,
@@ -560,6 +567,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: Some("Development".into()),
+            hidden: false,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,

@@ -25,6 +25,21 @@
 
 <Story name="Default" />
 <Story name="Selected" args={{ selected: true }} />
+<Story
+	name="Hidden"
+	args={{
+		template: {
+			key: 'github_legacy_oauth',
+			display_name: 'GitHub (Legacy OAuth)',
+			description: 'Classic OAuth App scopes. Hidden from agent-facing catalogs.',
+			category: 'Development',
+			hosts: ['api.github.com'],
+			action_count: 40,
+			tier: 'global',
+			hidden: true
+		}
+	}}
+/>
 
 <Story name="Catalog row" asChild>
 	<div style="display:flex; gap:16px; flex-wrap:wrap;">

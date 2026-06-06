@@ -218,6 +218,21 @@ pub fn compile_service(
         .and_then(Value::as_str)
         .map(str::to_string);
 
+    let hidden = match info.and_then(|i| i.get("x-overslash-hidden")) {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => {
+            // A typo like `hidden: "true"` must not silently unhide — warn
+            // and fall back to visible so the mistake is observable.
+            warnings.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("x-overslash-hidden must be a boolean (got {other})"),
+                "info.x-overslash-hidden",
+            ));
+            false
+        }
+    };
+
     let hosts = extract_hosts(root.get("servers"));
 
     let auth = match extract_auth(root.get("components")) {
@@ -325,6 +340,7 @@ pub fn compile_service(
             description,
             hosts,
             category,
+            hidden,
             auth,
             actions,
             runtime,
@@ -430,6 +446,44 @@ mod tests {
         assert_eq!(send.risk, Risk::Write);
         assert_eq!(send.scope_param.as_deref(), Some("channel"));
         assert!(send.params["channel"].required);
+        assert!(!svc.hidden, "hidden defaults to false when absent");
+    }
+
+    #[test]
+    fn compile_hidden_flag() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {
+                "title": "Legacy",
+                "x-overslash-key": "legacy",
+                "x-overslash-hidden": true
+            },
+            "paths": {}
+        });
+        let (svc, warnings) = compile_service(&v).expect("compile ok");
+        assert!(warnings.is_empty());
+        assert!(svc.hidden);
+    }
+
+    #[test]
+    fn compile_hidden_non_bool_warns_and_stays_visible() {
+        let v = json!({
+            "openapi": "3.1.0",
+            "info": {
+                "title": "Legacy",
+                "x-overslash-key": "legacy",
+                "x-overslash-hidden": "true"
+            },
+            "paths": {}
+        });
+        let (svc, warnings) = compile_service(&v).expect("compile ok");
+        assert!(!svc.hidden, "non-bool hidden must not hide the template");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.path == "info.x-overslash-hidden" && w.code == "openapi_invalid"),
+            "expected a warning for non-bool hidden, got {warnings:?}"
+        );
     }
 
     // ── MCP runtime: aliases + compile + merge ──────────────────────────

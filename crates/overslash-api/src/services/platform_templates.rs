@@ -34,6 +34,12 @@ pub async fn kernel_list_templates(ctx: PlatformCallContext) -> Result<Value, Ap
         if !is_visible(&global_filter, &svc.key) {
             continue;
         }
+        // `x-overslash-hidden` templates stay out of the agent-facing
+        // catalog; they remain reachable by key (get_template) and
+        // instantiable. Connected instances surface via list_services.
+        if svc.hidden {
+            continue;
+        }
         out.push(serde_json::json!({
             "key": svc.key,
             "display_name": svc.display_name,
@@ -54,9 +60,12 @@ pub async fn kernel_list_templates(ctx: PlatformCallContext) -> Result<Value, Ap
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let action_count = openapi::compile_service(&t.openapi)
-            .map(|(def, _)| def.actions.len())
-            .unwrap_or(0);
+        let (action_count, hidden) = openapi::compile_service(&t.openapi)
+            .map(|(def, _)| (def.actions.len(), def.hidden))
+            .unwrap_or((0, false));
+        if hidden {
+            continue;
+        }
         let tier = if is_user_tier { "user" } else { "org" };
         out.push(serde_json::json!({
             "key": t.key,

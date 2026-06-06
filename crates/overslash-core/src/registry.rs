@@ -26,6 +26,7 @@ fn http_pseudo_service() -> ServiceDefinition {
         ),
         hosts: Vec::new(),
         category: Some("Platform".to_string()),
+        hidden: false,
         auth: Vec::new(),
         actions: HashMap::new(),
         runtime: Runtime::Http,
@@ -453,13 +454,15 @@ paths:
             _ => panic!("github template must declare OAuth auth"),
         }
         assert!(gh.actions.contains_key("list_installations"));
+        assert!(!gh.hidden, "github template must not be hidden");
 
-        // `github_legacy_oauth` keeps the classic OAuth App scopes and carries
-        // a forward-compat `x-overslash-hidden` info annotation — loading it
-        // proves the (currently ignored) extension doesn't break compile.
+        // `github_legacy_oauth` keeps the classic OAuth App scopes and is
+        // marked `x-overslash-hidden: true` so it stays out of agent-facing
+        // catalogs while remaining reachable by key.
         let legacy = reg
             .get("github_legacy_oauth")
             .expect("github_legacy_oauth template missing");
+        assert!(legacy.hidden, "github_legacy_oauth must compile as hidden");
         match legacy
             .auth
             .iter()
