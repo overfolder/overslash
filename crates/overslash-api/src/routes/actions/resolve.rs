@@ -7,7 +7,9 @@ use uuid::Uuid;
 use overslash_db::scopes::OrgScope;
 
 use crate::{AppState, error::AppError, extractors::AuthContext, services::platform_connections};
-use overslash_core::types::{ActionRequest, McpAuth, ParamLocation, Runtime};
+use overslash_core::types::{
+    ActionRequest, McpAuth, ParamLocation, ResolvedActionRequest, Runtime,
+};
 
 use super::*;
 use super::{auth::*, errors::*, service_resolve::*};
@@ -227,7 +229,7 @@ pub(super) async fn resolve_request(
     ceiling_user_id: Uuid,
     req: &CallRequest,
     pre_resolved_mode_c: Option<ResolvedModeC>,
-) -> Result<(ActionRequest, ResolvedMeta), AppError> {
+) -> Result<(ResolvedActionRequest, ResolvedMeta), AppError> {
     // Parse the optional `return_url` hint once, at the request boundary.
     // Doing it here (rather than relying on the kernel's re-validation deep
     // in the mint path) means a malformed hint fails fast with 400 instead
@@ -275,8 +277,7 @@ pub(super) async fn resolve_request(
 
         let (path, url) = resolve_verb_host_and_path(&svc, service_key, &req.url, &req.path)?;
 
-        let mut headers = req.headers.clone();
-        let (secrets, _oauth_injected) = if let Some(ref inst) = instance {
+        let resolved_auth = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
                 ext,
@@ -285,7 +286,6 @@ pub(super) async fn resolve_request(
                 inst,
                 &svc,
                 &req.secrets,
-                &mut headers,
                 return_url_hint,
             )
             .await?
@@ -297,7 +297,6 @@ pub(super) async fn resolve_request(
                 identity_id,
                 &svc,
                 &req.secrets,
-                &mut headers,
                 return_url_hint,
             )
             .await?
@@ -306,12 +305,15 @@ pub(super) async fn resolve_request(
         let description = format!("{} {} ({})", raw_method, path, svc.display_name);
 
         return Ok((
-            ActionRequest {
-                method: raw_method.clone(),
-                url,
-                headers,
-                body: req.body.clone(),
-                secrets,
+            ResolvedActionRequest {
+                request: ActionRequest {
+                    method: raw_method.clone(),
+                    url,
+                    headers: req.headers.clone(),
+                    body: req.body.clone(),
+                    secrets: resolved_auth.secrets,
+                },
+                auth_header: resolved_auth.auth_header,
             },
             ResolvedMeta {
                 description: Some(description),
@@ -330,6 +332,7 @@ pub(super) async fn resolve_request(
                 params: HashMap::new(),
                 mcp_target: None,
                 platform_target: None,
+                instance_id: instance.as_ref().map(|i| i.id),
             },
         ));
     }
@@ -489,12 +492,15 @@ pub(super) async fn resolve_request(
             );
             let description = format!("{interpolated} ({})", svc.display_name);
             return Ok((
-                ActionRequest {
-                    method: String::new(),
-                    url: resolved_url.clone(),
-                    headers: HashMap::new(),
-                    body: None,
-                    secrets: Vec::new(),
+                ResolvedActionRequest {
+                    request: ActionRequest {
+                        method: String::new(),
+                        url: resolved_url.clone(),
+                        headers: HashMap::new(),
+                        body: None,
+                        secrets: Vec::new(),
+                    },
+                    auth_header: None,
                 },
                 ResolvedMeta {
                     description: Some(description),
@@ -515,6 +521,7 @@ pub(super) async fn resolve_request(
                         arguments,
                     }),
                     platform_target: None,
+                    instance_id: None,
                 },
             ));
         }
@@ -536,12 +543,15 @@ pub(super) async fn resolve_request(
             let params_map: serde_json::Map<String, serde_json::Value> =
                 req.params.clone().into_iter().collect();
             return Ok((
-                ActionRequest {
-                    method: String::new(),
-                    url: String::new(),
-                    headers: HashMap::new(),
-                    body: None,
-                    secrets: Vec::new(),
+                ResolvedActionRequest {
+                    request: ActionRequest {
+                        method: String::new(),
+                        url: String::new(),
+                        headers: HashMap::new(),
+                        body: None,
+                        secrets: Vec::new(),
+                    },
+                    auth_header: None,
                 },
                 ResolvedMeta {
                     description: Some(description),
@@ -560,6 +570,7 @@ pub(super) async fn resolve_request(
                         action_key: action_key.clone(),
                         params: params_map,
                     }),
+                    instance_id: None,
                 },
             ));
         }
@@ -670,7 +681,7 @@ pub(super) async fn resolve_request(
         // RefreshFailed / NoRefreshToken from the resolver bubble up as
         // `ReauthRequired` (with a freshly-minted gated URL) instead of being
         // swallowed and surfaced as opaque upstream errors downstream.
-        let (secrets, oauth_injected) = if let Some(ref inst) = instance {
+        let resolved_auth = if let Some(ref inst) = instance {
             resolve_instance_auth(
                 state,
                 ext,
@@ -679,7 +690,6 @@ pub(super) async fn resolve_request(
                 inst,
                 &svc,
                 &req.secrets,
-                &mut headers,
                 return_url_hint,
             )
             .await?
@@ -691,7 +701,6 @@ pub(super) async fn resolve_request(
                 identity_id,
                 &svc,
                 &req.secrets,
-                &mut headers,
                 return_url_hint,
             )
             .await?
@@ -710,7 +719,7 @@ pub(super) async fn resolve_request(
         // already give the operator a "set this secret" path. MCP-bearer
         // templates take a different fork (the runtime check above) and
         // never reach this branch.
-        if !oauth_injected && secrets.is_empty() {
+        if !resolved_auth.oauth_injected && resolved_auth.secrets.is_empty() {
             if let Some(err) = needs_authentication_for_service(
                 state,
                 scope.org_id(),
@@ -732,10 +741,20 @@ pub(super) async fn resolve_request(
         } else {
             format!("https://{host}")
         };
+        // Display-param resolution makes authenticated GETs against the
+        // provider — merge the live auth header into a throwaway map for
+        // those calls only; it never lands on the ActionRequest itself.
+        let resolver_headers = {
+            let mut h = headers.clone();
+            if let Some(ah) = &resolved_auth.auth_header {
+                h.insert(ah.name.clone(), ah.value.clone());
+            }
+            h
+        };
         let resolved = crate::services::param_resolver::resolve_display_params(
             &state.http_client,
             &resolver_base,
-            &headers,
+            &resolver_headers,
             action,
             &req.params,
         )
@@ -751,12 +770,15 @@ pub(super) async fn resolve_request(
         let action_risk = action.risk;
 
         return Ok((
-            ActionRequest {
-                method: action.method.clone(),
-                url,
-                headers,
-                body,
-                secrets,
+            ResolvedActionRequest {
+                request: ActionRequest {
+                    method: action.method.clone(),
+                    url,
+                    headers,
+                    body,
+                    secrets: resolved_auth.secrets,
+                },
+                auth_header: resolved_auth.auth_header,
             },
             ResolvedMeta {
                 description: Some(description),
@@ -772,6 +794,7 @@ pub(super) async fn resolve_request(
                 params: req.params.clone(),
                 mcp_target: None,
                 platform_target: None,
+                instance_id: instance.as_ref().map(|i| i.id),
             },
         ));
     }
