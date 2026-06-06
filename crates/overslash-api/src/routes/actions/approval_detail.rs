@@ -90,10 +90,15 @@ pub(super) async fn compute_disclosure(
 }
 
 /// Approval-create variant: returns the disclosed field list AND the
-/// redacted JSON blob to persist as `approvals.action_detail`. Falls back
-/// to the legacy raw `ActionRequest` serialization when the template
-/// declares neither `x-overslash-disclose` nor `x-overslash-redact`, so
-/// pre-feature templates are unaffected.
+/// redacted JSON blob to persist as `approvals.action_detail`.
+///
+/// Every branch — including the no-declaration fallback — goes through the
+/// header-free `build_jq_input` projection (`{method, url, params, body}`).
+/// Headers are never part of `action_detail`: the projection is what gets
+/// persisted, returned inline in the `pending_approval` envelope (REST and
+/// MCP), and served from `GET /v1/approvals` — all agent-reachable
+/// surfaces. See the projection-shape rationale in
+/// `overslash_core::disclosure::apply_redactions`.
 pub(super) async fn compute_approval_detail(
     meta: &ResolvedMeta,
     req: &ActionRequest,
@@ -141,7 +146,10 @@ pub(super) async fn compute_approval_detail(
     }
 
     if meta.disclose.is_empty() && meta.redact.is_empty() {
-        return (Vec::new(), serde_json::to_value(req).ok());
+        return (
+            Vec::new(),
+            Some(core_disclosure::build_jq_input(req, &meta.params)),
+        );
     }
     let projection = core_disclosure::build_jq_input(req, &meta.params);
     let disclosed = if meta.disclose.is_empty() {
@@ -160,4 +168,68 @@ pub(super) async fn compute_approval_detail(
         core_disclosure::apply_redactions(&mut redacted, &meta.redact);
     }
     (disclosed, Some(redacted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn http_meta() -> ResolvedMeta {
+        ResolvedMeta {
+            description: None,
+            service_scope: Some(ServiceScope {
+                service_key: "github".into(),
+                action_key: "create_issue".into(),
+                scope_param: None,
+                http_verb: None,
+            }),
+            risk: None,
+            disclose: Vec::new(),
+            redact: Vec::new(),
+            params: HashMap::new(),
+            mcp_target: None,
+            platform_target: None,
+            instance_id: None,
+        }
+    }
+
+    /// Regression guard for the OAuth-token leak: a template that declares
+    /// neither `x-overslash-disclose` nor `x-overslash-redact` must still
+    /// get the header-free projection — never a raw `ActionRequest`
+    /// serialization that would expose `headers` on every approval surface.
+    #[tokio::test]
+    async fn no_declaration_fallback_uses_headerless_projection() {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        headers.insert(
+            "X-Custom-Auth".to_string(),
+            "Bearer leaked-token-123".to_string(),
+        );
+        let req = ActionRequest {
+            method: "POST".into(),
+            url: "https://api.github.com/repos/o/r/issues".into(),
+            headers,
+            body: Some(r#"{"title":"hi"}"#.into()),
+            secrets: Vec::new(),
+        };
+        let meta = http_meta();
+
+        let (disclosed, detail) =
+            compute_approval_detail(&meta, &req, std::time::Duration::from_millis(100)).await;
+
+        assert!(disclosed.is_empty());
+        let detail = detail.expect("fallback always produces a detail blob");
+        assert_eq!(
+            detail,
+            overslash_core::disclosure::build_jq_input(&req, &meta.params),
+            "fallback must equal the canonical header-free projection"
+        );
+        assert!(detail.get("headers").is_none(), "headers must never appear");
+        let rendered = serde_json::to_string(&detail).expect("detail serializes");
+        assert!(
+            !rendered.contains("leaked-token-123"),
+            "credential values must never appear in action_detail"
+        );
+    }
 }

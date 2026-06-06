@@ -28,7 +28,7 @@ use overslash_core::{
     crypto,
     permissions::{GroupCeilingResult, PermissionKey, suggest_tiers},
     secret_injection::inject_secrets,
-    types::service::Risk,
+    types::{ResolvedActionRequest, service::Risk},
 };
 
 use super::*;
@@ -121,7 +121,10 @@ pub(super) async fn call_action_impl(
 
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
     // the identity lookup above so service-name resolution doesn't re-fetch it.
-    let (action_req, meta) = resolve_request(
+    // The live OAuth credential (when one resolved) rides separately on
+    // `auth_header` — `action_req` itself is credential-free and therefore
+    // safe to serialize into approval/audit/replay surfaces.
+    let (resolved, meta) = resolve_request(
         &state,
         &ext,
         &auth,
@@ -132,6 +135,10 @@ pub(super) async fn call_action_impl(
         pre_resolved_mode_c,
     )
     .await?;
+    let ResolvedActionRequest {
+        request: action_req,
+        auth_header,
+    } = resolved;
 
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
     // permission/approval work if the resolved action mutates. We use the
@@ -300,10 +307,25 @@ pub(super) async fn call_action_impl(
                     })
                     .ok()
                 } else {
+                    // `action_req` is credential-free (the live OAuth header
+                    // rides on `auth_header`, which has no Serialize impl).
+                    // Record the service/instance the credential resolved
+                    // from — exactly when one resolved — so the replay path
+                    // re-mints a fresh token instead of persisting this one.
+                    let (replay_service_key, replay_instance_id) = if auth_header.is_some() {
+                        (
+                            meta.service_scope.as_ref().map(|s| s.service_key.clone()),
+                            meta.instance_id,
+                        )
+                    } else {
+                        (None, None)
+                    };
                     serde_json::to_value(StoredCallRequest::new(
                         action_req.clone(),
                         req.filter.clone(),
                         req.prefer_stream.unwrap_or(false),
+                        replay_service_key,
+                        replay_instance_id,
                     ))
                     .ok()
                 };
@@ -598,8 +620,13 @@ pub(super) async fn call_action_impl(
         secret_values.insert(secret_ref.name.clone(), value);
     }
 
-    let (resolved_url, resolved_headers) = inject_secrets(&action_req, &secret_values)
+    let (resolved_url, mut resolved_headers) = inject_secrets(&action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // Send-time merge of the live OAuth credential — the only point where
+    // the token and the outgoing request meet.
+    if let Some(ah) = &auth_header {
+        resolved_headers.insert(ah.name.clone(), ah.value.clone());
+    }
     let resolved_url = state.config.apply_base_overrides(&resolved_url);
 
     // Streaming proxy path

@@ -23,6 +23,12 @@ pub enum InjectAs {
 }
 
 /// A raw HTTP action request (Mode A).
+///
+/// Credential-free by construction: live OAuth tokens are carried alongside
+/// in [`ResolvedActionRequest::auth_header`], never in `headers`, so this
+/// struct stays safe to persist (`approvals.replay_payload`) and to project
+/// into approval/audit surfaces. Vault secrets ride as [`SecretRef`]s —
+/// references only — and are resolved at send time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {
     pub method: String,
@@ -33,6 +39,29 @@ pub struct ActionRequest {
     pub body: Option<String>,
     #[serde(default)]
     pub secrets: Vec<SecretRef>,
+}
+
+/// A live credential header resolved at auth time (e.g.
+/// `Authorization: Bearer <oauth token>`).
+///
+/// Deliberately does NOT derive `Serialize`/`Deserialize`: tokens must be
+/// structurally impossible to persist or return on any API surface
+/// (approvals, audit, replay payloads). The value is merged into the
+/// outgoing header map only at send time.
+#[derive(Debug, Clone)]
+pub struct AuthHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// A fully resolved request: the serializable, credential-free
+/// [`ActionRequest`] plus the live auth header (when the service resolved
+/// OAuth). Not serializable as a whole — persistence paths must take
+/// `.request`, execution paths consume both.
+#[derive(Debug, Clone)]
+pub struct ResolvedActionRequest {
+    pub request: ActionRequest,
+    pub auth_header: Option<AuthHeader>,
 }
 
 /// Result of executing an HTTP action.

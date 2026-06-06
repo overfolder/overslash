@@ -1268,6 +1268,35 @@ async fn execute_claimed_approval(
     // shared audit + webhook + rule-creation tail below.
     let (finalised, succeeded, result_summary) = match payload {
         ReplayPayload::Http(stored) => {
+            // Replay payloads are credential-free: when the original call
+            // carried an OAuth header, only the service/instance it resolved
+            // from was stored. Re-resolve a fresh token against the
+            // requester's identity now — the stored request never holds one,
+            // and the original token could have expired while the approval
+            // sat pending. Pre-fix rows have no `service_key` and replay
+            // their baked-in headers as-is.
+            let auth_header = match stored.service_key.as_deref() {
+                Some(service_key) => {
+                    match crate::routes::actions::resolve_replay_auth_header(
+                        state,
+                        ext,
+                        scope,
+                        approval.identity_id,
+                        service_key,
+                        stored.instance_id,
+                    )
+                    .await
+                    {
+                        Ok(h) => Some(h),
+                        Err(e) => {
+                            let msg = format!("replay auth re-resolution failed: {e}");
+                            return fail_and_return(scope, execution_id, &msg, e).await;
+                        }
+                    }
+                }
+                None => None,
+            };
+
             // ── Replay with timeout. Streaming is forced off — the reviewer's
             // connection isn't the original caller's.
             let call_ctx = CallContext {
@@ -1288,7 +1317,7 @@ async fn execute_claimed_approval(
 
             let outcome = tokio::time::timeout(
                 replay_timeout,
-                action_caller::call_action_request(call_ctx, &stored.action),
+                action_caller::call_action_request(call_ctx, &stored.action, auth_header.as_ref()),
             )
             .await;
 

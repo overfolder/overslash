@@ -51,6 +51,10 @@ mod validate;
 use call::call_action_impl;
 use validate::validate_action_impl;
 
+// Used by the approval-replay path to re-mint the OAuth credential that
+// replay payloads deliberately don't persist.
+pub(crate) use auth::resolve_replay_auth_header;
+
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full
 /// list lives in `overslash_search`.
@@ -365,6 +369,10 @@ struct ResolvedMeta {
     /// When the resolved service has `runtime: Platform`, dispatch calls the
     /// in-process handler registry instead of making any outgoing call.
     platform_target: Option<PlatformTarget>,
+    /// Resolved service-instance id (HTTP shapes only). Stored on approval
+    /// replay payloads so the replay path can re-resolve OAuth against the
+    /// same binding instead of persisting a live token.
+    instance_id: Option<uuid::Uuid>,
 }
 
 struct McpTarget {

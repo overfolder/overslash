@@ -20,7 +20,7 @@ use uuid::Uuid;
 use overslash_core::{
     crypto,
     secret_injection::inject_secrets,
-    types::{ActionRequest, ActionResult, FilteredBody, McpAuth},
+    types::{ActionRequest, ActionResult, AuthHeader, FilteredBody, McpAuth},
 };
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
@@ -34,15 +34,23 @@ use crate::{
     },
 };
 
-/// Wrapper written into `approvals.action_detail` at approval-creation time.
-/// Carries the resolved `ActionRequest` plus the two side-channel fields the
-/// original `CallRequest` passed in (`filter`, `prefer_stream`) so a replay
-/// at `/v1/approvals/{id}/call` faithfully reproduces the shape of the
-/// response the agent would have received.
+/// Wrapper written into `approvals.replay_payload` at approval-creation
+/// time. Carries the resolved `ActionRequest` plus the two side-channel
+/// fields the original `CallRequest` passed in (`filter`, `prefer_stream`)
+/// so a replay at `/v1/approvals/{id}/call` faithfully reproduces the shape
+/// of the response the agent would have received.
+///
+/// `action` is credential-free: the live OAuth token never enters
+/// `ActionRequest.headers` (see `overslash_core::types::AuthHeader`).
+/// When the original call resolved OAuth, `service_key`/`instance_id`
+/// record where the credential came from so the replay path can re-resolve
+/// a fresh token instead of persisting one — which also keeps replays
+/// working after the original token would have expired.
 ///
 /// Reading old rows: `from_stored_detail` falls back to a bare `ActionRequest`
 /// value so pre-migration approvals stay replayable (filter=None,
-/// prefer_stream=false).
+/// prefer_stream=false). Pre-fix rows have no `service_key` and still carry
+/// their baked-in header — they replay as-is.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCallRequest {
     pub action: ActionRequest,
@@ -50,14 +58,29 @@ pub struct StoredCallRequest {
     pub filter: Option<ResponseFilter>,
     #[serde(default)]
     pub prefer_stream: bool,
+    /// Service whose auth must be re-resolved at replay time. `Some` exactly
+    /// when the original resolve produced a live OAuth header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_key: Option<String>,
+    /// Instance binding the original resolve used, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<Uuid>,
 }
 
 impl StoredCallRequest {
-    pub fn new(action: ActionRequest, filter: Option<ResponseFilter>, prefer_stream: bool) -> Self {
+    pub fn new(
+        action: ActionRequest,
+        filter: Option<ResponseFilter>,
+        prefer_stream: bool,
+        service_key: Option<String>,
+        instance_id: Option<Uuid>,
+    ) -> Self {
         Self {
             action,
             filter,
             prefer_stream,
+            service_key,
+            instance_id,
         }
     }
 
@@ -72,6 +95,8 @@ impl StoredCallRequest {
             action,
             filter: None,
             prefer_stream: false,
+            service_key: None,
+            instance_id: None,
         })
     }
 }
@@ -161,9 +186,15 @@ pub enum CallOutcome {
     Streamed(Response),
 }
 
+/// Execute a resolved, credential-free `ActionRequest`. The live OAuth
+/// credential (when the service resolved one) is passed separately as
+/// `auth_header` and merged into the outgoing header map at send time —
+/// it must never be baked into `action_req.headers`, which is what gets
+/// persisted on approvals and replay payloads.
 pub async fn call_action_request(
     ctx: CallContext<'_>,
     action_req: &ActionRequest,
+    auth_header: Option<&AuthHeader>,
 ) -> Result<CallOutcome, AppError> {
     // ── Resolve secrets ──────────────────────────────────────────────
     let enc_key = ctx.state.config.keyring()?;
@@ -187,8 +218,13 @@ pub async fn call_action_request(
         secret_values.insert(secret_ref.name.clone(), value);
     }
 
-    let (resolved_url, resolved_headers) = inject_secrets(action_req, &secret_values)
+    let (resolved_url, mut resolved_headers) = inject_secrets(action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // Send-time merge of the live OAuth credential — the only point where
+    // the token and the outgoing request meet.
+    if let Some(ah) = auth_header {
+        resolved_headers.insert(ah.name.clone(), ah.value.clone());
+    }
     let resolved_url = ctx.state.config.apply_base_overrides(&resolved_url);
 
     // ── Streaming path ───────────────────────────────────────────────
