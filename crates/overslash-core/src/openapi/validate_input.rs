@@ -112,6 +112,24 @@ pub fn validate_args(
     }
 }
 
+/// Fill `args` with each declared param's `default` where the caller omitted
+/// it (key absent) or passed an explicit null. Applies to params of any
+/// `required`-ness and any location — OpenAPI treats a `default` as the value
+/// used when the field is not supplied. Mutates `args` in place.
+///
+/// Call this *before* [`validate_args`] so a `required` param carrying a
+/// default is no longer reported as missing, and before request resolution so
+/// the default flows into the outgoing path/query/body like any other value.
+pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<String, Value>) {
+    for (name, p) in params {
+        let Some(default) = &p.default else { continue };
+        let absent = args.get(name).is_none_or(Value::is_null);
+        if absent {
+            args.insert(name.clone(), default.clone());
+        }
+    }
+}
+
 /// Format a list of errors into a single human-readable line.
 pub fn format_errors(errors: &[ArgError]) -> String {
     errors
@@ -189,6 +207,13 @@ mod tests {
         }
     }
 
+    fn p_default(t: &str, required: bool, default: Value) -> ActionParam {
+        ActionParam {
+            default: Some(default),
+            ..p(t, required)
+        }
+    }
+
     fn schema(entries: &[(&str, ActionParam)]) -> HashMap<String, ActionParam> {
         entries
             .iter()
@@ -237,6 +262,52 @@ mod tests {
     fn null_value_treated_as_missing() {
         let s = schema(&[("recipient", p("string", true))]);
         let a = args(&[("recipient", json!(null))]);
+        let err = validate_args(&s, &a).unwrap_err();
+        assert_eq!(
+            err,
+            vec![ArgError::Missing {
+                field: "recipient".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn default_satisfies_required() {
+        // A `required` param carrying a default (e.g. `calendarId: primary`)
+        // is omittable: applying defaults fills it, so validation passes.
+        let s = schema(&[("calendarId", p_default("string", true, json!("primary")))]);
+        let mut a = args(&[]);
+        apply_defaults(&s, &mut a);
+        assert_eq!(a.get("calendarId"), Some(&json!("primary")));
+        assert!(validate_args(&s, &a).is_ok());
+    }
+
+    #[test]
+    fn default_fills_null() {
+        let s = schema(&[("calendarId", p_default("string", true, json!("primary")))]);
+        let mut a = args(&[("calendarId", json!(null))]);
+        apply_defaults(&s, &mut a);
+        assert_eq!(a.get("calendarId"), Some(&json!("primary")));
+    }
+
+    #[test]
+    fn caller_value_wins_over_default() {
+        let s = schema(&[("calendarId", p_default("string", true, json!("primary")))]);
+        let mut a = args(&[("calendarId", json!("work@group.calendar.google.com"))]);
+        apply_defaults(&s, &mut a);
+        assert_eq!(
+            a.get("calendarId"),
+            Some(&json!("work@group.calendar.google.com"))
+        );
+    }
+
+    #[test]
+    fn no_default_still_missing() {
+        // Regression guard: a required param without a default is still
+        // reported missing after the defaults pass runs.
+        let s = schema(&[("recipient", p("string", true))]);
+        let mut a = args(&[]);
+        apply_defaults(&s, &mut a);
         let err = validate_args(&s, &a).unwrap_err();
         assert_eq!(
             err,

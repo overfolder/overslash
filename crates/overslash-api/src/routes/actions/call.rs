@@ -41,7 +41,7 @@ pub(super) async fn call_action_impl(
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
-    Json(req): Json<CallRequest>,
+    Json(mut req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
@@ -88,6 +88,14 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Fill in template-declared defaults (e.g. `calendarId: primary`) before
+    // validation so a `required` param with a default isn't rejected as
+    // missing, and before resolution so the default flows into the outgoing
+    // path/query/body like a caller-supplied value.
+    overslash_core::openapi::validate_input::apply_defaults(
+        &pre_meta.validation_params,
+        &mut req.params,
+    );
     if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
         &pre_meta.validation_params,
         &req.params,
