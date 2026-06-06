@@ -200,6 +200,8 @@ export interface TemplateSummary {
   hosts: string[];
   action_count: number;
   tier: TemplateTier;
+  /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
+  hidden?: boolean;
 }
 
 export interface TemplateDetail {
@@ -220,6 +222,8 @@ export interface TemplateDetail {
   runtime?: ServiceRuntime;
   /** Present when `runtime === "mcp"`. */
   mcp?: McpDetail;
+  /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
+  hidden?: boolean;
 }
 
 export interface CreateTemplateRequest {

@@ -1,9 +1,10 @@
 # DEPRECATED: classic OAuth App flow, kept for orgs whose configured GitHub
 # client (`OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` or BYOC) is
 # still an OAuth App. New setups should use the `github` template, which
-# targets GitHub App user-to-server tokens. `x-overslash-hidden` marks this
-# template for exclusion from the catalog once hidden-template support lands;
-# until then it is a no-op annotation.
+# targets GitHub App user-to-server tokens. `x-overslash-hidden` keeps this
+# template out of agent-facing catalogs (/v1/search, MCP discovery, semantic
+# search); it stays reachable by key and instantiable, and dashboard surfaces
+# show it with a "hidden" badge.
 openapi: 3.1.0
 info:
   title: GitHub (Legacy OAuth)

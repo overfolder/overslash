@@ -83,6 +83,13 @@ async fn backfill_global(
 
     let mut pending: Vec<PendingEmbed> = Vec::new();
     for svc in registry.all() {
+        if svc.hidden {
+            // Hidden templates are not advertised to semantic search.
+            // Prune rows embedded before the template was marked hidden —
+            // the global tier has no other write-path cleanup.
+            delete_template_embeddings(db, "global", None, None, &svc.key).await;
+            continue;
+        }
         for (action_key, action) in svc.actions.iter() {
             let source = action_source_text(
                 &svc.display_name,
@@ -182,6 +189,11 @@ async fn backfill_db_templates(db: &PgPool, embedder: &dyn Embedder) -> Result<u
                 continue;
             }
         };
+        if def.hidden {
+            // Same hidden-template pruning as the global tier above.
+            delete_template_embeddings(db, tier, Some(org_id), owner_identity_id, &def.key).await;
+            continue;
+        }
         for (action_key, action) in def.actions.iter() {
             let source = action_source_text(
                 &def.display_name,
@@ -281,6 +293,13 @@ pub async fn refresh_template(
     def: &overslash_core::types::ServiceDefinition,
 ) {
     if !embedder.is_enabled() {
+        return;
+    }
+
+    if def.hidden {
+        // Marking a template `x-overslash-hidden` pulls it out of semantic
+        // search immediately, same as deleting it.
+        delete_template_embeddings(db, tier, org_id, owner_identity_id, &def.key).await;
         return;
     }
 

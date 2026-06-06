@@ -1905,6 +1905,7 @@ mod risk_tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![],
             actions,
             runtime: Runtime::Http,

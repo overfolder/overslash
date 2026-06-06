@@ -47,6 +47,12 @@
 					...new Set(templates.map((t) => t.category ?? '').filter((c) => c))
 				]),
 			hint: 'Template category'
+		},
+		{
+			name: 'hidden',
+			operators: ['=', '!='],
+			values: ['true', 'false'],
+			hint: 'Hidden from agent-facing catalogs'
 		}
 	]);
 
@@ -65,6 +71,9 @@
 				break;
 			case 'category':
 				field = t.category ?? '';
+				break;
+			case 'hidden':
+				field = t.hidden ? 'true' : 'false';
 				break;
 			default:
 				return true;
@@ -316,6 +325,9 @@
 							</td>
 							<td>
 								<StatusBadge variant={t.tier} />
+								{#if t.hidden}
+									<StatusBadge variant="hidden" />
+								{/if}
 							</td>
 							<td class="muted">{t.category || '—'}</td>
 							<td>{t.action_count}</td>

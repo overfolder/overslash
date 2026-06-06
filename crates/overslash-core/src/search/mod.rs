@@ -173,6 +173,7 @@ mod tests {
             description: desc.map(String::from),
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![ServiceAuth::ApiKey {
                 default_secret_name: "k".into(),
                 injection: TokenInjection {

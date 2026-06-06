@@ -977,6 +977,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Mcp,
@@ -997,6 +998,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![ServiceAuth::ApiKey {
                 default_secret_name: "default".into(),
                 injection: TokenInjection {
@@ -1041,6 +1043,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![ServiceAuth::OAuth {
                 provider: "google".into(),
                 scopes: vec![],
@@ -1078,6 +1081,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Http,

@@ -65,6 +65,10 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
         alias: "category",
         canonical: "x-overslash-category",
     },
+    Alias {
+        alias: "hidden",
+        canonical: "x-overslash-hidden",
+    },
 ];
 
 pub(super) const OPERATION_ALIASES: &[Alias] = &[
@@ -172,14 +176,16 @@ mod tests {
     #[test]
     fn rewrites_alias_on_info() {
         let mut v = doc(json!({
-            "info": {"key": "slack", "category": "chat", "title": "Slack"}
+            "info": {"key": "slack", "category": "chat", "hidden": true, "title": "Slack"}
         }));
         let issues = normalize_aliases(&mut v);
         assert!(issues.is_empty(), "{issues:?}");
         let info = v["info"].as_object().unwrap();
         assert_eq!(info["x-overslash-key"], "slack");
         assert_eq!(info["x-overslash-category"], "chat");
+        assert_eq!(info["x-overslash-hidden"], true);
         assert!(!info.contains_key("key"));
+        assert!(!info.contains_key("hidden"));
     }
 
     #[test]

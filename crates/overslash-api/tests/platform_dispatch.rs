@@ -141,6 +141,15 @@ async fn list_templates_with_permission_returns_array() {
         !result_body.as_array().unwrap().is_empty(),
         "global services should appear in list"
     );
+    // `x-overslash-hidden` templates stay out of the agent-facing catalog.
+    assert!(
+        !result_body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["key"] == "github_legacy_oauth"),
+        "hidden template leaked into agent-facing list_templates"
+    );
 }
 
 /// The approval permission_keys use the `permission` anchor

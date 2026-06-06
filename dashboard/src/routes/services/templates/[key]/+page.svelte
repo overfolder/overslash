@@ -82,6 +82,9 @@
 				<span>Template Editor:</span>
 				<span class="name">{template.display_name}</span>
 				<StatusBadge variant={template.tier} />
+				{#if template.hidden}
+					<StatusBadge variant="hidden" />
+				{/if}
 				{#if readOnly}
 					<span class="read-only-badge">Read-only</span>
 				{/if}

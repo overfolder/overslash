@@ -286,6 +286,7 @@ mod verb_host_path_tests {
             description: None,
             hosts: hosts.into_iter().map(String::from).collect(),
             category: None,
+            hidden: false,
             auth: vec![],
             actions: std::collections::HashMap::new(),
             runtime: overslash_core::types::Runtime::Http,
