@@ -12,6 +12,14 @@ permissions:
   contents: read
   pull-requests: read
 
+# A superseded PR run (force-push / new commit) is pure waste and its jobs
+# hold runner slots that other runs then queue behind — cancel it outright.
+# Pushes and merge-queue runs are never cancelled: `github.ref` is unique per
+# merge-queue attempt, and successive pushes to dev/master just queue.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -37,6 +45,7 @@ jobs:
               - 'rust-toolchain.toml'
               - 'clippy.toml'
               - '.sqlx/**'
+              - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
             infra:
               - 'infra/**'
@@ -45,35 +54,12 @@ jobs:
               - 'dashboard/**'
               - '.github/workflows/ci.yml'
 
+  # Lint and the sqlx offline-cache check share one job: both are short
+  # (~1.5 min each), neither is on the critical path (coverage shards are),
+  # and one fewer job per run means one fewer runner slot competing with the
+  # coverage shards when the org hits its concurrency limit.
   lint:
-    name: Lint
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    env:
-      SQLX_OFFLINE: "true"
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Format check
-        run: cargo fmt --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Ban sqlx::test (use common::test_pool instead)
-        run: |
-          if grep -rn 'sqlx::test' crates/*/tests/; then
-            echo "::error::Found sqlx::test usage. Use #[tokio::test] + common::test_pool() instead."
-            exit 1
-          fi
-
-  sqlx-check:
-    name: SQLx Verify
+    name: Lint + SQLx Verify
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
@@ -100,6 +86,8 @@ jobs:
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
+          ALTER SYSTEM SET fsync = 'off';
+          ALTER SYSTEM SET full_page_writes = 'off';
           ALTER SYSTEM SET synchronous_commit = 'off';
           ALTER SYSTEM SET wal_compression = 'off';
           ALTER SYSTEM SET wal_writer_delay = '10s';
@@ -109,19 +97,27 @@ jobs:
           SQL
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Cache sqlx-cli
-        id: cache-sqlx
-        uses: actions/cache@v5
         with:
-          path: |
-            ~/.cargo/bin/sqlx
-            ~/.cargo/bin/cargo-sqlx
-          key: sqlx-cli-${{ runner.os }}-0.9
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # Pin the major so the CLI's offline-cache format matches the workspace
+      # sqlx 0.9 (the .sqlx/ files it verifies).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli@0.9
 
-      - name: Install sqlx-cli
-        if: steps.cache-sqlx.outputs.cache-hit != 'true'
-        run: cargo install sqlx-cli --no-default-features --features postgres --locked
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Ban sqlx::test (use common::test_pool instead)
+        run: |
+          if grep -rn 'sqlx::test' crates/*/tests/; then
+            echo "::error::Found sqlx::test usage. Use #[tokio::test] + common::test_pool() instead."
+            exit 1
+          fi
 
       - name: Run migrations
         run: cargo sqlx migrate run --source crates/overslash-db/migrations
@@ -134,9 +130,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    concurrency:
-      group: coverage-${{ github.workflow }}-${{ github.ref }}-${{ matrix.partition }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
@@ -180,23 +173,41 @@ jobs:
       # `System.IO.IOException: No space left on device` from the runner's
       # own log handle, which surfaces as a confusing job failure that
       # has nothing to do with the tests themselves.
-      - name: Free disk space on runner
+      #
+      # Runs in the background so its ~90s doesn't sit on the critical path:
+      # the deleted paths are not touched by any later step, and the deletion
+      # finishes long before disk pressure builds (peak usage is during the
+      # test run, ~3 min in). Orphaned background processes survive step
+      # boundaries for the lifetime of the job.
+      - name: Free disk space on runner (background)
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            "$AGENT_TOOLSDIRECTORY"
-          sudo docker image prune --all --force >/dev/null 2>&1 || true
-          df -h /
+          (sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+             /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+             "$AGENT_TOOLSDIRECTORY"
+           sudo docker image prune --all --force
+           df -h /) >"$RUNNER_TEMP/free-disk-space.log" 2>&1 &
+      # max_connections needs a full restart (not just a reload): the ci
+      # nextest profile runs 10 tests concurrently, each with its own pools
+      # (test pool + in-process API server pool), so the default 100 is too
+      # tight. fsync/full_page_writes off speeds up the per-test
+      # `CREATE DATABASE … TEMPLATE` clones — data is throwaway.
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
+          ALTER SYSTEM SET fsync = 'off';
+          ALTER SYSTEM SET full_page_writes = 'off';
           ALTER SYSTEM SET synchronous_commit = 'off';
           ALTER SYSTEM SET wal_compression = 'off';
           ALTER SYSTEM SET wal_writer_delay = '10s';
           ALTER SYSTEM SET commit_delay = '100000';
           ALTER SYSTEM SET work_mem = '32MB';
-          SELECT pg_reload_conf();
+          ALTER SYSTEM SET max_connections = '500';
           SQL
+          docker restart ${{ job.services.postgres.id }}
+          for _ in $(seq 1 30); do
+            pg_isready -h localhost -U overslash && break
+            sleep 1
+          done
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -208,9 +219,12 @@ jobs:
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
+      # --profile ci selects the nextest profile in .config/nextest.toml
+      # (test-threads = 10 — the suite is IO-bound, see the profile comments).
       - name: Tests with coverage (shard ${{ matrix.partition }}/3)
         run: >-
           cargo llvm-cov nextest --workspace
+          --profile ci
           --partition count:${{ matrix.partition }}/3
           --lcov --output-path lcov.info
         env:
@@ -307,6 +321,8 @@ jobs:
       - name: Tune Postgres for CI (durability off; data is throwaway)
         run: |
           PGPASSWORD=overslash psql -h localhost -U overslash -d overslash <<'SQL'
+          ALTER SYSTEM SET fsync = 'off';
+          ALTER SYSTEM SET full_page_writes = 'off';
           ALTER SYSTEM SET synchronous_commit = 'off';
           ALTER SYSTEM SET wal_compression = 'off';
           ALTER SYSTEM SET wal_writer_delay = '10s';
@@ -321,7 +337,7 @@ jobs:
           key: e2e
       - uses: taiki-e/install-action@v2
         with:
-          tool: sqlx-cli
+          tool: sqlx-cli@0.9
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -356,7 +372,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, sqlx-check, coverage, infra, dashboard, e2e]
+    needs: [changes, lint, coverage, infra, dashboard, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs passed or were skipped
