@@ -13,7 +13,7 @@ mod web;
 #[command(
     name = "overslash",
     bin_name = "overslash",
-    version,
+    version = common::version(),
     about = "Overslash — identity & authentication gateway for AI agents",
     long_about = "Overslash ships as a single binary with three integration surfaces: \
 the REST API (`serve`), the API plus embedded dashboard (`web`), \

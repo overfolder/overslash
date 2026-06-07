@@ -143,6 +143,13 @@ fn redact_password(url: &str) -> String {
     }
 }
 
+/// Version reported by the binary: the release tag baked in at build time
+/// (`OVERSLASH_VERSION`, set by the release workflow, no `v` prefix) or the
+/// crate version for local builds.
+pub fn version() -> &'static str {
+    option_env!("OVERSLASH_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 /// Print an executor-style startup banner with clickable URLs (OSC 8
 /// hyperlinks on supporting terminals, plain text otherwise).
 pub fn print_banner(mode: &str, public_url: &str, health_url: &str, embed_dashboard: bool) {
@@ -150,7 +157,7 @@ pub fn print_banner(mode: &str, public_url: &str, health_url: &str, embed_dashbo
     eprintln!();
     eprintln!(
         "  \x1b[1;35moverslash\x1b[0m {} — {mode} mode",
-        env!("CARGO_PKG_VERSION")
+        version()
     );
     eprintln!("  {bar}");
     eprintln!("  Dashboard  {}", link(public_url, public_url));
