@@ -569,6 +569,7 @@ pub(super) async fn call_action_impl(
             Json(CallResponse::Called {
                 result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
+                is_error,
             }),
         )
             .into_response();
@@ -630,6 +631,9 @@ pub(super) async fn call_action_impl(
             Json(CallResponse::Called {
                 result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
+                // Platform handlers run in-process: failures surface as
+                // `AppError`, so a Called envelope is always a success.
+                is_error: false,
             }),
         )
             .into_response());
@@ -695,6 +699,10 @@ pub(super) async fn call_action_impl(
             "method": action_req.method,
             "url": action_req.url,
             "status_code": upstream_status.as_u16(),
+            // Normalized upstream-failure flag, same field MCP audit details
+            // carry — lets the dashboard flag failed executions across
+            // runtimes without re-deriving from status_code.
+            "is_error": upstream_status.as_u16() >= 400,
             "content_length": content_length,
             "service": req.service,
             "action": req.action,
@@ -805,10 +813,15 @@ pub(super) async fn call_action_impl(
         None
     };
 
+    let upstream_error = result.status_code >= 400;
     let mut audit_detail = serde_json::json!({
         "method": action_req.method,
         "url": action_req.url,
         "status_code": result.status_code,
+        // Normalized upstream-failure flag, same field MCP audit details
+        // carry — lets the dashboard flag failed executions across
+        // runtimes without re-deriving from status_code.
+        "is_error": upstream_error,
         "duration_ms": result.duration_ms,
         "service": req.service,
         "action": req.action,
@@ -854,6 +867,7 @@ pub(super) async fn call_action_impl(
         Json(CallResponse::Called {
             result: render_action_result(&result, req.verbose),
             action_description: meta.description,
+            is_error: upstream_error,
         }),
     )
         .into_response();

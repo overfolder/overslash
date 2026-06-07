@@ -55,6 +55,12 @@
 		{#if response && response.status === 'called'}
 			{@const v = statusVariant(response.result.status_code)}
 			<span class={`chip ${v}`}>{response.result.status_code}</span>
+			{#if response.is_error}
+				<!-- The only failure signal for MCP tool errors, whose envelope
+				     status_code is always 200; for HTTP it reinforces the 4xx/5xx
+				     status chip. -->
+				<span class="chip err">upstream error</span>
+			{/if}
 			<span class="duration">{response.result.duration_ms}ms</span>
 		{:else if elapsedMs !== null && !running}
 			<span class="duration">{Math.round(elapsedMs)}ms</span>

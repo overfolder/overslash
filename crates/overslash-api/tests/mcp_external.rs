@@ -292,6 +292,7 @@ async fn mcp_none_auth_calls_and_audits_with_mcp_runtime() {
     assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
+    assert_eq!(body["is_error"], false);
 
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["runtime"], "mcp");
@@ -421,6 +422,9 @@ async fn mcp_is_error_surfaces_in_envelope_not_http() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
+    // The tool-level failure is surfaced on the envelope itself, so callers
+    // don't have to parse the MCP body to notice it.
+    assert_eq!(body["is_error"], true);
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["is_error"], true);
     assert_eq!(envelope["content"][0]["text"], "tool blew up");

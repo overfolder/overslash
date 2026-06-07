@@ -12,6 +12,7 @@ import {
 	makeSnapper,
 	seedAgent,
 	seedApproval,
+	seedExecution,
 	seedSecret
 } from '../tests/scenarios/index.mjs';
 
@@ -22,6 +23,10 @@ const session = await login('admin');
 await seedSecret(session, { name: `audit-demo-${Date.now()}`, value: 'hunter2' });
 await seedAgent(session, { name: `audit-demo-agent-${Date.now()}` });
 await seedApproval(session); // approval.created + identity.created upstream
+// action.executed rows: one success (the API's own /health) and one whose
+// upstream 404s — the latter renders the red "error" pill + Result line.
+await seedExecution(session, { url: `${session.apiUrl}/health` });
+await seedExecution(session, { url: `${session.apiUrl}/v1/upstream-error-demo` });
 
 const snap = await makeSnapper(session);
 
@@ -46,7 +51,42 @@ try {
 	}
 	await ctx.close();
 
-	// 4. Search bar with chip + autocomplete.
+	// 4. Upstream-error execution — expand the row carrying the red "error"
+	//    pill so the "Result" line ("Upstream error — HTTP 404") is visible.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-upstream-error', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('tr.row .upstream-error').first().waitFor({ timeout: 15_000 });
+			}
+		});
+		const errRow = page
+			.locator('tr.row', { has: page.locator('.upstream-error') })
+			.first();
+		await errRow.click();
+		await page.waitForTimeout(400);
+		await snap.snap(page, 'audit-upstream-error-expanded');
+		await ctx.close();
+	}
+
+	// 5. `result = error` filter — only upstream-error executions remain.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-result-error', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('.search input').first().waitFor({ timeout: 15_000 });
+			}
+		});
+		const input = page.locator('.search input').first();
+		await input.click();
+		await input.fill('result = error');
+		await input.press('Enter');
+		await page.waitForTimeout(600);
+		await snap.snap(page, 'audit-result-error');
+		await ctx.close();
+	}
+
+	// 6. Search bar with chip + autocomplete.
 	{
 		const { page, ctx } = await snap.navigateAndSnap('audit-search', '/audit', {
 			viewport: { width: 1400, height: 900 },
@@ -65,7 +105,7 @@ try {
 		await ctx.close();
 	}
 
-	// 5. Empty state — filter to a key that nothing matches.
+	// 7. Empty state — filter to a key that nothing matches.
 	{
 		const { page, ctx } = await snap.navigateAndSnap('audit-empty', '/audit', {
 			viewport: { width: 1400, height: 900 },

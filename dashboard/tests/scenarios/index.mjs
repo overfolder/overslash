@@ -31,7 +31,8 @@ export {
 	seedGroupGrant,
 	seedGroupMember,
 	seedApproval,
-	seedApprovalResolution
+	seedApprovalResolution,
+	seedExecution
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
 export { connectGithubService } from './connect.mjs';

@@ -626,7 +626,15 @@ export type FilteredBody =
     };
 
 export type CallResponse =
-  | { status: 'called'; result: ActionResult; action_description: string | null }
+  | {
+      status: 'called';
+      result: ActionResult;
+      action_description: string | null;
+      /** True when the upstream itself reported failure (MCP `is_error`
+       * envelope, or upstream HTTP >= 400) even though the call executed.
+       * Optional for wire-compat with older API builds. */
+      is_error?: boolean;
+    }
   | {
       status: 'pending_approval';
       approval_id: string;

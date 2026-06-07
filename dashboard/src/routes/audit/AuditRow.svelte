@@ -1,7 +1,7 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
 	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
-	import type { AuditEntry } from './types';
+	import { upstreamError, upstreamResultLabel, type AuditEntry } from './types';
 
 	let {
 		entry,
@@ -133,6 +133,11 @@
 		if (type === 'approval') return `/approvals/${id}`;
 		return null;
 	}
+
+	// Upstream-error presence for execution events (detail.is_error) —
+	// drives the row pill and the expanded "Result" line.
+	const hasUpstreamError = $derived(upstreamError(entry));
+	const resultLabel = $derived(upstreamResultLabel(entry));
 </script>
 
 <tr
@@ -187,7 +192,12 @@
 			<span class="via-imp" title="via impersonation by {entry.impersonated_by_name ?? entry.impersonated_by_identity_id}">imp</span>
 		{/if}
 	</td>
-	<td><code class="badge">{entry.action}</code></td>
+	<td>
+		<code class="badge">{entry.action}</code>
+		{#if hasUpstreamError}
+			<span class="upstream-error" title={resultLabel}>error</span>
+		{/if}
+	</td>
 	<td class="resource">
 		{#if entry.resource_type}
 			<span class="rtype">{entry.resource_type}</span>
@@ -210,6 +220,10 @@
 					<dd class="mono">{entry.id}</dd>
 					<dt>Timestamp</dt>
 					<dd class="mono">{entry.created_at}</dd>
+					{#if resultLabel}
+						<dt>Result</dt>
+						<dd class={hasUpstreamError ? 'result-err' : 'result-ok'}>{resultLabel}</dd>
+					{/if}
 					{#if entry.identity_path}
 						<dt>Identity</dt>
 						<dd>
@@ -441,6 +455,27 @@
 	.disclosed .trunc {
 		color: var(--color-text-muted);
 		font-size: 0.75rem;
+	}
+	.upstream-error {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 1px 5px;
+		border-radius: var(--radius-sm, 4px);
+		background: color-mix(in srgb, var(--color-danger, #d14343) 15%, transparent);
+		color: var(--color-danger, #b91c1c);
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		vertical-align: middle;
+		cursor: help;
+	}
+	.result-err {
+		color: var(--color-danger, #b91c1c);
+		font-weight: 600;
+	}
+	.result-ok {
+		color: var(--color-success, #15803d);
 	}
 	.via-imp {
 		display: inline-block;

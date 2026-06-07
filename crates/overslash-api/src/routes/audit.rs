@@ -83,6 +83,10 @@ struct AuditQuery {
     owner_user_id: Option<Uuid>,
     /// Substring on the owning user's name. Powers `user ~`.
     owner_user_contains: Option<String>,
+    /// Upstream result of execution events (`detail.is_error`). `true` →
+    /// executions whose upstream reported failure; `false` → executions
+    /// that succeeded. Powers the `result =` search bar key.
+    is_error: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     since: Option<OffsetDateTime>,
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
@@ -141,6 +145,7 @@ async fn query_audit(
         identity_kinds: identity_kinds.filter(|v| !v.is_empty()),
         owner_user_id: params.owner_user_id,
         owner_user_contains: params.owner_user_contains.and_then(empty),
+        is_error: params.is_error,
         limit: params.limit,
         offset: params.offset,
     };
