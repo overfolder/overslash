@@ -575,7 +575,7 @@
 						type="button"
 						class="btn"
 						title="Open in API Explorer"
-						onclick={() => goto(`/services?tab=api-explorer&service=${encodeURIComponent(svc?.name ?? '')}`)}
+						onclick={() => goto(`/services?tab=api-explorer&service=${encodeURIComponent(svc?.id ?? '')}`)}
 					>
 						⌘ Try it
 					</button>
