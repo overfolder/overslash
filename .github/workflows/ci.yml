@@ -99,7 +99,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The `key` suffix must be rotated whenever [profile.*] settings in
+      # Cargo.toml change: rust-cache's primary key doesn't hash profiles, so
+      # without a rotation it restores stale artifacts that refingerprint
+      # (full rebuild every run) and never saves the new ones because the
+      # primary key already exists. -deps-opt1 dates from the
+      # [profile.dev.package."*"] opt-level bump.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: lint-deps-opt1
       # Pin the major so the CLI's offline-cache format matches the workspace
       # sqlx 0.9 (the .sqlx/ files it verifies).
       - uses: taiki-e/install-action@v2
@@ -187,7 +195,7 @@ jobs:
            sudo docker image prune --all --force
            df -h /) >"$RUNNER_TEMP/free-disk-space.log" 2>&1 &
       # max_connections needs a full restart (not just a reload): the ci
-      # nextest profile runs 10 tests concurrently, each with its own pools
+      # nextest profile runs 8 tests concurrently, each with its own pools
       # (test pool + in-process API server pool), so the default 100 is too
       # tight. fsync/full_page_writes off speeds up the per-test
       # `CREATE DATABASE … TEMPLATE` clones — data is throwaway.
@@ -211,9 +219,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      # See the lint job for why the key carries a -deps-opt1 suffix (and
+      # must be rotated again on the next [profile.*] change).
       - uses: Swatinem/rust-cache@v2
         with:
-          key: coverage
+          key: coverage-deps-opt1
       # mold replaces the system linker (no RUSTFLAGS change, so cached
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
@@ -335,9 +345,11 @@ jobs:
           SQL
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      # See the lint job for why the key carries a -deps-opt1 suffix (and
+      # must be rotated again on the next [profile.*] change).
       - uses: Swatinem/rust-cache@v2
         with:
-          key: e2e
+          key: e2e-deps-opt1
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@v2
         with:
