@@ -23,6 +23,7 @@ use crate::{
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
     services::action_caller::{self, AuditSource, CallContext, CallOutcome, ReplayPayload},
+    services::audit_capture,
     services::group_ceiling,
     services::mcp_caller,
     services::platform_caller,
@@ -1281,6 +1282,27 @@ async fn execute_claimed_approval(
 
     let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
 
+    // Org-level response-body capture mode for the replay's audit row,
+    // resolved once so the call pipeline stays query-free. Capture is
+    // best-effort observability (the audit write itself is fire-and-
+    // forget), so a failed read degrades to Off rather than erroring —
+    // the execution row is already claimed as "executing" here, and a
+    // `?` would skip finalization and wedge it in that state forever.
+    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+        state.db(ext),
+        approval.org_id,
+    )
+    .await
+    {
+        Ok(mode) => mode
+            .map(|m| audit_capture::AuditResponseBodyMode::parse_or_off(&m))
+            .unwrap_or(audit_capture::AuditResponseBodyMode::Off),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this replay");
+            audit_capture::AuditResponseBodyMode::Off
+        }
+    };
+
     // Replays count toward the same execution/upstream metrics inline calls
     // record (they were invisible there before). The original call shape
     // isn't stored, so `mode = "replay"`; the template key is recovered from
@@ -1341,6 +1363,7 @@ async fn execute_claimed_approval(
                     approval_id: id,
                     execution_id,
                 },
+                audit_body_mode,
             };
 
             let outcome = tokio::time::timeout(
@@ -1457,6 +1480,18 @@ async fn execute_claimed_approval(
                             .expect("audit_detail is a json object");
                         obj.insert("replayed_from_approval".into(), serde_json::json!(id));
                         obj.insert("execution_id".into(), serde_json::json!(execution_id));
+                        // Org-gated response capture — same envelope-as-body
+                        // shape the inline MCP branch stores.
+                        if audit_capture::should_capture(audit_body_mode, is_error) {
+                            obj.insert(
+                                "response".into(),
+                                audit_capture::capture_body(
+                                    &result.body,
+                                    Some("application/json"),
+                                    state.config.audit_response_body_max_bytes,
+                                ),
+                            );
+                        }
                     }
                     let _ = scope
                         .log_audit(AuditEntry {
@@ -1481,8 +1516,34 @@ async fn execute_claimed_approval(
                         .unwrap_or(claimed);
                     (finalised, true, is_error, Some(summary))
                 }
-                Ok(Err(app_err)) => {
-                    let msg = app_err.to_string();
+                Ok(Err(invoke_err)) => {
+                    // Transport / JSON-RPC failures used to record nothing in
+                    // the audit log. Mirror the inline MCP fork: a secret-safe
+                    // error summary, plus the replay cross-references.
+                    if let Some(error_detail) = invoke_err.audit {
+                        let _ = scope
+                            .log_audit(AuditEntry {
+                                org_id: audit_org_id,
+                                identity_id: Some(approval.identity_id),
+                                action: "action.executed",
+                                resource_type: Some("mcp"),
+                                resource_id: None,
+                                detail: serde_json::json!({
+                                    "runtime": "mcp",
+                                    "tool": call.tool,
+                                    "arguments": call.arguments,
+                                    "url": call.url,
+                                    "is_error": true,
+                                    "error": error_detail,
+                                    "replayed_from_approval": id,
+                                    "execution_id": execution_id,
+                                }),
+                                description: Some(approval.action_summary.as_str()),
+                                ip_address: ip,
+                            })
+                            .await;
+                    }
+                    let msg = invoke_err.app.to_string();
                     let finalised = scope
                         .finalize_execution_failed(execution_id, &msg)
                         .await?

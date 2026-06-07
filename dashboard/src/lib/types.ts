@@ -60,6 +60,17 @@ export interface ExecutionSettings {
   default_deferred_execution: boolean;
 }
 
+/** Org-level capture mode for upstream response bodies on
+ * `action.executed` audit rows: `off` stores nothing (default),
+ * `errors_only` stores bodies of failed executions (`detail.is_error`),
+ * `all` stores every captured body. Bodies are truncated server-side
+ * (64 KB default). */
+export type AuditResponseBodyMode = 'off' | 'errors_only' | 'all';
+
+export interface AuditSettings {
+  response_body_mode: AuditResponseBodyMode;
+}
+
 export interface IdpConfig {
   id?: string;
   org_id?: string;

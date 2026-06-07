@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orgs SET audit_response_body_mode = $2, updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e6d937ca09a2dc666459ee08f687aa22b36c8e8dfe040e1a73e7b6c4551fff2b"
+}

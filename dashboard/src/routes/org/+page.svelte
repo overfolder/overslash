@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { ApiError, session } from '$lib/session';
 	import type {
+		AuditResponseBodyMode,
+		AuditSettings,
 		ExecutionSettings,
 		IdpConfig,
 		ManagedSigninSettings,
@@ -37,6 +39,9 @@
 	let executionSettings = $state<ExecutionSettings | null>(null);
 	let executionSaving = $state(false);
 	let executionError = $state<string | null>(null);
+	let auditSettings = $state<AuditSettings | null>(null);
+	let auditSaving = $state(false);
+	let auditError = $state<string | null>(null);
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
@@ -56,6 +61,7 @@
 		webhooks = data.webhooks;
 		secretRequestSettings = data.secretRequestSettings;
 		executionSettings = data.executionSettings;
+		auditSettings = data.auditSettings;
 		managedSigninSettings = data.managedSigninSettings;
 		invites = data.invites;
 		subscription = data.subscription;
@@ -478,6 +484,22 @@
 		}
 	}
 
+	async function setAuditResponseBodyMode(mode: AuditResponseBodyMode) {
+		if (!org || !auditSettings || auditSettings.response_body_mode === mode) return;
+		auditSaving = true;
+		auditError = null;
+		try {
+			const updated = await session.patch<AuditSettings>(`/v1/orgs/${org.id}/audit-settings`, {
+				response_body_mode: mode
+			});
+			auditSettings = updated;
+		} catch (err) {
+			auditError = asMessage(err);
+		} finally {
+			auditSaving = false;
+		}
+	}
+
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
 		if (!org || !secretRequestSettings) return;
 		const next = nextValue ?? !secretRequestSettings.allow_unsigned_secret_provide;
@@ -714,6 +736,73 @@
 				</div>
 				{#if executionError}
 					<div class="form-error">{executionError}</div>
+				{/if}
+			{/if}
+		</section>
+
+		<!-- Audit log (response-body capture) -->
+		<section class="card">
+			<h2>Audit log</h2>
+			<p class="section-desc">
+				Controls whether the upstream response body is stored on
+				<code>action.executed</code> audit entries. Bodies are truncated
+				(64&nbsp;KB by default) and shown in the entry's expanded view on the
+				Audit Log page. Response bodies can contain sensitive data returned
+				by the upstream service — they are stored until the audit entry is
+				deleted and visible to anyone who can read the audit log.
+			</p>
+			{#if auditSettings}
+				<fieldset class="mode-group" disabled={auditSaving}>
+					<label class="radio-row">
+						<input
+							type="radio"
+							name="audit-response-body-mode"
+							value="off"
+							checked={auditSettings.response_body_mode === 'off'}
+							onchange={() => setAuditResponseBodyMode('off')}
+						/>
+						<span class="radio-body">
+							<span class="radio-label">Off</span>
+							<span class="radio-help">Never store response bodies (default).</span>
+						</span>
+					</label>
+					<label class="radio-row">
+						<input
+							type="radio"
+							name="audit-response-body-mode"
+							value="errors_only"
+							checked={auditSettings.response_body_mode === 'errors_only'}
+							onchange={() => setAuditResponseBodyMode('errors_only')}
+						/>
+						<span class="radio-body">
+							<span class="radio-label">Errors only</span>
+							<span class="radio-help">
+								Store bodies of failed executions — upstream HTTP 4xx/5xx and
+								MCP tool errors. Error payloads are what you need when
+								debugging a failing agent, without retaining every successful
+								response.
+							</span>
+						</span>
+					</label>
+					<label class="radio-row">
+						<input
+							type="radio"
+							name="audit-response-body-mode"
+							value="all"
+							checked={auditSettings.response_body_mode === 'all'}
+							onchange={() => setAuditResponseBodyMode('all')}
+						/>
+						<span class="radio-body">
+							<span class="radio-label">All responses</span>
+							<span class="radio-help">
+								Store every captured response body, success or failure.
+								Significantly grows audit storage on busy orgs.
+							</span>
+						</span>
+					</label>
+				</fieldset>
+				{#if auditError}
+					<div class="form-error">{auditError}</div>
 				{/if}
 			{/if}
 		</section>
@@ -1904,6 +1993,43 @@
 		margin-bottom: 0.25rem;
 	}
 	.toggle-help {
+		color: var(--color-text-muted);
+		font-size: 0.82rem;
+		line-height: 1.45;
+	}
+	.mode-group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		border: none;
+		margin: 0;
+		padding: 0;
+	}
+	.mode-group:disabled {
+		opacity: 0.6;
+	}
+	.radio-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6rem;
+		cursor: pointer;
+	}
+	.radio-row input[type='radio'] {
+		margin-top: 0.2rem;
+		accent-color: var(--color-primary, #3b82f6);
+	}
+	.radio-body {
+		flex: 1;
+		min-width: 0;
+	}
+	.radio-label {
+		display: block;
+		font-weight: 600;
+		font-size: 0.95rem;
+		margin-bottom: 0.15rem;
+	}
+	.radio-help {
+		display: block;
 		color: var(--color-text-muted);
 		font-size: 0.82rem;
 		line-height: 1.45;

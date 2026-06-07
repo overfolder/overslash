@@ -379,7 +379,7 @@ export async function seedApprovalResolution(session, approvalId, resolution) {
  * when pointing at localhost.
  *
  * @param {import('./auth.mjs').Session} session
- * @param {{ url: string, method?: string }} input
+ * @param {{ url: string, method?: string, expect?: number | number[] }} input
  * @returns {Promise<{ status: string, is_error?: boolean, result?: unknown }>}
  */
 export async function seedExecution(session, input) {
@@ -389,6 +389,26 @@ export async function seedExecution(session, input) {
 			service: 'http',
 			method: input.method ?? 'GET',
 			url: input.url
-		}
+		},
+		// A transport-level failure (e.g. connection refused) surfaces as a
+		// 502 from the gateway while still writing the `action.executed`
+		// audit row with `detail.error`. Pass `expect: 502` to seed one.
+		expect: input.expect
+	});
+}
+
+/**
+ * Set the org's audit response-body capture mode
+ * (`off` | `errors_only` | `all`). Governs whether subsequently-seeded
+ * executions carry `detail.response` on their `action.executed` rows.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {'off' | 'errors_only' | 'all'} mode
+ * @returns {Promise<{ response_body_mode: string }>}
+ */
+export async function setAuditResponseBodyMode(session, mode) {
+	return api(session, `/v1/orgs/${session.orgId}/audit-settings`, {
+		method: 'PATCH',
+		body: { response_body_mode: mode }
 	});
 }

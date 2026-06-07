@@ -20,6 +20,7 @@ use crate::{
     extractors::{AuthContext, ClientIp, ReqExt},
     services::{
         action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
+        audit_capture::{self, AuditResponseBodyMode},
         group_ceiling, http_caller, mcp_caller,
         response_filter::{self},
     },
@@ -492,12 +493,33 @@ pub(super) async fn call_action_impl(
     // metrics wrapper in `mod.rs` applies to `record_execution`.
     let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
 
+    // Org-level response-body capture mode for audit rows. One extra PK
+    // lookup on the hot path — the org row isn't otherwise fetched here.
+    // Capture is best-effort observability (the audit write itself is
+    // fire-and-forget), so any failure to resolve the mode — missing org
+    // (can't happen post-auth) or a transient DB error — degrades to Off
+    // rather than failing the caller's action.
+    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+        state.db(&ext),
+        auth.org_id,
+    )
+    .await
+    {
+        Ok(mode) => mode
+            .map(|m| AuditResponseBodyMode::parse_or_off(&m))
+            .unwrap_or(AuditResponseBodyMode::Off),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this call");
+            AuditResponseBodyMode::Off
+        }
+    };
+
     // ── MCP dispatch fork ────────────────────────────────────────────
     // Mcp-runtime services skip the HTTP executor: no URL templating, no
     // secret injection into headers, no streaming path. The executor owns
     // header resolution through mcp_auth::resolve_headers.
     if let Some(mcp_target) = meta.mcp_target.as_ref() {
-        let result = mcp_caller::invoke(
+        let result = match mcp_caller::invoke(
             &state,
             &scope,
             &mcp_target.url,
@@ -505,7 +527,42 @@ pub(super) async fn call_action_impl(
             &mcp_target.tool,
             &mcp_target.arguments,
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(invoke_err) => {
+                // Transport / JSON-RPC failures used to bubble out with no
+                // audit trail at all. Record the attempt with a secret-safe
+                // error summary before propagating; pre-flight failures
+                // (header resolution, SSRF guard) carry no summary and keep
+                // the old no-row behavior.
+                if let Some(error_detail) = invoke_err.audit {
+                    let _ = scope
+                        .clone()
+                        .log_audit(AuditEntry {
+                            org_id: auth.org_id,
+                            identity_id: Some(identity_id),
+                            action: "action.executed",
+                            resource_type: req.service.as_deref(),
+                            resource_id: None,
+                            detail: serde_json::json!({
+                                "runtime": "mcp",
+                                "tool": mcp_target.tool,
+                                "arguments": mcp_target.arguments,
+                                "url": mcp_target.url,
+                                "is_error": true,
+                                "error": error_detail,
+                                "service": req.service,
+                                "action": req.action,
+                            }),
+                            description: meta.description.as_deref(),
+                            ip_address: ip.0.as_deref(),
+                        })
+                        .await;
+                }
+                return Err(invoke_err.app);
+            }
+        };
 
         // Build the shared MCP audit shape, then layer on inline-only
         // fields (service/action/disclosed). Replay uses the same helper
@@ -530,6 +587,18 @@ pub(super) async fn call_action_impl(
                 .expect("audit_detail is a json object");
             obj.insert("service".into(), serde_json::json!(req.service));
             obj.insert("action".into(), serde_json::json!(req.action));
+            // Org-gated response capture: for MCP the "body" is the stable
+            // result envelope (runtime/tool/structured/content/is_error).
+            if audit_capture::should_capture(audit_body_mode, is_error) {
+                obj.insert(
+                    "response".into(),
+                    audit_capture::capture_body(
+                        &result.body,
+                        Some("application/json"),
+                        state.config.audit_response_body_max_bytes,
+                    ),
+                );
+            }
         }
 
         // Disclosure + redaction: MCP actions can declare the same
@@ -671,14 +740,33 @@ pub(super) async fn call_action_impl(
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {
-        let upstream = http_caller::call_streaming(
+        let upstream = match http_caller::call_streaming(
             &state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
             action_req.body.as_deref(),
         )
-        .await?;
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                let e = http_caller::CallError::Request(e);
+                log_transport_error_audit(
+                    &scope,
+                    auth.org_id,
+                    identity_id,
+                    &action_req,
+                    req.service.as_deref(),
+                    req.action.as_deref(),
+                    audit_capture::scrub_transport_error(&e),
+                    meta.description.as_deref(),
+                    ip.0.as_deref(),
+                )
+                .await;
+                return Err(map_call_error(e));
+            }
+        };
 
         let upstream_status = upstream.status();
         // A transport failure above propagates via `?` and records nothing
@@ -707,6 +795,18 @@ pub(super) async fn call_action_impl(
             "service": req.service,
             "action": req.action,
         });
+        // The streamed body is never buffered, so it can't be captured. A
+        // small marker keeps "streamed, body unavailable" distinguishable
+        // from "capture off" on rows where capture would have applied.
+        if audit_capture::should_capture(audit_body_mode, upstream_status.as_u16() >= 400) {
+            streamed_detail
+                .as_object_mut()
+                .expect("audit detail is a json object")
+                .insert(
+                    "response".into(),
+                    serde_json::json!({ "skipped": "streamed" }),
+                );
+        }
         let streamed_disclosed = compute_disclosure(
             &meta,
             &action_req,
@@ -769,7 +869,7 @@ pub(super) async fn call_action_impl(
     }
 
     // Buffered call path (default)
-    let mut result = http_caller::call(
+    let mut result = match http_caller::call(
         &state.http_client,
         &action_req.method,
         &resolved_url,
@@ -778,19 +878,29 @@ pub(super) async fn call_action_impl(
         state.config.max_response_body_bytes,
     )
     .await
-    .map_err(|e| match e {
-        http_caller::CallError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        } => AppError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        },
-        http_caller::CallError::Request(e) => AppError::Request(e),
-    })?;
-    // Transport failures / oversized bodies bail above and record nothing —
+    {
+        Ok(result) => result,
+        Err(e) => {
+            // Transport failures / oversized bodies used to bail with no
+            // audit trail at all — only metrics saw them. Record the
+            // attempt with a secret-safe error summary before propagating.
+            log_transport_error_audit(
+                &scope,
+                auth.org_id,
+                identity_id,
+                &action_req,
+                req.service.as_deref(),
+                req.action.as_deref(),
+                audit_capture::scrub_transport_error(&e),
+                meta.description.as_deref(),
+                ip.0.as_deref(),
+            )
+            .await;
+            return Err(map_call_error(e));
+        }
+    };
+    // Transport failures / oversized bodies bail above (with an error audit
+    // row but no upstream-response sample) —
     // this counter only counts responses that actually arrived upstream.
     overslash_metrics::actions::record_upstream_response(
         &upstream_tpl,
@@ -826,6 +936,21 @@ pub(super) async fn call_action_impl(
         "service": req.service,
         "action": req.action,
     });
+    // Org-gated response capture (off / errors_only / all), truncated at
+    // AUDIT_RESPONSE_BODY_MAX_BYTES.
+    if audit_capture::should_capture(audit_body_mode, upstream_error) {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert(
+                "response".to_string(),
+                audit_capture::capture_body(
+                    &result.body,
+                    result.headers.get("content-type").map(String::as_str),
+                    state.config.audit_response_body_max_bytes,
+                ),
+            );
+    }
     if let Some(filter_audit) = filter_audit {
         audit_detail
             .as_object_mut()
@@ -879,4 +1004,62 @@ pub(super) async fn call_action_impl(
         resp.extensions_mut().insert(UpstreamErrored);
     }
     Ok(resp)
+}
+
+/// Map a transport-level `CallError` to the client-facing `AppError`.
+/// Shared by the streamed and buffered forks so the error contract stays
+/// what it was before transport failures gained audit rows.
+fn map_call_error(e: http_caller::CallError) -> AppError {
+    match e {
+        http_caller::CallError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        } => AppError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        },
+        http_caller::CallError::Request(e) => AppError::Request(e),
+    }
+}
+
+/// Write the `action.executed` audit row for an HTTP call whose upstream
+/// never produced a response (DNS/connect/timeout, or a body over the
+/// buffering limit). No `status_code` — nothing arrived. `error_detail`
+/// comes from `audit_capture::scrub_transport_error`, so it never carries
+/// the resolved URL or injected secrets; `action_req.url` is the same
+/// secret-free template URL the success rows store.
+#[allow(clippy::too_many_arguments)]
+async fn log_transport_error_audit(
+    scope: &OrgScope,
+    org_id: Uuid,
+    identity_id: Uuid,
+    action_req: &overslash_core::types::ActionRequest,
+    service: Option<&str>,
+    action: Option<&str>,
+    error_detail: serde_json::Value,
+    description: Option<&str>,
+    ip: Option<&str>,
+) {
+    let _ = scope
+        .clone()
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(identity_id),
+            action: "action.executed",
+            resource_type: service,
+            resource_id: None,
+            detail: serde_json::json!({
+                "method": action_req.method,
+                "url": action_req.url,
+                "is_error": true,
+                "error": error_detail,
+                "service": service,
+                "action": action,
+            }),
+            description,
+            ip_address: ip,
+        })
+        .await;
 }
