@@ -46,6 +46,11 @@ pub struct Config {
     pub public_url: String,
     pub dev_auth_enabled: bool,
     pub max_response_body_bytes: usize,
+    /// Truncation cap for upstream response bodies persisted on
+    /// `action.executed` audit rows (when the org's
+    /// `audit_response_body_mode` enables capture). Bytes of the
+    /// already-decoded body string, not the wire size.
+    pub audit_response_body_max_bytes: usize,
     pub filter_timeout_ms: u64,
     pub dashboard_url: String,
     pub dashboard_origin: String,
@@ -371,6 +376,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5_242_880), // 5 MB
+            audit_response_body_max_bytes: env::var("AUDIT_RESPONSE_BODY_MAX_BYTES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(65_536), // 64 KB
             filter_timeout_ms: env::var("FILTER_TIMEOUT_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -1132,6 +1141,7 @@ mod tests {
             public_url: "http://localhost:0".into(),
             dev_auth_enabled: false,
             max_response_body_bytes: 0,
+            audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
             dashboard_url: "/".into(),
             dashboard_origin: "*".into(),

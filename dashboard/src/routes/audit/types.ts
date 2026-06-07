@@ -77,15 +77,54 @@ export function upstreamError(entry: AuditEntry): boolean {
 	return typeof code === 'number' && code >= 400;
 }
 
+/** Captured upstream response on execution events (`detail.response`),
+ * present when the org's audit response-body mode enabled capture for the
+ * row. `skipped` replaces the body fields on streamed executions, whose
+ * body never passes through a buffer the gateway could sample. */
+export interface AuditResponseCapture {
+	body?: string;
+	truncated?: boolean;
+	content_type?: string;
+	skipped?: string;
+}
+
+export function responseCapture(entry: AuditEntry): AuditResponseCapture | null {
+	const r = entry.detail.response;
+	if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+	return r as AuditResponseCapture;
+}
+
+/** Secret-safe transport-failure summary (`detail.error`) on execution
+ * events whose upstream never produced a response (DNS/connect/timeout,
+ * body over the buffering limit, MCP transport errors). */
+export interface AuditTransportError {
+	kind: string;
+	message: string;
+}
+
+export function transportError(entry: AuditEntry): AuditTransportError | null {
+	const e = entry.detail.error;
+	if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+	const { kind, message } = e as Record<string, unknown>;
+	if (typeof kind !== 'string' || typeof message !== 'string') return null;
+	return { kind, message };
+}
+
 /** Human-readable upstream result for the expanded pane, or null for
  * non-execution events. "Upstream error — HTTP 502" / "Upstream error —
- * tool reported error" (MCP) / "Success — HTTP 200" / "Success". */
+ * tool reported error" (MCP) / "Transport error — could not connect to
+ * upstream" / "Success — HTTP 200" / "Success". */
 export function upstreamResultLabel(entry: AuditEntry): string | null {
 	if (!EXECUTION_ACTIONS.includes(entry.action)) return null;
 	const failed = upstreamError(entry);
 	const code = entry.detail.status_code;
 	const isMcp = entry.detail.runtime === 'mcp';
 	if (failed) {
+		// Transport-failure rows carry `error` and no status_code — the
+		// upstream never answered, which is a different story than an
+		// HTTP error response.
+		const transport = transportError(entry);
+		if (transport) return `Transport error — ${transport.message}`;
 		if (isMcp) return 'Upstream error — tool reported error';
 		return typeof code === 'number' ? `Upstream error — HTTP ${code}` : 'Upstream error';
 	}

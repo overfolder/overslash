@@ -17,7 +17,7 @@ use crate::{
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, InstanceAdminAuth, ReqExt},
     routes::auth::{session_cookie, signing_key_bytes},
-    services::jwt,
+    services::{audit_capture::AuditResponseBodyMode, jwt},
 };
 
 pub fn router() -> Router<AppState> {
@@ -41,6 +41,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/orgs/{id}/execution-settings",
             get(get_execution_settings).patch(patch_execution_settings),
+        )
+        .route(
+            "/v1/orgs/{id}/audit-settings",
+            get(get_audit_settings).patch(patch_audit_settings),
         )
         .route(
             "/v1/orgs/{id}/managed-signin",
@@ -856,6 +860,87 @@ async fn patch_execution_settings(
 
     Ok(Json(ExecutionSettingsResponse {
         default_deferred_execution: req.default_deferred_execution,
+    }))
+}
+
+// ─── Audit settings (response body capture mode) ────────────────────────
+
+#[derive(Serialize)]
+struct AuditSettingsResponse {
+    /// Whether `action.executed` audit rows persist the upstream response
+    /// body: `"off"` (default) stores nothing, `"errors_only"` stores
+    /// bodies when the normalized `detail.is_error` flag is true, `"all"`
+    /// stores every captured body. Bodies are truncated at
+    /// `AUDIT_RESPONSE_BODY_MAX_BYTES` (default 64 KB).
+    response_body_mode: String,
+}
+
+#[derive(Deserialize)]
+struct PatchAuditSettingsRequest {
+    response_body_mode: String,
+}
+
+async fn get_audit_settings(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<AuditSettingsResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let value = overslash_db::repos::org::get_audit_response_body_mode(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(AuditSettingsResponse {
+        response_body_mode: value,
+    }))
+}
+
+async fn patch_audit_settings(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchAuditSettingsRequest>,
+) -> Result<Json<AuditSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    // Parse at the boundary so the DB CHECK constraint is never the thing
+    // that rejects bad input.
+    let mode = AuditResponseBodyMode::parse(&req.response_body_mode).ok_or_else(|| {
+        AppError::BadRequest("response_body_mode must be one of: off, errors_only, all".into())
+    })?;
+
+    let updated =
+        overslash_db::repos::org::set_audit_response_body_mode(state.db(&ext), id, mode.as_str())
+            .await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.audit_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "response_body_mode": mode.as_str(),
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(AuditSettingsResponse {
+        response_body_mode: mode.as_str().to_string(),
     }))
 }
 

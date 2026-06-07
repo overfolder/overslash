@@ -29,6 +29,7 @@ use crate::{
     AppState,
     error::AppError,
     services::{
+        audit_capture::{self, AuditResponseBodyMode},
         http_caller,
         response_filter::{self, ResponseFilter},
     },
@@ -173,6 +174,9 @@ pub struct CallContext<'a> {
     pub filter: Option<ResponseFilter>,
     pub prefer_stream: bool,
     pub audit_source: AuditSource,
+    /// Org-level response-body capture mode for the audit row, resolved by
+    /// the caller (one PK lookup) so this pipeline stays query-free.
+    pub audit_body_mode: AuditResponseBodyMode,
 }
 
 pub enum CallOutcome {
@@ -229,14 +233,27 @@ pub async fn call_action_request(
 
     // ── Streaming path ───────────────────────────────────────────────
     if ctx.prefer_stream {
-        let upstream = http_caller::call_streaming(
+        let upstream = match http_caller::call_streaming(
             &ctx.state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
             action_req.body.as_deref(),
         )
-        .await?;
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                let e = http_caller::CallError::Request(e);
+                log_transport_error_audit(
+                    &ctx,
+                    action_req,
+                    audit_capture::scrub_transport_error(&e),
+                )
+                .await;
+                return Err(map_call_error(e));
+            }
+        };
 
         let upstream_status = upstream.status();
         let upstream_headers = upstream.headers().clone();
@@ -270,7 +287,7 @@ pub async fn call_action_request(
     }
 
     // ── Buffered path (default) ──────────────────────────────────────
-    let mut result = http_caller::call(
+    let mut result = match http_caller::call(
         &ctx.state.http_client,
         &action_req.method,
         &resolved_url,
@@ -279,18 +296,17 @@ pub async fn call_action_request(
         ctx.state.config.max_response_body_bytes,
     )
     .await
-    .map_err(|e| match e {
-        http_caller::CallError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        } => AppError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        },
-        http_caller::CallError::Request(e) => AppError::Request(e),
-    })?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            // Transport failures / oversized bodies used to bail with no
+            // audit trail at all. Record the attempt with a secret-safe
+            // error summary before propagating.
+            log_transport_error_audit(&ctx, action_req, audit_capture::scrub_transport_error(&e))
+                .await;
+            return Err(map_call_error(e));
+        }
+    };
 
     let filter_audit = if let Some(filter) = ctx.filter.clone() {
         let lang = filter.lang().to_string();
@@ -315,6 +331,21 @@ pub async fn call_action_request(
         "service": ctx.service_key,
         "action": ctx.action_key,
     });
+    // Org-gated response capture (off / errors_only / all), truncated at
+    // AUDIT_RESPONSE_BODY_MAX_BYTES.
+    if audit_capture::should_capture(ctx.audit_body_mode, result.status_code >= 400) {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert(
+                "response".to_string(),
+                audit_capture::capture_body(
+                    &result.body,
+                    result.headers.get("content-type").map(String::as_str),
+                    ctx.state.config.audit_response_body_max_bytes,
+                ),
+            );
+    }
     if let Some(filter_audit) = filter_audit {
         audit_detail
             .as_object_mut()
@@ -355,6 +386,71 @@ pub async fn call_action_request(
     })
 }
 
+/// Map a transport-level `CallError` to the client-facing `AppError`.
+/// Kept identical to the pre-audit-row error contract.
+fn map_call_error(e: http_caller::CallError) -> AppError {
+    match e {
+        http_caller::CallError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        } => AppError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        },
+        http_caller::CallError::Request(e) => AppError::Request(e),
+    }
+}
+
+/// Write the `action.executed` audit row for a call whose upstream never
+/// produced a response (DNS/connect/timeout, or a body over the buffering
+/// limit). No `status_code` — nothing arrived. `error_detail` comes from
+/// `audit_capture::scrub_transport_error`, so it never carries the
+/// resolved URL or injected secrets; `action_req.url` is the same
+/// secret-free template URL the success rows store.
+async fn log_transport_error_audit(
+    ctx: &CallContext<'_>,
+    action_req: &ActionRequest,
+    error_detail: serde_json::Value,
+) {
+    let mut audit_detail = serde_json::json!({
+        "method": action_req.method,
+        "url": action_req.url,
+        "is_error": true,
+        "error": error_detail,
+        "service": ctx.service_key,
+        "action": ctx.action_key,
+    });
+    if let AuditSource::Replay {
+        approval_id,
+        execution_id,
+    } = ctx.audit_source
+    {
+        let obj = audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object");
+        obj.insert(
+            "replayed_from_approval".to_string(),
+            serde_json::json!(approval_id),
+        );
+        obj.insert("execution_id".to_string(), serde_json::json!(execution_id));
+    }
+
+    let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
+        .log_audit(AuditEntry {
+            org_id: ctx.scope.org_id(),
+            identity_id: Some(ctx.identity_id),
+            action: "action.executed",
+            resource_type: ctx.service_key,
+            resource_id: None,
+            detail: audit_detail,
+            description: ctx.description,
+            ip_address: ctx.ip,
+        })
+        .await;
+}
+
 async fn write_stream_audit(
     ctx: &CallContext<'_>,
     action_req: &ActionRequest,
@@ -371,6 +467,18 @@ async fn write_stream_audit(
         "service": ctx.service_key,
         "action": ctx.action_key,
     });
+    // The streamed body is never buffered, so it can't be captured. A small
+    // marker keeps "streamed, body unavailable" distinguishable from
+    // "capture off" on rows where capture would have applied.
+    if audit_capture::should_capture(ctx.audit_body_mode, status_code >= 400) {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert(
+                "response".to_string(),
+                serde_json::json!({ "skipped": "streamed" }),
+            );
+    }
     if let AuditSource::Replay {
         approval_id,
         execution_id,
