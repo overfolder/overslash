@@ -1,0 +1,25 @@
+# Nextest configuration. The `ci` profile is selected explicitly in
+# .github/workflows/ci.yml via `--profile ci`; local runs keep nextest
+# defaults (see CLAUDE.md for the local --test-threads guidance).
+
+[profile.ci]
+# Integration tests are largely IO-bound: each test clones a template
+# database (CREATE DATABASE … TEMPLATE), boots an in-process API server, and
+# talks to it over loopback HTTP — much wall time is spent waiting on
+# Postgres and the network stack, and ~26 tests sleep for multiple seconds.
+# Oversubscribing the runner's 4 vCPUs cuts shard wall time, but only up to
+# a point: at 10 threads, instrumented tests that take <9s locally showed
+# >60s tail latencies and one timeout-flake on CI (run 27099100262), so 8 is
+# the measured sweet spot between throughput and tail blowup.
+# CI raises Postgres max_connections to 500 to give the extra concurrent
+# pools headroom (see the "Tune Postgres" step in ci.yml).
+test-threads = 8
+
+# One retry guards the merge queue against timing flakes surfaced by the
+# higher parallelism. Nextest still reports retried tests loudly as FLAKY in
+# the run summary, so genuine flakes stay visible rather than hidden.
+retries = 1
+
+# Surface tests that creep past a minute so slow-test regressions are
+# visible in the log instead of silently inflating shard times.
+slow-timeout = { period = "60s" }

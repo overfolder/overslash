@@ -41,5 +41,9 @@ async-trait = "0.1"
 [profile.dev]
 debug = "line-tables-only"
 
-[profile.dev.package.sqlx-macros]
+# External deps at opt-level 1 (workspace members stay at 0): they burn most
+# of the per-test CPU in the integration suite — locally and under coverage
+# instrumentation in CI. Coverage fidelity is unaffected: only workspace
+# crates appear in reports. Covers the old sqlx-macros override too.
+[profile.dev.package."*"]
 opt-level = 1
