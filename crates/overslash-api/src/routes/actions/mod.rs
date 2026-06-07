@@ -94,8 +94,8 @@ pub(crate) fn bounded_template_key(
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
 /// the success-body status tag and would require threading an outcome out of
 /// the inner function — we classify by HTTP status, plus the
-/// `UpstreamToolError` response-extension marker the MCP branch sets when
-/// the tool reported an in-band error behind an outer 200.
+/// `UpstreamErrored` response-extension marker the executor branches set
+/// when the upstream itself failed (MCP in-band `is_error`, HTTP 5xx).
 async fn call_action(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -124,20 +124,23 @@ async fn call_action(
         Ok(resp) => resp.status().as_u16(),
         Err(err) => err.status_code().as_u16(),
     };
-    let status_label = if status_code >= 500 {
+    // The marker outranks the status-code rules: an upstream failure rides
+    // behind an outer 200 (MCP in-band errors, buffered HTTP 5xx envelope)
+    // or passes a 5xx straight through (streaming) — either way it is the
+    // upstream's outage, not Overslash's, and without the marker it would
+    // count as `called` (looking like 100% success) or `failed` (paging as
+    // a gateway error). Same `>= 500` line the replay path draws.
+    let status_label = if matches!(
+        &result,
+        Ok(resp) if resp.extensions().get::<call::UpstreamErrored>().is_some()
+    ) {
+        "upstream_error"
+    } else if status_code >= 500 {
         "failed"
     } else if status_code == 403 {
         "denied"
     } else if status_code >= 400 {
         "rejected"
-    } else if matches!(
-        &result,
-        Ok(resp) if resp.extensions().get::<call::UpstreamToolError>().is_some()
-    ) {
-        // MCP tool-level errors ride behind an outer 200 (in-band per the
-        // MCP spec) — without this they'd count as plain `called` and an
-        // upstream outage would look like 100% success.
-        "upstream_error"
     } else {
         "called"
     };

@@ -34,13 +34,16 @@ use overslash_core::{
 use super::*;
 use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 
-/// Marker inserted into the MCP success Response's extensions when the tool
-/// returned an in-band error (`is_error: true`). `call_action` reads it to
-/// reclassify the `record_execution` status from `"called"` to
-/// `"upstream_error"`. Zero-sized and in-process only: it never serializes,
-/// it just rides the Response from the inner handler to the metrics wrapper.
+/// Marker inserted into the Response's extensions when the transport
+/// succeeded but the *upstream* reported failure — an MCP tool's in-band
+/// `is_error: true`, or an upstream HTTP 5xx (buffered and streamed).
+/// `call_action` reads it to record the execution as `"upstream_error"`
+/// instead of `"called"` (or, for streamed 5xx passthrough, `"failed"`),
+/// keeping upstream outages distinguishable from Overslash's own errors.
+/// Zero-sized and in-process only: it never serializes, it just rides the
+/// Response from the inner handler to the metrics wrapper.
 #[derive(Clone, Copy)]
-pub(crate) struct UpstreamToolError;
+pub(crate) struct UpstreamErrored;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn call_action_impl(
@@ -570,7 +573,7 @@ pub(super) async fn call_action_impl(
         )
             .into_response();
         if is_error {
-            resp.extensions_mut().insert(UpstreamToolError);
+            resp.extensions_mut().insert(UpstreamErrored);
         }
         return Ok(resp);
     }
@@ -747,7 +750,14 @@ pub(super) async fn call_action_impl(
             }
         }
 
-        return Ok(response.body(body).unwrap());
+        let mut response = response.body(body).unwrap();
+        // Streamed 5xx passes the upstream status straight through, where
+        // the metrics wrapper would otherwise classify it as Overslash's
+        // own "failed". The marker keeps it attributed to the upstream.
+        if upstream_status.as_u16() >= 500 {
+            response.extensions_mut().insert(UpstreamErrored);
+        }
+        return Ok(response);
     }
 
     // Buffered call path (default)
@@ -839,12 +849,20 @@ pub(super) async fn call_action_impl(
         })
         .await;
 
-    Ok((
+    let mut resp = (
         StatusCode::OK,
         Json(CallResponse::Called {
             result: render_action_result(&result, req.verbose),
             action_description: meta.description,
         }),
     )
-        .into_response())
+        .into_response();
+    // Upstream 5xx rides inside this 200 envelope — same in-band shape as
+    // an MCP tool error, same marker, so the metrics wrapper records it as
+    // `upstream_error` rather than a plain `called`. Mirrors the replay
+    // path's `status_code >= 500` classification.
+    if result.status_code >= 500 {
+        resp.extensions_mut().insert(UpstreamErrored);
+    }
+    Ok(resp)
 }

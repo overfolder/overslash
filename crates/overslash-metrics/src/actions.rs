@@ -10,10 +10,11 @@ use metrics::{counter, histogram};
 
 /// Record one action execution. `status` is one of:
 /// `"called"`, `"upstream_error"` (transport succeeded but the upstream
-/// reported an in-band failure — today only MCP `is_error: true`),
-/// `"rejected"`, `"failed"`, `"approval_required"`, `"filtered"`,
-/// `"denied"`. `mode` is `"action"`, `"verb"`, or `"replay"` (approval
-/// replay, where the original call shape isn't stored).
+/// itself failed — MCP in-band `is_error: true` or an upstream HTTP 5xx;
+/// `"failed"` stays reserved for Overslash's own 5xx), `"rejected"`,
+/// `"failed"`, `"approval_required"`, `"filtered"`, `"denied"`. `mode` is
+/// `"action"`, `"verb"`, or `"replay"` (approval replay, where the
+/// original call shape isn't stored).
 pub fn record_execution(template_key: &str, mode: &str, status: &str, elapsed: Duration) {
     counter!(
         "overslash_action_executions_total",
