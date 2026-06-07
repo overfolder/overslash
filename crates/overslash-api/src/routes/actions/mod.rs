@@ -73,11 +73,29 @@ pub fn validate_router() -> Router<AppState> {
     Router::new().route("/v1/actions/validate", post(validate_action))
 }
 
+/// Bound a caller-supplied service key to one that actually exists in the
+/// registry, so the `template_key` metric label can never blow up
+/// Prometheus cardinality: a client could otherwise submit
+/// `service: "<arbitrary>"` and mint a new label value even on requests
+/// that fail validation inside the inner handler.
+pub(crate) fn bounded_template_key(
+    registry: &overslash_core::registry::ServiceRegistry,
+    service: Option<&str>,
+) -> String {
+    match service {
+        Some(key) if registry.get(key).is_some() => key.to_string(),
+        Some(_) => "_unknown".to_string(),
+        None => "_invalid".to_string(),
+    }
+}
+
 /// Top-level handler that times the request and emits the
 /// `overslash_action_executions_total` / `_duration_seconds` metrics.
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
 /// the success-body status tag and would require threading an outcome out of
-/// the inner function — for now we classify by HTTP status only.
+/// the inner function — we classify by HTTP status, plus the
+/// `UpstreamToolError` response-extension marker the MCP branch sets when
+/// the tool reported an in-band error behind an outer 200.
 async fn call_action(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -96,15 +114,7 @@ async fn call_action(
         (true, false) => "verb",
         _ => "_invalid",
     };
-    // Bound the `template_key` label to keys that actually exist in the
-    // registry. A client could otherwise submit `service: "<arbitrary>"`
-    // and explode Prometheus cardinality even on requests that fail
-    // validation inside the inner handler.
-    let template_key = match req.service.as_deref() {
-        Some(key) if state.registry.get(key).is_some() => key.to_string(),
-        Some(_) => "_unknown".to_string(),
-        None => "_invalid".to_string(),
-    };
+    let template_key = bounded_template_key(&state.registry, req.service.as_deref());
 
     let result = call_action_impl(State(state), ReqExt(ext), auth, scope, ip, Json(req)).await;
 
@@ -120,6 +130,14 @@ async fn call_action(
         "denied"
     } else if status_code >= 400 {
         "rejected"
+    } else if matches!(
+        &result,
+        Ok(resp) if resp.extensions().get::<call::UpstreamToolError>().is_some()
+    ) {
+        // MCP tool-level errors ride behind an outer 200 (in-band per the
+        // MCP spec) — without this they'd count as plain `called` and an
+        // upstream outage would look like 100% success.
+        "upstream_error"
     } else {
         "called"
     };
@@ -158,11 +176,7 @@ async fn validate_action(
         (true, false) => "verb",
         _ => "_invalid",
     };
-    let template_key = match req.service.as_deref() {
-        Some(key) if state.registry.get(key).is_some() => key.to_string(),
-        Some(_) => "_unknown".to_string(),
-        None => "_invalid".to_string(),
-    };
+    let template_key = bounded_template_key(&state.registry, req.service.as_deref());
 
     let result = validate_action_impl(State(state), ReqExt(ext), auth, scope, Json(req)).await;
 

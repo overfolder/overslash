@@ -72,11 +72,26 @@
         }
       },
       {
-        "xPos": 0, "yPos": 14, "width": 12, "height": 2,
+        "xPos": 0, "yPos": 14, "width": 12, "height": 8,
+        "widget": {
+          "title": "Upstream Response Rate by Status Class & Template (5m)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum by (status_class, template_key) (rate(overslash_upstream_responses_total{job=\"${api_service_name}\"}[5m]))"
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 22, "width": 12, "height": 2,
         "widget": { "title": "Background Tasks (silent-hang radar)", "text": { "content": "Age in seconds since each task last reported a successful tick. Red = stale > 5 min.", "format": "MARKDOWN" } }
       },
       {
-        "xPos": 0, "yPos": 16, "width": 12, "height": 8,
+        "xPos": 0, "yPos": 24, "width": 12, "height": 8,
         "widget": {
           "title": "Background Task Last-Success Age (s)",
           "xyChart": {
@@ -91,11 +106,11 @@
         }
       },
       {
-        "xPos": 0, "yPos": 24, "width": 12, "height": 2,
+        "xPos": 0, "yPos": 32, "width": 12, "height": 2,
         "widget": { "title": "Approvals", "text": { "content": "---", "format": "MARKDOWN" } }
       },
       {
-        "xPos": 0, "yPos": 26, "width": 6, "height": 4,
+        "xPos": 0, "yPos": 34, "width": 6, "height": 4,
         "widget": {
           "title": "Approvals Pending",
           "scorecard": {
@@ -109,7 +124,7 @@
         }
       },
       {
-        "xPos": 6, "yPos": 26, "width": 6, "height": 4,
+        "xPos": 6, "yPos": 34, "width": 6, "height": 4,
         "widget": {
           "title": "Oldest Pending Approval (s)",
           "scorecard": {
