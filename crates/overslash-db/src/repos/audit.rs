@@ -104,6 +104,13 @@ pub struct AuditFilter {
     /// Substring (case-insensitive) on the owning user's name — the actor's own
     /// name when they are a user, else their `owner_id`'s name. Powers `user ~`.
     pub owner_user_contains: Option<String>,
+    /// Upstream result of execution events, matched against the normalized
+    /// `detail.is_error` flag written by the action executors. `Some(true)`
+    /// returns executions whose upstream reported failure (MCP `is_error`
+    /// envelope, upstream HTTP >= 400); `Some(false)` returns executions that
+    /// carry the flag and succeeded — rows without the flag (non-execution
+    /// events, pre-flag history) match neither. Powers the `result =` key.
+    pub is_error: Option<bool>,
     pub limit: i64,
     pub offset: i64,
 }
@@ -176,6 +183,9 @@ pub(crate) async fn query_filtered(
            AND ($21::text IS NULL
                 OR (i.kind = 'user' AND i.name ILIKE $21)
                 OR owner.name ILIKE $21)
+           AND ($22::boolean IS NULL
+                OR ($22 AND a.detail->>'is_error' = 'true')
+                OR (NOT $22 AND a.detail->>'is_error' = 'false'))
          ORDER BY a.created_at DESC
          LIMIT $10 OFFSET $11",
         filter.org_id,
@@ -199,6 +209,7 @@ pub(crate) async fn query_filtered(
         kinds,
         filter.owner_user_id,
         owner_name_like,
+        filter.is_error,
     )
     .fetch_all(pool)
     .await

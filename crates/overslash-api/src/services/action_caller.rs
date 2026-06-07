@@ -308,6 +308,9 @@ pub async fn call_action_request(
         "method": action_req.method,
         "url": action_req.url,
         "status_code": result.status_code,
+        // Normalized upstream-failure flag, same field MCP audit details
+        // carry — keeps replay rows consistent with inline executions.
+        "is_error": result.status_code >= 400,
         "duration_ms": result.duration_ms,
         "service": ctx.service_key,
         "action": ctx.action_key,
@@ -362,6 +365,8 @@ async fn write_stream_audit(
         "method": action_req.method,
         "url": action_req.url,
         "status_code": status_code,
+        // Normalized upstream-failure flag — see the buffered path above.
+        "is_error": status_code >= 400,
         "content_length": content_length,
         "service": ctx.service_key,
         "action": ctx.action_key,

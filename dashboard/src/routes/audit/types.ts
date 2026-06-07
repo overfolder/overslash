@@ -56,6 +56,43 @@ export interface AuditFilters {
 	owner_user_id?: string;
 	/** Substring on the owning user's name. Powers `user ~`. */
 	owner_user_contains?: string;
+	/** Upstream result of execution events (`detail.is_error`). `true` →
+	 * executions whose upstream reported failure (MCP `is_error` envelope,
+	 * upstream HTTP >= 400); `false` → executions that succeeded. Powers
+	 * the `result =` search bar key. */
+	is_error?: boolean;
+}
+
+/** Execution events that carry the normalized `detail.is_error` flag. */
+const EXECUTION_ACTIONS = ['action.executed', 'action.streamed'];
+
+/** Upstream-error presence for execution events. Reads the normalized
+ * `detail.is_error` flag; falls back to `detail.status_code` for rows
+ * written before the flag was normalized onto HTTP executions. */
+export function upstreamError(entry: AuditEntry): boolean {
+	if (!EXECUTION_ACTIONS.includes(entry.action)) return false;
+	if (entry.detail.is_error === true) return true;
+	if (entry.detail.is_error === false) return false;
+	const code = entry.detail.status_code;
+	return typeof code === 'number' && code >= 400;
+}
+
+/** Human-readable upstream result for the expanded pane, or null for
+ * non-execution events. "Upstream error — HTTP 502" / "Upstream error —
+ * tool reported error" (MCP) / "Success — HTTP 200" / "Success". */
+export function upstreamResultLabel(entry: AuditEntry): string | null {
+	if (!EXECUTION_ACTIONS.includes(entry.action)) return null;
+	const failed = upstreamError(entry);
+	const code = entry.detail.status_code;
+	const isMcp = entry.detail.runtime === 'mcp';
+	if (failed) {
+		if (isMcp) return 'Upstream error — tool reported error';
+		return typeof code === 'number' ? `Upstream error — HTTP ${code}` : 'Upstream error';
+	}
+	// Pre-flag MCP rows without is_error still land here as success — the
+	// envelope's 200 carries no signal, so don't render a misleading code.
+	if (isMcp) return 'Success';
+	return typeof code === 'number' ? `Success — HTTP ${code}` : 'Success';
 }
 
 export const PAGE_LIMIT = 50;
@@ -84,6 +121,7 @@ export function buildQuery(filters: AuditFilters, limit: number, offset: number)
 	if (filters.identity_kind) p.set('identity_kind', filters.identity_kind);
 	if (filters.owner_user_id) p.set('owner_user_id', filters.owner_user_id);
 	if (filters.owner_user_contains) p.set('owner_user_contains', filters.owner_user_contains);
+	if (filters.is_error !== undefined) p.set('is_error', String(filters.is_error));
 	return p.toString();
 }
 
@@ -112,13 +150,19 @@ export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 		const v = params.get(k);
 		if (v) f[k] = v;
 	}
+	// Boolean param: parse explicitly so `is_error=false` survives the
+	// round-trip instead of being treated as truthy/absent.
+	const isError = params.get('is_error');
+	if (isError === 'true') f.is_error = true;
+	else if (isError === 'false') f.is_error = false;
 	return f;
 }
 
 export function filtersToSearchString(filters: AuditFilters): string {
 	const p = new URLSearchParams();
 	for (const [k, v] of Object.entries(filters)) {
-		if (v) p.set(k, v as string);
+		// `v !== undefined` (not truthiness) so `is_error: false` is kept.
+		if (v !== undefined && v !== '') p.set(k, String(v));
 	}
 	const s = p.toString();
 	return s ? `?${s}` : '';

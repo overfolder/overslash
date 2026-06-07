@@ -75,6 +75,12 @@ export function buildAuditSearchKeys(
 			hint: 'identity name'
 		},
 		{ name: 'event', operators: ['=', '~'], values: EVENT_VALUES, hint: 'event type' },
+		{
+			name: 'result',
+			operators: ['='],
+			values: ['error', 'success'],
+			hint: 'upstream result of executions'
+		},
 		{ name: 'resource', operators: ['=', '~'], values: RESOURCE_VALUES, hint: 'resource type' },
 		{ name: 'description', operators: ['=', '~'], values: [], hint: 'description text' },
 		{ name: 'ip', operators: ['=', '~'], values: [], hint: 'IP address' },
@@ -93,6 +99,8 @@ export function buildAuditSearchKeys(
  *
  * Mapping rules:
  * - `event = X` / `~ X`     → action / action_contains
+ * - `result = error|success`→ is_error=true/false (upstream result of
+ *                             execution events, from detail.is_error)
  * - `resource = X` / `~ X`  → resource_type / resource_type_contains
  * - `description = / ~`     → description / description_contains
  * - `ip = / ~`              → ip_address / ip_address_contains
@@ -130,6 +138,9 @@ export function searchToFilters(
 		if (expr.key === 'event') {
 			if (expr.op === '~') filters.action_contains = expr.value;
 			else filters.action = expr.value;
+		} else if (expr.key === 'result') {
+			if (expr.value === 'error') filters.is_error = true;
+			else if (expr.value === 'success') filters.is_error = false;
 		} else if (expr.key === 'resource') {
 			if (expr.op === '~') filters.resource_type_contains = expr.value;
 			else filters.resource_type = expr.value;
@@ -200,6 +211,8 @@ export function filtersToSearch(
 	if (filters.action) expressions.push({ key: 'event', op: '=', value: filters.action });
 	if (filters.action_contains)
 		expressions.push({ key: 'event', op: '~', value: filters.action_contains });
+	if (filters.is_error !== undefined)
+		expressions.push({ key: 'result', op: '=', value: filters.is_error ? 'error' : 'success' });
 	if (filters.resource_type)
 		expressions.push({ key: 'resource', op: '=', value: filters.resource_type });
 	if (filters.resource_type_contains)

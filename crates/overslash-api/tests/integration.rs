@@ -216,9 +216,24 @@ async fn start_mock() -> SocketAddr {
         }
     }
 
+    // Returns the requested status code — lets tests exercise upstream
+    // 4xx/5xx responses (e.g. the `is_error` / `upstream_error` paths).
+    async fn status_code(
+        axum::extract::Path(code): axum::extract::Path<u16>,
+    ) -> (axum::http::StatusCode, &'static str) {
+        (
+            axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::IM_A_TEAPOT),
+            "upstream says no",
+        )
+    }
+
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
         .route("/echo", get(echo).post(echo).put(echo).delete(echo))
+        .route(
+            "/status/{code}",
+            get(status_code).post(status_code).put(status_code),
+        )
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
         .route("/oauth/token", post(oauth_token))
@@ -442,6 +457,114 @@ async fn test_happy_path_call_with_permission() {
     // Verify secret injection in echo response
     let echo_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(echo_body["headers"]["x-token"], "tok_secret-value-123");
+}
+
+/// An upstream 4xx/5xx still executes (gateway 200, `status: "called"`) but
+/// must be flagged: `is_error: true` on the response envelope, the
+/// normalized `detail.is_error` on the `action.executed` audit row, and the
+/// `/v1/audit?is_error=` filter splitting failures from successes.
+#[tokio::test]
+async fn test_upstream_http_error_flagged_in_envelope_and_audit() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "identity_id": ident_id,
+            "action_pattern": "http:**",
+            "effect": "allow"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Upstream 500 — executed, mirrored on the result, flagged on the envelope.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/status/500"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    assert_eq!(body["is_error"], true);
+    assert_eq!(body["result"]["status_code"], 500);
+
+    // Success for contrast — `is_error: false`.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    assert_eq!(body["is_error"], false);
+
+    // Audit rows carry the normalized flag.
+    let audit: Vec<Value> = client
+        .get(format!("{base}/v1/audit?action=action.executed"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let failed = audit
+        .iter()
+        .find(|e| e["detail"]["status_code"] == 500)
+        .expect("failed execution audit row");
+    assert_eq!(failed["detail"]["is_error"], true);
+    let succeeded = audit
+        .iter()
+        .find(|e| e["detail"]["status_code"] == 200)
+        .expect("successful execution audit row");
+    assert_eq!(succeeded["detail"]["is_error"], false);
+
+    // `is_error=` filter splits the two; rows without the flag match neither.
+    let errors: Vec<Value> = client
+        .get(format!("{base}/v1/audit?is_error=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!errors.is_empty());
+    assert!(errors.iter().all(|e| e["detail"]["is_error"] == true));
+    assert!(errors.iter().any(|e| e["detail"]["status_code"] == 500));
+
+    let successes: Vec<Value> = client
+        .get(format!("{base}/v1/audit?is_error=false"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!successes.is_empty());
+    assert!(successes.iter().all(|e| e["detail"]["is_error"] == false));
+    assert!(successes.iter().any(|e| e["detail"]["status_code"] == 200));
 }
 
 #[tokio::test]

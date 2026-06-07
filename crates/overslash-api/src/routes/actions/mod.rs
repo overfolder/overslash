@@ -288,6 +288,12 @@ enum CallResponse {
         /// parsed as JSON, ≤8 KB). The selector lives on `CallRequest.verbose`.
         result: serde_json::Value,
         action_description: Option<String>,
+        /// True when the upstream itself reported failure — an MCP envelope
+        /// with `is_error: true`, or an upstream HTTP status >= 400 — even
+        /// though the call executed. Mirrors `detail.is_error` on the
+        /// `action.executed` audit entry so callers (dashboard Try It, MCP
+        /// clients) can flag the result without parsing the body.
+        is_error: bool,
     },
     #[serde(rename = "pending_approval")]
     PendingApproval {
