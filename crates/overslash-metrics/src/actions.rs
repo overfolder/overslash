@@ -1,14 +1,20 @@
-//! Action execution metrics — `mode` is one of `a` (`http` pseudo-service),
-//! `c` (Service + defined action), or `c_verb` (Service + HTTP verb, SPEC
-//! §8). `template_key` is the OpenAPI service template identifier; for raw
-//! HTTP it is the literal `"_raw"`.
+//! Action execution metrics — `mode` on the execution/validation series is
+//! the call shape: `action` (Service + defined action), `verb` (Service +
+//! HTTP verb, SPEC §8 — raw HTTP rides on this via the `http`
+//! pseudo-service), or `replay` (approval replay). `template_key` is the
+//! registry-bounded service template identifier.
 
 use std::time::Duration;
 
 use metrics::{counter, histogram};
 
 /// Record one action execution. `status` is one of:
-/// `"called"`, `"failed"`, `"approval_required"`, `"filtered"`, `"denied"`.
+/// `"called"`, `"upstream_error"` (transport succeeded but the upstream
+/// itself failed — MCP in-band `is_error: true` or an upstream HTTP 5xx;
+/// `"failed"` stays reserved for Overslash's own 5xx), `"rejected"`,
+/// `"failed"`, `"approval_required"`, `"filtered"`, `"denied"`. `mode` is
+/// `"action"`, `"verb"`, or `"replay"` (approval replay, where the
+/// original call shape isn't stored).
 pub fn record_execution(template_key: &str, mode: &str, status: &str, elapsed: Duration) {
     counter!(
         "overslash_action_executions_total",
@@ -45,21 +51,31 @@ pub fn record_validation(template_key: &str, mode: &str, outcome: &str, elapsed:
     .record(elapsed.as_secs_f64());
 }
 
-/// Record one outbound HTTP call made on behalf of an action.
-/// `status_class` is one of `"2xx"`, `"3xx"`, `"4xx"`, `"5xx"`, `"error"`.
-pub fn record_outbound(template_key: &str, status_class: &str, elapsed: Duration) {
+/// Record one upstream response received by an action execution. Emitted
+/// only when an upstream response actually arrived — transport-level
+/// failures (connect/TLS errors, MCP transport/RPC errors) record nothing
+/// here; they surface through the `AppError` → 502 path and
+/// `record_execution(status = "failed")`. This is what makes an upstream
+/// outage distinguishable from Overslash's own errors: gateway health lives
+/// on `run.googleapis.com/request_count`, upstream health lives here.
+///
+/// Labels:
+/// * `template_key` — registry-bounded service key (same bounding rules as
+///   [`record_execution`]: unknown keys collapse to `"_unknown"`).
+/// * `mode` — the *runtime* that produced the response: `"http"` | `"mcp"`.
+///   Deliberately a different label space than `record_execution`'s `mode`
+///   (call shape: `action`/`verb`/`replay`) — don't try to reconcile them.
+/// * `status_class` — HTTP runtime: `"2xx"`..`"5xx"` from the upstream
+///   status (via [`status_class`]). MCP runtime: `"2xx"` when the tool
+///   succeeded, `"error"` when it returned the in-band `is_error: true`.
+pub fn record_upstream_response(template_key: &str, mode: &str, status_class: &str) {
     counter!(
-        "overslash_outbound_http_total",
+        "overslash_upstream_responses_total",
         "template_key" => template_key.to_string(),
+        "mode" => mode.to_string(),
         "status_class" => status_class.to_string(),
     )
     .increment(1);
-    histogram!(
-        "overslash_outbound_http_duration_seconds",
-        "template_key" => template_key.to_string(),
-        "status_class" => status_class.to_string(),
-    )
-    .record(elapsed.as_secs_f64());
 }
 
 /// Map a numeric HTTP status to its class label (`"2xx"`, `"4xx"`, etc).
@@ -93,7 +109,8 @@ mod tests {
         // Helpers must be safe to call before the recorder is installed —
         // tests in other modules exercise the same callsites without
         // necessarily having installed the global recorder first.
-        record_execution("svc", "a", "called", std::time::Duration::from_millis(1));
-        record_outbound("svc", "2xx", std::time::Duration::from_millis(1));
+        record_execution("svc", "verb", "called", std::time::Duration::from_millis(1));
+        record_upstream_response("svc", "http", "2xx");
+        record_upstream_response("svc", "mcp", "error");
     }
 }

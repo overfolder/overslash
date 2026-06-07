@@ -34,6 +34,17 @@ use overslash_core::{
 use super::*;
 use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
 
+/// Marker inserted into the Response's extensions when the transport
+/// succeeded but the *upstream* reported failure — an MCP tool's in-band
+/// `is_error: true`, or an upstream HTTP 5xx (buffered and streamed).
+/// `call_action` reads it to record the execution as `"upstream_error"`
+/// instead of `"called"` (or, for streamed 5xx passthrough, `"failed"`),
+/// keeping upstream outages distinguishable from Overslash's own errors.
+/// Zero-sized and in-process only: it never serializes, it just rides the
+/// Response from the inner handler to the metrics wrapper.
+#[derive(Clone, Copy)]
+pub(crate) struct UpstreamErrored;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn call_action_impl(
     State(state): State<AppState>,
@@ -476,6 +487,11 @@ pub(super) async fn call_action_impl(
         }
     }
 
+    // Registry-bounded `template_key` for the upstream-response counter,
+    // shared by the MCP and HTTP dispatch forks below. Same bounding the
+    // metrics wrapper in `mod.rs` applies to `record_execution`.
+    let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
+
     // ── MCP dispatch fork ────────────────────────────────────────────
     // Mcp-runtime services skip the HTTP executor: no URL templating, no
     // secret injection into headers, no streaming path. The executor owns
@@ -494,11 +510,19 @@ pub(super) async fn call_action_impl(
         // Build the shared MCP audit shape, then layer on inline-only
         // fields (service/action/disclosed). Replay uses the same helper
         // from approvals.rs to keep the two surfaces from drifting.
-        let (_is_error, mut audit_detail) = mcp_caller::build_audit_detail(
+        let (is_error, mut audit_detail) = mcp_caller::build_audit_detail(
             &result,
             &mcp_target.tool,
             &mcp_target.url,
             &mcp_target.arguments,
+        );
+        // Transport + JSON-RPC succeeded (failures short-circuit above via
+        // AppError::BadGateway and record nothing here); the tool's in-band
+        // error flag is the only "upstream status" MCP has.
+        overslash_metrics::actions::record_upstream_response(
+            &upstream_tpl,
+            "mcp",
+            if is_error { "error" } else { "2xx" },
         );
         {
             let obj = audit_detail
@@ -540,14 +564,18 @@ pub(super) async fn call_action_impl(
             })
             .await;
 
-        return Ok((
+        let mut resp = (
             StatusCode::OK,
             Json(CallResponse::Called {
                 result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
             }),
         )
-            .into_response());
+            .into_response();
+        if is_error {
+            resp.extensions_mut().insert(UpstreamErrored);
+        }
+        return Ok(resp);
     }
 
     // ── Platform dispatch fork ───────────────────────────────────────
@@ -649,6 +677,13 @@ pub(super) async fn call_action_impl(
         .await?;
 
         let upstream_status = upstream.status();
+        // A transport failure above propagates via `?` and records nothing
+        // here — this counter only counts responses that actually arrived.
+        overslash_metrics::actions::record_upstream_response(
+            &upstream_tpl,
+            "http",
+            overslash_metrics::actions::status_class(upstream_status.as_u16()),
+        );
         let upstream_headers = upstream.headers().clone();
         let content_length = upstream
             .headers()
@@ -715,7 +750,14 @@ pub(super) async fn call_action_impl(
             }
         }
 
-        return Ok(response.body(body).unwrap());
+        let mut response = response.body(body).unwrap();
+        // Streamed 5xx passes the upstream status straight through, where
+        // the metrics wrapper would otherwise classify it as Overslash's
+        // own "failed". The marker keeps it attributed to the upstream.
+        if upstream_status.as_u16() >= 500 {
+            response.extensions_mut().insert(UpstreamErrored);
+        }
+        return Ok(response);
     }
 
     // Buffered call path (default)
@@ -740,6 +782,13 @@ pub(super) async fn call_action_impl(
         },
         http_caller::CallError::Request(e) => AppError::Request(e),
     })?;
+    // Transport failures / oversized bodies bail above and record nothing —
+    // this counter only counts responses that actually arrived upstream.
+    overslash_metrics::actions::record_upstream_response(
+        &upstream_tpl,
+        "http",
+        overslash_metrics::actions::status_class(result.status_code),
+    );
 
     // Apply the optional response filter (jq today). The original body is
     // preserved on `result.body` either way; the filtered output goes on
@@ -800,12 +849,20 @@ pub(super) async fn call_action_impl(
         })
         .await;
 
-    Ok((
+    let mut resp = (
         StatusCode::OK,
         Json(CallResponse::Called {
             result: render_action_result(&result, req.verbose),
             action_description: meta.description,
         }),
     )
-        .into_response())
+        .into_response();
+    // Upstream 5xx rides inside this 200 envelope — same in-band shape as
+    // an MCP tool error, same marker, so the metrics wrapper records it as
+    // `upstream_error` rather than a plain `called`. Mirrors the replay
+    // path's `status_code >= 500` classification.
+    if result.status_code >= 500 {
+        resp.extensions_mut().insert(UpstreamErrored);
+    }
+    Ok(resp)
 }

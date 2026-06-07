@@ -1164,6 +1164,23 @@ fn spawn_auto_call(
     });
 }
 
+/// Recover a registry-bounded `template_key` for replay metrics from the
+/// approval's permission keys. Keys derive as `{service}:{action}:{arg}` or
+/// `{service}:{METHOD}:{path}` (SPEC §8), so the prefix before the first
+/// `:` is the service key. Anything that doesn't resolve to a registry
+/// entry collapses to `"_unknown"` — same cardinality bound the inline
+/// path applies via `bounded_template_key`.
+fn replay_template_key(registry: &ServiceRegistry, permission_keys: &[String]) -> String {
+    let service = permission_keys
+        .first()
+        .and_then(|k| k.split(':').next())
+        .filter(|s| !s.is_empty());
+    match service {
+        Some(s) if registry.get(s).is_some() => s.to_string(),
+        _ => "_unknown".to_string(),
+    }
+}
+
 /// Run a *claimed* execution to terminal state. Shared between the manual
 /// `POST /v1/approvals/{id}/call` path and the auto-call-on-approve
 /// background task spawned by `resolve_approval`. The caller is responsible
@@ -1264,9 +1281,20 @@ async fn execute_claimed_approval(
 
     let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
 
-    // Both branches produce (finalised, succeeded, result_summary) for the
-    // shared audit + webhook + rule-creation tail below.
-    let (finalised, succeeded, result_summary) = match payload {
+    // Replays count toward the same execution/upstream metrics inline calls
+    // record (they were invisible there before). The original call shape
+    // isn't stored, so `mode = "replay"`; the template key is recovered from
+    // the approval's permission keys.
+    let replay_tpl = replay_template_key(&state.registry, &approval.permission_keys);
+    let replay_start = std::time::Instant::now();
+
+    // Each branch produces (finalised, succeeded, upstream_errored,
+    // result_summary) for the shared metrics + audit + webhook +
+    // rule-creation tail below. `upstream_errored` is true when the upstream
+    // responded but reported failure (HTTP 5xx, MCP in-band `is_error`) —
+    // a success from the approval's perspective, an outage from the
+    // operator's.
+    let (finalised, succeeded, upstream_errored, result_summary) = match payload {
         ReplayPayload::Http(stored) => {
             // Replay payloads are credential-free: when the original call
             // carried an OAuth header, only the service/instance it resolved
@@ -1323,6 +1351,14 @@ async fn execute_claimed_approval(
 
             match outcome {
                 Ok(Ok(CallOutcome::Buffered { result, .. })) => {
+                    // Upstream actually responded — count it, same as the
+                    // inline buffered path. Transport failures land in the
+                    // Ok(Err(..)) arm below and record nothing here.
+                    overslash_metrics::actions::record_upstream_response(
+                        &replay_tpl,
+                        "http",
+                        overslash_metrics::actions::status_class(result.status_code),
+                    );
                     let mut result_json = serde_json::to_value(&result)
                         .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
                     if stored.prefer_stream {
@@ -1334,11 +1370,12 @@ async fn execute_claimed_approval(
                         "status_code": result.status_code,
                         "duration_ms": result.duration_ms,
                     });
+                    let upstream_errored = result.status_code >= 500;
                     let finalised = scope
                         .finalize_execution_executed(execution_id, &result_json)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, true, Some(summary))
+                    (finalised, true, upstream_errored, Some(summary))
                 }
                 Ok(Ok(CallOutcome::Streamed(_))) => {
                     // Defensive: replay forces prefer_stream=false so this variant is
@@ -1349,7 +1386,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Ok(Err(app_err)) => {
                     let msg = app_err.to_string();
@@ -1357,7 +1394,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, &msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Err(_elapsed) => {
                     let msg = "replay_timeout";
@@ -1365,7 +1402,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
             }
         }
@@ -1399,11 +1436,20 @@ async fn execute_claimed_approval(
                     // `action.executed` from action_caller; we do the
                     // equivalent here. `build_audit_detail` is shared with
                     // the inline executor so the two paths can't drift.
-                    let (_is_error, mut audit_detail) = mcp_caller::build_audit_detail(
+                    let (is_error, mut audit_detail) = mcp_caller::build_audit_detail(
                         &result,
                         &call.tool,
                         &call.url,
                         &call.arguments,
+                    );
+                    // Same in-band mapping as the inline MCP branch:
+                    // transport succeeded, the tool's is_error flag is the
+                    // upstream status. Transport failures land in
+                    // Ok(Err(..)) below and record nothing here.
+                    overslash_metrics::actions::record_upstream_response(
+                        &replay_tpl,
+                        "mcp",
+                        if is_error { "error" } else { "2xx" },
                     );
                     {
                         let obj = audit_detail
@@ -1433,7 +1479,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_executed(execution_id, &result_json)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, true, Some(summary))
+                    (finalised, true, is_error, Some(summary))
                 }
                 Ok(Err(app_err)) => {
                     let msg = app_err.to_string();
@@ -1441,14 +1487,14 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, &msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Err(_elapsed) => {
                     let finalised = scope
                         .finalize_execution_failed(execution_id, "replay_timeout")
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
             }
         }
@@ -1535,7 +1581,9 @@ async fn execute_claimed_approval(
                         .finalize_execution_executed(execution_id, &result_json)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, true, Some(summary))
+                    // Platform dispatch is in-process — there is no upstream
+                    // to report on, so `upstream_errored` is always false.
+                    (finalised, true, false, Some(summary))
                 }
                 Ok(Err(app_err)) => {
                     let msg = app_err.to_string();
@@ -1543,18 +1591,36 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, &msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Err(_elapsed) => {
                     let finalised = scope
                         .finalize_execution_failed(execution_id, "replay_timeout")
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
             }
         }
     };
+
+    // Replays were previously invisible in execution metrics — record them
+    // with the same status vocabulary the inline path uses so dashboards
+    // can split inline vs replay volume and an upstream failing during
+    // replay still shows as `upstream_error`, not silent success.
+    let replay_status = if !succeeded {
+        "failed"
+    } else if upstream_errored {
+        "upstream_error"
+    } else {
+        "called"
+    };
+    overslash_metrics::actions::record_execution(
+        &replay_tpl,
+        "replay",
+        replay_status,
+        replay_start.elapsed(),
+    );
 
     // ── Rule creation for Allow & Remember. Only on successful replay —
     // a failed replay leaves no rule so the reviewer can retry after fixing
