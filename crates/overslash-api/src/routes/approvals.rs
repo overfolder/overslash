@@ -1283,12 +1283,25 @@ async fn execute_claimed_approval(
     let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
 
     // Org-level response-body capture mode for the replay's audit row,
-    // resolved once so the call pipeline stays query-free. Fail closed.
-    let audit_body_mode =
-        overslash_db::repos::org::get_audit_response_body_mode(state.db(ext), approval.org_id)
-            .await?
+    // resolved once so the call pipeline stays query-free. Capture is
+    // best-effort observability (the audit write itself is fire-and-
+    // forget), so a failed read degrades to Off rather than erroring —
+    // the execution row is already claimed as "executing" here, and a
+    // `?` would skip finalization and wedge it in that state forever.
+    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+        state.db(ext),
+        approval.org_id,
+    )
+    .await
+    {
+        Ok(mode) => mode
             .map(|m| audit_capture::AuditResponseBodyMode::parse_or_off(&m))
-            .unwrap_or(audit_capture::AuditResponseBodyMode::Off);
+            .unwrap_or(audit_capture::AuditResponseBodyMode::Off),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this replay");
+            audit_capture::AuditResponseBodyMode::Off
+        }
+    };
 
     // Replays count toward the same execution/upstream metrics inline calls
     // record (they were invisible there before). The original call shape

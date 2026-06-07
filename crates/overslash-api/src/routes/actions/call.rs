@@ -495,12 +495,24 @@ pub(super) async fn call_action_impl(
 
     // Org-level response-body capture mode for audit rows. One extra PK
     // lookup on the hot path — the org row isn't otherwise fetched here.
-    // Fail closed: a missing org (can't happen post-auth) means Off.
-    let audit_body_mode =
-        overslash_db::repos::org::get_audit_response_body_mode(state.db(&ext), auth.org_id)
-            .await?
+    // Capture is best-effort observability (the audit write itself is
+    // fire-and-forget), so any failure to resolve the mode — missing org
+    // (can't happen post-auth) or a transient DB error — degrades to Off
+    // rather than failing the caller's action.
+    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+        state.db(&ext),
+        auth.org_id,
+    )
+    .await
+    {
+        Ok(mode) => mode
             .map(|m| AuditResponseBodyMode::parse_or_off(&m))
-            .unwrap_or(AuditResponseBodyMode::Off);
+            .unwrap_or(AuditResponseBodyMode::Off),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this call");
+            AuditResponseBodyMode::Off
+        }
+    };
 
     // ── MCP dispatch fork ────────────────────────────────────────────
     // Mcp-runtime services skip the HTTP executor: no URL templating, no
