@@ -126,14 +126,14 @@ jobs:
         run: cargo sqlx prepare --workspace --check -- --tests
 
   coverage:
-    name: Test + Coverage (${{ matrix.partition }}/3)
+    name: Test + Coverage (${{ matrix.partition }}/5)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3]
+        partition: [1, 2, 3, 4, 5]
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -204,10 +204,9 @@ jobs:
           ALTER SYSTEM SET max_connections = '500';
           SQL
           docker restart ${{ job.services.postgres.id }}
-          for _ in $(seq 1 30); do
-            pg_isready -h localhost -U overslash && break
-            sleep 1
-          done
+          # Fail the step if Postgres never comes back (timeout exits 124)
+          # instead of letting the test step run against a dead database.
+          timeout 60 bash -c 'until pg_isready -h localhost -U overslash; do sleep 1; done'
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -215,17 +214,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: coverage
+      # mold replaces the system linker (no RUSTFLAGS change, so cached
+      # artifacts stay valid). Linking ~99 instrumented test binaries is
+      # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
+      - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
       # --profile ci selects the nextest profile in .config/nextest.toml
       # (test-threads = 10 — the suite is IO-bound, see the profile comments).
-      - name: Tests with coverage (shard ${{ matrix.partition }}/3)
+      - name: Tests with coverage (shard ${{ matrix.partition }}/5)
         run: >-
           cargo llvm-cov nextest --workspace
           --profile ci
-          --partition count:${{ matrix.partition }}/3
+          --partition count:${{ matrix.partition }}/5
           --lcov --output-path lcov.info
         env:
           RUST_LOG: warn
@@ -335,6 +338,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: e2e
+      - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@v2
         with:
           tool: sqlx-cli@0.9
