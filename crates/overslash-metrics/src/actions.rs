@@ -109,7 +109,7 @@ mod tests {
         // Helpers must be safe to call before the recorder is installed —
         // tests in other modules exercise the same callsites without
         // necessarily having installed the global recorder first.
-        record_execution("svc", "a", "called", std::time::Duration::from_millis(1));
+        record_execution("svc", "verb", "called", std::time::Duration::from_millis(1));
         record_upstream_response("svc", "http", "2xx");
         record_upstream_response("svc", "mcp", "error");
     }
