@@ -225,7 +225,7 @@ resource "google_monitoring_alert_policy" "oauth_refresh_failure_rate" {
 # oauth/webhook ratios — occasional tool errors and upstream 5xx are
 # semi-normal; this should fire on outages, not flaky single calls.
 resource "google_monitoring_alert_policy" "upstream_error_rate" {
-  count = local.alerts_enabled ? 1 : 0
+  count = local.alerts_enabled && var.upstream_error_alert_enabled ? 1 : 0
 
   project      = var.project_id
   display_name = "[P1] ${var.base_prefix} Upstream Error Rate"
