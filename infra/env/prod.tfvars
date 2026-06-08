@@ -1,6 +1,7 @@
 project_id = "overslash"
 region     = "europe-west1"
 env        = "prod"
+rust_log   = "overslash=debug,info"
 
 # Empty `domain` skips the single-host google_cloud_run_domain_mapping in
 # favor of the wildcard GCLB stack (see `enable_api_lb`).
@@ -23,10 +24,10 @@ cloud_sql_tier         = "db-f1-micro"
 cloud_sql_disk_size_gb = 10
 cloud_sql_zone         = "europe-west1-b"
 
-# Cloud Run — scale to zero, minimal resources
+# Cloud Run — one always-warm instance (no cold starts), minimal resources
 cloud_run_cpu           = "1"
 cloud_run_memory        = "1Gi"
-cloud_run_min_instances = 0
+cloud_run_min_instances = 1
 cloud_run_max_instances = 3
 
 # Networking — private VPC required for Memorystore/Valkey reachability
