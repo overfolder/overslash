@@ -20,6 +20,7 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -35,3 +36,8 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # The repo default branch is `dev`, but releases are cut from
+          # `master` (tags + release.yml live there). Without this, the
+          # action defaults to the default branch and opens the release PR
+          # against `dev` — wrong base, wrong tag target.
+          target-branch: master
