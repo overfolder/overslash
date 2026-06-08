@@ -26,6 +26,7 @@ fn http_pseudo_service() -> ServiceDefinition {
         ),
         hosts: Vec::new(),
         category: Some("Platform".to_string()),
+        hidden: false,
         auth: Vec::new(),
         actions: HashMap::new(),
         runtime: Runtime::Http,
@@ -418,5 +419,67 @@ paths:
             .join("services");
         let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
         assert!(!reg.is_empty(), "no shipped templates loaded");
+    }
+
+    #[test]
+    fn shipped_github_templates_auth() {
+        use crate::types::ServiceAuth;
+
+        let services_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = ServiceRegistry::load_from_dir(&services_dir).unwrap();
+
+        // `github` targets GitHub App user-to-server tokens: no OAuth scopes
+        // (the app's permissions + installations govern access) plus an
+        // installation diagnostic action.
+        let gh = reg.get("github").expect("github template missing");
+        match gh
+            .auth
+            .iter()
+            .find(|a| matches!(a, ServiceAuth::OAuth { .. }))
+        {
+            Some(ServiceAuth::OAuth {
+                provider, scopes, ..
+            }) => {
+                assert_eq!(provider, "github");
+                assert!(
+                    scopes.is_empty(),
+                    "GitHub App template must not declare OAuth scopes, got {scopes:?}"
+                );
+            }
+            _ => panic!("github template must declare OAuth auth"),
+        }
+        assert!(gh.actions.contains_key("list_installations"));
+        assert!(!gh.hidden, "github template must not be hidden");
+
+        // `github_legacy_oauth` keeps the classic OAuth App scopes and is
+        // marked `x-overslash-hidden: true` so it stays out of agent-facing
+        // catalogs while remaining reachable by key.
+        let legacy = reg
+            .get("github_legacy_oauth")
+            .expect("github_legacy_oauth template missing");
+        assert!(legacy.hidden, "github_legacy_oauth must compile as hidden");
+        match legacy
+            .auth
+            .iter()
+            .find(|a| matches!(a, ServiceAuth::OAuth { .. }))
+        {
+            Some(ServiceAuth::OAuth {
+                provider, scopes, ..
+            }) => {
+                assert_eq!(provider, "github");
+                for s in ["repo", "read:user", "user:email"] {
+                    assert!(
+                        scopes.iter().any(|x| x == s),
+                        "legacy template missing scope {s}"
+                    );
+                }
+            }
+            _ => panic!("github_legacy_oauth template must declare OAuth auth"),
+        }
     }
 }

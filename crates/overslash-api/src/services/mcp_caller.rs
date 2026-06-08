@@ -39,6 +39,23 @@ use crate::services::{
 /// behavior across the two user-URL code paths.
 const MCP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Error from [`invoke`]. `audit` carries a secret-safe `{kind, message}`
+/// summary for the `action.executed` transport-error audit row — `Some`
+/// only when the upstream server was actually contacted (transport /
+/// JSON-RPC failures). Pre-flight failures (header resolution, SSRF
+/// guard) keep it `None`, matching the HTTP path where secret-resolution
+/// errors never produce an execution audit row.
+pub struct McpInvokeError {
+    pub app: AppError,
+    pub audit: Option<Value>,
+}
+
+impl From<McpInvokeError> for AppError {
+    fn from(e: McpInvokeError) -> Self {
+        e.app
+    }
+}
+
 pub async fn invoke(
     state: &AppState,
     scope: &OrgScope,
@@ -46,8 +63,10 @@ pub async fn invoke(
     auth: &McpAuth,
     tool: &str,
     arguments: &Value,
-) -> Result<ActionResult, AppError> {
-    let headers = mcp_auth::resolve_headers(state, scope, auth).await?;
+) -> Result<ActionResult, McpInvokeError> {
+    let headers = mcp_auth::resolve_headers(state, scope, auth)
+        .await
+        .map_err(|app| McpInvokeError { app, audit: None })?;
 
     // Apply OVERSLASH_SSRF_ALLOW_PRIVATE-gated host overrides so e2e tests
     // can route MCP calls at a local fake. Same semantics as the HTTP path
@@ -59,14 +78,19 @@ pub async fn invoke(
     // the reqwest client to that IP so a compromised resolver cannot rebind
     // to an internal target between validation and connect. Timeouts live
     // on this client too — state.http_client has no per-request deadline.
-    let (http, base) = ssrf_guard::build_pinned_client(url, MCP_TIMEOUT).await?;
+    let (http, base) = ssrf_guard::build_pinned_client(url, MCP_TIMEOUT)
+        .await
+        .map_err(|app| McpInvokeError { app, audit: None })?;
     let client = McpClient::with_client_and_base(http, base, DEFAULT_MAX_BODY_BYTES);
 
     let start = Instant::now();
     let result = client
         .tools_call(&headers, tool, arguments)
         .await
-        .map_err(map_client_error)?;
+        .map_err(|e| McpInvokeError {
+            audit: Some(scrub_client_error(&e)),
+            app: map_client_error(e),
+        })?;
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let envelope = json!({
@@ -116,6 +140,56 @@ pub fn build_audit_detail(
         "is_error": is_error,
     });
     (is_error, detail)
+}
+
+/// Secret-safe `{kind, message}` summary of an MCP client error for the
+/// transport-error audit row. Fixed strings only: the raw error Display
+/// (`Transport`) can carry the resolved URL, and `Http.body` / `Rpc.message`
+/// are upstream-authored text whose persistence must stay gated behind the
+/// org's response-body setting, not ride in unconditionally via the error.
+fn scrub_client_error(err: &crate::services::mcp_client::McpClientError) -> Value {
+    use crate::services::mcp_client::McpClientError::*;
+    match err {
+        InvalidUrl(_) => json!({
+            "kind": "invalid_url",
+            "message": "invalid mcp server url",
+        }),
+        Transport(e) => {
+            let (kind, message) = if e.is_timeout() {
+                ("timeout", "mcp request timed out")
+            } else if e.is_connect() {
+                ("connect", "could not connect to mcp server")
+            } else {
+                ("transport", "transport error contacting mcp server")
+            };
+            json!({ "kind": kind, "message": message })
+        }
+        BadJson(_) => json!({
+            "kind": "bad_json",
+            "message": "mcp server returned invalid JSON",
+        }),
+        Http { status, .. } => json!({
+            "kind": "http",
+            "message": format!("mcp server returned HTTP {status}"),
+        }),
+        AuthRequired { .. } => json!({
+            "kind": "auth_required",
+            "message": "mcp server requires OAuth",
+        }),
+        Rpc { code, .. } => json!({
+            "kind": "rpc",
+            "message": format!("mcp JSON-RPC error {code}"),
+        }),
+        UnexpectedShape(_) => json!({
+            "kind": "unexpected_shape",
+            "message": "mcp server returned an unexpected response shape",
+        }),
+        ResponseTooLarge { limit_bytes } => json!({
+            "kind": "response_too_large",
+            "message": "mcp response exceeded the buffering limit",
+            "limit_bytes": limit_bytes,
+        }),
+    }
 }
 
 fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppError {

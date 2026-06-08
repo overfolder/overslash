@@ -76,6 +76,12 @@ pub struct ServiceDefinition {
     pub hosts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Catalog visibility (`x-overslash-hidden`). Hidden templates are
+    /// omitted from agent-facing list/search surfaces (MCP discovery,
+    /// `/v1/search`, embeddings) but stay reachable by key and instantiable;
+    /// dashboard surfaces show them flagged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(default)]
     pub auth: Vec<ServiceAuth>,
     #[serde(default)]
@@ -260,6 +266,27 @@ pub struct ParamResolver {
     pub pick: String,
 }
 
+/// Where a parameter is sent on the wire, mirroring the OpenAPI `in:` field.
+///
+/// Routing only consults `Query`: on non-GET methods, query-located params go
+/// to the URL query string while everything else becomes the JSON body. `Path`
+/// is informational — path interpolation matches `{name}` placeholders in the
+/// path template and never reads this field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParamLocation {
+    #[default]
+    Body,
+    Query,
+    Path,
+}
+
+impl ParamLocation {
+    pub fn is_default(&self) -> bool {
+        matches!(self, ParamLocation::Body)
+    }
+}
+
 /// A parameter for a service action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -276,6 +303,9 @@ pub struct ActionParam {
     /// Optional resolver to convert an opaque ID into a human-readable name for descriptions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve: Option<ParamResolver>,
+    /// Where this parameter is sent (body/query/path). Omitted when `body` (the default).
+    #[serde(default, skip_serializing_if = "ParamLocation::is_default")]
+    pub location: ParamLocation,
 }
 
 #[cfg(test)]
@@ -333,6 +363,71 @@ mod tests {
         assert_eq!(Risk::Read.to_string(), "read");
         assert_eq!(Risk::Write.to_string(), "write");
         assert_eq!(Risk::Delete.to_string(), "delete");
+    }
+
+    // ── ParamLocation ─────────────────────────────────────────────────
+
+    #[test]
+    fn param_location_serde_roundtrip() {
+        assert_eq!(
+            serde_json::to_string(&ParamLocation::Body).unwrap(),
+            r#""body""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ParamLocation::Query).unwrap(),
+            r#""query""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ParamLocation::Path).unwrap(),
+            r#""path""#
+        );
+
+        assert_eq!(
+            serde_json::from_str::<ParamLocation>(r#""body""#).unwrap(),
+            ParamLocation::Body
+        );
+        assert_eq!(
+            serde_json::from_str::<ParamLocation>(r#""query""#).unwrap(),
+            ParamLocation::Query
+        );
+        assert_eq!(
+            serde_json::from_str::<ParamLocation>(r#""path""#).unwrap(),
+            ParamLocation::Path
+        );
+    }
+
+    #[test]
+    fn param_location_default_is_body() {
+        assert_eq!(ParamLocation::default(), ParamLocation::Body);
+        assert!(ParamLocation::Body.is_default());
+        assert!(!ParamLocation::Query.is_default());
+        assert!(!ParamLocation::Path.is_default());
+    }
+
+    #[test]
+    fn action_param_omits_default_location() {
+        let p = ActionParam {
+            param_type: "string".into(),
+            required: false,
+            description: String::new(),
+            enum_values: None,
+            default: None,
+            resolve: None,
+            location: ParamLocation::Body,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert!(json.get("location").is_none());
+
+        let q = ActionParam {
+            location: ParamLocation::Query,
+            ..p
+        };
+        let json = serde_json::to_value(&q).unwrap();
+        assert_eq!(json["location"], "query");
+
+        // Older serialized params without a `location` key deserialize as body.
+        let legacy: ActionParam = serde_json::from_str(r#"{"type": "string"}"#).unwrap();
+        assert_eq!(legacy.location, ParamLocation::Body);
     }
 
     // ── Runtime types ─────────────────────────────────────────────────
@@ -430,6 +525,7 @@ mod tests {
             description: None,
             hosts: vec!["slack.com".into()],
             category: None,
+            hidden: false,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Http,
@@ -471,6 +567,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: Some("Development".into()),
+            hidden: false,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,

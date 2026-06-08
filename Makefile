@@ -1,4 +1,4 @@
-.PHONY: local dev dev-api dev-dashboard down test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test check fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
@@ -8,6 +8,9 @@
        e2e e2e-up e2e-down
 
 COMPOSE := $(shell command -v podman-compose 2>/dev/null || command -v docker-compose 2>/dev/null || echo "docker compose")
+ENGINE := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null || echo docker)
+# Cross-project network bridging Overfolder ↔ Overslash (see docker/docker-compose.dev.yml).
+SHARED_NET := overfolder-shared
 TOFU := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
 TOFU_DIR := infra
 ENV ?= dev
@@ -38,14 +41,27 @@ NC := \033[0m
 WT_ENV = bash bin/worktree-env.sh && set -a && { [ -f .env.local ] && . ./.env.local; }; set +a; \
          PROJ_FLAG=$${COMPOSE_PROJECT_NAME:+--project-name $$COMPOSE_PROJECT_NAME}
 
-# Start local infra (postgres only)
-local:
-	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
+# Ensure the cross-project podman network exists (idempotent). The Overfolder
+# backend attaches to this same network to reach the API by the `overslash`
+# alias — see docker/docker-compose.dev.yml.
+net:
+	@$(ENGINE) network inspect $(SHARED_NET) >/dev/null 2>&1 || { \
+		echo -e "$(GREEN)Creating shared network $(SHARED_NET)...$(NC)"; \
+		$(ENGINE) network create $(SHARED_NET); }
 
-# Start all dev services (postgres + api with cargo-watch + dashboard)
-dev:
+# Start the full local dev stack (postgres + api with cargo-watch + dashboard).
+# Creates the shared network first so Overfolder can reach this API. `dev` is
+# kept as an alias of `local`.
+local dev: net
 	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml down --remove-orphans 2>/dev/null; \
 	$(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up --build
+
+# Stop the full local dev stack (alias of `down`).
+local-down: down
+
+# Start local infra only (postgres) — used by e2e-up.sh and worktree isolation.
+local-db:
+	@$(WT_ENV); $(COMPOSE) $$PROJ_FLAG -f docker/docker-compose.dev.yml up -d postgres
 
 # Start only the API (postgres + api)
 dev-api:

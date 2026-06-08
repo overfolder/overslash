@@ -215,6 +215,49 @@ resource "google_monitoring_alert_policy" "oauth_refresh_failure_rate" {
   }
 }
 
+# Upstream error rate > 20% over 15 min — a service Overslash *calls* is
+# failing (HTTP 5xx, or an MCP tool returning in-band `is_error: true`).
+# These never show on the gateway's own request_count: HTTP-mode actions
+# pass the upstream status through inside a 200 envelope, and MCP errors are
+# in-band behind an outer 200 — so without this alert an upstream outage
+# looks like 100% success. P1 not P0: Overslash itself is up (its own 5xx
+# pages via the P0 alert). The 20% bar is deliberately higher than the
+# oauth/webhook ratios — occasional tool errors and upstream 5xx are
+# semi-normal; this should fire on outages, not flaky single calls.
+resource "google_monitoring_alert_policy" "upstream_error_rate" {
+  count = local.alerts_enabled && var.upstream_error_alert_enabled ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[P1] ${var.base_prefix} Upstream Error Rate"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Upstream error ratio > 20%"
+
+    condition_prometheus_query_language {
+      query               = <<-PROMQL
+        sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}",status_class=~"5xx|error"}[15m]))
+          /
+        clamp_min(sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}"}[15m])), 1)
+        > 0.20
+      PROMQL
+      duration            = "900s"
+      evaluation_interval = "60s"
+    }
+  }
+
+  notification_channels = local.p1_channels
+
+  alert_strategy {
+    auto_close = "604800s"
+  }
+
+  documentation {
+    content   = "More than 20% of upstream responses over the last 15 minutes were failures — HTTP 5xx from an upstream API or in-band MCP tool errors (`is_error: true`). This is an *upstream* outage, not Overslash's own errors (those page via the P0 5xx alert). Break down `overslash_upstream_responses_total` by `template_key` (the 'Upstream Error Ratio by Template' chart on the Actions & OAuth dashboard) to find the failing service."
+    mime_type = "text/markdown"
+  }
+}
+
 # Webhook terminal-failure rate > 5% over 30 min.
 resource "google_monitoring_alert_policy" "webhook_failure_rate" {
   count = local.alerts_enabled ? 1 : 0

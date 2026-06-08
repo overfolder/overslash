@@ -10,7 +10,8 @@
 		| 'partially-degraded'
 		| 'global'
 		| 'org'
-		| 'user';
+		| 'user'
+		| 'hidden';
 	let { variant, label }: { variant: Variant; label?: string } = $props();
 	const text = $derived(label ?? variant.replace('-', ' '));
 </script>
@@ -48,10 +49,14 @@
 		border-color: rgba(220, 38, 38, 0.35);
 	}
 	.archived,
-	.built-in {
+	.built-in,
+	.hidden {
 		background: var(--color-bg, #f4f4f5);
 		color: var(--color-text-muted, #6b7280);
 		border-color: var(--color-border, #e5e7eb);
+	}
+	.hidden {
+		border-style: dashed;
 	}
 	.global {
 		background: rgba(59, 130, 246, 0.12);

@@ -12,7 +12,9 @@ import {
 	makeSnapper,
 	seedAgent,
 	seedApproval,
-	seedSecret
+	seedExecution,
+	seedSecret,
+	setAuditResponseBodyMode
 } from '../tests/scenarios/index.mjs';
 
 const session = await login('admin');
@@ -22,6 +24,17 @@ const session = await login('admin');
 await seedSecret(session, { name: `audit-demo-${Date.now()}`, value: 'hunter2' });
 await seedAgent(session, { name: `audit-demo-agent-${Date.now()}` });
 await seedApproval(session); // approval.created + identity.created upstream
+// Capture error-response bodies on audit rows so the expanded views below
+// include the "response body" section.
+await setAuditResponseBodyMode(session, 'errors_only');
+// action.executed rows, oldest → newest: a transport failure (connection
+// refused — gateway 502, audit row carries `detail.error`), one success
+// (the API's own /health), and one whose upstream 401s with a JSON error
+// body (the API's own /v1/secrets, called without auth) — the newest error
+// row renders the red "error" pill + Result line + captured body.
+await seedExecution(session, { url: 'http://127.0.0.1:9/unreachable', expect: 502 });
+await seedExecution(session, { url: `${session.apiUrl}/health` });
+await seedExecution(session, { url: `${session.apiUrl}/v1/secrets` });
 
 const snap = await makeSnapper(session);
 
@@ -46,7 +59,61 @@ try {
 	}
 	await ctx.close();
 
-	// 4. Search bar with chip + autocomplete.
+	// 4. Upstream-error execution — expand the row carrying the red "error"
+	//    pill so the "Result" line ("Upstream error — HTTP 404") is visible.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-upstream-error', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('tr.row .upstream-error').first().waitFor({ timeout: 15_000 });
+			}
+		});
+		const errRow = page
+			.locator('tr.row', { has: page.locator('.upstream-error') })
+			.first();
+		await errRow.click();
+		await page.waitForTimeout(400);
+		await snap.snap(page, 'audit-upstream-error-expanded');
+		await ctx.close();
+	}
+
+	// 4b. Transport-error execution — the older error row (connection
+	//     refused). Expanded pane shows "Transport error — …" plus the
+	//     Error line; no response body (the upstream never answered).
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-transport-error', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('tr.row .upstream-error').nth(1).waitFor({ timeout: 15_000 });
+			}
+		});
+		const transportRow = page
+			.locator('tr.row', { has: page.locator('.upstream-error') })
+			.nth(1);
+		await transportRow.click();
+		await page.waitForTimeout(400);
+		await snap.snap(page, 'audit-transport-error-expanded');
+		await ctx.close();
+	}
+
+	// 5. `result = error` filter — only upstream-error executions remain.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-result-error', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('.search input').first().waitFor({ timeout: 15_000 });
+			}
+		});
+		const input = page.locator('.search input').first();
+		await input.click();
+		await input.fill('result = error');
+		await input.press('Enter');
+		await page.waitForTimeout(600);
+		await snap.snap(page, 'audit-result-error');
+		await ctx.close();
+	}
+
+	// 6. Search bar with chip + autocomplete.
 	{
 		const { page, ctx } = await snap.navigateAndSnap('audit-search', '/audit', {
 			viewport: { width: 1400, height: 900 },
@@ -65,7 +132,7 @@ try {
 		await ctx.close();
 	}
 
-	// 5. Empty state — filter to a key that nothing matches.
+	// 7. Empty state — filter to a key that nothing matches.
 	{
 		const { page, ctx } = await snap.navigateAndSnap('audit-empty', '/audit', {
 			viewport: { width: 1400, height: 900 },

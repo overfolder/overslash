@@ -615,6 +615,7 @@ where
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -727,13 +728,45 @@ where
             state.clone(),
             overslash_api::middleware::subdomain::subdomain_middleware,
         ))
-        .with_state(state);
+        .with_state(state)
+        // Mirror production (lib.rs): install the global Prometheus recorder
+        // (idempotent — safe across the many apps one test binary builds)
+        // and expose `/internal/metrics` so tests can assert on emitted
+        // series. The recorder is process-global, so assert series
+        // *presence*, never exact counts.
+        .merge(overslash_metrics::metrics_router(overslash_metrics::setup()));
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
     (addr, Client::new())
+}
+
+/// Scrape the in-process `/internal/metrics` endpoint mounted by
+/// `start_api` and return the raw Prometheus text body. Find your series
+/// with line-level `contains` checks on each label — the exporter does not
+/// guarantee label order.
+pub async fn scrape_metrics(base: &str, client: &Client) -> String {
+    let resp = client
+        .get(format!("{base}/internal/metrics"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "metrics scrape failed");
+    resp.text().await.unwrap()
+}
+
+/// True when `metrics_text` contains a series line for `name` carrying every
+/// `key="value"` pair in `labels`, in any order. The recorder is shared by
+/// every test in the binary, so this checks presence — never counts.
+pub fn has_metric_series(metrics_text: &str, name: &str, labels: &[(&str, &str)]) -> bool {
+    metrics_text.lines().any(|line| {
+        line.starts_with(name)
+            && labels
+                .iter()
+                .all(|(k, v)| line.contains(&format!("{k}=\"{v}\"")))
+    })
 }
 
 /// Start API with dev auth enabled. Returns (base_url, client).
@@ -760,6 +793,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         public_url: format!("http://{addr}"),
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -890,6 +924,7 @@ pub async fn start_api_with_auth_providers(
         public_url: public_url.to_string(),
         dev_auth_enabled: true,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1374,6 +1409,7 @@ where
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1510,6 +1546,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -1617,6 +1654,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: max_bytes,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),

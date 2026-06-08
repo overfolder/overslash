@@ -59,3 +59,9 @@ variable "oauth_refresh_alert_enabled" {
   description = "Enable the OAuth refresh failure rate alert. GMP rejects the alert policy if overslash_oauth_events_total has never been emitted (no metric descriptor yet). Set true once at least one OAuth token refresh has been observed."
 }
 
+variable "upstream_error_alert_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable the upstream error rate alert. GMP rejects the alert policy if overslash_upstream_responses_total has never been emitted (no metric descriptor yet). Set true once at least one upstream response has been observed."
+}
+

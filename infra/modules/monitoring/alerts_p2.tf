@@ -1,5 +1,56 @@
 # P2 — informational, email only.
 
+# Gateway 4xx ratio spike. 4xx is dominated by legitimate client errors —
+# validation failures, permission denials, and rate limits all map to 4xx by
+# design — so an absolute-rate or low-ratio threshold would be constant
+# noise. A 30% ratio sustained for 10 minutes flags a regime change instead:
+# a deploy that rejects valid requests, a broken auth path 401/403-ing
+# broadly, or a misbehaving client hammering the API.
+resource "google_monitoring_alert_policy" "api_high_4xx" {
+  count = local.alerts_enabled ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[P2] ${var.base_prefix} API High 4xx Rate"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "4xx error rate > 30%"
+
+    condition_threshold {
+      filter          = "${local.api_filter} AND metric.type = \"run.googleapis.com/request_count\" AND metric.labels.response_code_class = \"4xx\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0.30
+      duration        = "600s"
+
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.labels.service_name"]
+      }
+
+      denominator_filter = "${local.api_filter} AND metric.type = \"run.googleapis.com/request_count\""
+
+      denominator_aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.labels.service_name"]
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  notification_channels = local.p2_channels
+
+  alert_strategy {
+    auto_close = "604800s"
+  }
+}
+
 # Monthly billing budget at 50% / 80% / 100%. Skipped when the project isn't
 # linked to a billing account.
 resource "google_billing_budget" "monthly" {

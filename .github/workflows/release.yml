@@ -82,7 +82,10 @@ jobs:
           name: dashboard-build
           path: dashboard/build
       - name: Build
-        run: cargo build --release --package overslash-cli --features embed-dashboard --locked
+        shell: bash
+        # OVERSLASH_VERSION (tag without the `v` prefix) overrides the crate
+        # version reported by `--version`, the startup banner, and DCR.
+        run: OVERSLASH_VERSION="${VERSION#v}" cargo build --release --package overslash-cli --features embed-dashboard --locked
       - name: Strip binary
         if: runner.os != 'Windows'
         run: strip target/release/overslash

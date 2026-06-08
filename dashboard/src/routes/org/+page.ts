@@ -1,6 +1,7 @@
 import type { PageLoad } from './$types';
 import { ApiError, session, type MeIdentity } from '$lib/session';
 import type {
+	AuditSettings,
 	ExecutionSettings,
 	IdpConfig,
 	ManagedSigninSettings,
@@ -43,6 +44,7 @@ export interface OrgPageData {
 	webhooks: Webhook[];
 	secretRequestSettings: SecretRequestSettings | null;
 	executionSettings: ExecutionSettings | null;
+	auditSettings: AuditSettings | null;
 	managedSigninSettings: ManagedSigninSettings | null;
 	invites: OrgInvite[];
 	subscription: OrgSubscription | null;
@@ -70,6 +72,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				webhooks: [],
 				secretRequestSettings: null,
 				executionSettings: null,
+				auditSettings: null,
 				managedSigninSettings: null,
 				invites: [],
 				subscription: null,
@@ -86,6 +89,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			webhooks,
 			secretRequestSettings,
 			executionSettings,
+			auditSettings,
 			managedSigninSettings,
 			invites
 		] = await Promise.all([
@@ -102,6 +106,9 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				: Promise.resolve(null),
 			orgId
 				? session.get<ExecutionSettings>(`/v1/orgs/${orgId}/execution-settings`)
+				: Promise.resolve(null),
+			orgId
+				? session.get<AuditSettings>(`/v1/orgs/${orgId}/audit-settings`)
 				: Promise.resolve(null),
 			orgId
 				? session.get<ManagedSigninSettings>(`/v1/orgs/${orgId}/managed-signin`)
@@ -129,6 +136,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			webhooks,
 			secretRequestSettings,
 			executionSettings,
+			auditSettings,
 			managedSigninSettings,
 			invites,
 			subscription,
@@ -148,6 +156,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			webhooks: [],
 			secretRequestSettings: null,
 			executionSettings: null,
+			auditSettings: null,
 			managedSigninSettings: null,
 			invites: [],
 			subscription: null,

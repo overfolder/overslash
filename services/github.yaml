@@ -1,8 +1,22 @@
+# GitHub via a GitHub App (user-to-server tokens). The org's OAuth client
+# credentials (`OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` or a
+# BYOC credential) must belong to a GitHub App, and the app must be installed
+# on the target repos/orgs. The authorize/token endpoints are identical to the
+# classic OAuth App flow; user access tokens expire (~8h) and refresh via the
+# standard refresh grant, which the gateway already performs automatically.
+# Orgs still on an OAuth App client can use the hidden `github_legacy_oauth`
+# template instead.
 openapi: 3.1.0
 info:
   title: GitHub
   key: github
   category: Development
+  description: >-
+    GitHub via a GitHub App. The configured OAuth client must be a GitHub App
+    (not a classic OAuth App), and the app must be installed on the
+    repositories or organizations you want to act on. Access is governed by
+    the app's fine-grained permissions and its installations, not OAuth
+    scopes.
 servers:
   - url: https://api.github.com
 components:
@@ -14,16 +28,32 @@ components:
         authorizationCode:
           authorizationUrl: https://github.com/login/oauth/authorize
           tokenUrl: https://github.com/login/oauth/access_token
-          scopes:
-            repo: ""
-            read:user: ""
-            user:email: ""
+          # GitHub Apps ignore the `scope` parameter: what a user-to-server
+          # token can do is the intersection of the app's permissions and the
+          # installation the user has access to. Declared empty on purpose.
+          scopes: {}
 paths:
   /user:
     get:
       operationId: get_authenticated_user
       summary: Get the authenticated user's profile
       risk: read
+  /user/installations:
+    get:
+      operationId: list_installations
+      summary: List GitHub App installations accessible to the authenticated user
+      description: >-
+        Diagnostic for "app not installed" failures: lists the installations
+        of this GitHub App that the user can access. Repositories outside
+        these installations are invisible to the token.
+      risk: read
+      parameters:
+        - name: per_page
+          in: query
+          description: Results per page (max 100)
+          schema:
+            type: integer
+            default: 30
   /user/repos:
     get:
       operationId: list_repos

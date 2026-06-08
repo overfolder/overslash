@@ -51,6 +51,10 @@ mod validate;
 use call::call_action_impl;
 use validate::validate_action_impl;
 
+// Used by the approval-replay path to re-mint the OAuth credential that
+// replay payloads deliberately don't persist.
+pub(crate) use auth::resolve_replay_auth_header;
+
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full
 /// list lives in `overslash_search`.
@@ -69,11 +73,29 @@ pub fn validate_router() -> Router<AppState> {
     Router::new().route("/v1/actions/validate", post(validate_action))
 }
 
+/// Bound a caller-supplied service key to one that actually exists in the
+/// registry, so the `template_key` metric label can never blow up
+/// Prometheus cardinality: a client could otherwise submit
+/// `service: "<arbitrary>"` and mint a new label value even on requests
+/// that fail validation inside the inner handler.
+pub(crate) fn bounded_template_key(
+    registry: &overslash_core::registry::ServiceRegistry,
+    service: Option<&str>,
+) -> String {
+    match service {
+        Some(key) if registry.get(key).is_some() => key.to_string(),
+        Some(_) => "_unknown".to_string(),
+        None => "_invalid".to_string(),
+    }
+}
+
 /// Top-level handler that times the request and emits the
 /// `overslash_action_executions_total` / `_duration_seconds` metrics.
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
 /// the success-body status tag and would require threading an outcome out of
-/// the inner function — for now we classify by HTTP status only.
+/// the inner function — we classify by HTTP status, plus the
+/// `UpstreamErrored` response-extension marker the executor branches set
+/// when the upstream itself failed (MCP in-band `is_error`, HTTP 5xx).
 async fn call_action(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -92,15 +114,7 @@ async fn call_action(
         (true, false) => "verb",
         _ => "_invalid",
     };
-    // Bound the `template_key` label to keys that actually exist in the
-    // registry. A client could otherwise submit `service: "<arbitrary>"`
-    // and explode Prometheus cardinality even on requests that fail
-    // validation inside the inner handler.
-    let template_key = match req.service.as_deref() {
-        Some(key) if state.registry.get(key).is_some() => key.to_string(),
-        Some(_) => "_unknown".to_string(),
-        None => "_invalid".to_string(),
-    };
+    let template_key = bounded_template_key(&state.registry, req.service.as_deref());
 
     let result = call_action_impl(State(state), ReqExt(ext), auth, scope, ip, Json(req)).await;
 
@@ -110,7 +124,18 @@ async fn call_action(
         Ok(resp) => resp.status().as_u16(),
         Err(err) => err.status_code().as_u16(),
     };
-    let status_label = if status_code >= 500 {
+    // The marker outranks the status-code rules: an upstream failure rides
+    // behind an outer 200 (MCP in-band errors, buffered HTTP 5xx envelope)
+    // or passes a 5xx straight through (streaming) — either way it is the
+    // upstream's outage, not Overslash's, and without the marker it would
+    // count as `called` (looking like 100% success) or `failed` (paging as
+    // a gateway error). Same `>= 500` line the replay path draws.
+    let status_label = if matches!(
+        &result,
+        Ok(resp) if resp.extensions().get::<call::UpstreamErrored>().is_some()
+    ) {
+        "upstream_error"
+    } else if status_code >= 500 {
         "failed"
     } else if status_code == 403 {
         "denied"
@@ -154,11 +179,7 @@ async fn validate_action(
         (true, false) => "verb",
         _ => "_invalid",
     };
-    let template_key = match req.service.as_deref() {
-        Some(key) if state.registry.get(key).is_some() => key.to_string(),
-        Some(_) => "_unknown".to_string(),
-        None => "_invalid".to_string(),
-    };
+    let template_key = bounded_template_key(&state.registry, req.service.as_deref());
 
     let result = validate_action_impl(State(state), ReqExt(ext), auth, scope, Json(req)).await;
 
@@ -267,6 +288,12 @@ enum CallResponse {
         /// parsed as JSON, ≤8 KB). The selector lives on `CallRequest.verbose`.
         result: serde_json::Value,
         action_description: Option<String>,
+        /// True when the upstream itself reported failure — an MCP envelope
+        /// with `is_error: true`, or an upstream HTTP status >= 400 — even
+        /// though the call executed. Mirrors `detail.is_error` on the
+        /// `action.executed` audit entry so callers (dashboard Try It, MCP
+        /// clients) can flag the result without parsing the body.
+        is_error: bool,
     },
     #[serde(rename = "pending_approval")]
     PendingApproval {
@@ -365,6 +392,10 @@ struct ResolvedMeta {
     /// When the resolved service has `runtime: Platform`, dispatch calls the
     /// in-process handler registry instead of making any outgoing call.
     platform_target: Option<PlatformTarget>,
+    /// Resolved service-instance id (HTTP shapes only). Stored on approval
+    /// replay payloads so the replay path can re-resolve OAuth against the
+    /// same binding instead of persisting a live token.
+    instance_id: Option<uuid::Uuid>,
 }
 
 struct McpTarget {

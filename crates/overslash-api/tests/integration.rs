@@ -41,6 +41,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -216,9 +217,35 @@ async fn start_mock() -> SocketAddr {
         }
     }
 
+    // Returns the requested status code — lets tests exercise upstream
+    // 4xx/5xx responses (e.g. the `is_error` / `upstream_error` paths).
+    async fn status_code(
+        axum::extract::Path(code): axum::extract::Path<u16>,
+    ) -> (axum::http::StatusCode, &'static str) {
+        (
+            axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::IM_A_TEAPOT),
+            "upstream says no",
+        )
+    }
+
+    // Returns a body containing a raw NUL byte — Postgres rejects  
+    // inside jsonb strings, so this exercises the audit response-body
+    // sanitizer (an unsanitized body would silently drop the audit row).
+    async fn nul_body() -> impl axum::response::IntoResponse {
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            b"a\x00b".to_vec(),
+        )
+    }
+
     let state: S = Arc::new(Mutex::new(MockState::default()));
     let app = Router::new()
         .route("/echo", get(echo).post(echo).put(echo).delete(echo))
+        .route(
+            "/status/{code}",
+            get(status_code).post(status_code).put(status_code),
+        )
+        .route("/nul", get(nul_body))
         .route("/webhooks/receive", post(receive_webhook))
         .route("/webhooks/received", get(list_webhooks))
         .route("/oauth/token", post(oauth_token))
@@ -442,6 +469,395 @@ async fn test_happy_path_call_with_permission() {
     // Verify secret injection in echo response
     let echo_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(echo_body["headers"]["x-token"], "tok_secret-value-123");
+}
+
+/// An upstream 4xx/5xx still executes (gateway 200, `status: "called"`) but
+/// must be flagged: `is_error: true` on the response envelope, the
+/// normalized `detail.is_error` on the `action.executed` audit row, and the
+/// `/v1/audit?is_error=` filter splitting failures from successes.
+#[tokio::test]
+async fn test_upstream_http_error_flagged_in_envelope_and_audit() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "identity_id": ident_id,
+            "action_pattern": "http:**",
+            "effect": "allow"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Upstream 500 — executed, mirrored on the result, flagged on the envelope.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/status/500"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    assert_eq!(body["is_error"], true);
+    assert_eq!(body["result"]["status_code"], 500);
+
+    // Success for contrast — `is_error: false`.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "called");
+    assert_eq!(body["is_error"], false);
+
+    // Audit rows carry the normalized flag.
+    let audit: Vec<Value> = client
+        .get(format!("{base}/v1/audit?action=action.executed"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let failed = audit
+        .iter()
+        .find(|e| e["detail"]["status_code"] == 500)
+        .expect("failed execution audit row");
+    assert_eq!(failed["detail"]["is_error"], true);
+    let succeeded = audit
+        .iter()
+        .find(|e| e["detail"]["status_code"] == 200)
+        .expect("successful execution audit row");
+    assert_eq!(succeeded["detail"]["is_error"], false);
+
+    // `is_error=` filter splits the two; rows without the flag match neither.
+    let errors: Vec<Value> = client
+        .get(format!("{base}/v1/audit?is_error=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!errors.is_empty());
+    assert!(errors.iter().all(|e| e["detail"]["is_error"] == true));
+    assert!(errors.iter().any(|e| e["detail"]["status_code"] == 500));
+
+    let successes: Vec<Value> = client
+        .get(format!("{base}/v1/audit?is_error=false"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!successes.is_empty());
+    assert!(successes.iter().all(|e| e["detail"]["is_error"] == false));
+    assert!(successes.iter().any(|e| e["detail"]["status_code"] == 200));
+}
+
+/// `GET/PATCH /v1/orgs/{id}/audit-settings`: default `off`, round-trips
+/// every valid mode, rejects unknown modes at the boundary (400), and
+/// enforces admin + same-org access.
+#[tokio::test]
+async fn test_audit_settings_endpoint() {
+    let pool = common::test_pool().await;
+    let (base, key, org_id, _ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    // Default is off.
+    let settings: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}/audit-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["response_body_mode"], "off");
+
+    // Round-trip every valid mode.
+    for mode in ["errors_only", "all", "off"] {
+        let updated: Value = client
+            .patch(format!("{base}/v1/orgs/{org_id}/audit-settings"))
+            .header(auth(&admin_key).0, auth(&admin_key).1)
+            .json(&json!({"response_body_mode": mode}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(updated["response_body_mode"], mode);
+
+        let settings: Value = client
+            .get(format!("{base}/v1/orgs/{org_id}/audit-settings"))
+            .header(auth(&admin_key).0, auth(&admin_key).1)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(settings["response_body_mode"], mode);
+    }
+
+    // Unknown mode is rejected at the boundary, not by the DB CHECK.
+    let resp = client
+        .patch(format!("{base}/v1/orgs/{org_id}/audit-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({"response_body_mode": "everything"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Agent-bound keys are not admins.
+    let resp = client
+        .patch(format!("{base}/v1/orgs/{org_id}/audit-settings"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"response_body_mode": "all"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Cross-org id is rejected.
+    let other = Uuid::new_v4();
+    let resp = client
+        .get(format!("{base}/v1/orgs/{other}/audit-settings"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+/// Response-body capture follows the org's `audit_response_body_mode`:
+/// `off` stores nothing, `errors_only` stores only upstream-error bodies,
+/// `all` stores every body — truncated at the configured cap and with NUL
+/// bytes sanitized (Postgres rejects ` ` in jsonb; the row must still
+/// be written).
+#[tokio::test]
+async fn test_audit_response_body_capture_modes() {
+    let pool = common::test_pool().await;
+    let mock_addr = start_mock().await;
+    let (base, key, org_id, ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "identity_id": ident_id,
+            "action_pattern": "http:**",
+            "effect": "allow"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let call = |url: String| {
+        let client = client.clone();
+        let base = base.clone();
+        let key = key.clone();
+        async move {
+            let resp = client
+                .post(format!("{base}/v1/actions/call"))
+                .header(auth(&key).0, auth(&key).1)
+                .json(&json!({"service": "http", "method": "GET", "url": url}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+        }
+    };
+    let set_mode = |mode: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let admin_key = admin_key.clone();
+        async move {
+            let resp = client
+                .patch(format!("{base}/v1/orgs/{org_id}/audit-settings"))
+                .header(auth(&admin_key).0, auth(&admin_key).1)
+                .json(&json!({"response_body_mode": mode}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+        }
+    };
+    let audit_row = |url_suffix: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let admin_key = admin_key.clone();
+        async move {
+            let rows: Vec<Value> = client
+                .get(format!("{base}/v1/audit?action=action.executed"))
+                .header(auth(&admin_key).0, auth(&admin_key).1)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            rows.into_iter()
+                .find(|e| {
+                    e["detail"]["url"]
+                        .as_str()
+                        .is_some_and(|u| u.ends_with(url_suffix))
+                })
+                .unwrap_or_else(|| panic!("no audit row for {url_suffix}"))
+        }
+    };
+
+    // ── off (default): nothing captured, success or error ──
+    call(format!("http://{mock_addr}/echo?phase=off")).await;
+    call(format!("http://{mock_addr}/status/500?phase=off")).await;
+    assert!(audit_row("/echo?phase=off").await["detail"]["response"].is_null());
+    assert!(audit_row("/status/500?phase=off").await["detail"]["response"].is_null());
+
+    // ── errors_only: 200 skipped, 404 captured ──
+    set_mode("errors_only").await;
+    call(format!("http://{mock_addr}/echo?phase=eo")).await;
+    call(format!("http://{mock_addr}/status/404?phase=eo")).await;
+    assert!(audit_row("/echo?phase=eo").await["detail"]["response"].is_null());
+    let row = audit_row("/status/404?phase=eo").await;
+    assert_eq!(row["detail"]["is_error"], true);
+    assert_eq!(row["detail"]["response"]["body"], "upstream says no");
+    assert_eq!(row["detail"]["response"]["truncated"], false);
+
+    // ── all: success captured too, with content type ──
+    set_mode("all").await;
+    call(format!("http://{mock_addr}/echo?phase=all")).await;
+    let row = audit_row("/echo?phase=all").await;
+    assert_eq!(row["detail"]["is_error"], false);
+    let body = row["detail"]["response"]["body"].as_str().unwrap();
+    assert!(body.contains("phase=all"), "echo body captured: {body}");
+    assert_eq!(row["detail"]["response"]["truncated"], false);
+    assert!(
+        row["detail"]["response"]["content_type"]
+            .as_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+
+    // ── truncation at the configured cap (64 KB in the test config) ──
+    let big = "x".repeat(70_000);
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "POST",
+            "url": format!("http://{mock_addr}/echo?phase=big"),
+            "body": big,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let row = audit_row("/echo?phase=big").await;
+    assert_eq!(row["detail"]["response"]["truncated"], true);
+    assert!(row["detail"]["response"]["body"].as_str().unwrap().len() <= 65_536);
+
+    // ── NUL byte in the upstream body: sanitized, row still written ──
+    call(format!("http://{mock_addr}/nul?phase=nul")).await;
+    let row = audit_row("/nul?phase=nul").await;
+    assert_eq!(row["detail"]["response"]["body"], "a\u{FFFD}b");
+}
+
+/// A transport-level failure (connection refused here) now writes an
+/// `action.executed` audit row with `is_error: true` and a secret-safe
+/// `error` summary — regardless of the response-body setting. Before,
+/// these failures recorded nothing at all.
+#[tokio::test]
+async fn test_transport_error_writes_audit_row() {
+    let pool = common::test_pool().await;
+    let (base, key, _org_id, ident_id, admin_key) = setup(pool).await;
+    let client = Client::new();
+
+    let resp = client
+        .post(format!("{base}/v1/permissions"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "identity_id": ident_id,
+            "action_pattern": "http:**",
+            "effect": "allow"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Port 1 on loopback refuses connections.
+    let target = "http://127.0.0.1:1/unreachable";
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&key).0, auth(&key).1)
+        .json(&json!({"service": "http", "method": "GET", "url": target}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+
+    let rows: Vec<Value> = client
+        .get(format!("{base}/v1/audit?action=action.executed"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = rows
+        .iter()
+        .find(|e| e["detail"]["url"] == target)
+        .expect("transport-error audit row");
+    assert_eq!(row["detail"]["is_error"], true);
+    assert!(row["detail"]["status_code"].is_null());
+    assert_eq!(row["detail"]["error"]["kind"], "connect");
+    // Fixed per-kind message — never reqwest's Display, which can carry
+    // the resolved URL (and injected secrets) for other call shapes.
+    let msg = row["detail"]["error"]["message"].as_str().unwrap();
+    assert_eq!(msg, "could not connect to upstream");
+
+    // The transport-error row rides the existing is_error filter.
+    let errors: Vec<Value> = client
+        .get(format!("{base}/v1/audit?is_error=true"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(errors.iter().any(|e| e["detail"]["url"] == target));
 }
 
 #[tokio::test]
@@ -1364,6 +1780,7 @@ async fn test_service_registry_api() {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),
@@ -2383,6 +2800,7 @@ async fn start_api_with_registry(
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),

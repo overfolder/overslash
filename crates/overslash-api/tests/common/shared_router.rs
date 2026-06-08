@@ -52,11 +52,11 @@ impl SharedRouterRegistry {
         self.resources.insert(id, leaked);
     }
 
-    fn deregister(&self, id: TestPoolId) {
+    fn deregister(&self, id: TestPoolId) -> Option<&'static TestResources> {
         // The `&'static` stays alive until process exit; we only
         // remove the map entry so a stray request after the test
         // ended can't resolve to the now-finished test's pool.
-        self.resources.remove(&id);
+        self.resources.remove(&id).map(|(_, r)| r)
     }
 }
 
@@ -70,21 +70,33 @@ impl TestResourceResolver for SharedRouterRegistry {
     }
 }
 
-/// RAII guard: deregisters this test's `TestResources` on drop.
+/// RAII guard: deregisters this test's `TestResources` on drop and
+/// hands its pool to the shared-router runtime for closing.
 pub struct ResourceGuard {
     id: TestPoolId,
     registry: Arc<SharedRouterRegistry>,
+    pool_closer: tokio::sync::mpsc::UnboundedSender<PgPool>,
 }
 
 impl Drop for ResourceGuard {
     fn drop(&mut self) {
-        self.registry.deregister(self.id);
+        if let Some(resources) = self.registry.deregister(self.id) {
+            // Close the finished test's pool. The leaked `TestResources`
+            // keeps its `PgPool` — and that pool's open connections —
+            // alive until process exit; across a large binary that
+            // exhausts Postgres `max_connections` (default 100) and the
+            // tail of the suite fails with `PoolTimedOut`. Closing must
+            // happen on a live runtime, and this test's runtime is about
+            // to shut down, so ship the pool to the shared-router thread.
+            let _ = self.pool_closer.send(resources.db.clone());
+        }
     }
 }
 
 struct SharedHarness {
     addr: SocketAddr,
     registry: Arc<SharedRouterRegistry>,
+    pool_closer: tokio::sync::mpsc::UnboundedSender<PgPool>,
 }
 
 static HARNESS: OnceCell<SharedHarness> = OnceCell::const_new();
@@ -128,6 +140,7 @@ pub async fn start_api_shared(pool: PgPool) -> (SocketAddr, Client, ResourceGuar
         ResourceGuard {
             id,
             registry: harness.registry.clone(),
+            pool_closer: harness.pool_closer.clone(),
         },
     )
 }
@@ -135,12 +148,46 @@ pub async fn start_api_shared(pool: PgPool) -> (SocketAddr, Client, ResourceGuar
 async fn boot_shared_router() -> SharedHarness {
     let registry = SharedRouterRegistry::new();
     let registry_for_state = registry.clone();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    // Bind synchronously so the address is known before the listener moves
+    // to the server thread.
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let addr = std_listener.local_addr().unwrap();
     let state = build_shared_state(registry_for_state, addr);
     let app = build_shared_router(state);
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    SharedHarness { addr, registry }
+    let (pool_closer, mut pool_close_rx) = tokio::sync::mpsc::unbounded_channel::<PgPool>();
+    // The shared server must outlive every test: `#[tokio::test]` drops its
+    // runtime when the test fn returns, aborting any task spawned on it. A
+    // plain `tokio::spawn` here would tie the server to whichever test won
+    // the `get_or_init` race — once that test finished, every other test in
+    // the binary would see its requests die with `IncompleteMessage`. Run
+    // the server on a dedicated thread with its own runtime instead; it
+    // lives until process exit.
+    std::thread::Builder::new()
+        .name("shared-router".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("shared-router runtime builds");
+            rt.block_on(async move {
+                // Drain pools handed over by `ResourceGuard::drop` so
+                // finished tests release their Postgres connections.
+                tokio::spawn(async move {
+                    while let Some(pool) = pool_close_rx.recv().await {
+                        pool.close().await;
+                    }
+                });
+                let listener = TcpListener::from_std(std_listener).unwrap();
+                axum::serve(listener, app).await.unwrap();
+            });
+        })
+        .expect("shared-router thread spawns");
+    SharedHarness {
+        addr,
+        registry,
+        pool_closer,
+    }
 }
 
 fn build_shared_router(state: AppState) -> axum::Router {
@@ -244,6 +291,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         max_response_body_bytes: 5_242_880,
+        audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
         dashboard_url: "/".into(),
         dashboard_origin: "*localhost*".into(),

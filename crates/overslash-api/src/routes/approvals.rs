@@ -23,6 +23,7 @@ use crate::{
     error::{AppError, Result},
     extractors::{AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
     services::action_caller::{self, AuditSource, CallContext, CallOutcome, ReplayPayload},
+    services::audit_capture,
     services::group_ceiling,
     services::mcp_caller,
     services::platform_caller,
@@ -891,46 +892,14 @@ async fn resolve_approval(
             };
 
         if !elicitation_active && auto_call_enabled {
-            let state_c = state.clone();
-            let ext_c = ext.clone();
-            let approval_c = approval_pre.clone();
-            let resolver_identity = auth.identity_id;
-            let resolver_org_id = auth.org_id;
-            let ip_c = ip.0.clone();
-            tokio::spawn(async move {
-                let scope_c = OrgScope::new(approval_c.org_id, state_c.db_pool(&ext_c));
-                // Atomic claim with triggered_by="auto". Losing this claim
-                // is fine — it means a manual /call beat us to it.
-                let claim = match scope_c.claim_execution(approval_c.id, "auto").await {
-                    Ok(Some(row)) => row,
-                    Ok(None) => return,
-                    Err(e) => {
-                        tracing::warn!(
-                            approval_id = %approval_c.id,
-                            "auto-call claim failed: {e}"
-                        );
-                        return;
-                    }
-                };
-                if let Err(e) = execute_claimed_approval(
-                    &state_c,
-                    &ext_c,
-                    &scope_c,
-                    &approval_c,
-                    claim,
-                    "auto",
-                    ip_c.as_deref(),
-                    resolver_org_id,
-                    resolver_identity,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        approval_id = %approval_c.id,
-                        "auto-call execute failed: {e}"
-                    );
-                }
-            });
+            spawn_auto_call(
+                state.clone(),
+                ext.clone(),
+                approval_pre.clone(),
+                ip.0.clone(),
+                auth.org_id,
+                auth.identity_id,
+            );
         }
 
         Some(row)
@@ -1144,6 +1113,75 @@ async fn call_approval(
     Ok(Json(response))
 }
 
+/// Spawn the background auto-call-on-approve task for `approval`: atomically
+/// claim its pending execution with `triggered_by="auto"` and run it to
+/// terminal state. Losing the claim is fine — it means a manual `/call` beat
+/// us to it. Shared between the `/resolve` path and cascade resolution.
+///
+/// Deliberately a plain fn (not `async`) that boxes the
+/// `execute_claimed_approval` future as `dyn Future`: cascade resolution makes
+/// `execute_claimed_approval` reach itself through this helper, and the type
+/// erasure is what stops the compiler from chasing an infinitely recursive
+/// opaque future type.
+fn spawn_auto_call(
+    state: AppState,
+    ext: axum::http::Extensions,
+    approval: overslash_db::repos::approval::ApprovalRow,
+    ip: Option<String>,
+    audit_org_id: Uuid,
+    audit_identity_id: Option<Uuid>,
+) {
+    tokio::spawn(async move {
+        let scope = OrgScope::new(approval.org_id, state.db_pool(&ext));
+        let claim = match scope.claim_execution(approval.id, "auto").await {
+            Ok(Some(row)) => row,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(
+                    approval_id = %approval.id,
+                    "auto-call claim failed: {e}"
+                );
+                return;
+            }
+        };
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<_>> + Send>> =
+            Box::pin(execute_claimed_approval(
+                &state,
+                &ext,
+                &scope,
+                &approval,
+                claim,
+                "auto",
+                ip.as_deref(),
+                audit_org_id,
+                audit_identity_id,
+            ));
+        if let Err(e) = fut.await {
+            tracing::warn!(
+                approval_id = %approval.id,
+                "auto-call execute failed: {e}"
+            );
+        }
+    });
+}
+
+/// Recover a registry-bounded `template_key` for replay metrics from the
+/// approval's permission keys. Keys derive as `{service}:{action}:{arg}` or
+/// `{service}:{METHOD}:{path}` (SPEC §8), so the prefix before the first
+/// `:` is the service key. Anything that doesn't resolve to a registry
+/// entry collapses to `"_unknown"` — same cardinality bound the inline
+/// path applies via `bounded_template_key`.
+fn replay_template_key(registry: &ServiceRegistry, permission_keys: &[String]) -> String {
+    let service = permission_keys
+        .first()
+        .and_then(|k| k.split(':').next())
+        .filter(|s| !s.is_empty());
+    match service {
+        Some(s) if registry.get(s).is_some() => s.to_string(),
+        _ => "_unknown".to_string(),
+    }
+}
+
 /// Run a *claimed* execution to terminal state. Shared between the manual
 /// `POST /v1/approvals/{id}/call` path and the auto-call-on-approve
 /// background task spawned by `resolve_approval`. The caller is responsible
@@ -1244,10 +1282,71 @@ async fn execute_claimed_approval(
 
     let replay_timeout = std::time::Duration::from_secs(state.config.execution_replay_timeout_secs);
 
-    // Both branches produce (finalised, succeeded, result_summary) for the
-    // shared audit + webhook + rule-creation tail below.
-    let (finalised, succeeded, result_summary) = match payload {
+    // Org-level response-body capture mode for the replay's audit row,
+    // resolved once so the call pipeline stays query-free. Capture is
+    // best-effort observability (the audit write itself is fire-and-
+    // forget), so a failed read degrades to Off rather than erroring —
+    // the execution row is already claimed as "executing" here, and a
+    // `?` would skip finalization and wedge it in that state forever.
+    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+        state.db(ext),
+        approval.org_id,
+    )
+    .await
+    {
+        Ok(mode) => mode
+            .map(|m| audit_capture::AuditResponseBodyMode::parse_or_off(&m))
+            .unwrap_or(audit_capture::AuditResponseBodyMode::Off),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this replay");
+            audit_capture::AuditResponseBodyMode::Off
+        }
+    };
+
+    // Replays count toward the same execution/upstream metrics inline calls
+    // record (they were invisible there before). The original call shape
+    // isn't stored, so `mode = "replay"`; the template key is recovered from
+    // the approval's permission keys.
+    let replay_tpl = replay_template_key(&state.registry, &approval.permission_keys);
+    let replay_start = std::time::Instant::now();
+
+    // Each branch produces (finalised, succeeded, upstream_errored,
+    // result_summary) for the shared metrics + audit + webhook +
+    // rule-creation tail below. `upstream_errored` is true when the upstream
+    // responded but reported failure (HTTP 5xx, MCP in-band `is_error`) —
+    // a success from the approval's perspective, an outage from the
+    // operator's.
+    let (finalised, succeeded, upstream_errored, result_summary) = match payload {
         ReplayPayload::Http(stored) => {
+            // Replay payloads are credential-free: when the original call
+            // carried an OAuth header, only the service/instance it resolved
+            // from was stored. Re-resolve a fresh token against the
+            // requester's identity now — the stored request never holds one,
+            // and the original token could have expired while the approval
+            // sat pending. Pre-fix rows have no `service_key` and replay
+            // their baked-in headers as-is.
+            let auth_header = match stored.service_key.as_deref() {
+                Some(service_key) => {
+                    match crate::routes::actions::resolve_replay_auth_header(
+                        state,
+                        ext,
+                        scope,
+                        approval.identity_id,
+                        service_key,
+                        stored.instance_id,
+                    )
+                    .await
+                    {
+                        Ok(h) => Some(h),
+                        Err(e) => {
+                            let msg = format!("replay auth re-resolution failed: {e}");
+                            return fail_and_return(scope, execution_id, &msg, e).await;
+                        }
+                    }
+                }
+                None => None,
+            };
+
             // ── Replay with timeout. Streaming is forced off — the reviewer's
             // connection isn't the original caller's.
             let call_ctx = CallContext {
@@ -1264,16 +1363,25 @@ async fn execute_claimed_approval(
                     approval_id: id,
                     execution_id,
                 },
+                audit_body_mode,
             };
 
             let outcome = tokio::time::timeout(
                 replay_timeout,
-                action_caller::call_action_request(call_ctx, &stored.action),
+                action_caller::call_action_request(call_ctx, &stored.action, auth_header.as_ref()),
             )
             .await;
 
             match outcome {
                 Ok(Ok(CallOutcome::Buffered { result, .. })) => {
+                    // Upstream actually responded — count it, same as the
+                    // inline buffered path. Transport failures land in the
+                    // Ok(Err(..)) arm below and record nothing here.
+                    overslash_metrics::actions::record_upstream_response(
+                        &replay_tpl,
+                        "http",
+                        overslash_metrics::actions::status_class(result.status_code),
+                    );
                     let mut result_json = serde_json::to_value(&result)
                         .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
                     if stored.prefer_stream {
@@ -1285,11 +1393,12 @@ async fn execute_claimed_approval(
                         "status_code": result.status_code,
                         "duration_ms": result.duration_ms,
                     });
+                    let upstream_errored = result.status_code >= 500;
                     let finalised = scope
                         .finalize_execution_executed(execution_id, &result_json)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, true, Some(summary))
+                    (finalised, true, upstream_errored, Some(summary))
                 }
                 Ok(Ok(CallOutcome::Streamed(_))) => {
                     // Defensive: replay forces prefer_stream=false so this variant is
@@ -1300,7 +1409,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Ok(Err(app_err)) => {
                     let msg = app_err.to_string();
@@ -1308,7 +1417,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, &msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Err(_elapsed) => {
                     let msg = "replay_timeout";
@@ -1316,7 +1425,7 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
             }
         }
@@ -1350,11 +1459,20 @@ async fn execute_claimed_approval(
                     // `action.executed` from action_caller; we do the
                     // equivalent here. `build_audit_detail` is shared with
                     // the inline executor so the two paths can't drift.
-                    let (_is_error, mut audit_detail) = mcp_caller::build_audit_detail(
+                    let (is_error, mut audit_detail) = mcp_caller::build_audit_detail(
                         &result,
                         &call.tool,
                         &call.url,
                         &call.arguments,
+                    );
+                    // Same in-band mapping as the inline MCP branch:
+                    // transport succeeded, the tool's is_error flag is the
+                    // upstream status. Transport failures land in
+                    // Ok(Err(..)) below and record nothing here.
+                    overslash_metrics::actions::record_upstream_response(
+                        &replay_tpl,
+                        "mcp",
+                        if is_error { "error" } else { "2xx" },
                     );
                     {
                         let obj = audit_detail
@@ -1362,6 +1480,18 @@ async fn execute_claimed_approval(
                             .expect("audit_detail is a json object");
                         obj.insert("replayed_from_approval".into(), serde_json::json!(id));
                         obj.insert("execution_id".into(), serde_json::json!(execution_id));
+                        // Org-gated response capture — same envelope-as-body
+                        // shape the inline MCP branch stores.
+                        if audit_capture::should_capture(audit_body_mode, is_error) {
+                            obj.insert(
+                                "response".into(),
+                                audit_capture::capture_body(
+                                    &result.body,
+                                    Some("application/json"),
+                                    state.config.audit_response_body_max_bytes,
+                                ),
+                            );
+                        }
                     }
                     let _ = scope
                         .log_audit(AuditEntry {
@@ -1384,22 +1514,48 @@ async fn execute_claimed_approval(
                         .finalize_execution_executed(execution_id, &result_json)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, true, Some(summary))
+                    (finalised, true, is_error, Some(summary))
                 }
-                Ok(Err(app_err)) => {
-                    let msg = app_err.to_string();
+                Ok(Err(invoke_err)) => {
+                    // Transport / JSON-RPC failures used to record nothing in
+                    // the audit log. Mirror the inline MCP fork: a secret-safe
+                    // error summary, plus the replay cross-references.
+                    if let Some(error_detail) = invoke_err.audit {
+                        let _ = scope
+                            .log_audit(AuditEntry {
+                                org_id: audit_org_id,
+                                identity_id: Some(approval.identity_id),
+                                action: "action.executed",
+                                resource_type: Some("mcp"),
+                                resource_id: None,
+                                detail: serde_json::json!({
+                                    "runtime": "mcp",
+                                    "tool": call.tool,
+                                    "arguments": call.arguments,
+                                    "url": call.url,
+                                    "is_error": true,
+                                    "error": error_detail,
+                                    "replayed_from_approval": id,
+                                    "execution_id": execution_id,
+                                }),
+                                description: Some(approval.action_summary.as_str()),
+                                ip_address: ip,
+                            })
+                            .await;
+                    }
+                    let msg = invoke_err.app.to_string();
                     let finalised = scope
                         .finalize_execution_failed(execution_id, &msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Err(_elapsed) => {
                     let finalised = scope
                         .finalize_execution_failed(execution_id, "replay_timeout")
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
             }
         }
@@ -1486,7 +1642,9 @@ async fn execute_claimed_approval(
                         .finalize_execution_executed(execution_id, &result_json)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, true, Some(summary))
+                    // Platform dispatch is in-process — there is no upstream
+                    // to report on, so `upstream_errored` is always false.
+                    (finalised, true, false, Some(summary))
                 }
                 Ok(Err(app_err)) => {
                     let msg = app_err.to_string();
@@ -1494,18 +1652,36 @@ async fn execute_claimed_approval(
                         .finalize_execution_failed(execution_id, &msg)
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
                 Err(_elapsed) => {
                     let finalised = scope
                         .finalize_execution_failed(execution_id, "replay_timeout")
                         .await?
                         .unwrap_or(claimed);
-                    (finalised, false, None)
+                    (finalised, false, false, None)
                 }
             }
         }
     };
+
+    // Replays were previously invisible in execution metrics — record them
+    // with the same status vocabulary the inline path uses so dashboards
+    // can split inline vs replay volume and an upstream failing during
+    // replay still shows as `upstream_error`, not silent success.
+    let replay_status = if !succeeded {
+        "failed"
+    } else if upstream_errored {
+        "upstream_error"
+    } else {
+        "called"
+    };
+    overslash_metrics::actions::record_execution(
+        &replay_tpl,
+        "replay",
+        replay_status,
+        replay_start.elapsed(),
+    );
 
     // ── Rule creation for Allow & Remember. Only on successful replay —
     // a failed replay leaves no rule so the reviewer can retry after fixing
@@ -1529,7 +1705,7 @@ async fn execute_claimed_approval(
         // that the new rules might now satisfy. Best-effort — never fail the
         // /call request just because the cascade hit a snag.
         if !keys_owned.is_empty() {
-            cascaded_approval_ids = match crate::services::permission_chain::cascade_resolve(
+            let cascaded = match crate::services::permission_chain::cascade_resolve(
                 state,
                 scope,
                 placement_id,
@@ -1537,7 +1713,7 @@ async fn execute_claimed_approval(
             )
             .await
             {
-                Ok(ids) => ids,
+                Ok(resolved) => resolved,
                 Err(e) => {
                     tracing::warn!(
                         approval_id = %id,
@@ -1546,6 +1722,79 @@ async fn execute_claimed_approval(
                     Vec::new()
                 }
             };
+
+            // Auto-call each cascaded approval whose *own* requesting agent
+            // has `auto_call_on_approve` set, mirroring the `/resolve` path.
+            // Cascaded executions carry `remember=false`, so these replays
+            // can never write rules or cascade further. Lookup failures
+            // degrade to manual-only, same as `/resolve`.
+            for c in &cascaded {
+                // No pending execution row (best-effort creation failed in
+                // the cascade) → nothing to claim.
+                if c.execution_id.is_none() {
+                    continue;
+                }
+                let auto_call_enabled = match overslash_db::repos::identity::get_by_id(
+                    state.db(ext),
+                    c.approval.org_id,
+                    c.approval.identity_id,
+                )
+                .await
+                {
+                    Ok(Some(i)) => i.auto_call_on_approve,
+                    Ok(None) => {
+                        tracing::warn!(
+                            approval_id = %c.approval.id,
+                            "cascade auto-call identity lookup returned no row"
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            approval_id = %c.approval.id,
+                            "cascade auto-call identity lookup failed: {e}"
+                        );
+                        false
+                    }
+                };
+                if !auto_call_enabled {
+                    continue;
+                }
+                // Same elicitation suppression as `/resolve`: an in-flight
+                // elicitation drives its own /resolve → /call round-trip.
+                let elicitation_active =
+                    match overslash_db::repos::mcp_elicitation::has_active_for_approval(
+                        state.db(ext),
+                        c.approval.id,
+                    )
+                    .await
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(
+                                approval_id = %c.approval.id,
+                                "cascade auto-call elicitation lookup failed: {e}"
+                            );
+                            false
+                        }
+                    };
+                if elicitation_active {
+                    continue;
+                }
+                // There is no human resolver here — attribute the execution
+                // audit to the cascaded approval's subject, consistent with
+                // `approval.cascade_resolved`.
+                spawn_auto_call(
+                    state.clone(),
+                    ext.clone(),
+                    c.approval.clone(),
+                    ip.map(str::to_string),
+                    c.approval.org_id,
+                    Some(c.approval.identity_id),
+                );
+            }
+
+            cascaded_approval_ids = cascaded.into_iter().map(|c| c.approval.id).collect();
         }
     }
 
@@ -1783,6 +2032,7 @@ mod risk_tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![],
             actions,
             runtime: Runtime::Http,

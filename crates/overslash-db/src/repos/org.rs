@@ -222,6 +222,40 @@ pub async fn set_default_deferred_execution(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `audit_response_body_mode` setting for an org
+/// (`'off' | 'errors_only' | 'all'`, enforced by a CHECK constraint).
+/// Governs whether `action.executed` audit rows persist the upstream
+/// response body. Returns `None` if the org doesn't exist.
+pub async fn get_audit_response_body_mode(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT audit_response_body_mode FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.audit_response_body_mode))
+}
+
+/// Update the `audit_response_body_mode` setting for an org. The caller
+/// must pass one of the CHECK-allowed values.
+pub async fn set_audit_response_body_mode(
+    pool: &PgPool,
+    id: Uuid,
+    mode: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET audit_response_body_mode = $2, updated_at = now() WHERE id = $1",
+        id,
+        mode,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Atomically update template settings and return the new values.
 pub async fn update_template_settings(
     pool: &PgPool,

@@ -1,7 +1,5 @@
 //! OAuth / credential resolution, scope checks, and re-auth envelopes.
 
-use std::collections::HashMap;
-
 use uuid::Uuid;
 
 use overslash_db::scopes::OrgScope;
@@ -11,9 +9,47 @@ use crate::{
     error::AppError,
     services::{oauth::OAuthError, platform_connections},
 };
-use overslash_core::types::{InjectAs, SecretRef};
+use overslash_core::types::{AuthHeader, InjectAs, SecretRef};
 
 use super::*;
+
+/// Outcome of service/instance auth resolution.
+///
+/// The live OAuth credential rides in `auth_header` — a non-`Serialize`
+/// type merged into the outgoing header map only at send time — instead of
+/// being baked into the request's header map, so approval/audit/replay
+/// persistence can never capture it.
+pub(crate) struct ResolvedAuth {
+    pub secrets: Vec<SecretRef>,
+    pub auth_header: Option<AuthHeader>,
+    /// Whether OAuth resolution succeeded. Distinct from
+    /// `auth_header.is_some()` only for templates that declare a query-param
+    /// token injection (no header to build); kept so the
+    /// `needs_authentication` gate behaves identically for those.
+    pub oauth_injected: bool,
+}
+
+impl ResolvedAuth {
+    fn secrets_only(secrets: Vec<SecretRef>) -> Self {
+        Self {
+            secrets,
+            auth_header: None,
+            oauth_injected: false,
+        }
+    }
+
+    fn oauth(auth_header: Option<AuthHeader>) -> Self {
+        Self {
+            secrets: Vec::new(),
+            auth_header,
+            oauth_injected: true,
+        }
+    }
+
+    fn none() -> Self {
+        Self::secrets_only(Vec::new())
+    }
+}
 
 pub(super) fn classify_oauth(err: &OAuthError) -> OAuthOutcome {
     match err {
@@ -264,8 +300,9 @@ pub(super) async fn needs_authentication_for_service(
 }
 
 /// Auto-resolve auth for a service. Uses the identity's OAuth connection when the
-/// template declares OAuth auth. Returns (secret_refs, oauth_was_injected).
-/// If an OAuth token is resolved, it's injected directly into headers (not via SecretRef).
+/// template declares OAuth auth. A resolved OAuth token is returned as
+/// [`ResolvedAuth::auth_header`] (never written into the request's header
+/// map — see [`ResolvedAuth`]).
 ///
 /// `RefreshFailed` / `NoRefreshToken` from the OAuth resolver bubble up as
 /// `AppError::ReauthRequired` (with a freshly-minted gated URL) so the
@@ -273,19 +310,17 @@ pub(super) async fn needs_authentication_for_service(
 /// resolver errors (crypto/db/provider lookup) keep the legacy
 /// fall-through behavior — they don't have a clean "click here to fix"
 /// recovery shape.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn resolve_service_auth(
+pub(crate) async fn resolve_service_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
     scope: &OrgScope,
     identity_id: Uuid,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
-    headers: &mut HashMap<String, String>,
     return_url_hint: Option<&str>,
-) -> Result<(Vec<SecretRef>, bool), AppError> {
+) -> Result<ResolvedAuth, AppError> {
     if !explicit_secrets.is_empty() {
-        return Ok((explicit_secrets.to_vec(), false));
+        return Ok(ResolvedAuth::secrets_only(explicit_secrets.to_vec()));
     }
 
     let org_id = scope.org_id();
@@ -368,15 +403,21 @@ pub(super) async fn resolve_service_auth(
             .await
             {
                 Ok(access_token) => {
-                    // Inject directly into headers
+                    // Carry the live token out-of-band; it is merged into the
+                    // outgoing header map only at send time.
                     let value = match &token_injection.prefix {
                         Some(p) => format!("{p}{access_token}"),
                         None => access_token,
                     };
-                    if let Some(header_name) = &token_injection.header_name {
-                        headers.insert(header_name.clone(), value);
-                    }
-                    return Ok((vec![], true));
+                    let auth_header =
+                        token_injection
+                            .header_name
+                            .as_ref()
+                            .map(|header_name| AuthHeader {
+                                name: header_name.clone(),
+                                value,
+                            });
+                    return Ok(ResolvedAuth::oauth(auth_header));
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -411,7 +452,7 @@ pub(super) async fn resolve_service_auth(
             "OAuth provider returned an error: {detail}"
         )));
     }
-    Ok((Vec::new(), false))
+    Ok(ResolvedAuth::none())
 }
 
 /// Fail-fast scope gate: before the outgoing request is built, compare the
@@ -530,10 +571,74 @@ pub(super) async fn check_required_scopes(
     })
 }
 
+/// Re-resolve the live OAuth header for an approval replay.
+///
+/// Replay payloads are credential-free: when the original call resolved an
+/// OAuth header, `StoredCallRequest` records the `service_key` (and
+/// `instance_id` binding, when there was one) instead of the token. This
+/// re-runs the same resolution against the requester's identity to mint a
+/// fresh token at replay time — which also keeps approvals replayable after
+/// the original token would have expired.
+///
+/// Fails with `Conflict` when the service/template was deleted since the
+/// approval was created, or when auth no longer resolves to a header — a
+/// tokenless replay of a call that originally carried OAuth would surface
+/// as a confusing upstream 401 otherwise. Typed OAuth errors
+/// (`ReauthRequired` etc.) propagate as-is.
+pub(crate) async fn resolve_replay_auth_header(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    scope: &OrgScope,
+    identity_id: Uuid,
+    service_key: &str,
+    instance_id: Option<Uuid>,
+) -> Result<AuthHeader, AppError> {
+    // Instance deleted since approval-create falls through to the
+    // service-level resolve below — same recovery the live call path has
+    // for a connection deleted out from under an instance.
+    let instance = match instance_id {
+        Some(id) => scope.get_service_instance(id).await?,
+        None => None,
+    };
+
+    // `resolve_template_definition` walks user tier → org tier → global
+    // registry, same as the live call path.
+    let template_key = instance
+        .as_ref()
+        .map(|i| i.template_key.as_str())
+        .unwrap_or(service_key);
+    let svc = crate::routes::templates::resolve_template_definition(
+        state,
+        ext,
+        scope.org_id(),
+        Some(identity_id),
+        template_key,
+    )
+    .await
+    .map_err(|e| {
+        AppError::Conflict(format!(
+            "cannot replay: service '{service_key}' is no longer resolvable: {e}"
+        ))
+    })?;
+
+    let resolved = if let Some(ref inst) = instance {
+        resolve_instance_auth(state, ext, scope, identity_id, inst, &svc, &[], None).await?
+    } else {
+        resolve_service_auth(state, ext, scope, identity_id, &svc, &[], None).await?
+    };
+
+    resolved.auth_header.ok_or_else(|| {
+        AppError::Conflict(format!(
+            "cannot replay: authentication for service '{service_key}' no longer resolves \
+             (the original call carried an OAuth credential)"
+        ))
+    })
+}
+
 /// Resolve auth for a service instance. If the instance has a bound connection_id or secret_name,
 /// use that directly. Otherwise fall back to auto-resolve from the template's auth config.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn resolve_instance_auth(
+pub(crate) async fn resolve_instance_auth(
     state: &AppState,
     ext: &axum::http::Extensions,
     scope: &OrgScope,
@@ -541,11 +646,10 @@ pub(super) async fn resolve_instance_auth(
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     svc: &overslash_core::types::ServiceDefinition,
     explicit_secrets: &[SecretRef],
-    headers: &mut HashMap<String, String>,
     return_url_hint: Option<&str>,
-) -> Result<(Vec<SecretRef>, bool), AppError> {
+) -> Result<ResolvedAuth, AppError> {
     if !explicit_secrets.is_empty() {
-        return Ok((explicit_secrets.to_vec(), false));
+        return Ok(ResolvedAuth::secrets_only(explicit_secrets.to_vec()));
     }
 
     let org_id = scope.org_id();
@@ -623,16 +727,22 @@ pub(super) async fn resolve_instance_auth(
                                     Some(p) => format!("{p}{access_token}"),
                                     None => access_token,
                                 };
-                                if let Some(header_name) = &token_injection.header_name {
-                                    headers.insert(header_name.clone(), value);
-                                }
-                                return Ok((vec![], true));
+                                let auth_header =
+                                    token_injection.header_name.as_ref().map(|header_name| {
+                                        AuthHeader {
+                                            name: header_name.clone(),
+                                            value,
+                                        }
+                                    });
+                                return Ok(ResolvedAuth::oauth(auth_header));
                             }
                         }
                     }
-                    // No matching auth config found, inject as Bearer by default
-                    headers.insert("Authorization".into(), format!("Bearer {access_token}"));
-                    return Ok((vec![], true));
+                    // No matching auth config found, carry as Bearer by default
+                    return Ok(ResolvedAuth::oauth(Some(AuthHeader {
+                        name: "Authorization".into(),
+                        value: format!("Bearer {access_token}"),
+                    })));
                 }
                 Err(e) => {
                     // Surface the typed AppError up the call stack — the
@@ -661,20 +771,17 @@ pub(super) async fn resolve_instance_auth(
     if let Some(ref secret_name) = instance.secret_name {
         for service_auth in &svc.auth {
             if let overslash_core::types::ServiceAuth::ApiKey { injection, .. } = service_auth {
-                return Ok((
-                    vec![SecretRef {
-                        name: secret_name.clone(),
-                        inject_as: if injection.inject_as == "query" {
-                            InjectAs::Query
-                        } else {
-                            InjectAs::Header
-                        },
-                        header_name: injection.header_name.clone(),
-                        query_param: injection.query_param.clone(),
-                        prefix: injection.prefix.clone(),
-                    }],
-                    false,
-                ));
+                return Ok(ResolvedAuth::secrets_only(vec![SecretRef {
+                    name: secret_name.clone(),
+                    inject_as: if injection.inject_as == "query" {
+                        InjectAs::Query
+                    } else {
+                        InjectAs::Header
+                    },
+                    header_name: injection.header_name.clone(),
+                    query_param: injection.query_param.clone(),
+                    prefix: injection.prefix.clone(),
+                }]));
             }
         }
     }
@@ -687,7 +794,6 @@ pub(super) async fn resolve_instance_auth(
         identity_id,
         svc,
         explicit_secrets,
-        headers,
         return_url_hint,
     )
     .await

@@ -21,7 +21,12 @@
 >
 	<div class="head">
 		<span class="name">{template.display_name}</span>
-		<StatusBadge variant={template.tier} />
+		<span class="badges">
+			{#if template.hidden}
+				<StatusBadge variant="hidden" />
+			{/if}
+			<StatusBadge variant={template.tier} />
+		</span>
 	</div>
 	<div class="key">{template.key}</div>
 	{#if template.description}
@@ -62,6 +67,11 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.5rem;
+	}
+	.badges {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
 	}
 	.name {
 		font-weight: 600;

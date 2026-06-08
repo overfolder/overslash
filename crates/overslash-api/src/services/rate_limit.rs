@@ -231,6 +231,20 @@ impl RateLimitConfigCache {
         self.user_budget.remove(&(org_id, user_id));
     }
 
+    /// Remove entries past their TTL. The resolve methods only check
+    /// freshness on read — without periodic eviction, every unique
+    /// (org, user/identity) pair that ever hits the API stays resident
+    /// for the life of the process (slow memory growth on long-lived
+    /// instances).
+    pub fn evict_expired(&self) {
+        self.user_budget
+            .retain(|_, entry| entry.fetched_at.elapsed() < self.ttl);
+        self.identity_cap
+            .retain(|_, entry| entry.fetched_at.elapsed() < self.ttl);
+        self.org_budget
+            .retain(|_, entry| entry.fetched_at.elapsed() < self.ttl);
+    }
+
     /// Resolve the User bucket config. Uses cache, falls back to DB resolution chain.
     pub async fn resolve_user_budget(
         &self,
@@ -426,4 +440,45 @@ pub fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry() -> CachedConfig {
+        CachedConfig {
+            config: None,
+            fetched_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn evict_expired_drops_stale_entries_from_all_maps() {
+        // TTL of zero → every entry is stale the moment it's inserted.
+        let cache = RateLimitConfigCache::new(Duration::ZERO);
+        let org = Uuid::new_v4();
+        cache.user_budget.insert((org, Uuid::new_v4()), entry());
+        cache.identity_cap.insert((org, Uuid::new_v4()), entry());
+        cache.org_budget.insert(org, entry());
+
+        cache.evict_expired();
+
+        assert!(cache.user_budget.is_empty());
+        assert!(cache.identity_cap.is_empty());
+        assert!(cache.org_budget.is_empty());
+    }
+
+    #[test]
+    fn evict_expired_keeps_fresh_entries() {
+        let cache = RateLimitConfigCache::new(Duration::from_secs(60));
+        let org = Uuid::new_v4();
+        cache.user_budget.insert((org, Uuid::new_v4()), entry());
+        cache.org_budget.insert(org, entry());
+
+        cache.evict_expired();
+
+        assert_eq!(cache.user_budget.len(), 1);
+        assert_eq!(cache.org_budget.len(), 1);
+    }
 }

@@ -311,6 +311,9 @@ export async function seedApproval(session, input = {}) {
 		const secretName = `scenarios_demo_${Date.now()}`;
 		await seedSecret(session, { name: secretName, value: 'demo' });
 		callBody = {
+			// Mode A raw HTTP rides on the synthetic `http` pseudo-service;
+			// `service` is required since the legacy no-service shape was removed.
+			service: 'http',
 			method: input.method ?? 'POST',
 			url: input.url ?? 'https://api.example.com/messages',
 			body: input.body ?? '{}',
@@ -363,5 +366,49 @@ export async function seedApprovalResolution(session, approvalId, resolution) {
 	return api(session, `/v1/approvals/${approvalId}/resolve`, {
 		method: 'POST',
 		body: { resolution }
+	});
+}
+
+/**
+ * Execute a raw-HTTP Mode A action as the session user and return the
+ * `CallResponse` envelope. Without `secrets[]` the call is ungated, so it
+ * executes immediately — no approval detour. Pair with a URL that 404s/500s
+ * to seed an upstream-error execution (`detail.is_error: true` on the
+ * `action.executed` audit row), or a healthy one (e.g. `/health`) for a
+ * success row. Requires the e2e stack (`OVERSLASH_SSRF_ALLOW_PRIVATE=1`)
+ * when pointing at localhost.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {{ url: string, method?: string, expect?: number | number[] }} input
+ * @returns {Promise<{ status: string, is_error?: boolean, result?: unknown }>}
+ */
+export async function seedExecution(session, input) {
+	return api(session, '/v1/actions/call', {
+		method: 'POST',
+		body: {
+			service: 'http',
+			method: input.method ?? 'GET',
+			url: input.url
+		},
+		// A transport-level failure (e.g. connection refused) surfaces as a
+		// 502 from the gateway while still writing the `action.executed`
+		// audit row with `detail.error`. Pass `expect: 502` to seed one.
+		expect: input.expect
+	});
+}
+
+/**
+ * Set the org's audit response-body capture mode
+ * (`off` | `errors_only` | `all`). Governs whether subsequently-seeded
+ * executions carry `detail.response` on their `action.executed` rows.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {'off' | 'errors_only' | 'all'} mode
+ * @returns {Promise<{ response_body_mode: string }>}
+ */
+export async function setAuditResponseBodyMode(session, mode) {
+	return api(session, `/v1/orgs/${session.orgId}/audit-settings`, {
+		method: 'PATCH',
+		body: { response_body_mode: mode }
 	});
 }

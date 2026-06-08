@@ -327,6 +327,12 @@ variable "oauth_refresh_alert_enabled" {
   default     = false
 }
 
+variable "upstream_error_alert_enabled" {
+  description = "Enable the upstream error rate P1 alert. Leave false until overslash_upstream_responses_total has been emitted at least once (GMP rejects the policy if the metric descriptor does not exist)."
+  type        = bool
+  default     = false
+}
+
 variable "monthly_budget_usd" {
   description = "Monthly billing budget in USD. Triggers email alerts at 50%/80%/100%."
   type        = number

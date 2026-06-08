@@ -648,6 +648,7 @@ mod tests {
             description: None,
             hosts: vec!["api.example.com".into()],
             category: None,
+            hidden: false,
             auth: vec![ServiceAuth::ApiKey {
                 default_secret_name: "svc_token".into(),
                 injection: TokenInjection {
@@ -693,6 +694,7 @@ mod tests {
             enum_values: None,
             default: None,
             resolve: None,
+            location: crate::types::ParamLocation::Body,
         }
     }
 
@@ -946,6 +948,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: Some("platform".into()),
+            hidden: false,
             auth: vec![],
             actions: HashMap::new(),
             runtime: Runtime::Platform,
@@ -998,6 +1001,7 @@ mod tests {
                             enum_values: None,
                             default: None,
                             resolve: None,
+                            location: crate::types::ParamLocation::Body,
                         },
                     );
                     p
@@ -1018,6 +1022,7 @@ mod tests {
             description: None,
             hosts: vec![],
             category: None,
+            hidden: false,
             auth: vec![],
             actions,
             runtime: Runtime::Mcp,

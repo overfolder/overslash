@@ -50,4 +50,42 @@ impl FreeUnlimitedCache {
     pub fn invalidate(&self, org_id: Uuid) {
         self.entries.remove(&org_id);
     }
+
+    /// Remove entries past their TTL. `is_free_unlimited` only checks
+    /// freshness on read — without periodic eviction, every org that ever
+    /// hits the API stays resident for the life of the process.
+    pub fn evict_expired(&self) {
+        self.entries
+            .retain(|_, (_, fetched_at)| fetched_at.elapsed() < self.ttl);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evict_expired_drops_stale_entries() {
+        // TTL of zero → every entry is stale the moment it's inserted.
+        let cache = FreeUnlimitedCache::new(Duration::ZERO);
+        cache
+            .entries
+            .insert(Uuid::new_v4(), ("free".into(), Instant::now()));
+
+        cache.evict_expired();
+
+        assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn evict_expired_keeps_fresh_entries() {
+        let cache = FreeUnlimitedCache::new(Duration::from_secs(60));
+        cache
+            .entries
+            .insert(Uuid::new_v4(), ("free_unlimited".into(), Instant::now()));
+
+        cache.evict_expired();
+
+        assert_eq!(cache.entries.len(), 1);
+    }
 }

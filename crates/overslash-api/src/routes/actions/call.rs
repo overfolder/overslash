@@ -20,6 +20,7 @@ use crate::{
     extractors::{AuthContext, ClientIp, ReqExt},
     services::{
         action_caller::{StoredCallRequest, StoredMcpCall, StoredPlatformCall},
+        audit_capture::{self, AuditResponseBodyMode},
         group_ceiling, http_caller, mcp_caller,
         response_filter::{self},
     },
@@ -28,11 +29,22 @@ use overslash_core::{
     crypto,
     permissions::{GroupCeilingResult, PermissionKey, suggest_tiers},
     secret_injection::inject_secrets,
-    types::service::Risk,
+    types::{ResolvedActionRequest, service::Risk},
 };
 
 use super::*;
 use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
+
+/// Marker inserted into the Response's extensions when the transport
+/// succeeded but the *upstream* reported failure — an MCP tool's in-band
+/// `is_error: true`, or an upstream HTTP 5xx (buffered and streamed).
+/// `call_action` reads it to record the execution as `"upstream_error"`
+/// instead of `"called"` (or, for streamed 5xx passthrough, `"failed"`),
+/// keeping upstream outages distinguishable from Overslash's own errors.
+/// Zero-sized and in-process only: it never serializes, it just rides the
+/// Response from the inner handler to the metrics wrapper.
+#[derive(Clone, Copy)]
+pub(crate) struct UpstreamErrored;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn call_action_impl(
@@ -41,7 +53,7 @@ pub(super) async fn call_action_impl(
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
-    Json(req): Json<CallRequest>,
+    Json(mut req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     // Reject filter + streaming up front — silently dropping the filter
     // could let an agent think it's getting a small slice and instead
@@ -88,6 +100,14 @@ pub(super) async fn call_action_impl(
     // the template / instance from the DB.
     let (pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
+    // Fill in template-declared defaults (e.g. `calendarId: primary`) before
+    // validation so a `required` param with a default isn't rejected as
+    // missing, and before resolution so the default flows into the outgoing
+    // path/query/body like a caller-supplied value.
+    overslash_core::openapi::validate_input::apply_defaults(
+        &pre_meta.validation_params,
+        &mut req.params,
+    );
     if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
         &pre_meta.validation_params,
         &req.params,
@@ -121,7 +141,10 @@ pub(super) async fn call_action_impl(
 
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
     // the identity lookup above so service-name resolution doesn't re-fetch it.
-    let (action_req, meta) = resolve_request(
+    // The live OAuth credential (when one resolved) rides separately on
+    // `auth_header` — `action_req` itself is credential-free and therefore
+    // safe to serialize into approval/audit/replay surfaces.
+    let (resolved, meta) = resolve_request(
         &state,
         &ext,
         &auth,
@@ -132,6 +155,10 @@ pub(super) async fn call_action_impl(
         pre_resolved_mode_c,
     )
     .await?;
+    let ResolvedActionRequest {
+        request: action_req,
+        auth_header,
+    } = resolved;
 
     // Caller-asserted risk gate (MCP `overslash_read`): reject before any
     // permission/approval work if the resolved action mutates. We use the
@@ -300,10 +327,25 @@ pub(super) async fn call_action_impl(
                     })
                     .ok()
                 } else {
+                    // `action_req` is credential-free (the live OAuth header
+                    // rides on `auth_header`, which has no Serialize impl).
+                    // Record the service/instance the credential resolved
+                    // from — exactly when one resolved — so the replay path
+                    // re-mints a fresh token instead of persisting this one.
+                    let (replay_service_key, replay_instance_id) = if auth_header.is_some() {
+                        (
+                            meta.service_scope.as_ref().map(|s| s.service_key.clone()),
+                            meta.instance_id,
+                        )
+                    } else {
+                        (None, None)
+                    };
                     serde_json::to_value(StoredCallRequest::new(
                         action_req.clone(),
                         req.filter.clone(),
                         req.prefer_stream.unwrap_or(false),
+                        replay_service_key,
+                        replay_instance_id,
                     ))
                     .ok()
                 };
@@ -446,12 +488,38 @@ pub(super) async fn call_action_impl(
         }
     }
 
+    // Registry-bounded `template_key` for the upstream-response counter,
+    // shared by the MCP and HTTP dispatch forks below. Same bounding the
+    // metrics wrapper in `mod.rs` applies to `record_execution`.
+    let upstream_tpl = super::bounded_template_key(&state.registry, req.service.as_deref());
+
+    // Org-level response-body capture mode for audit rows. One extra PK
+    // lookup on the hot path — the org row isn't otherwise fetched here.
+    // Capture is best-effort observability (the audit write itself is
+    // fire-and-forget), so any failure to resolve the mode — missing org
+    // (can't happen post-auth) or a transient DB error — degrades to Off
+    // rather than failing the caller's action.
+    let audit_body_mode = match overslash_db::repos::org::get_audit_response_body_mode(
+        state.db(&ext),
+        auth.org_id,
+    )
+    .await
+    {
+        Ok(mode) => mode
+            .map(|m| AuditResponseBodyMode::parse_or_off(&m))
+            .unwrap_or(AuditResponseBodyMode::Off),
+        Err(e) => {
+            tracing::warn!(error = %e, "audit_response_body_mode read failed; response capture disabled for this call");
+            AuditResponseBodyMode::Off
+        }
+    };
+
     // ── MCP dispatch fork ────────────────────────────────────────────
     // Mcp-runtime services skip the HTTP executor: no URL templating, no
     // secret injection into headers, no streaming path. The executor owns
     // header resolution through mcp_auth::resolve_headers.
     if let Some(mcp_target) = meta.mcp_target.as_ref() {
-        let result = mcp_caller::invoke(
+        let result = match mcp_caller::invoke(
             &state,
             &scope,
             &mcp_target.url,
@@ -459,16 +527,59 @@ pub(super) async fn call_action_impl(
             &mcp_target.tool,
             &mcp_target.arguments,
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(invoke_err) => {
+                // Transport / JSON-RPC failures used to bubble out with no
+                // audit trail at all. Record the attempt with a secret-safe
+                // error summary before propagating; pre-flight failures
+                // (header resolution, SSRF guard) carry no summary and keep
+                // the old no-row behavior.
+                if let Some(error_detail) = invoke_err.audit {
+                    let _ = scope
+                        .clone()
+                        .log_audit(AuditEntry {
+                            org_id: auth.org_id,
+                            identity_id: Some(identity_id),
+                            action: "action.executed",
+                            resource_type: req.service.as_deref(),
+                            resource_id: None,
+                            detail: serde_json::json!({
+                                "runtime": "mcp",
+                                "tool": mcp_target.tool,
+                                "arguments": mcp_target.arguments,
+                                "url": mcp_target.url,
+                                "is_error": true,
+                                "error": error_detail,
+                                "service": req.service,
+                                "action": req.action,
+                            }),
+                            description: meta.description.as_deref(),
+                            ip_address: ip.0.as_deref(),
+                        })
+                        .await;
+                }
+                return Err(invoke_err.app);
+            }
+        };
 
         // Build the shared MCP audit shape, then layer on inline-only
         // fields (service/action/disclosed). Replay uses the same helper
         // from approvals.rs to keep the two surfaces from drifting.
-        let (_is_error, mut audit_detail) = mcp_caller::build_audit_detail(
+        let (is_error, mut audit_detail) = mcp_caller::build_audit_detail(
             &result,
             &mcp_target.tool,
             &mcp_target.url,
             &mcp_target.arguments,
+        );
+        // Transport + JSON-RPC succeeded (failures short-circuit above via
+        // AppError::BadGateway and record nothing here); the tool's in-band
+        // error flag is the only "upstream status" MCP has.
+        overslash_metrics::actions::record_upstream_response(
+            &upstream_tpl,
+            "mcp",
+            if is_error { "error" } else { "2xx" },
         );
         {
             let obj = audit_detail
@@ -476,6 +587,18 @@ pub(super) async fn call_action_impl(
                 .expect("audit_detail is a json object");
             obj.insert("service".into(), serde_json::json!(req.service));
             obj.insert("action".into(), serde_json::json!(req.action));
+            // Org-gated response capture: for MCP the "body" is the stable
+            // result envelope (runtime/tool/structured/content/is_error).
+            if audit_capture::should_capture(audit_body_mode, is_error) {
+                obj.insert(
+                    "response".into(),
+                    audit_capture::capture_body(
+                        &result.body,
+                        Some("application/json"),
+                        state.config.audit_response_body_max_bytes,
+                    ),
+                );
+            }
         }
 
         // Disclosure + redaction: MCP actions can declare the same
@@ -510,14 +633,19 @@ pub(super) async fn call_action_impl(
             })
             .await;
 
-        return Ok((
+        let mut resp = (
             StatusCode::OK,
             Json(CallResponse::Called {
                 result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
+                is_error,
             }),
         )
-            .into_response());
+            .into_response();
+        if is_error {
+            resp.extensions_mut().insert(UpstreamErrored);
+        }
+        return Ok(resp);
     }
 
     // ── Platform dispatch fork ───────────────────────────────────────
@@ -572,6 +700,9 @@ pub(super) async fn call_action_impl(
             Json(CallResponse::Called {
                 result: render_action_result(&result, req.verbose),
                 action_description: meta.description,
+                // Platform handlers run in-process: failures surface as
+                // `AppError`, so a Called envelope is always a success.
+                is_error: false,
             }),
         )
             .into_response());
@@ -598,22 +729,53 @@ pub(super) async fn call_action_impl(
         secret_values.insert(secret_ref.name.clone(), value);
     }
 
-    let (resolved_url, resolved_headers) = inject_secrets(&action_req, &secret_values)
+    let (resolved_url, mut resolved_headers) = inject_secrets(&action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // Send-time merge of the live OAuth credential — the only point where
+    // the token and the outgoing request meet.
+    if let Some(ah) = &auth_header {
+        resolved_headers.insert(ah.name.clone(), ah.value.clone());
+    }
     let resolved_url = state.config.apply_base_overrides(&resolved_url);
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {
-        let upstream = http_caller::call_streaming(
+        let upstream = match http_caller::call_streaming(
             &state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
             action_req.body.as_deref(),
         )
-        .await?;
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                let e = http_caller::CallError::Request(e);
+                log_transport_error_audit(
+                    &scope,
+                    auth.org_id,
+                    identity_id,
+                    &action_req,
+                    req.service.as_deref(),
+                    req.action.as_deref(),
+                    audit_capture::scrub_transport_error(&e),
+                    meta.description.as_deref(),
+                    ip.0.as_deref(),
+                )
+                .await;
+                return Err(map_call_error(e));
+            }
+        };
 
         let upstream_status = upstream.status();
+        // A transport failure above propagates via `?` and records nothing
+        // here — this counter only counts responses that actually arrived.
+        overslash_metrics::actions::record_upstream_response(
+            &upstream_tpl,
+            "http",
+            overslash_metrics::actions::status_class(upstream_status.as_u16()),
+        );
         let upstream_headers = upstream.headers().clone();
         let content_length = upstream
             .headers()
@@ -625,10 +787,26 @@ pub(super) async fn call_action_impl(
             "method": action_req.method,
             "url": action_req.url,
             "status_code": upstream_status.as_u16(),
+            // Normalized upstream-failure flag, same field MCP audit details
+            // carry — lets the dashboard flag failed executions across
+            // runtimes without re-deriving from status_code.
+            "is_error": upstream_status.as_u16() >= 400,
             "content_length": content_length,
             "service": req.service,
             "action": req.action,
         });
+        // The streamed body is never buffered, so it can't be captured. A
+        // small marker keeps "streamed, body unavailable" distinguishable
+        // from "capture off" on rows where capture would have applied.
+        if audit_capture::should_capture(audit_body_mode, upstream_status.as_u16() >= 400) {
+            streamed_detail
+                .as_object_mut()
+                .expect("audit detail is a json object")
+                .insert(
+                    "response".into(),
+                    serde_json::json!({ "skipped": "streamed" }),
+                );
+        }
         let streamed_disclosed = compute_disclosure(
             &meta,
             &action_req,
@@ -680,11 +858,18 @@ pub(super) async fn call_action_impl(
             }
         }
 
-        return Ok(response.body(body).unwrap());
+        let mut response = response.body(body).unwrap();
+        // Streamed 5xx passes the upstream status straight through, where
+        // the metrics wrapper would otherwise classify it as Overslash's
+        // own "failed". The marker keeps it attributed to the upstream.
+        if upstream_status.as_u16() >= 500 {
+            response.extensions_mut().insert(UpstreamErrored);
+        }
+        return Ok(response);
     }
 
     // Buffered call path (default)
-    let mut result = http_caller::call(
+    let mut result = match http_caller::call(
         &state.http_client,
         &action_req.method,
         &resolved_url,
@@ -693,18 +878,35 @@ pub(super) async fn call_action_impl(
         state.config.max_response_body_bytes,
     )
     .await
-    .map_err(|e| match e {
-        http_caller::CallError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        } => AppError::ResponseTooLarge {
-            content_length,
-            content_type,
-            limit_bytes,
-        },
-        http_caller::CallError::Request(e) => AppError::Request(e),
-    })?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            // Transport failures / oversized bodies used to bail with no
+            // audit trail at all — only metrics saw them. Record the
+            // attempt with a secret-safe error summary before propagating.
+            log_transport_error_audit(
+                &scope,
+                auth.org_id,
+                identity_id,
+                &action_req,
+                req.service.as_deref(),
+                req.action.as_deref(),
+                audit_capture::scrub_transport_error(&e),
+                meta.description.as_deref(),
+                ip.0.as_deref(),
+            )
+            .await;
+            return Err(map_call_error(e));
+        }
+    };
+    // Transport failures / oversized bodies bail above (with an error audit
+    // row but no upstream-response sample) —
+    // this counter only counts responses that actually arrived upstream.
+    overslash_metrics::actions::record_upstream_response(
+        &upstream_tpl,
+        "http",
+        overslash_metrics::actions::status_class(result.status_code),
+    );
 
     // Apply the optional response filter (jq today). The original body is
     // preserved on `result.body` either way; the filtered output goes on
@@ -721,14 +923,34 @@ pub(super) async fn call_action_impl(
         None
     };
 
+    let upstream_error = result.status_code >= 400;
     let mut audit_detail = serde_json::json!({
         "method": action_req.method,
         "url": action_req.url,
         "status_code": result.status_code,
+        // Normalized upstream-failure flag, same field MCP audit details
+        // carry — lets the dashboard flag failed executions across
+        // runtimes without re-deriving from status_code.
+        "is_error": upstream_error,
         "duration_ms": result.duration_ms,
         "service": req.service,
         "action": req.action,
     });
+    // Org-gated response capture (off / errors_only / all), truncated at
+    // AUDIT_RESPONSE_BODY_MAX_BYTES.
+    if audit_capture::should_capture(audit_body_mode, upstream_error) {
+        audit_detail
+            .as_object_mut()
+            .expect("audit_detail is a json object")
+            .insert(
+                "response".to_string(),
+                audit_capture::capture_body(
+                    &result.body,
+                    result.headers.get("content-type").map(String::as_str),
+                    state.config.audit_response_body_max_bytes,
+                ),
+            );
+    }
     if let Some(filter_audit) = filter_audit {
         audit_detail
             .as_object_mut()
@@ -765,12 +987,79 @@ pub(super) async fn call_action_impl(
         })
         .await;
 
-    Ok((
+    let mut resp = (
         StatusCode::OK,
         Json(CallResponse::Called {
             result: render_action_result(&result, req.verbose),
             action_description: meta.description,
+            is_error: upstream_error,
         }),
     )
-        .into_response())
+        .into_response();
+    // Upstream 5xx rides inside this 200 envelope — same in-band shape as
+    // an MCP tool error, same marker, so the metrics wrapper records it as
+    // `upstream_error` rather than a plain `called`. Mirrors the replay
+    // path's `status_code >= 500` classification.
+    if result.status_code >= 500 {
+        resp.extensions_mut().insert(UpstreamErrored);
+    }
+    Ok(resp)
+}
+
+/// Map a transport-level `CallError` to the client-facing `AppError`.
+/// Shared by the streamed and buffered forks so the error contract stays
+/// what it was before transport failures gained audit rows.
+fn map_call_error(e: http_caller::CallError) -> AppError {
+    match e {
+        http_caller::CallError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        } => AppError::ResponseTooLarge {
+            content_length,
+            content_type,
+            limit_bytes,
+        },
+        http_caller::CallError::Request(e) => AppError::Request(e),
+    }
+}
+
+/// Write the `action.executed` audit row for an HTTP call whose upstream
+/// never produced a response (DNS/connect/timeout, or a body over the
+/// buffering limit). No `status_code` — nothing arrived. `error_detail`
+/// comes from `audit_capture::scrub_transport_error`, so it never carries
+/// the resolved URL or injected secrets; `action_req.url` is the same
+/// secret-free template URL the success rows store.
+#[allow(clippy::too_many_arguments)]
+async fn log_transport_error_audit(
+    scope: &OrgScope,
+    org_id: Uuid,
+    identity_id: Uuid,
+    action_req: &overslash_core::types::ActionRequest,
+    service: Option<&str>,
+    action: Option<&str>,
+    error_detail: serde_json::Value,
+    description: Option<&str>,
+    ip: Option<&str>,
+) {
+    let _ = scope
+        .clone()
+        .log_audit(AuditEntry {
+            org_id,
+            identity_id: Some(identity_id),
+            action: "action.executed",
+            resource_type: service,
+            resource_id: None,
+            detail: serde_json::json!({
+                "method": action_req.method,
+                "url": action_req.url,
+                "is_error": true,
+                "error": error_detail,
+                "service": service,
+                "action": action,
+            }),
+            description,
+            ip_address: ip,
+        })
+        .await;
 }

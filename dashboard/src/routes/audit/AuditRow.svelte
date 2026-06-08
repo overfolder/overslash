@@ -1,7 +1,13 @@
 <script lang="ts">
 	import IdentityPath from '$lib/components/IdentityPath.svelte';
 	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
-	import type { AuditEntry } from './types';
+	import {
+		responseCapture,
+		transportError,
+		upstreamError,
+		upstreamResultLabel,
+		type AuditEntry
+	} from './types';
 
 	let {
 		entry,
@@ -133,6 +139,27 @@
 		if (type === 'approval') return `/approvals/${id}`;
 		return null;
 	}
+
+	// Upstream-error presence for execution events (detail.is_error) —
+	// drives the row pill and the expanded "Result" line.
+	const hasUpstreamError = $derived(upstreamError(entry));
+	const resultLabel = $derived(upstreamResultLabel(entry));
+
+	// Captured upstream response (detail.response) + transport-failure
+	// summary (detail.error) — present when the org's audit settings
+	// enabled capture / the upstream never answered.
+	const response = $derived(responseCapture(entry));
+	const transportErr = $derived(transportError(entry));
+
+	// Pretty-print the captured body when it parses as JSON; truncated
+	// captures usually don't, and fall back to the raw text.
+	function prettyBody(body: string): string {
+		try {
+			return JSON.stringify(JSON.parse(body), null, 2);
+		} catch {
+			return body;
+		}
+	}
 </script>
 
 <tr
@@ -187,7 +214,12 @@
 			<span class="via-imp" title="via impersonation by {entry.impersonated_by_name ?? entry.impersonated_by_identity_id}">imp</span>
 		{/if}
 	</td>
-	<td><code class="badge">{entry.action}</code></td>
+	<td>
+		<code class="badge">{entry.action}</code>
+		{#if hasUpstreamError}
+			<span class="upstream-error" title={resultLabel}>error</span>
+		{/if}
+	</td>
 	<td class="resource">
 		{#if entry.resource_type}
 			<span class="rtype">{entry.resource_type}</span>
@@ -210,6 +242,14 @@
 					<dd class="mono">{entry.id}</dd>
 					<dt>Timestamp</dt>
 					<dd class="mono">{entry.created_at}</dd>
+					{#if resultLabel}
+						<dt>Result</dt>
+						<dd class={hasUpstreamError ? 'result-err' : 'result-ok'}>{resultLabel}</dd>
+					{/if}
+					{#if transportErr}
+						<dt>Error</dt>
+						<dd class="result-err mono">{transportErr.kind}: {transportErr.message}</dd>
+					{/if}
 					{#if entry.identity_path}
 						<dt>Identity</dt>
 						<dd>
@@ -299,6 +339,26 @@
 							{/if}
 						{/each}
 					</dl>
+				{/if}
+				{#if response}
+					<div class="json-block">
+						<div class="json-label">
+							response body
+							{#if response.content_type}
+								<span class="resp-meta mono">{response.content_type}</span>
+							{/if}
+							{#if response.truncated}
+								<span class="resp-trunc">(truncated)</span>
+							{/if}
+						</div>
+						{#if response.skipped === 'streamed'}
+							<div class="muted resp-skipped">streamed — body not captured</div>
+						{:else if response.body}
+							<pre>{prettyBody(response.body)}</pre>
+						{:else if typeof response.body === 'string'}
+							<div class="muted resp-skipped">empty body</div>
+						{/if}
+					</div>
 				{/if}
 				<div class="json-block">
 					<div class="json-label">detail</div>
@@ -441,6 +501,41 @@
 	.disclosed .trunc {
 		color: var(--color-text-muted);
 		font-size: 0.75rem;
+	}
+	.upstream-error {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 1px 5px;
+		border-radius: var(--radius-sm, 4px);
+		background: color-mix(in srgb, var(--color-danger, #d14343) 15%, transparent);
+		color: var(--color-danger, #b91c1c);
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		vertical-align: middle;
+		cursor: help;
+	}
+	.result-err {
+		color: var(--color-danger, #b91c1c);
+		font-weight: 600;
+	}
+	.resp-meta {
+		margin-left: 6px;
+		color: var(--color-text-muted);
+		font-size: 0.7rem;
+	}
+	.resp-trunc {
+		margin-left: 6px;
+		color: var(--color-warning, #b45309);
+		font-size: 0.7rem;
+	}
+	.resp-skipped {
+		font-size: 0.85rem;
+		font-style: italic;
+	}
+	.result-ok {
+		color: var(--color-success, #15803d);
 	}
 	.via-imp {
 		display: inline-block;

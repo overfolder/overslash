@@ -27,17 +27,49 @@ services:
       HOST: 0.0.0.0
       RUSTUP_TOOLCHAIN: stable
       SQLX_OFFLINE: "true"
+      # The dashboard dev server runs on a separate port (5173, or a dynamic
+      # port in worktrees). Without this the API's redirect builder falls back
+      # to public_url (:3000) for org switches / deep-links, sending the browser
+      # to the API instead of the Vite dev server. Mirror DASH_HOST_PORT so
+      # redirects land on the dashboard, which proxies /v1 + /auth back here.
+      DASHBOARD_URL: http://localhost:${DASH_HOST_PORT:-5173}
     ports:
+      # Loopback publish for host access (browser/curl on the host).
       - "127.0.0.1:${API_HOST_PORT:-3000}:3000"
+    networks:
+      # `default` keeps API↔postgres/dashboard wiring inside this project.
+      default: {}
+      # `overfolder-shared` lets the Overfolder backend reach this API
+      # container-to-container via the `overslash` alias (no host hop).
+      overfolder-shared:
+        aliases:
+          - overslash
     volumes:
       - ../crates/overslash-core/src:/app/crates/overslash-core/src:ro
       - ../crates/overslash-db/src:/app/crates/overslash-db/src:ro
       - ../crates/overslash-api/src:/app/crates/overslash-api/src:ro
       - ../crates/overslash-mcp/src:/app/crates/overslash-mcp/src:ro
       - ../crates/overslash-cli/src:/app/crates/overslash-cli/src:ro
+      # overslash-metrics is a (non-dev) dependency of overslash-api and has no
+      # explicit [lib], so cargo needs its src/lib.rs to even parse the manifest.
+      - ../crates/overslash-metrics/src:/app/crates/overslash-metrics/src:ro
       - ../tests/mock-target/src:/app/tests/mock-target/src:ro
       - ../services:/app/services:ro
+      # Compile-time assets pulled in via include_str! from outside src/:
+      #   overslash-core   -> templates/email/*.html
+      #   overslash-api    -> CARGO_MANIFEST_DIR/../../SKILL.md == /app/SKILL.md
+      - ../crates/overslash-core/templates:/app/crates/overslash-core/templates:ro
+      - ../SKILL.md:/app/SKILL.md:ro
       - cargo-cache:/usr/local/cargo/registry
+      # Persist the build dir across container recreation. `make dev` does
+      # `down` + `up --build`, which without this resets target/ to the image
+      # state (prebuilt deps + stub-compiled overslash crates) every time,
+      # forcing a full recompile on every start. Docker seeds a fresh named
+      # volume from the image's /app/target on first creation, so deps stay
+      # cached and only changed crates rebuild. Note: dependency bumps
+      # (Cargo.lock) won't reach an existing volume — run `make worktree-clean`
+      # (or remove the api-target volume) after a deps change.
+      - api-target:/app/target
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +85,11 @@ services:
     volumes:
       - ../dashboard:/app
       - dashboard-node-modules:/app/node_modules
+      # static/SKILL.md is a symlink to the repo-root SKILL.md (../../SKILL.md).
+      # Only ../dashboard is mounted, so that target resolves to /SKILL.md inside
+      # the container — mount the real file there so the symlink isn't dangling
+      # (otherwise svelte-kit sync's statSync throws ENOENT walking static/).
+      - ../SKILL.md:/SKILL.md:ro
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:
       - api
@@ -60,4 +97,12 @@ services:
 volumes:
   pgdata:
   cargo-cache:
+  api-target:
   dashboard-node-modules:
+
+networks:
+  default: {}
+  # Cross-project bridge to Overfolder. Created by `make local`/`make dev`
+  # (and Overfolder's `make local`); external so neither project owns it.
+  overfolder-shared:
+    external: true

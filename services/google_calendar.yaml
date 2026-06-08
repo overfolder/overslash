@@ -5,6 +5,9 @@ info:
   category: Productivity
 servers:
   - url: https://www.googleapis.com
+security:
+  - oauth:
+      - https://www.googleapis.com/auth/calendar
 components:
   securitySchemes:
     oauth:
@@ -88,6 +91,13 @@ paths:
       summary: "Create event '{summary}' on calendar {calendarId}"
       risk: write
       scope_param: calendarId
+      parameters:
+        - name: sendUpdates
+          in: query
+          description: "Whether to send notification emails to attendees: all, externalOnly, or none (default)"
+          schema:
+            type: string
+            enum: [all, externalOnly, none]
       requestBody:
         required: true
         content:
@@ -114,6 +124,15 @@ paths:
                 attendees:
                   type: array
                   description: "List of attendees: [{email}]"
+                reminders:
+                  type: object
+                  description: "Reminders: {useDefault, overrides: [{method: email|popup, minutes}]}; set useDefault: false when supplying overrides"
+                recurrence:
+                  type: array
+                  description: "List of RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=10']"
+                colorId:
+                  type: string
+                  description: "Color id of the event (1-11, see Colors.event in the Google Calendar API)"
   /calendar/v3/calendars/{calendarId}/events/{eventId}:
     parameters:
       - name: calendarId
@@ -144,6 +163,13 @@ paths:
       summary: "Update event {eventId} on calendar {calendarId}"
       risk: write
       scope_param: calendarId
+      parameters:
+        - name: sendUpdates
+          in: query
+          description: "Whether to send notification emails to attendees: all, externalOnly, or none (default)"
+          schema:
+            type: string
+            enum: [all, externalOnly, none]
       requestBody:
         content:
           application/json:
@@ -168,8 +194,24 @@ paths:
                 attendees:
                   type: array
                   description: "List of attendees: [{email}]"
+                reminders:
+                  type: object
+                  description: "Reminders: {useDefault, overrides: [{method: email|popup, minutes}]}; set useDefault: false when supplying overrides"
+                recurrence:
+                  type: array
+                  description: "List of RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=10']"
+                colorId:
+                  type: string
+                  description: "Color id of the event (1-11, see Colors.event in the Google Calendar API)"
     delete:
       operationId: delete_event
       summary: "Delete event {eventId} on calendar {calendarId}"
       risk: delete
       scope_param: calendarId
+      parameters:
+        - name: sendUpdates
+          in: query
+          description: "Whether to send notification emails to attendees: all, externalOnly, or none (default)"
+          schema:
+            type: string
+            enum: [all, externalOnly, none]

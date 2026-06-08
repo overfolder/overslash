@@ -60,6 +60,17 @@ export interface ExecutionSettings {
   default_deferred_execution: boolean;
 }
 
+/** Org-level capture mode for upstream response bodies on
+ * `action.executed` audit rows: `off` stores nothing (default),
+ * `errors_only` stores bodies of failed executions (`detail.is_error`),
+ * `all` stores every captured body. Bodies are truncated server-side
+ * (64 KB default). */
+export type AuditResponseBodyMode = 'off' | 'errors_only' | 'all';
+
+export interface AuditSettings {
+  response_body_mode: AuditResponseBodyMode;
+}
+
 export interface IdpConfig {
   id?: string;
   org_id?: string;
@@ -200,6 +211,8 @@ export interface TemplateSummary {
   hosts: string[];
   action_count: number;
   tier: TemplateTier;
+  /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
+  hidden?: boolean;
 }
 
 export interface TemplateDetail {
@@ -220,6 +233,8 @@ export interface TemplateDetail {
   runtime?: ServiceRuntime;
   /** Present when `runtime === "mcp"`. */
   mcp?: McpDetail;
+  /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
+  hidden?: boolean;
 }
 
 export interface CreateTemplateRequest {
@@ -622,7 +637,15 @@ export type FilteredBody =
     };
 
 export type CallResponse =
-  | { status: 'called'; result: ActionResult; action_description: string | null }
+  | {
+      status: 'called';
+      result: ActionResult;
+      action_description: string | null;
+      /** True when the upstream itself reported failure (MCP `is_error`
+       * envelope, or upstream HTTP >= 400) even though the call executed.
+       * Optional for wire-compat with older API builds. */
+      is_error?: boolean;
+    }
   | {
       status: 'pending_approval';
       approval_id: string;

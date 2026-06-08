@@ -292,11 +292,28 @@ async fn mcp_none_auth_calls_and_audits_with_mcp_runtime() {
     assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
+    assert_eq!(body["is_error"], false);
 
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["runtime"], "mcp");
     assert_eq!(envelope["tool"], "echo");
     assert_eq!(envelope["structured"]["echo"]["x"], "hi");
+
+    // Transport success + is_error=false maps to status_class="2xx" on the
+    // upstream-response counter.
+    let metrics = common::scrape_metrics(&base, &client).await;
+    assert!(
+        common::has_metric_series(
+            &metrics,
+            "overslash_upstream_responses_total",
+            &[
+                ("template_key", "_unknown"),
+                ("mode", "mcp"),
+                ("status_class", "2xx"),
+            ],
+        ),
+        "expected mcp 2xx upstream series in:\n{metrics}"
+    );
     assert_eq!(envelope["is_error"], false);
 
     // Stub saw no auth header for kind:none.
@@ -405,9 +422,42 @@ async fn mcp_is_error_surfaces_in_envelope_not_http() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
+    // The tool-level failure is surfaced on the envelope itself, so callers
+    // don't have to parse the MCP body to notice it.
+    assert_eq!(body["is_error"], true);
     let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
     assert_eq!(envelope["is_error"], true);
     assert_eq!(envelope["content"][0]["text"], "tool blew up");
+
+    // The tool error rides in-band behind an outer 200 — metrics must still
+    // record it as an upstream failure, not silent success. Org-uploaded
+    // templates aren't in the global registry, so the bounded template_key
+    // is `_unknown`.
+    let metrics = common::scrape_metrics(&base, &client).await;
+    assert!(
+        common::has_metric_series(
+            &metrics,
+            "overslash_upstream_responses_total",
+            &[
+                ("template_key", "_unknown"),
+                ("mode", "mcp"),
+                ("status_class", "error"),
+            ],
+        ),
+        "expected mcp upstream-error series in:\n{metrics}"
+    );
+    assert!(
+        common::has_metric_series(
+            &metrics,
+            "overslash_action_executions_total",
+            &[
+                ("template_key", "_unknown"),
+                ("mode", "action"),
+                ("status", "upstream_error"),
+            ],
+        ),
+        "expected upstream_error execution series in:\n{metrics}"
+    );
 }
 
 #[tokio::test]

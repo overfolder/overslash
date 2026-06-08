@@ -20,8 +20,8 @@ use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, DisclosureField, McpAuth, McpSpec, ParamResolver, Risk, ServiceAction,
-    ServiceAuth, TokenInjection,
+    ActionParam, DisclosureField, McpAuth, McpSpec, ParamLocation, ParamResolver, Risk,
+    ServiceAction, ServiceAuth, TokenInjection,
 };
 
 // ── servers → hosts ──────────────────────────────────────────────────
@@ -246,11 +246,41 @@ fn parse_token_injection(v: Option<&Value>) -> Option<TokenInjection> {
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
 
+/// Pick the required OAuth scopes out of a `security` array Value.
+///
+/// For each security requirement object we pick the first non-empty scope
+/// list — matches the OpenAPI 3.1 "requirements are OR-ed" model for the
+/// common case of a single `oauth2` scheme. A non-array Value, an empty array,
+/// or requirements with only empty scope lists yield no scopes.
+fn scopes_from_security(security: &Value) -> Vec<String> {
+    security
+        .as_array()
+        .and_then(|reqs| {
+            reqs.iter().find_map(|req| {
+                req.as_object()?.values().find_map(|scopes| {
+                    let arr = scopes.as_array()?;
+                    if arr.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            arr.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                })
+            })
+        })
+        .unwrap_or_default()
+}
+
 pub(super) fn extract_http_action(
     path_key: &str,
     method: &str,
     op: &Map<String, Value>,
     path_level_params: Option<&Value>,
+    root_security: Option<&Value>,
     sink: &mut HashMap<String, ServiceAction>,
 ) -> Result<(), Vec<ValidationIssue>> {
     let base = format!("paths.{path_key}.{method}");
@@ -306,30 +336,14 @@ pub(super) fn extract_http_action(
     }
     collect_body_parameters(op.get("requestBody"), &mut params);
 
-    // Per-action OAuth scopes: look at the operation's `security` clause.
-    // For each security requirement object pick the first non-empty scope
-    // list — matches the OpenAPI 3.1 spec's "requirements are OR-ed" model
-    // for the common case of a single `oauth2` security scheme.
+    // Per-action OAuth scopes. The operation's own `security` key, when present
+    // (even as an empty array `[]`, which OpenAPI 3.1 treats as an explicit
+    // opt-out / "no security"), takes precedence. When the operation omits
+    // `security` entirely it inherits the document root-level default.
     let required_scopes = op
         .get("security")
-        .and_then(Value::as_array)
-        .and_then(|reqs| {
-            reqs.iter().find_map(|req| {
-                req.as_object()?.values().find_map(|scopes| {
-                    let arr = scopes.as_array()?;
-                    if arr.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            arr.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect::<Vec<_>>(),
-                        )
-                    }
-                })
-            })
-        })
+        .or(root_security)
+        .map(scopes_from_security)
         .unwrap_or_default();
 
     let mut disclose_errors = Vec::new();
@@ -451,6 +465,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     enum_values: None,
                     default: None,
                     resolve: None,
+                    location: ParamLocation::Body,
                 },
             ))
         })
@@ -845,6 +860,7 @@ pub(super) fn lower_input_schema(schema: &Value) -> HashMap<String, ActionParam>
                 enum_values,
                 default,
                 resolve: None,
+                location: ParamLocation::Body,
             },
         );
     }
@@ -907,6 +923,12 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
 
         let resolve = obj.get("x-overslash-resolve").and_then(parse_resolver);
 
+        let location = match obj.get("in").and_then(Value::as_str) {
+            Some("query") => ParamLocation::Query,
+            Some("path") => ParamLocation::Path,
+            _ => ParamLocation::Body,
+        };
+
         out.insert(
             name.to_string(),
             ActionParam {
@@ -916,6 +938,7 @@ fn collect_parameters(arr: &[Value], out: &mut HashMap<String, ActionParam>) {
                 enum_values,
                 default,
                 resolve,
+                location,
             },
         );
     }
@@ -972,6 +995,7 @@ fn collect_body_parameters(body: Option<&Value>, out: &mut HashMap<String, Actio
                 enum_values,
                 default,
                 resolve,
+                location: ParamLocation::Body,
             },
         );
     }
@@ -1608,6 +1632,39 @@ mod tests {
     }
 
     #[test]
+    fn parameter_location_from_in() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "paths": {
+                "/cal/{id}/events": {
+                    "post": {
+                        "operationId": "create_event",
+                        "parameters": [
+                            {"name": "id", "in": "path", "required": true,
+                             "schema": {"type": "string"}},
+                            {"name": "sendUpdates", "in": "query",
+                             "schema": {"type": "string"}}
+                        ],
+                        "requestBody": {
+                            "content": {"application/json": {"schema": {
+                                "type": "object",
+                                "properties": {"summary": {"type": "string"}}
+                            }}}
+                        }
+                    }
+                }
+            }
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        let a = &svc.actions["create_event"];
+        assert_eq!(a.params["id"].location, ParamLocation::Path);
+        assert_eq!(a.params["sendUpdates"].location, ParamLocation::Query);
+        assert_eq!(a.params["summary"].location, ParamLocation::Body);
+        // Path template is unaffected by location tracking.
+        assert_eq!(a.path, "/cal/{id}/events");
+    }
+
+    #[test]
     fn parameter_enum_and_default() {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
@@ -1827,6 +1884,53 @@ mod tests {
         let doc = json!({
             "info": {"title": "T", "x-overslash-key": "t"},
             "paths": {"/x": {"get": {"operationId": "x"}}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert!(svc.actions["x"].required_scopes.is_empty());
+    }
+
+    // ── root-level security → default required_scopes ─────────────────
+
+    #[test]
+    fn root_security_inherited_when_op_omits_security() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "security": [{"oauth": ["https://example.com/auth/default"]}],
+            "paths": {"/x": {"get": {"operationId": "x"}}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(
+            svc.actions["x"].required_scopes,
+            vec!["https://example.com/auth/default"]
+        );
+    }
+
+    #[test]
+    fn op_security_overrides_root_security() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "security": [{"oauth": ["https://example.com/auth/default"]}],
+            "paths": {"/x": {"get": {
+                "operationId": "x",
+                "security": [{"oauth": ["https://example.com/auth/override"]}]
+            }}}
+        });
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert_eq!(
+            svc.actions["x"].required_scopes,
+            vec!["https://example.com/auth/override"]
+        );
+    }
+
+    #[test]
+    fn op_empty_security_array_opts_out_of_root_default() {
+        let doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "security": [{"oauth": ["https://example.com/auth/default"]}],
+            "paths": {"/x": {"get": {
+                "operationId": "x",
+                "security": []
+            }}}
         });
         let (svc, _) = compile_service(&doc).unwrap();
         assert!(svc.actions["x"].required_scopes.is_empty());

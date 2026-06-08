@@ -210,6 +210,10 @@ async fn search(
     let visible_templates: Vec<&TemplateCandidate> = template_iter
         .filter(|t| !excluded.contains(&t.def.key))
         .filter(|t| !emptied_by_instance_exclude.contains(&t.def.key))
+        // `x-overslash-hidden` templates are not advertised to agents: drop
+        // their un-instantiated catalog rows. Connected instances still
+        // surface — an org that deliberately set one up keeps using it.
+        .filter(|t| !t.def.hidden || instances_by_template.contains_key(&t.def.key))
         .collect();
 
     if q.is_empty() {

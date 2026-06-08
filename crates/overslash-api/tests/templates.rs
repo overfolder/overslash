@@ -387,6 +387,109 @@ async fn test_selective_global_enable() {
 }
 
 // ---------------------------------------------------------------------------
+// Hidden templates (`x-overslash-hidden`) — flagged on dashboard surfaces,
+// reachable by key. Agent-facing exclusion is covered in search.rs and
+// platform_dispatch.rs.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_hidden_template_flagged_in_lists_and_reachable_by_key() {
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(true).await;
+
+    // Dashboard list: hidden templates are present, flagged.
+    let resp = client
+        .get(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    let templates: Vec<Value> = resp.json().await.unwrap();
+    let legacy = templates
+        .iter()
+        .find(|t| t["key"] == "github_legacy_oauth")
+        .expect("github_legacy_oauth missing from /v1/templates");
+    assert_eq!(legacy["hidden"], true);
+    let gh = templates
+        .iter()
+        .find(|t| t["key"] == "github")
+        .expect("github missing from /v1/templates");
+    assert_eq!(gh["hidden"], false);
+
+    // Dashboard search: same flagging.
+    let resp = client
+        .get(format!("{base}/v1/templates/search?q=legacy"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    let results: Vec<Value> = resp.json().await.unwrap();
+    let legacy = results
+        .iter()
+        .find(|t| t["key"] == "github_legacy_oauth")
+        .expect("github_legacy_oauth missing from /v1/templates/search");
+    assert_eq!(legacy["hidden"], true);
+
+    // Reachable by key, detail carries the flag.
+    let resp = client
+        .get(format!("{base}/v1/templates/github_legacy_oauth"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let detail: Value = resp.json().await.unwrap();
+    assert_eq!(detail["hidden"], true);
+
+    // Admin list flags it too.
+    let resp = client
+        .get(format!("{base}/v1/templates/admin"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let templates: Vec<Value> = resp.json().await.unwrap();
+    let legacy = templates
+        .iter()
+        .find(|t| t["key"] == "github_legacy_oauth")
+        .expect("github_legacy_oauth missing from /v1/templates/admin");
+    assert_eq!(legacy["hidden"], true);
+}
+
+#[tokio::test]
+async fn test_hidden_org_template_flagged_in_list() {
+    let (base, client, _, admin_key, _, _, _, _) = bootstrap(false).await;
+
+    // The unprefixed `hidden:` alias normalizes to `x-overslash-hidden` on
+    // write and the compiled flag round-trips through the list endpoint.
+    let openapi =
+        minimal_openapi("shadow-api", "Shadow API").replace("info:", "info:\n  hidden: true");
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({ "openapi": openapi }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert_eq!(status, 200, "create failed: {}", resp.text().await.unwrap());
+
+    let resp = client
+        .get(format!("{base}/v1/templates"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+    let templates: Vec<Value> = resp.json().await.unwrap();
+    let shadow = templates
+        .iter()
+        .find(|t| t["key"] == "shadow-api")
+        .expect("shadow-api missing from /v1/templates");
+    assert_eq!(shadow["tier"], "org");
+    assert_eq!(shadow["hidden"], true);
+}
+
+// ---------------------------------------------------------------------------
 // Admin compliance view
 // ---------------------------------------------------------------------------
 

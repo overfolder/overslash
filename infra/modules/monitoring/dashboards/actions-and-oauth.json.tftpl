@@ -37,28 +37,28 @@
       {
         "xPos": 0, "yPos": 10, "width": 6, "height": 8,
         "widget": {
-          "title": "Outbound HTTP p99 by Template & Status (5m)",
+          "title": "Upstream Response Rate by Status Class & Mode (5m)",
           "xyChart": {
             "dataSets": [{
               "timeSeriesQuery": {
-                "prometheusQuery": "histogram_quantile(0.99, sum by (le, template_key, status_class) (rate(overslash_outbound_http_duration_seconds_bucket[5m])))"
+                "prometheusQuery": "sum by (status_class, mode) (rate(overslash_upstream_responses_total[5m]))"
               },
-              "plotType": "LINE"
+              "plotType": "STACKED_AREA"
             }],
-            "yAxis": { "scale": "LINEAR", "label": "s" }
+            "yAxis": { "scale": "LINEAR" }
           }
         }
       },
       {
         "xPos": 6, "yPos": 10, "width": 6, "height": 8,
         "widget": {
-          "title": "Outbound HTTP Rate by Status Class (5m)",
+          "title": "Upstream Error Ratio by Template (15m)",
           "xyChart": {
             "dataSets": [{
               "timeSeriesQuery": {
-                "prometheusQuery": "sum by (status_class) (rate(overslash_outbound_http_total[5m]))"
+                "prometheusQuery": "sum by (template_key) (rate(overslash_upstream_responses_total{status_class=~\"5xx|error\"}[15m])) / clamp_min(sum by (template_key) (rate(overslash_upstream_responses_total[15m])), 1)"
               },
-              "plotType": "STACKED_AREA"
+              "plotType": "LINE"
             }],
             "yAxis": { "scale": "LINEAR" }
           }

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT audit_response_body_mode FROM orgs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audit_response_body_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "audit_response_body_mode"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "66122e6eb0ee069bd6dca7e691c56ff2d2a04514419234e6d012e7762753eeda"
+}

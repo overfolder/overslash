@@ -421,6 +421,8 @@ The current resolver receives the approval (via webhook or polling) and chooses 
 
 **Rule placement on Approve & Remember**: the new permission rule is added to the **closest non-`inherit_permissions` ancestor of the requester** (inclusive of the requester). Identities with `inherit_permissions=true` are skipped because their permissions are dynamic — putting a rule there would be silently overridden by parent walks. This is the requester's "permission-owning" identity.
 
+**Cascade resolution.** When the remembered rule lands, other pending approvals whose requester is the placement identity or a descendant are re-walked; the ones the new rule now structurally allows are auto-resolved (`resolved_by='cascade'`) with a fresh pending execution each. Cascaded approvals follow the same post-resolve behavior as a direct approve: if the cascaded approval's *own* requesting agent has `auto_call_on_approve = true`, the gateway spawns the background replay immediately (same atomic claim guard and elicitation suppression as `/resolve`); otherwise the execution waits for a manual `POST /v1/approvals/{id}/call`. Cascade executions always carry `remember=false`, so a cascade-triggered replay can never store new rules or trigger further cascades.
+
 **Why this arrangement is expected to be common.** Real-world agent deployments tend to converge on a multi-level hierarchy:
 
 - **A single powerful "main" agent per user.** Users want one always-on agent (a Chief of Staff, an executive assistant, an ops manager) with broad authority across the services they own. It's the day-to-day driver and the entry point for delegation.

@@ -69,6 +69,9 @@ pub fn parse_template_parts(
         description: description.map(|s| s.to_string()),
         hosts: hosts.to_vec(),
         category: category.map(|s| s.to_string()),
+        // Parts-based CRUD has no `hidden` input — the flag lives in the
+        // stored OpenAPI doc and is honored wherever that doc is compiled.
+        hidden: false,
         auth,
         actions,
         runtime: Runtime::Http,

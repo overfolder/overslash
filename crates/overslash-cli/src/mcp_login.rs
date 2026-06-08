@@ -199,7 +199,7 @@ async fn dcr(endpoint: &str, redirect_uri: &str) -> anyhow::Result<String> {
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "software_id": "overslash-cli",
-        "software_version": env!("CARGO_PKG_VERSION"),
+        "software_version": crate::common::version(),
     });
     let resp = reqwest::Client::new()
         .post(endpoint)

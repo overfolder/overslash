@@ -116,6 +116,9 @@ struct TemplateSummary {
     hosts: Vec<String>,
     action_count: usize,
     tier: String,
+    /// `x-overslash-hidden` — dashboard surfaces show hidden templates
+    /// flagged; agent-facing surfaces (`/v1/search`, MCP) omit them.
+    hidden: bool,
 }
 
 #[derive(Serialize)]
@@ -144,6 +147,8 @@ struct TemplateDetail {
     /// Summary of the MCP block when `runtime == "mcp"`. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     mcp: Option<McpDetail>,
+    /// `x-overslash-hidden` — see [`TemplateSummary::hidden`].
+    hidden: bool,
 }
 
 #[derive(Serialize)]
@@ -179,6 +184,8 @@ struct AdminTemplateSummary {
     /// For global templates: whether the template is explicitly enabled
     /// when `global_templates_enabled` is off. Always `true` for org/user tiers.
     enabled: bool,
+    /// `x-overslash-hidden` — see [`TemplateSummary::hidden`].
+    hidden: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -318,6 +325,7 @@ fn db_row_to_detail(t: service_template::ServiceTemplateRow, tier: &str) -> Resu
         id: Some(t.id),
         runtime,
         mcp,
+        hidden: def.hidden,
     })
 }
 
@@ -411,6 +419,7 @@ async fn list_templates(
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
             tier: "global".into(),
+            hidden: svc.hidden,
         });
     }
 
@@ -425,9 +434,9 @@ async fn list_templates(
         if is_user_tier && !user_templates_allowed {
             continue;
         }
-        let action_count = openapi::compile_service(&t.openapi)
-            .map(|(def, _)| def.actions.len())
-            .unwrap_or(0);
+        let (action_count, hidden) = openapi::compile_service(&t.openapi)
+            .map(|(def, _)| (def.actions.len(), def.hidden))
+            .unwrap_or((0, false));
         let tier = if is_user_tier { "user" } else { "org" };
         templates.push(TemplateSummary {
             key: t.key,
@@ -437,6 +446,7 @@ async fn list_templates(
             hosts: t.hosts,
             action_count,
             tier: tier.into(),
+            hidden,
         });
     }
 
@@ -468,6 +478,7 @@ async fn search_templates(
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
             tier: "global".into(),
+            hidden: svc.hidden,
         });
     }
 
@@ -486,9 +497,9 @@ async fn search_templates(
             || t.display_name.to_lowercase().contains(&q)
             || t.description.to_lowercase().contains(&q)
         {
-            let action_count = openapi::compile_service(&t.openapi)
-                .map(|(def, _)| def.actions.len())
-                .unwrap_or(0);
+            let (action_count, hidden) = openapi::compile_service(&t.openapi)
+                .map(|(def, _)| (def.actions.len(), def.hidden))
+                .unwrap_or((0, false));
             let tier = if is_user_tier { "user" } else { "org" };
             results.push(TemplateSummary {
                 key: t.key,
@@ -498,6 +509,7 @@ async fn search_templates(
                 hosts: t.hosts,
                 action_count,
                 tier: tier.into(),
+                hidden,
             });
         }
     }
@@ -571,6 +583,7 @@ async fn get_template(
         id: None,
         runtime,
         mcp,
+        hidden: svc.hidden,
     }))
 }
 
@@ -1007,15 +1020,16 @@ async fn list_templates_admin(
             id: None,
             owner_identity_id: None,
             enabled,
+            hidden: svc.hidden,
         });
     }
 
     // ALL DB templates (org + all users')
     let db_templates = service_template::list_all_by_org(state.db(&ext), acl.org_id).await?;
     for t in db_templates {
-        let action_count = openapi::compile_service(&t.openapi)
-            .map(|(def, _)| def.actions.len())
-            .unwrap_or(0);
+        let (action_count, hidden) = openapi::compile_service(&t.openapi)
+            .map(|(def, _)| (def.actions.len(), def.hidden))
+            .unwrap_or((0, false));
         let tier = if t.owner_identity_id.is_some() {
             "user"
         } else {
@@ -1032,6 +1046,7 @@ async fn list_templates_admin(
             id: Some(t.id),
             owner_identity_id: t.owner_identity_id,
             enabled: true, // org/user templates are always "enabled"
+            hidden,
         });
     }
 

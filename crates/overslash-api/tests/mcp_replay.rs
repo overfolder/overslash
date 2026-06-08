@@ -579,4 +579,34 @@ async fn mcp_replay_tool_level_error_still_executes() {
     .unwrap();
     assert_eq!(envelope["runtime"], "mcp");
     assert_eq!(envelope["is_error"], true);
+
+    // The replay executed, but the upstream tool failed in-band — execution
+    // metrics must say `upstream_error` (mode `replay`), and the upstream
+    // counter must record the MCP error class. Org-uploaded templates aren't
+    // in the global registry, so the bounded template_key is `_unknown`.
+    let metrics = common::scrape_metrics(&ctx.base, &ctx.client).await;
+    assert!(
+        common::has_metric_series(
+            &metrics,
+            "overslash_action_executions_total",
+            &[
+                ("template_key", "_unknown"),
+                ("mode", "replay"),
+                ("status", "upstream_error"),
+            ],
+        ),
+        "expected replay upstream_error execution series in:\n{metrics}"
+    );
+    assert!(
+        common::has_metric_series(
+            &metrics,
+            "overslash_upstream_responses_total",
+            &[
+                ("template_key", "_unknown"),
+                ("mode", "mcp"),
+                ("status_class", "error"),
+            ],
+        ),
+        "expected mcp upstream-error series in:\n{metrics}"
+    );
 }
