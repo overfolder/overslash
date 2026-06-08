@@ -155,10 +155,7 @@ pub fn version() -> &'static str {
 pub fn print_banner(mode: &str, public_url: &str, health_url: &str, embed_dashboard: bool) {
     let bar = "─".repeat(60);
     eprintln!();
-    eprintln!(
-        "  \x1b[1;35moverslash\x1b[0m {} — {mode} mode",
-        version()
-    );
+    eprintln!("  \x1b[1;35moverslash\x1b[0m {} — {mode} mode", version());
     eprintln!("  {bar}");
     eprintln!("  Dashboard  {}", link(public_url, public_url));
     eprintln!("  Health     {}", link(health_url, health_url));
