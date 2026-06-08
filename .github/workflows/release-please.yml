@@ -1,0 +1,37 @@
+name: Release Please
+
+# Runs after every push to master (i.e. after a dev → master promotion PR
+# merges). Opens/updates a "chore(release): vX.Y.Z" PR against master that
+# bumps the version and prepends CHANGELOG.md from the conventional commits
+# since the last release tag. Merging that PR creates the tag + GitHub
+# release; the tag push then triggers release.yml, which builds the binaries
+# and attaches them to the release.
+#
+# IMPORTANT: requires the RELEASE_PLEASE_TOKEN repo secret — a fine-grained
+# PAT scoped to this repo with contents:write + pull-requests:write. The
+# default GITHUB_TOKEN cannot be used end-to-end: PRs it opens never trigger
+# CI (so the master ruleset's required checks would block the release PR),
+# and tags it creates never trigger release.yml (so no binaries would be
+# built). The `|| github.token` fallback below only keeps the release PR
+# flowing if the secret is ever deleted; with the fallback token the steps
+# above must be done by hand (re-trigger CI, push the tag yourself).
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Release PR / tag
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
