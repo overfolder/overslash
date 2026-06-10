@@ -409,3 +409,155 @@ async fn reauth_required_rest_envelope_includes_raw_authorize_url() {
         "raw must be the upstream URL, not the gated Overslash URL: {raw}"
     );
 }
+
+/// `?wrap=true` (the dashboard "try it" surface) turns the gateway's own
+/// `needs_authentication` 401 into a **200** envelope with the status inside,
+/// so a browser client doesn't conflate it with a session-expiry 401 and
+/// bounce the user to /login. The default (no `wrap`) still returns the 401 —
+/// see `mode_c_no_connection_returns_needs_authentication`.
+#[tokio::test]
+async fn wrap_true_returns_200_needs_authentication_envelope() {
+    let pool = common::test_pool().await;
+
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", "x_test_client");
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
+    }
+
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (_org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "x",
+            "name": "x",
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        create_resp.status().is_success(),
+        "service create failed: {} {:?}",
+        create_resp.status(),
+        create_resp.text().await
+    );
+    let svc: Value = create_resp.json().await.unwrap();
+    let svc_id = svc["id"].as_str().unwrap().to_string();
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "x:*:*"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call?wrap=true"))
+        .header(common::auth(&api_key).0, common::auth(&api_key).1)
+        .json(&json!({
+            "service": "x",
+            "action": "get_me",
+            "params": {},
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "wrap=true must surface needs_authentication as a 200, got: {:?}",
+        resp.text().await
+    );
+    let body: Value = resp.json().await.unwrap();
+    // `status` discriminant inside the body (not `error`), so it slots into
+    // the dashboard's `CallResponse` union.
+    assert_eq!(body["status"], "needs_authentication");
+    assert_eq!(body["service"], "x");
+    assert_eq!(body["service_instance_id"].as_str().unwrap(), svc_id);
+    let auth_url = body["auth_url"].as_str().unwrap();
+    assert!(
+        auth_url.contains("/connect-authorize?id="),
+        "auth_url should be a gated link: {auth_url}"
+    );
+}
+
+/// `?wrap=true` likewise surfaces `reauth_required` as a 200 envelope. Mirrors
+/// `reauth_required_rest_envelope_includes_raw_authorize_url` (which asserts
+/// the default 401 shape).
+#[tokio::test]
+async fn wrap_true_returns_200_reauth_required_envelope() {
+    let pool = common::test_pool().await;
+
+    unsafe {
+        std::env::set_var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS", "1");
+        std::env::set_var("OAUTH_X_CLIENT_ID", "x_test_client");
+        std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
+    }
+
+    let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
+    let (org_id, ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    let connection_id = seed_connection_no_refresh_expired(&pool, org_id, ident_id, "x").await;
+
+    let create_resp = client
+        .post(format!("{base}/v1/services"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({
+            "template_key": "x",
+            "name": "x",
+            "user_level": false,
+            "status": "active",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(create_resp.status().is_success());
+
+    client
+        .post(format!("{base}/v1/permissions"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"identity_id": ident_id, "action_pattern": "x:*:*"}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(format!("{base}/v1/actions/call?wrap=true"))
+        .header(common::auth(&api_key).0, common::auth(&api_key).1)
+        .json(&json!({
+            "service": "x",
+            "action": "get_me",
+            "params": {},
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "wrap=true must surface reauth_required as a 200, got: {:?}",
+        resp.text().await
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "reauth_required");
+    assert_eq!(
+        body["connection_id"].as_str().unwrap(),
+        connection_id.to_string()
+    );
+    assert!(
+        body["auth_url"]
+            .as_str()
+            .expect("auth_url required")
+            .contains("/connect-authorize?id="),
+    );
+}
