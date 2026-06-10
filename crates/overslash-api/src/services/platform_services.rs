@@ -7,7 +7,7 @@
 //! keeps the auto-add-to-Myself behavior, owner resolution, template
 //! validation, and credential-status derivation in one place.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -285,6 +285,10 @@ pub async fn kernel_list_services(
     // (deduped by (owner, provider)) so the badge matches a real call instead
     // of falsely reading "needs setup".
     let mut conn_by_owner_provider: HashMap<(Uuid, String), Vec<String>> = HashMap::new();
+    // Track looked-up pairs separately from found ones: an owner with no
+    // connection for the provider must still be cached, or each of its unbound
+    // instances would re-query (N+1 on the no-connection path).
+    let mut looked_up: HashSet<(Uuid, String)> = HashSet::new();
     for row in &rows {
         if row.connection_id.is_some() {
             continue;
@@ -299,7 +303,7 @@ pub async fn kernel_list_services(
             continue;
         };
         let key = (owner, provider.to_string());
-        if conn_by_owner_provider.contains_key(&key) {
+        if !looked_up.insert(key.clone()) {
             continue;
         }
         if let Ok(Some(conn)) = UserScope::new(ctx.org_id, owner, ctx.db.clone())
