@@ -48,8 +48,18 @@ async function request<T>(
 			}
 		}
 		if (res.status === 401 && typeof window !== 'undefined') {
+			// A 401 carrying the gateway's typed service-auth envelope
+			// (needs_authentication / reauth_required) means the *target service*
+			// needs auth — the dashboard session itself is fine. Don't bounce to
+			// /login; let the caller render it (e.g. the API Explorer "try it"
+			// panel, which also opts into ?wrap=true so this is a 200 anyway).
+			const code =
+				errorBody && typeof errorBody === 'object'
+					? (errorBody as { error?: string }).error
+					: undefined;
+			const isServiceAuth = code === 'needs_authentication' || code === 'reauth_required';
 			const here = window.location.pathname + window.location.search;
-			if (window.location.pathname !== '/login') {
+			if (!isServiceAuth && window.location.pathname !== '/login') {
 				window.location.href = `/login?reason=expired&return_to=${encodeURIComponent(here)}`;
 			}
 		}
@@ -88,8 +98,18 @@ async function requestText<T>(path: string, text: string, signal?: AbortSignal):
 			}
 		}
 		if (res.status === 401 && typeof window !== 'undefined') {
+			// A 401 carrying the gateway's typed service-auth envelope
+			// (needs_authentication / reauth_required) means the *target service*
+			// needs auth — the dashboard session itself is fine. Don't bounce to
+			// /login; let the caller render it (e.g. the API Explorer "try it"
+			// panel, which also opts into ?wrap=true so this is a 200 anyway).
+			const code =
+				errorBody && typeof errorBody === 'object'
+					? (errorBody as { error?: string }).error
+					: undefined;
+			const isServiceAuth = code === 'needs_authentication' || code === 'reauth_required';
 			const here = window.location.pathname + window.location.search;
-			if (window.location.pathname !== '/login') {
+			if (!isServiceAuth && window.location.pathname !== '/login') {
 				window.location.href = `/login?reason=expired&return_to=${encodeURIComponent(here)}`;
 			}
 		}
