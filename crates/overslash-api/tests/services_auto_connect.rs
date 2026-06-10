@@ -388,6 +388,174 @@ async fn end_to_end_oauth_callback_binds_connection_to_instance() {
 }
 
 #[tokio::test]
+async fn unbound_oauth_instance_with_provider_connection_classifies_ok() {
+    // Regression: an instance with `connection_id = NULL` still works at call
+    // time because `resolve_service_auth` auto-resolves the owner identity's
+    // connection by provider (`find_my_connection_by_provider`). The credential
+    // classifier must mirror that resolution — otherwise the dashboard badge
+    // *and* the agent-facing `service_status` falsely read "needs setup" for a
+    // working service, which pushes eval agents to re-auth a service that's
+    // already usable. Reproduces the production `google_calendar` instance that
+    // was never explicitly bound but whose owner has a Google connection.
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+
+    sqlx::query("UPDATE oauth_providers SET token_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/oauth/token"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oauth_providers SET userinfo_endpoint = $1 WHERE key = 'google'")
+        .bind(format!("http://{mock_addr}/userinfo-404"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-unbound").await;
+
+    // Create the instance and complete the auto-connect callback so a real
+    // connection lands, owned by the instance's owner (the bind owner-check
+    // guarantees owner == connection.identity_id).
+    let body: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({ "template_key": "gcal-unbound", "name": "gcal-unbound-svc" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let instance_id: uuid::Uuid = body["id"].as_str().unwrap().parse().unwrap();
+    let flow_id = body["connect"]["flow_id"].as_str().unwrap().to_string();
+
+    let callback: Value = client
+        .get(format!(
+            "{base}/v1/oauth/callback?code=unbound_code&state={flow_id}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(callback["status"], "connected");
+    let connection_id: uuid::Uuid = callback["connection_id"].as_str().unwrap().parse().unwrap();
+
+    // The mock token endpoint returns no `scope`, so grant the connection the
+    // template's scopes explicitly, then UNBIND the instance to reproduce the
+    // `connection_id = NULL` state seen in production.
+    sqlx::query("UPDATE connections SET scopes = $1 WHERE id = $2")
+        .bind(vec![
+            "https://www.googleapis.com/auth/calendar.events".to_string(),
+            "https://www.googleapis.com/auth/calendar.readonly".to_string(),
+        ])
+        .bind(connection_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE service_instances SET connection_id = NULL WHERE id = $1")
+        .bind(instance_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Detail endpoint — what MCP `service_status` and the detail page read.
+    let detail: Value = client
+        .get(format!("{base}/v1/services/gcal-unbound-svc"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        detail["connection_id"].is_null(),
+        "instance must still be unbound; got {detail}"
+    );
+    assert_eq!(
+        detail["credentials_status"], "ok",
+        "unbound OAuth instance with a covering provider connection must classify ok, not needs_authentication; got {detail}"
+    );
+
+    // List endpoint — what the dashboard /services table reads.
+    let list: Value = client
+        .get(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == body["id"])
+        .expect("instance present in services list");
+    assert_eq!(
+        row["credentials_status"], "ok",
+        "list path must also reflect the auto-resolved connection; got {row}"
+    );
+}
+
+#[tokio::test]
+async fn unbound_oauth_instance_without_connection_still_needs_auth() {
+    // Counterpart to the regression above: when the owner has *no* connection
+    // for the provider, an unbound OAuth instance genuinely needs setup. The
+    // provider fallback must not paper over that.
+    ensure_oauth_env();
+    let pool = common::test_pool().await;
+    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{api_addr}");
+    let (_org_id, _ident_id, api_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+
+    seed_oauth_template(&base, &client, &admin_key, "gcal-noconn").await;
+
+    let body: Value = client
+        .post(format!("{base}/v1/services"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({
+            "template_key": "gcal-noconn",
+            "name": "gcal-noconn-svc",
+            "skip_connect": true,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let detail: Value = client
+        .get(format!("{base}/v1/services/gcal-noconn-svc"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        detail["connection_id"].is_null(),
+        "instance should be unbound; got {detail}"
+    );
+    assert_eq!(
+        detail["credentials_status"], "needs_authentication",
+        "unbound OAuth instance with no provider connection must still need auth; got {body}"
+    );
+}
+
+#[tokio::test]
 async fn connect_include_raw_exposes_upstream_authorize_url() {
     // White-label integration path: when the REST caller opts in with
     // `connect_include_raw: true`, the response also carries the raw
