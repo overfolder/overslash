@@ -19,7 +19,7 @@ use overslash_db::repos::service_instance::{
     CreateServiceInstance, ServiceInstanceRow, UpdateServiceInstance,
 };
 use overslash_db::repos::service_template;
-use overslash_db::scopes::OrgScope;
+use overslash_db::scopes::{OrgScope, UserScope};
 
 use super::group_ceiling;
 use super::platform_caller::PlatformCallContext;
@@ -279,19 +279,55 @@ pub async fn kernel_list_services(
         }
     }
 
+    // Mirror execution's auto-resolve for unbound OAuth instances: a row with
+    // no explicit `connection_id` is served at call time by the owner
+    // identity's connection for the template's provider. Resolve those here
+    // (deduped by (owner, provider)) so the badge matches a real call instead
+    // of falsely reading "needs setup".
+    let mut conn_by_owner_provider: HashMap<(Uuid, String), Vec<String>> = HashMap::new();
+    for row in &rows {
+        if row.connection_id.is_some() {
+            continue;
+        }
+        let (Some(owner), Some(tpl)) = (
+            row.owner_identity_id,
+            templates.get(&(row.owner_identity_id, row.template_key.clone())),
+        ) else {
+            continue;
+        };
+        let Some(provider) = template_oauth_provider(tpl) else {
+            continue;
+        };
+        let key = (owner, provider.to_string());
+        if conn_by_owner_provider.contains_key(&key) {
+            continue;
+        }
+        if let Ok(Some(conn)) = UserScope::new(ctx.org_id, owner, ctx.db.clone())
+            .find_my_connection_by_provider(provider)
+            .await
+        {
+            conn_by_owner_provider.insert(key, conn.scopes);
+        }
+    }
+
     let summaries = rows
         .into_iter()
         .map(|row| {
             let tpl_key = (row.owner_identity_id, row.template_key.clone());
             let template = templates.get(&tpl_key);
             let credentials_status = template.and_then(|tpl| {
-                derive_credentials_status(
-                    tpl,
-                    row.connection_id
-                        .and_then(|cid| connections_by_id.get(&cid))
-                        .map(|c| c.scopes.as_slice()),
-                    row.secret_name.as_deref(),
-                )
+                let scopes: Option<&[String]> = if let Some(cid) = row.connection_id {
+                    connections_by_id.get(&cid).map(|c| c.scopes.as_slice())
+                } else if let (Some(owner), Some(provider)) =
+                    (row.owner_identity_id, template_oauth_provider(tpl))
+                {
+                    conn_by_owner_provider
+                        .get(&(owner, provider.to_string()))
+                        .map(|s| s.as_slice())
+                } else {
+                    None
+                };
+                derive_credentials_status(tpl, scopes, row.secret_name.as_deref())
             });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
             let mut summary = row_to_summary(row, groups);
@@ -873,21 +909,46 @@ pub async fn compute_credentials_status(
         resolve_template_definition(db, registry, row.org_id, template_owner, &row.template_key)
             .await
             .ok()?;
-    let conn_scopes = if let Some(conn_id) = row.connection_id {
-        scope
-            .get_connection(conn_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|c| c.scopes)
-    } else {
-        None
-    };
+    let conn_scopes = resolve_effective_scopes(db, scope, &template, row).await;
     derive_credentials_status(
         &template,
         conn_scopes.as_deref(),
         row.secret_name.as_deref(),
     )
+}
+
+/// Granted scopes of the connection the *execution* path would actually use.
+///
+/// Mirrors `resolve_service_auth` / `check_required_scopes` at call time: an
+/// explicit `connection_id` binding wins (resolved org-scoped, so agent-owned
+/// connections still classify — see PR #321); otherwise an OAuth template
+/// auto-resolves the *owner identity's* connection for its provider. Without
+/// this, an instance that was never explicitly bound but works via provider
+/// auto-resolve (e.g. a `google_calendar` instance with `connection_id = NULL`
+/// when the owner has a Google connection) was misreported as needing setup —
+/// both on the dashboard badge and on the agent-facing `service_status`.
+async fn resolve_effective_scopes(
+    db: &sqlx::PgPool,
+    scope: &OrgScope,
+    template: &ServiceDefinition,
+    row: &ServiceInstanceRow,
+) -> Option<Vec<String>> {
+    if let Some(conn_id) = row.connection_id {
+        return scope
+            .get_connection(conn_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|c| c.scopes);
+    }
+    let provider = template_oauth_provider(template)?;
+    let owner = row.owner_identity_id?;
+    UserScope::new(row.org_id, owner, db.clone())
+        .find_my_connection_by_provider(provider)
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.scopes)
 }
 
 /// Pure classifier: takes a template + (optional) granted scopes + secret name
