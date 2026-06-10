@@ -23,7 +23,13 @@
 
 use std::collections::HashMap;
 
-use axum::{Json, Router, extract::State, response::Response, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -89,6 +95,79 @@ pub(crate) fn bounded_template_key(
     }
 }
 
+/// Query options for `POST /v1/actions/call`.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct CallQuery {
+    /// Opt-in (dashboard "try it" surface): return the gateway's own auth
+    /// errors (`needs_authentication` / `reauth_required`) as a `200` envelope
+    /// with the status inside the body, instead of a real `401`. Browser
+    /// clients otherwise can't distinguish a target-service auth prompt from an
+    /// expired-session `401` and bounce the user to `/login`. The default
+    /// (unset) keeps the typed-`401` contract MCP/REST/white-label callers rely
+    /// on. Only the gateway's auth `401`s are wrapped — upstream statuses
+    /// already ride inside the `status: "called"` envelope, and other gateway
+    /// errors (400/403/5xx) pass through unchanged.
+    #[serde(default)]
+    wrap: Option<bool>,
+}
+
+/// When `?wrap=true`, turn the gateway's auth-`401` variants into a `200`
+/// `CallResponse`-shaped envelope (`status` discriminant inside the body).
+/// Returns `None` for every other error so it propagates as its normal status.
+fn wrap_auth_error_as_ok(err: &AppError) -> Option<Response> {
+    use serde_json::json;
+    match err {
+        AppError::NeedsAuthentication {
+            service,
+            service_instance_id,
+            connection_id,
+            auth_url,
+            short,
+            raw,
+        } => {
+            let mut body = json!({ "status": "needs_authentication", "auth_url": auth_url });
+            if let Some(s) = service {
+                body["service"] = json!(s);
+            }
+            if let Some(id) = service_instance_id {
+                body["service_instance_id"] = json!(id);
+            }
+            if let Some(id) = connection_id {
+                body["connection_id"] = json!(id);
+            }
+            if let Some(s) = short {
+                body["short"] = json!(s);
+            }
+            if let Some(r) = raw {
+                body["raw"] = json!(r);
+            }
+            Some((StatusCode::OK, Json(body)).into_response())
+        }
+        AppError::ReauthRequired {
+            connection_id,
+            auth_url,
+            short,
+            raw,
+            reason,
+        } => {
+            let mut body = json!({
+                "status": "reauth_required",
+                "connection_id": connection_id,
+                "auth_url": auth_url,
+                "reason": reason,
+            });
+            if let Some(s) = short {
+                body["short"] = json!(s);
+            }
+            if let Some(r) = raw {
+                body["raw"] = json!(r);
+            }
+            Some((StatusCode::OK, Json(body)).into_response())
+        }
+        _ => None,
+    }
+}
+
 /// Top-level handler that times the request and emits the
 /// `overslash_action_executions_total` / `_duration_seconds` metrics.
 /// Granular outcomes (approval_required vs called vs filtered) are encoded in
@@ -102,6 +181,7 @@ async fn call_action(
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
+    Query(q): Query<CallQuery>,
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     let start = std::time::Instant::now();
@@ -150,6 +230,16 @@ async fn call_action(
         status_label,
         start.elapsed(),
     );
+
+    // Opt-in error wrapping for the dashboard "try it" surface. Done *after*
+    // metrics so the auth 401 still counts as `rejected`, not a fake `called`.
+    if q.wrap.unwrap_or(false) {
+        if let Err(err) = &result {
+            if let Some(resp) = wrap_auth_error_as_ok(err) {
+                return Ok(resp);
+            }
+        }
+    }
     result
 }
 

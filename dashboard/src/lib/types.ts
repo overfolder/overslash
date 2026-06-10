@@ -692,7 +692,28 @@ export type CallResponse =
       action_detail_truncated: boolean;
       action_detail_size_bytes: number;
     }
-  | { status: 'denied'; reason: string };
+  | { status: 'denied'; reason: string }
+  /** Gateway-level "the target service needs auth" results. Only surfaced
+   *  when the caller opts into error-wrapping (`?wrap=true`, used by the
+   *  dashboard "try it" surface) — otherwise these come back as a `401`.
+   *  Mirrors the `AppError::NeedsAuthentication` / `ReauthRequired` bodies. */
+  | {
+      status: 'needs_authentication';
+      service?: string;
+      service_instance_id?: string;
+      connection_id?: string;
+      auth_url: string;
+      short?: string;
+      raw?: string;
+    }
+  | {
+      status: 'reauth_required';
+      connection_id: string;
+      auth_url: string;
+      reason: string;
+      short?: string;
+      raw?: string;
+    };
 
 /** Mirrors crates/overslash-api/src/routes/identities.rs IdentityResponse. */
 export interface Identity {

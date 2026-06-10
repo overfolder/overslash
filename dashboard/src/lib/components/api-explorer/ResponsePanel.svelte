@@ -62,6 +62,11 @@
 				<span class="chip err">upstream error</span>
 			{/if}
 			<span class="duration">{response.result.duration_ms}ms</span>
+		{:else if response && (response.status === 'needs_authentication' || response.status === 'reauth_required')}
+			<span class="chip warn">needs auth</span>
+			{#if elapsedMs !== null && !running}
+				<span class="duration">{Math.round(elapsedMs)}ms</span>
+			{/if}
 		{:else if elapsedMs !== null && !running}
 			<span class="duration">{Math.round(elapsedMs)}ms</span>
 		{/if}
@@ -122,6 +127,30 @@
 		<div class="error">
 			<strong>Denied</strong>
 			<p>{response.reason}</p>
+		</div>
+	{:else if response.status === 'needs_authentication'}
+		<div class="info">
+			<strong>Authentication required</strong>
+			<p>
+				{response.service
+					? `“${response.service}” needs to be connected before this action can run.`
+					: 'This service needs to be connected before this action can run.'}
+			</p>
+			<a class="btn" href={response.auth_url} target="_blank" rel="noopener noreferrer">
+				Connect →
+			</a>
+			<p class="muted">Opens the authorization flow in a new tab. Re-run once connected.</p>
+		</div>
+	{:else if response.status === 'reauth_required'}
+		<div class="info">
+			<strong>Reconnect required</strong>
+			<p>
+				This connection needs to be re-authorized{response.reason ? `: ${response.reason}` : '.'}
+			</p>
+			<a class="btn" href={response.auth_url} target="_blank" rel="noopener noreferrer">
+				Reconnect →
+			</a>
+			<p class="muted">Opens the authorization flow in a new tab. Re-run once reconnected.</p>
 		</div>
 	{/if}
 </section>
