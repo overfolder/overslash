@@ -130,7 +130,16 @@
 			? identities.find((i) => i.id === userFilter && i.kind === 'user') ?? null
 			: null
 	);
-	const displayRoots = $derived(scopedUser ? [scopedUser] : roots);
+	// When scoped to one user, that user is the only root. Honor the archived
+	// filter here too: an archived scoped user is hidden from the tree unless
+	// "Show archived" is on (the banner still names them so the scope is clear).
+	const displayRoots = $derived(
+		scopedUser
+			? showArchived || !scopedUser.archived_at
+				? [scopedUser]
+				: []
+			: roots
+	);
 
 	function clearUserFilter() {
 		const url = new URL($page.url);
