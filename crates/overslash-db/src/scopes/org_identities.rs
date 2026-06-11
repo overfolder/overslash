@@ -13,7 +13,8 @@
 use uuid::Uuid;
 
 use crate::repos::identity::{
-    self, ApplyPatchOutcome, DeleteLeafOutcome, IdentityRow, PatchIdentity, RestoreOutcome,
+    self, ApplyPatchOutcome, ArchiveOutcome, DeleteLeafOutcome, IdentityRow, PatchIdentity,
+    RestoreOutcome,
 };
 use crate::scopes::OrgScope;
 
@@ -173,6 +174,16 @@ impl OrgScope {
     /// auto-revoked API keys.
     pub async fn restore_identity(&self, id: Uuid) -> Result<RestoreOutcome, sqlx::Error> {
         identity::restore(self.db(), self.org_id(), id).await
+    }
+
+    /// Cascade-archive an identity and its entire descendant subtree in this
+    /// org. Returns `None` if the id does not exist in this org.
+    pub async fn archive_identity(
+        &self,
+        id: Uuid,
+        reason: Option<&str>,
+    ) -> Result<Option<ArchiveOutcome>, sqlx::Error> {
+        identity::archive_identity(self.db(), self.org_id(), id, reason).await
     }
 
     /// Rename an identity in this org. Returns `None` if the row does not

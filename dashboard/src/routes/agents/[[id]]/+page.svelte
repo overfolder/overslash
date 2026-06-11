@@ -88,11 +88,21 @@
 	let createInherit = $state(false);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
+	// Opt-in reveal of archived identities in the tree (hidden by default).
+	let showArchived = $state(false);
 
 	const selected = $derived(identities.find((i) => i.id === selectedId) ?? null);
+	// Tree is built from `visibleIdentities`, not the full set, so archived nodes
+	// are hidden by default. `selected`/`scopedUser` stay on the full `identities`
+	// array so the detail pane still resolves an archived selection. Hiding an
+	// archived parent drops its whole branch from the render walk — safe because
+	// cascade-archive marks the entire subtree, so no *live* node is orphaned.
+	const visibleIdentities = $derived(
+		showArchived ? identities : identities.filter((i) => !i.archived_at)
+	);
 	const childrenOf = $derived.by(() => {
 		const m = new Map<string | null, Identity[]>();
-		for (const ident of identities) {
+		for (const ident of visibleIdentities) {
 			const arr = m.get(ident.parent_id) ?? [];
 			arr.push(ident);
 			m.set(ident.parent_id, arr);
@@ -700,7 +710,18 @@
 	<div class="panels" data-mobile-pane={selected ? 'detail' : 'tree'}>
 		<!-- Left: Agent tree -->
 		<aside class="tree-panel">
-			<div class="tree-head">Agents</div>
+			<div class="tree-head">
+				<span>Agents</span>
+				<label class="archived-toggle">
+					<ToggleSwitch
+						checked={showArchived}
+						onchange={(next) => (showArchived = next)}
+						size="sm"
+						label="Show archived"
+					/>
+					Show archived
+				</label>
+			</div>
 			{#if loading && identities.length === 0}
 				<p class="muted tree-empty">Loading…</p>
 			{:else if displayRoots.length === 0}
@@ -974,6 +995,7 @@
 	<div
 		class="tree-node"
 		class:selected={isSelected}
+		class:archived={!!node.archived_at}
 		style:padding-left={`${depth * 20 + 16}px`}
 		role="treeitem"
 		aria-selected={isSelected}
@@ -1299,6 +1321,21 @@
 	.tree-node.selected .tree-label {
 		color: var(--color-primary);
 		font-weight: 600;
+	}
+	.tree-node.archived {
+		opacity: 0.5;
+	}
+	.tree-node.archived .tree-label {
+		text-decoration: line-through;
+	}
+	.archived-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font: var(--text-body-small);
+		font-weight: 400;
+		color: var(--color-text-muted);
+		cursor: pointer;
 	}
 	.tree-toggle-slot {
 		width: 12px;
