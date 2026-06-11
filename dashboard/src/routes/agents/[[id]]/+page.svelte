@@ -110,6 +110,19 @@
 		return m;
 	});
 	const roots = $derived(childrenOf.get(null) ?? []);
+	// Unfiltered parent→children map over ALL identities (incl. archived). Used
+	// for counts that must match the server's cascade delete, which ignores the
+	// display-only "Show archived" filter — otherwise the delete dialog would
+	// undercount and risk unexpected data loss.
+	const allChildrenOf = $derived.by(() => {
+		const m = new Map<string | null, Identity[]>();
+		for (const ident of identities) {
+			const arr = m.get(ident.parent_id) ?? [];
+			arr.push(ident);
+			m.set(ident.parent_id, arr);
+		}
+		return m;
+	});
 	const pendingByIdentity = $derived.by(() => {
 		const m = new Map<string, number>();
 		for (const a of approvals) m.set(a.identity_id, (m.get(a.identity_id) ?? 0) + 1);
@@ -153,7 +166,9 @@
 
 	/** Count all descendants of an identity */
 	function descendantCount(id: string): number {
-		const kids = childrenOf.get(id) ?? [];
+		// Count over ALL descendants (incl. archived) so the delete confirmation
+		// matches the server's cascade, not the filtered tree.
+		const kids = allChildrenOf.get(id) ?? [];
 		let count = kids.length;
 		for (const k of kids) count += descendantCount(k.id);
 		return count;
@@ -673,9 +688,11 @@
 		void navigator.clipboard.writeText(text);
 	}
 
-	// Eligible parents for the create form — all identities can be parents.
+	// Eligible parents for the create form — any live identity can be a parent.
+	// Archived identities are excluded: the server rejects creating a child under
+	// an archived parent.
 	const createEligibleParents = $derived(
-		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind))
+		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind) && !i.archived_at)
 	);
 
 	// Parent identity for the selected node
