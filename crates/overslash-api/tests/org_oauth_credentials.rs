@@ -193,10 +193,11 @@ async fn test_delete_unknown_provider_returns_404() {
 }
 
 #[tokio::test]
-async fn test_put_rejects_when_service_oauth_env_var_set() {
-    // When the tier-3 env-var scheme (OAUTH_*_CLIENT_ID/_SECRET) is set
-    // AND the DANGER opt-in is on, the admin should not be able to
-    // override via the dashboard — the env scheme is operator-managed.
+async fn test_put_overrides_service_oauth_env_var() {
+    // Org-level OAuth App Credentials are an intentional override. Even when
+    // the env-var scheme (OAUTH_*_CLIENT_ID/_SECRET) is set AND the DANGER
+    // opt-in is on, the admin can still save org creds from the dashboard, and
+    // the cascade resolves them (tier 3) ahead of the env vars (tier 4).
     // SAFETY: env var mutation is process-global, but these tests already
     // share env via the test harness and this test runs serially enough.
     unsafe {
@@ -206,9 +207,10 @@ async fn test_put_rejects_when_service_oauth_env_var_set() {
     }
 
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (addr, client) = common::start_api(pool).await;
+    let (addr, client) = common::start_api(pool.clone()).await;
     let base = format!("http://{addr}");
     let admin_key = fx.org_key.clone();
+    let org_id = fx.org_id;
 
     let resp = client
         .put(format!("{base}/v1/org-oauth-credentials/spotify"))
@@ -217,7 +219,17 @@ async fn test_put_rejects_when_service_oauth_env_var_set() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 409);
+    assert_eq!(resp.status(), 200, "override should be allowed");
+
+    // The cascade resolves the org override ahead of the env vars.
+    let enc_key = crypto::Keyring::test();
+    let creds = overslash_api::services::client_credentials::resolve(
+        &pool, &enc_key, org_id, None, "spotify", None, None,
+    )
+    .await
+    .expect("cascade should resolve the org override");
+    assert_eq!(creds.client_id, "dashboard-id");
+    assert_eq!(creds.client_secret, "dashboard-secret");
 
     // Clean up so we don't pollute later tests.
     unsafe {
@@ -799,6 +811,70 @@ async fn test_login_returns_clear_error_when_deferred_idp_has_no_org_creds() {
     assert!(
         body.contains("Org Settings") || body.contains("OAuth App Credentials"),
         "error should guide admin: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_login_prefers_org_creds_over_env_on_managed_signin() {
+    // Managed-signin path with no dedicated IdP config: org OAuth App
+    // Credentials are an override and must win over the shared GOOGLE_AUTH_*
+    // env creds at login time. The env creds are only the fallback when no org
+    // credentials are configured.
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api_with(pool.clone(), |cfg| {
+        cfg.google_auth_client_id = Some("env-google-id".into());
+        cfg.google_auth_client_secret = Some("env-google-secret".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+    let org_id = fx.org_id;
+    let admin_key = fx.org_key.clone();
+
+    // Managed signin on, and (deliberately) no IdP config for google.
+    overslash_db::repos::org::set_allow_overslash_managed_signin(&pool, org_id, true)
+        .await
+        .unwrap();
+
+    let orgs: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let slug = orgs["slug"].as_str().unwrap().to_string();
+
+    put_google_creds(&base, &client, &admin_key).await;
+
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let login_resp = no_redirect
+        .get(format!("{base}/auth/login/google?org={slug}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        login_resp.status().is_redirection(),
+        "expected redirect: {:?}",
+        login_resp.status()
+    );
+    let location = login_resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        location.contains("72939999999-fakegoogleclientid"),
+        "managed-signin login should embed the org-override client_id: {location}"
+    );
+    assert!(
+        !location.contains("env-google-id"),
+        "env creds must not win over the org override: {location}"
     );
 }
 

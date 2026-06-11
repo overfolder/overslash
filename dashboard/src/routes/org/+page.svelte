@@ -133,6 +133,7 @@
 	] as const;
 	let showOauthCredForm = $state(false);
 	let oauthCredEditingProvider = $state<string | null>(null);
+	let oauthCredOverridingEnv = $state(false);
 	let oauthCredProvider = $state<string>('google');
 	let oauthCredClientId = $state('');
 	let oauthCredClientSecret = $state('');
@@ -360,6 +361,7 @@
 
 	function openAddOauthCred() {
 		oauthCredEditingProvider = null;
+		oauthCredOverridingEnv = false;
 		// Pick a default provider that isn't already configured, falling back
 		// to "google" if everything is already configured.
 		const taken = new Set(oauthCredentials.map((c) => c.provider_key));
@@ -373,6 +375,7 @@
 
 	function openEditOauthCred(row: OAuthCredential) {
 		oauthCredEditingProvider = row.provider_key;
+		oauthCredOverridingEnv = row.source === 'env';
 		oauthCredProvider = row.provider_key;
 		oauthCredClientId = '';
 		oauthCredClientSecret = '';
@@ -1209,7 +1212,9 @@
 											Remove
 										</button>
 									{:else}
-										<span class="muted small">read-only</span>
+										<button type="button" class="btn-link" onclick={() => openEditOauthCred(row)}>
+											Override
+										</button>
 									{/if}
 								</td>
 							</tr>
@@ -1220,6 +1225,13 @@
 
 			{#if showOauthCredForm}
 				<form class="inline-form" onsubmit={submitOauthCred}>
+					{#if oauthCredOverridingEnv}
+						<p class="muted small">
+							This provider is currently served by environment variables. Saving an
+							org-level credential here overrides that default for both service
+							connections and IdP login.
+						</p>
+					{/if}
 					<label>
 						Provider
 						<select bind:value={oauthCredProvider} disabled={oauthCredEditingProvider !== null}>

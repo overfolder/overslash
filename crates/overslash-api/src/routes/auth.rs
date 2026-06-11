@@ -1653,13 +1653,27 @@ async fn resolve_auth_credentials(
             .get_org_idp_config_by_provider(provider_key)
             .await?;
 
-        // Opt-in env-var path. Only used when the org has no dedicated IdP
-        // row for this provider — a dedicated config is an explicit admin
-        // choice and must win over the operator-shared env creds. When the
-        // flag is on but env creds aren't configured server-side, fall
-        // through to the dedicated-IdP path (returns the same helpful 404
-        // as before if absent).
+        let enc_key = state
+            .config
+            .keyring()
+            .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
+
+        // Managed-signin path: the org has no dedicated IdP row for this
+        // provider. Org-level OAuth App Credentials are an explicit admin
+        // override and win over the operator-shared env creds, so check them
+        // first; the `{PROVIDER}_AUTH_*` env vars are the fallback when no org
+        // credentials are configured. When neither is set, fall through to the
+        // dedicated-IdP path (returns the same helpful 404 as before if absent).
         if org_row.allow_overslash_managed_signin && config_opt.is_none() {
+            if let Some(creds) = crate::services::client_credentials::resolve_org_oauth_secrets(
+                &bootstrap_scope,
+                &enc_key,
+                provider_key,
+            )
+            .await?
+            {
+                return Ok((creds.client_id, creds.client_secret));
+            }
             if let Some(creds) = state.config.env_auth_credentials(provider_key) {
                 return Ok(creds);
             }
@@ -1676,11 +1690,6 @@ async fn resolve_auth_credentials(
                 "provider {provider_key} is disabled for org {slug}"
             )));
         }
-
-        let enc_key = state
-            .config
-            .keyring()
-            .map_err(|e| AppError::Internal(format!("invalid encryption key: {e}")))?;
 
         // IdP uses its own dedicated credentials — decrypt them directly.
         if let (Some(enc_id), Some(enc_secret)) = (

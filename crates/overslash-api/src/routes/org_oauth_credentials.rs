@@ -130,29 +130,13 @@ async fn put_credentials(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
-    // Reject when env vars already serve this provider — either the tier-3
-    // service-OAuth scheme (`OAUTH_{PROVIDER}_CLIENT_ID`, which the cascade
-    // reads) or the legacy IdP-login scheme (`{PROVIDER}_AUTH_CLIENT_ID`,
-    // which `auth.rs` reads for IdP login). If the admin sets org-level
-    // creds while an env var is live, the org creds get silently ignored
-    // by whichever path is env-backed — surface the conflict up front.
-    // See TECH_DEBT.md for the env-var naming split.
-    if env_provides(&provider_key) {
-        return Err(AppError::Conflict(format!(
-            "provider '{provider_key}' is configured via OAUTH_{}_CLIENT_ID / _SECRET \
-             environment variables and cannot be overridden from the dashboard",
-            provider_key.to_uppercase()
-        )));
-    }
-    if state.config.env_auth_credentials(&provider_key).is_some() {
-        return Err(AppError::Conflict(format!(
-            "provider '{provider_key}' is configured via legacy IdP environment \
-             variables (e.g. {}_AUTH_CLIENT_ID). The org-level credential would be \
-             silently ignored by the login flow. Unset the env vars first or \
-             configure the IdP with dedicated credentials.",
-            provider_key.to_uppercase()
-        )));
-    }
+    // Org-level credentials are an intentional override and always win over
+    // env vars, so writing them is allowed even when an env var is live:
+    //   - Service connections: org secrets are tier 3 and env vars tier 4 in
+    //     `client_credentials::resolve`, so the org credential is read first.
+    //   - IdP login: `auth.rs::resolve_auth_credentials` checks org OAuth App
+    //     Credentials before the `{PROVIDER}_AUTH_*` env fallback.
+    // See TECH_DEBT.md for the env-var naming split between the two schemes.
 
     let enc_key = state.config.keyring()?;
     let (id_name, secret_name) = oauth_secret_names(&provider_key);
@@ -242,16 +226,6 @@ async fn delete_credentials(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// True when tier-3 env vars currently provide credentials for the given
-/// provider. Mirrors the lookup in `client_credentials::resolve`.
-fn env_provides(provider_key: &str) -> bool {
-    if std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_err() {
-        return false;
-    }
-    let (id_name, secret_name) = oauth_secret_names(provider_key);
-    std::env::var(&id_name).is_ok() && std::env::var(&secret_name).is_ok()
-}
 
 /// Client IDs are not secret but they're long; show a stable fingerprint
 /// that's recognizable without leaking extra detail. Short inputs fall back
