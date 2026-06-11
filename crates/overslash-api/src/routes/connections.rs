@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::HeaderMap,
+    extract::{Form, Path, Query, State},
+    http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -16,8 +16,8 @@ use overslash_db::repos::oauth_connection_flow;
 use overslash_db::scopes::{OrgScope, UserScope};
 
 use super::connect_gate::{
-    ParsedSession, SessionError, gone_html, mismatch_html, read_session,
-    session_authorized_for_org_identity,
+    ConnectGateOutcome, SessionError, admin_consent_html, evaluate_connect_gate, gone_html,
+    mismatch_html, read_session,
 };
 use super::util::fmt_time;
 use crate::{
@@ -55,6 +55,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/v1/oauth/callback", get(oauth_callback))
         .route("/connect-authorize", get(connect_authorize))
+        .route("/connect-authorize/confirm", post(connect_authorize_confirm))
 }
 
 #[derive(Deserialize)]
@@ -225,37 +226,106 @@ async fn connect_authorize(
         }
     };
 
-    if session_authorized_for_flow(&state, &ext, &session, flow.org_id, flow.identity_id).await? {
-        // Atomically claim the flow for redirect. `consume` is the
-        // gate's single-use UX flag — a concurrent click that already
-        // marked the row returns `None`, in which case we render the
-        // "already been used" page instead of letting two browser tabs
-        // race into the upstream provider. The `/v1/oauth/callback`
-        // security boundary still re-validates everything from the
-        // OAuth `state` parameter regardless.
-        match oauth_connection_flow::consume(state.db(&ext), &flow.id).await? {
-            Some(row) => {
-                return Ok(Redirect::to(&row.upstream_authorize_url).into_response());
-            }
-            None => {
-                return Ok(gone_html(
-                    "This OAuth link has already been used. Initiate the connection again to retry.",
-                ));
-            }
+    match evaluate_connect_gate(&state, &ext, &session, &flow, allow_remint(&ext)).await? {
+        ConnectGateOutcome::Deny => Ok(mismatch_html()),
+        // Admin/actor who is not the owner: render the loud consent page. The
+        // flow is NOT consumed here — the confirm POST is the boundary that
+        // re-validates and consumes. `set_cookie` is recomputed on confirm.
+        ConnectGateOutcome::NeedsConsent {
+            owner_label,
+            provider,
+            ..
+        } => Ok(admin_consent_html(&owner_label, &provider, &flow.id)),
+        ConnectGateOutcome::Allow { set_cookie } => {
+            consume_and_redirect(&state, &ext, &flow.id, set_cookie).await
         }
     }
-
-    Ok(mismatch_html())
 }
 
-async fn session_authorized_for_flow(
+#[derive(Deserialize)]
+struct ConfirmParams {
+    id: String,
+}
+
+/// POST target of the admin/actor consent interstitial ([`admin_consent_html`]).
+/// The consent page is advisory; this handler is the boundary — it re-runs the
+/// full gate evaluation server-side (never trusting the page) and only then
+/// consumes the flow and redirects to the provider. `SameSite=Lax` on the
+/// session cookie blocks a cross-site forge of this POST.
+async fn connect_authorize_confirm(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+    Form(params): Form<ConfirmParams>,
+) -> Result<Response> {
+    let Some(flow) = oauth_connection_flow::get_by_id(state.db(&ext), &params.id).await? else {
+        return Ok(gone_html("This OAuth link is invalid or has been revoked."));
+    };
+    if flow.consumed_at.is_some() {
+        return Ok(gone_html(
+            "This OAuth link has already been used. Initiate the connection again to retry.",
+        ));
+    }
+    if flow.expires_at <= OffsetDateTime::now_utc() {
+        return Ok(gone_html(
+            "This OAuth link has expired. Initiate the connection again to retry.",
+        ));
+    }
+    let session = match read_session(&state, &headers) {
+        Ok(s) => s,
+        Err(SessionError::Missing) => return Err(AppError::Unauthorized("missing session".into())),
+        Err(SessionError::Invalid) => {
+            return Err(AppError::Unauthorized("invalid session cookie".into()));
+        }
+    };
+    match evaluate_connect_gate(&state, &ext, &session, &flow, allow_remint(&ext)).await? {
+        ConnectGateOutcome::Deny => Ok(mismatch_html()),
+        // Owner/auto-switch, or a consented admin/actor — both proceed.
+        ConnectGateOutcome::Allow { set_cookie }
+        | ConnectGateOutcome::NeedsConsent { set_cookie, .. } => {
+            consume_and_redirect(&state, &ext, &flow.id, set_cookie).await
+        }
+    }
+}
+
+/// Whether the connect gate may transparently re-mint the session cookie to the
+/// flow's org. On an explicit org subdomain the dashboard already aligns the
+/// cookie via `/auth/switch-org`, so we never silently re-scope there; on
+/// `Root` (local dev with no subdomains, or the apex) the auto-switch is the
+/// fix for multi-org / multi-IdP users.
+fn allow_remint(ext: &axum::http::Extensions) -> bool {
+    !matches!(
+        ext.get::<crate::middleware::subdomain::RequestOrgContext>(),
+        Some(crate::middleware::subdomain::RequestOrgContext::Org { .. })
+    )
+}
+
+/// Atomically claim the flow for redirect and 303 to the upstream provider,
+/// attaching `set_cookie` only on the winning consume (so we never re-scope a
+/// session for a flow we didn't actually start). `consume` is the gate's
+/// single-use UX flag — a concurrent click that already marked the row returns
+/// `None`, in which case we render the "already been used" page instead of
+/// letting two browser tabs race into the upstream provider. The
+/// `/v1/oauth/callback` security boundary still re-validates everything from the
+/// OAuth `state` parameter regardless.
+async fn consume_and_redirect(
     state: &AppState,
     ext: &axum::http::Extensions,
-    session: &ParsedSession,
-    flow_org_id: Uuid,
-    flow_identity_id: Uuid,
-) -> std::result::Result<bool, AppError> {
-    session_authorized_for_org_identity(state, ext, session, flow_org_id, flow_identity_id).await
+    flow_id: &str,
+    set_cookie: Option<axum::http::HeaderValue>,
+) -> Result<Response> {
+    match oauth_connection_flow::consume(state.db(ext), flow_id).await? {
+        Some(row) => {
+            let mut resp = Redirect::to(&row.upstream_authorize_url).into_response();
+            if let Some(cookie) = set_cookie {
+                resp.headers_mut().insert(header::SET_COOKIE, cookie);
+            }
+            Ok(resp)
+        }
+        None => Ok(gone_html(
+            "This OAuth link has already been used. Initiate the connection again to retry.",
+        )),
+    }
 }
 
 #[derive(Deserialize)]
