@@ -574,7 +574,9 @@ impl Config {
     }
 
     /// Returns env-var-based auth credentials for a given provider key, if configured.
-    /// Env vars take precedence over DB-stored IdP configs.
+    /// These are a fallback for IdP login: `resolve_auth_credentials` prefers a
+    /// dedicated IdP config and then org-level OAuth App Credentials, using these
+    /// env vars only when no org/dedicated credentials are configured.
     pub fn env_auth_credentials(&self, provider_key: &str) -> Option<(String, String)> {
         match provider_key {
             "google" => self

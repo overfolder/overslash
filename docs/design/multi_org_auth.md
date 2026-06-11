@@ -172,7 +172,7 @@ Self-hosted deployments bypass this middleware when `SINGLE_ORG_MODE=<slug>` is 
 Added 2026-05, migration 066. Default `true` for new corp orgs, `false` for existing ones.
 
 - The org has `allow_overslash_managed_signin = true`.
-- `resolve_auth_credentials` first looks for a dedicated `org_idp_configs` row for the provider. If present, dedicated creds win (the admin's explicit setup is authoritative). If absent and the server has env-var creds (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`, …), it returns those — the Overslash-managed OAuth app authenticates the user.
+- `resolve_auth_credentials` first looks for a dedicated `org_idp_configs` row for the provider. If present, dedicated creds win (the admin's explicit setup is authoritative). If absent, it next checks the org's OAuth App Credentials (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET` org secrets) and returns those when configured — an org-level credential is an intentional override of the shared env app. Only when neither is set does it fall back to the server's env-var creds (`GOOGLE_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_ID`, …) — the Overslash-managed OAuth app authenticates the user.
 - The callback path swaps the `allowed_email_domains` gate for an invite check:
   1. Exchange code → `{ subject, email, name }`. If email missing → reject (`idp_missing_email`).
   2. If the `identities(org_id, external_id)` row already exists, refresh + return (existing member).
