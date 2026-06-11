@@ -5,6 +5,11 @@ use uuid::Uuid;
 /// Reason an identity was archived. Stored in `archived_reason`.
 pub const ARCHIVED_REASON_IDLE_TIMEOUT: &str = "idle_timeout";
 
+/// Default reason for an on-demand (caller-initiated) archive when the caller
+/// supplies no explicit reason. Keeps archived rows carrying provenance, in
+/// parity with the idle sweep above.
+pub const ARCHIVED_REASON_MANUAL: &str = "manual";
+
 /// `external_id` reserved for the per-org Agent that owns "service keys"
 /// minted from Org Settings. The colon-prefixed namespace cannot collide
 /// with IdP-issued subjects (IdP subs come from per-provider strings
@@ -939,6 +944,119 @@ pub async fn archive_idle_subagents(pool: &PgPool) -> Result<u64, sqlx::Error> {
 
     tx.commit().await?;
     Ok(archived_ids.len() as u64)
+}
+
+/// Outcome of an on-demand cascade archive.
+pub struct ArchiveOutcome {
+    /// The root identity row, reflecting the archived state (whether it was
+    /// archived by this call or was already archived).
+    pub identity: Box<IdentityRow>,
+    /// Number of rows newly archived in this call (0 on an idempotent re-archive).
+    pub archived_count: u64,
+}
+
+/// Cascade-archive an identity and its entire descendant subtree in one
+/// transaction. Mirrors `archive_idle_subagents` (revoke keys + expire pending
+/// approvals for everything archived), but:
+///   - targets a single `id` plus all its descendants (recursive CTE over
+///     `parent_id` within `org_id`), so we never leave a live child under an
+///     archived parent (overfolder's cascade-delete semantics); and
+///   - accepts ANY kind (user/agent/sub_agent) — overfolder archives user
+///     identities too (e.g. on ghost-merge/delete).
+///
+/// Returns `Ok(None)` when `id` doesn't exist in this org (drives a 404).
+/// Idempotent: re-archiving an already-archived root is a no-op success with
+/// `archived_count: 0`.
+///
+/// No `FOR UPDATE` locks: archive is monotonic (only ever sets `archived_at`,
+/// never clears it) and the `archived_at IS NULL` guard makes a double-archive a
+/// no-op, so concurrent passes converge. The cascade is a snapshot of the
+/// subtree at CTE-eval time (a child grafted on mid-transaction by `move_under`
+/// is caught by the next archive call or the idle sweep, not this one).
+///
+/// Known asymmetry: `restore` is `sub_agent`-only and refuses to revive a child
+/// under an archived parent, so a cascade-archived user/agent subtree cannot be
+/// fully undone via the current `/restore` endpoint. Archive is one-way for
+/// non-sub_agent subtrees; a symmetric "cascade restore" is future work.
+pub(crate) async fn archive_identity(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+    reason: Option<&str>,
+) -> Result<Option<ArchiveOutcome>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Collect the root + all descendants (root seeded at lvl 0 so it's always
+    // included, even with no children). Bounded by MAX_TREE_DEPTH as a
+    // defence-in-depth against a leftover cycle.
+    let subtree_ids: Vec<Uuid> = sqlx::query_scalar!(
+        r#"WITH RECURSIVE subtree(id, lvl) AS (
+            SELECT id, 0 FROM identities WHERE id = $1 AND org_id = $2
+            UNION ALL
+            SELECT i.id, s.lvl + 1
+            FROM identities i
+            INNER JOIN subtree s ON i.parent_id = s.id
+            WHERE i.org_id = $2 AND s.lvl < $3
+        )
+        SELECT id AS "id!" FROM subtree"#,
+        id,
+        org_id,
+        MAX_TREE_DEPTH,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    if subtree_ids.is_empty() {
+        // Root id not found in this org.
+        tx.commit().await?;
+        return Ok(None);
+    }
+
+    let archived_ids: Vec<Uuid> = sqlx::query_scalar!(
+        r#"UPDATE identities
+           SET archived_at = now(), archived_reason = $2, updated_at = now()
+           WHERE id = ANY($1) AND archived_at IS NULL
+           RETURNING id"#,
+        &subtree_ids,
+        reason,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    if !archived_ids.is_empty() {
+        super::api_key::revoke_by_identity_ids_with_reason(
+            &mut *tx,
+            &archived_ids,
+            super::api_key::REVOKED_REASON_IDENTITY_ARCHIVED,
+        )
+        .await?;
+
+        sqlx::query!(
+            "UPDATE approvals SET status = 'expired', resolved_at = now(), resolved_by = 'system'
+             WHERE identity_id = ANY($1) AND status = 'pending'",
+            &archived_ids,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Re-read the root inside the tx so the returned row reflects the archived
+    // state in both the just-archived and already-archived cases.
+    let root = sqlx::query_as!(
+        IdentityRow,
+        "SELECT id, org_id, name, kind, external_id, email, metadata, parent_id, depth, owner_id, inherit_permissions, last_active_at, archived_at, archived_reason, preferences, is_org_admin, user_id, auto_call_on_approve, created_at, updated_at
+         FROM identities WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Some(ArchiveOutcome {
+        identity: Box::new(root),
+        archived_count: archived_ids.len() as u64,
+    }))
 }
 
 /// Phase 2: hard-delete sub-agents that have been archived past the org retention window.

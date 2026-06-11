@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, patch, post},
 };
@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
-use overslash_db::repos::identity::RestoreOutcome;
+use overslash_db::repos::identity::{ARCHIVED_REASON_MANUAL, RestoreOutcome};
 
 use super::util::fmt_time;
 use crate::{
@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/identities/{id}/children", get(list_children))
         .route("/v1/identities/{id}/chain", get(get_chain))
         .route("/v1/identities/{id}/restore", post(restore_identity))
+        .route("/v1/identities/{id}/archive", post(archive_identity))
         .route(
             "/v1/identities/{id}/mcp-connection",
             get(get_mcp_connection).patch(patch_mcp_connection),
@@ -450,24 +451,41 @@ async fn create_identity(
     Ok(Json(row.into()))
 }
 
+/// Query params for the identity-listing endpoints. Archived rows are excluded
+/// by default; callers that manage archived state (the dashboard, admin tools)
+/// pass `?include_archived=true` to get the full set.
+#[derive(Deserialize)]
+struct ListIdentitiesQuery {
+    #[serde(default)]
+    include_archived: bool,
+}
+
 async fn list_identities(
     _: crate::extractors::OrgAcl,
     scope: OrgScope,
+    Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    let rows = scope.list_identities().await?;
+    let mut rows = scope.list_identities().await?;
+    if !q.include_archived {
+        rows.retain(|r| r.archived_at.is_none());
+    }
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
 async fn list_children(
     scope: OrgScope,
     Path(id): Path<Uuid>,
+    Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
     // Verify the parent itself lives in this org. Cross-tenant ids return None.
     let _ident = scope
         .get_identity(id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    let rows = scope.list_identity_children(id).await?;
+    let mut rows = scope.list_identity_children(id).await?;
+    if !q.include_archived {
+        rows.retain(|r| r.archived_at.is_none());
+    }
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
@@ -543,6 +561,72 @@ async fn restore_identity(
         )),
         RestoreOutcome::NotFound => Err(AppError::NotFound("identity not found".into())),
     }
+}
+
+#[derive(Deserialize, Default)]
+struct ArchiveRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ArchiveResponse {
+    identity: IdentityResponse,
+    archived_count: u64,
+}
+
+/// Cascade-archive an identity and its descendant subtree.
+///
+/// Unlike restore (sub_agent-only), this accepts any kind — overfolder archives
+/// user identities too (e.g. on ghost-merge/delete). Archiving revokes API keys
+/// and expires pending approvals for everything in the subtree, so it requires
+/// write-level ACL. Idempotent: re-archiving an already-archived root returns
+/// 200 with `archived_count: 0`. The optional JSON body `{ "reason": "..." }`
+/// may be omitted (defaults to `"manual"`).
+async fn archive_identity(
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    body: Option<Json<ArchiveRequest>>,
+) -> Result<Json<ArchiveResponse>> {
+    // Existence + org-scope check up front for a clean 404 (cross-tenant ids
+    // return None). The repo also returns None for a missing root.
+    let _existing = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let reason = req.reason.as_deref().or(Some(ARCHIVED_REASON_MANUAL));
+
+    let outcome = scope
+        .archive_identity(id, reason)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "identity.archived",
+            resource_type: Some("identity"),
+            resource_id: Some(outcome.identity.id),
+            detail: serde_json::json!({
+                "name": &outcome.identity.name,
+                "kind": &outcome.identity.kind,
+                "archived_count": outcome.archived_count,
+                "reason": outcome.identity.archived_reason,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(ArchiveResponse {
+        identity: (*outcome.identity).into(),
+        archived_count: outcome.archived_count,
+    }))
 }
 
 // ---------------------------------------------------------------------------

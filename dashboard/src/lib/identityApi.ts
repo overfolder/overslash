@@ -8,8 +8,10 @@ import type { Identity, PermissionRule } from './types';
 
 // ─── Identities ───────────────────────────────────────────────────────────
 
+// The Agents view filters archived nodes client-side (so the "Show archived"
+// toggle reveals them without a refetch), so we always fetch the full set.
 export function listIdentities(): Promise<Identity[]> {
-	return session.get<Identity[]>('/v1/identities');
+	return session.get<Identity[]>('/v1/identities?include_archived=true');
 }
 
 export function getIdentityChain(id: string): Promise<Identity[]> {
