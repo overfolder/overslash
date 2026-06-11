@@ -1306,7 +1306,11 @@ async fn seed_owner_identity(pool: &PgPool, org_id: Uuid, name: &str, email: &st
 /// A non-admin user-kind identity in `org_id` with its own `user_id` +
 /// membership. Returns `(identity_id, user_id)`.
 async fn seed_member_identity(pool: &PgPool, org_id: Uuid, name: &str) -> (Uuid, Uuid) {
-    let email = format!("{}-{}@member.test", name.to_lowercase(), Uuid::new_v4().simple());
+    let email = format!(
+        "{}-{}@member.test",
+        name.to_lowercase(),
+        Uuid::new_v4().simple()
+    );
     let user = user_repo::create_overslash_backed(
         pool,
         Some(&email),
@@ -1316,9 +1320,10 @@ async fn seed_member_identity(pool: &PgPool, org_id: Uuid, name: &str) -> (Uuid,
     )
     .await
     .unwrap();
-    let ident = identity::create_with_email(pool, org_id, name, "user", None, Some(&email), json!({}))
-        .await
-        .unwrap();
+    let ident =
+        identity::create_with_email(pool, org_id, name, "user", None, Some(&email), json!({}))
+            .await
+            .unwrap();
     identity::set_user_id(pool, org_id, ident.id, Some(user.id))
         .await
         .unwrap();
@@ -1462,8 +1467,14 @@ async fn connect_gate_admin_override_shows_consent_then_confirm_redirects() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.text().await.unwrap();
     assert!(body.contains("Bob"), "consent names the owner: {body}");
-    assert!(body.contains("Continue to google"), "consent has a confirm button");
-    assert!(!flow_consumed(&pool, &flow).await, "consent page must not consume");
+    assert!(
+        body.contains("Continue to google"),
+        "consent has a confirm button"
+    );
+    assert!(
+        !flow_consumed(&pool, &flow).await,
+        "consent page must not consume"
+    );
 
     // POST confirm → 303 to the provider; flow now consumed; no remint (same org).
     let resp = post_confirm(&base, &flow, &cookie).await;
@@ -1474,7 +1485,10 @@ async fn connect_gate_admin_override_shows_consent_then_confirm_redirects() {
             .unwrap()
             .starts_with("https://provider.example/")
     );
-    assert!(resp.headers().get("set-cookie").is_none(), "same-org: no remint");
+    assert!(
+        resp.headers().get("set-cookie").is_none(),
+        "same-org: no remint"
+    );
     assert!(flow_consumed(&pool, &flow).await);
 }
 
@@ -1492,7 +1506,11 @@ async fn connect_gate_actor_override_confirm_redirects() {
     let cookie = mint_session_cookie_with_user(org_a, carol, Some(carol_user));
 
     let resp = get_gate(&base, &flow, &cookie).await;
-    assert_eq!(resp.status(), StatusCode::OK, "actor sees consent, not a deny");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "actor sees consent, not a deny"
+    );
     assert!(!flow_consumed(&pool, &flow).await);
 
     let resp = post_confirm(&base, &flow, &cookie).await;
@@ -1522,7 +1540,10 @@ async fn connect_gate_ineligible_denied_on_get_and_confirm() {
     // Forge a direct confirm POST, skipping the consent page entirely.
     let resp = post_confirm(&base, &flow, &cookie).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "confirm re-validates");
-    assert!(!flow_consumed(&pool, &flow).await, "denied confirm must not consume");
+    assert!(
+        !flow_consumed(&pool, &flow).await,
+        "denied confirm must not consume"
+    );
 }
 
 /// Defence-in-depth: an identity flagged `is_org_admin` but with NO live
@@ -1546,9 +1567,17 @@ async fn connect_gate_admin_without_membership_denied() {
     )
     .await
     .unwrap();
-    let stale = identity::create_with_email(&pool, org_a, "Stale Admin", "user", None, Some(&email), json!({}))
-        .await
-        .unwrap();
+    let stale = identity::create_with_email(
+        &pool,
+        org_a,
+        "Stale Admin",
+        "user",
+        None,
+        Some(&email),
+        json!({}),
+    )
+    .await
+    .unwrap();
     identity::set_is_org_admin(&pool, org_a, stale.id, true)
         .await
         .unwrap();

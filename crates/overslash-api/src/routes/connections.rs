@@ -55,7 +55,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/v1/oauth/callback", get(oauth_callback))
         .route("/connect-authorize", get(connect_authorize))
-        .route("/connect-authorize/confirm", post(connect_authorize_confirm))
+        .route(
+            "/connect-authorize/confirm",
+            post(connect_authorize_confirm),
+        )
 }
 
 #[derive(Deserialize)]
