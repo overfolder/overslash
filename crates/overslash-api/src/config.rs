@@ -45,6 +45,12 @@ pub struct Config {
     pub github_auth_client_secret: Option<String>,
     pub public_url: String,
     pub dev_auth_enabled: bool,
+    /// Passwordless email magic-link login. Default-on: it needs no external
+    /// IdP credentials, so it's the working login on a fresh self-hosted
+    /// deploy. Set `MAGIC_LINK_ENABLED=false` to disable (e.g. an org that
+    /// mandates SSO). Surfaced on the root login page and gates both
+    /// `/auth/magic-link/*` endpoints.
+    pub magic_link_enabled: bool,
     pub max_response_body_bytes: usize,
     /// Truncation cap for upstream response bodies persisted on
     /// `action.executed` audit rows (when the org's
@@ -372,6 +378,10 @@ impl Config {
             github_auth_client_secret: env::var("GITHUB_AUTH_CLIENT_SECRET").ok(),
             public_url,
             dev_auth_enabled: env::var("DEV_AUTH").is_ok(),
+            // Default-on; only an explicit falsey value disables it.
+            magic_link_enabled: env::var("MAGIC_LINK_ENABLED")
+                .map(|v| !matches!(v.trim().to_lowercase().as_str(), "false" | "0" | "no"))
+                .unwrap_or(true),
             max_response_body_bytes: env::var("MAX_RESPONSE_BODY_BYTES")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -1142,6 +1152,7 @@ mod tests {
             github_auth_client_secret: None,
             public_url: "http://localhost:0".into(),
             dev_auth_enabled: false,
+            magic_link_enabled: true,
             max_response_body_bytes: 0,
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,
