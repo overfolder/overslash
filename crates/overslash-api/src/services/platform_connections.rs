@@ -105,6 +105,18 @@ pub struct CreateConnectionInput {
     /// response, preserving today's behavior.
     #[serde(default)]
     pub return_url: Option<String>,
+    /// Optional white-label provider `redirect_uri` — the URL the provider
+    /// redirects to with the auth code, e.g.
+    /// `https://app.overfolder.com/auth/google/integrations/callback`. When
+    /// set, it is baked into the authorize URL and reused verbatim at token
+    /// exchange (the partner forwards `{code, state}` to
+    /// `POST /v1/oauth/exchange`). Unlike `return_url`, the host MUST be on the
+    /// org's `oauth_callback_allowed_hosts` allow-list at create time —
+    /// validation hard-fails rather than falling back, because the value is
+    /// baked into the provider URL with no recovery. Omit for the historical
+    /// `{public_url}/v1/oauth/callback` behavior.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
     /// When `POST /v1/services` orchestrates an OAuth flow as part of
     /// setting up a new service, this carries the just-created instance's
     /// id so the callback can bind the resulting connection back onto the
@@ -159,6 +171,65 @@ pub(crate) fn parse_return_url(raw: Option<&str>) -> Result<Option<String>, AppE
         ));
     }
     Ok(Some(parsed.into()))
+}
+
+/// Parse and validate a caller-supplied white-label `redirect_uri`, returning
+/// the normalized `(url, lowercased_host)` pair. Format rules mirror
+/// [`parse_return_url`] (https-only except localhost, no fragment, no userinfo,
+/// ≤2048 bytes). The host is returned so the kernel can enforce the org's
+/// `oauth_callback_allowed_hosts` allow-list — unlike `return_url`, membership
+/// is mandatory because the value is baked into the provider authorize URL.
+pub(crate) fn parse_redirect_uri(raw: Option<&str>) -> Result<Option<(String, String)>, AppError> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if raw.len() > RETURN_URL_MAX_LEN {
+        return Err(AppError::BadRequest(format!(
+            "redirect_uri exceeds {RETURN_URL_MAX_LEN}-byte limit"
+        )));
+    }
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| AppError::BadRequest(format!("redirect_uri is not a valid URL: {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::BadRequest("redirect_uri must include a host".into()))?
+        .to_ascii_lowercase();
+    let scheme = parsed.scheme();
+    let scheme_ok = scheme == "https"
+        || (scheme == "http" && matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"));
+    if !scheme_ok {
+        return Err(AppError::BadRequest(
+            "redirect_uri must use https (http allowed only for localhost)".into(),
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(AppError::BadRequest(
+            "redirect_uri must not contain a fragment".into(),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::BadRequest(
+            "redirect_uri must not contain userinfo".into(),
+        ));
+    }
+    Ok(Some((parsed.into(), host)))
+}
+
+/// The historical provider `redirect_uri`: `{public_url}/v1/oauth/callback`.
+/// Used when a flow row carries no custom `redirect_uri` (legacy/non-white-label
+/// flows), at both authorize build and token exchange.
+pub(crate) fn default_callback_redirect_uri(public_url: &str) -> String {
+    format!("{}/v1/oauth/callback", public_url.trim_end_matches('/'))
+}
+
+/// Whether `host` appears in an org's comma-separated, lowercased
+/// `oauth_callback_allowed_hosts` column. Defensive about whitespace/casing in
+/// case the stored value predates boundary normalization.
+fn callback_host_allowed(allowed_hosts_csv: &str, host: &str) -> bool {
+    allowed_hosts_csv
+        .split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .any(|h| !h.is_empty() && h == host)
 }
 
 #[derive(Debug, Serialize)]
@@ -262,10 +333,34 @@ async fn kernel_create_connection_for_identity(
     )
     .await?;
 
-    let redirect_uri = format!(
-        "{}/v1/oauth/callback",
-        ctx.config.public_url.trim_end_matches('/')
-    );
+    // Resolve the provider `redirect_uri`. A white-label caller may override
+    // it with a partner-hosted callback, but only if the host is on the org's
+    // allow-list — hard-fail otherwise, since this value is baked into the
+    // authorize URL with no callback-time recovery. Omitted ⇒ the historical
+    // overslash.com callback. Whatever we choose is persisted on the flow row
+    // and reused verbatim at token exchange so the two values byte-match.
+    let custom_redirect_uri = match parse_redirect_uri(input.redirect_uri.as_deref())? {
+        Some((url, host)) => {
+            let allowed_hosts =
+                overslash_db::repos::org::get_oauth_callback_allowed_hosts(&ctx.db, ctx.org_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+            if !callback_host_allowed(&allowed_hosts, &host) {
+                return Err(AppError::BadRequest(format!(
+                    "redirect_uri host '{host}' is not on this org's allow-list"
+                )));
+            }
+            Some(url)
+        }
+        None => None,
+    };
+    // The value used to build the authorize URL AND reused at token exchange.
+    // The custom partner callback when supplied; otherwise the historical
+    // overslash.com callback. Only the custom value is persisted on the flow
+    // row — legacy flows keep `redirect_uri` NULL and recompute the default.
+    let redirect_uri = custom_redirect_uri
+        .clone()
+        .unwrap_or_else(|| default_callback_redirect_uri(&ctx.config.public_url));
 
     let byoc_id = creds.byoc_credential_id;
 
@@ -328,6 +423,7 @@ async fn kernel_create_connection_for_identity(
             created_ip: request_meta.ip,
             created_user_agent: request_meta.user_agent,
             return_url: return_url.as_deref(),
+            redirect_uri: custom_redirect_uri.as_deref(),
             upgrade_connection_id: input.upgrade_connection_id,
             service_instance_id: input.service_instance_id,
         },
@@ -461,6 +557,7 @@ pub async fn mint_initial_auth_url(
             // instead of landing on the default JSON response. The host is
             // re-validated against the allow-list at callback time.
             return_url: return_url.map(str::to_string),
+            redirect_uri: None,
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -531,6 +628,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
+                redirect_uri: None,
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -562,6 +660,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
+                redirect_uri: None,
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -589,6 +688,7 @@ pub async fn mint_upgrade_auth_url(
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
             return_url: return_url.map(str::to_string),
+            redirect_uri: None,
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -677,5 +777,70 @@ mod tests {
         // to a non-HTTP target.
         assert!(parse_return_url(Some("javascript:alert(1)")).is_err());
         assert!(parse_return_url(Some("mailto:foo@example.com")).is_err());
+    }
+
+    #[test]
+    fn parse_redirect_uri_accepts_https_and_returns_host() {
+        let (url, host) = parse_redirect_uri(Some(
+            "https://App.Overfolder.com/auth/google/integrations/callback",
+        ))
+        .expect("valid")
+        .expect("present");
+        assert_eq!(
+            url,
+            "https://app.overfolder.com/auth/google/integrations/callback"
+        );
+        // url::Url lowercases the host in the URL; the returned host is also
+        // lowercased so the allow-list comparison is case-insensitive.
+        assert_eq!(host, "app.overfolder.com");
+    }
+
+    #[test]
+    fn parse_redirect_uri_accepts_http_localhost() {
+        let (_url, host) = parse_redirect_uri(Some("http://localhost:5173/cb"))
+            .expect("valid")
+            .expect("present");
+        assert_eq!(host, "localhost");
+    }
+
+    #[test]
+    fn parse_redirect_uri_none_and_blank_pass_through_as_none() {
+        assert!(parse_redirect_uri(None).unwrap().is_none());
+        assert!(parse_redirect_uri(Some("   ")).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_redirect_uri_rejects_bad_inputs() {
+        assert!(parse_redirect_uri(Some("http://evil.example.com/cb")).is_err());
+        assert!(parse_redirect_uri(Some("https://app.overfolder.com/cb#frag")).is_err());
+        assert!(parse_redirect_uri(Some("https://u:p@app.overfolder.com/cb")).is_err());
+        assert!(parse_redirect_uri(Some("/just/a/path")).is_err());
+        assert!(parse_redirect_uri(Some("javascript:alert(1)")).is_err());
+    }
+
+    #[test]
+    fn callback_host_allowed_matches_case_and_whitespace_insensitively() {
+        assert!(callback_host_allowed(
+            "app.overfolder.com",
+            "app.overfolder.com"
+        ));
+        assert!(callback_host_allowed(
+            " App.Overfolder.com , staging.overfolder.com ",
+            "staging.overfolder.com"
+        ));
+        assert!(!callback_host_allowed("app.overfolder.com", "evil.test"));
+        assert!(!callback_host_allowed("", "app.overfolder.com"));
+    }
+
+    #[test]
+    fn default_callback_redirect_uri_trims_trailing_slash() {
+        assert_eq!(
+            default_callback_redirect_uri("https://api.overslash.com/"),
+            "https://api.overslash.com/v1/oauth/callback"
+        );
+        assert_eq!(
+            default_callback_redirect_uri("https://api.overslash.com"),
+            "https://api.overslash.com/v1/oauth/callback"
+        );
     }
 }

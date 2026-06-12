@@ -47,6 +47,10 @@ pub fn router() -> Router<AppState> {
             get(get_audit_settings).patch(patch_audit_settings),
         )
         .route(
+            "/v1/orgs/{id}/oauth-callback-settings",
+            get(get_oauth_callback_settings).patch(patch_oauth_callback_settings),
+        )
+        .route(
             "/v1/orgs/{id}/managed-signin",
             get(get_managed_signin).patch(patch_managed_signin),
         )
@@ -941,6 +945,128 @@ async fn patch_audit_settings(
 
     Ok(Json(AuditSettingsResponse {
         response_body_mode: mode.as_str().to_string(),
+    }))
+}
+
+// ─── OAuth callback host allow-list (white-label custom redirect_uri) ───
+
+#[derive(Serialize)]
+struct OAuthCallbackSettingsResponse {
+    /// Hosts an org API key may use as a custom OAuth `redirect_uri` when it
+    /// starts a white-label connect flow. Lowercased bare hostnames; empty
+    /// means custom redirect URIs are disabled for the org.
+    allowed_hosts: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct PatchOAuthCallbackSettingsRequest {
+    allowed_hosts: Vec<String>,
+}
+
+/// Maximum number of allow-listed callback hosts per org. Generous — partners
+/// rarely need more than a couple (prod + staging) — but finite.
+const MAX_CALLBACK_HOSTS: usize = 32;
+
+/// Normalize, validate, and dedupe a caller-supplied host list. Each entry must
+/// be a bare hostname (no scheme, path, port, or whitespace); the value is
+/// lowercased and order-preserving-deduped. The result is stored comma-joined.
+fn normalize_callback_hosts(raw: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in raw {
+        let host = entry.trim().to_ascii_lowercase();
+        if host.is_empty() {
+            continue;
+        }
+        if host.len() > 253
+            || host.contains('/')
+            || host.contains(':')
+            || host.contains(',')
+            || host.chars().any(char::is_whitespace)
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
+            return Err(AppError::BadRequest(format!(
+                "'{entry}' is not a valid bare hostname (no scheme, path, port, or whitespace)"
+            )));
+        }
+        if !out.contains(&host) {
+            out.push(host);
+        }
+    }
+    if out.len() > MAX_CALLBACK_HOSTS {
+        return Err(AppError::BadRequest(format!(
+            "at most {MAX_CALLBACK_HOSTS} callback hosts allowed"
+        )));
+    }
+    Ok(out)
+}
+
+/// Split a stored comma-joined host list into a vec, skipping blanks.
+fn split_callback_hosts(csv: &str) -> Vec<String> {
+    csv.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+async fn get_oauth_callback_settings(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OAuthCallbackSettingsResponse>> {
+    if id != auth.org_id {
+        return Err(AppError::Forbidden("cannot read another org".into()));
+    }
+    let value = overslash_db::repos::org::get_oauth_callback_allowed_hosts(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    Ok(Json(OAuthCallbackSettingsResponse {
+        allowed_hosts: split_callback_hosts(&value),
+    }))
+}
+
+async fn patch_oauth_callback_settings(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PatchOAuthCallbackSettingsRequest>,
+) -> Result<Json<OAuthCallbackSettingsResponse>> {
+    if id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "cannot mutate another org's config".into(),
+        ));
+    }
+
+    let hosts = normalize_callback_hosts(&req.allowed_hosts)?;
+    let stored = hosts.join(",");
+
+    let updated =
+        overslash_db::repos::org::set_oauth_callback_allowed_hosts(state.db(&ext), id, &stored)
+            .await?;
+    if !updated {
+        return Err(AppError::NotFound("org not found".into()));
+    }
+
+    let _ = overslash_db::OrgScope::new(acl.org_id, state.db_pool(&ext))
+        .log_audit(AuditEntry {
+            org_id: id,
+            identity_id: acl.identity_id,
+            action: "org.oauth_callback_settings.updated",
+            resource_type: Some("org"),
+            resource_id: Some(id),
+            detail: serde_json::json!({ "allowed_hosts": hosts }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(OAuthCallbackSettingsResponse {
+        allowed_hosts: hosts,
     }))
 }
 

@@ -55,6 +55,12 @@ pub struct CreateServiceInput {
     /// for the validation contract.
     #[serde(default)]
     pub connect_return_url: Option<String>,
+    /// White-label provider `redirect_uri` for the auto-initiated OAuth flow.
+    /// Only consulted when the kernel auto-initiates a flow; the host must be on
+    /// the org's `oauth_callback_allowed_hosts` allow-list. See
+    /// [`crate::services::platform_connections::CreateConnectionInput::redirect_uri`].
+    #[serde(default)]
+    pub connect_redirect_uri: Option<String>,
     /// REST-only opt-in: surface the raw upstream provider authorize URL
     /// (e.g. `https://accounts.google.com/...`) on the `connect` bundle
     /// in addition to the Overslash-gated `auth_url`. White-label
@@ -669,6 +675,7 @@ pub async fn kernel_create_service(
             on_behalf_of,
             upgrade_connection_id: None,
             return_url: input.connect_return_url.clone(),
+            redirect_uri: input.connect_redirect_uri.clone(),
             service_instance_id: Some(row_id),
         };
         match crate::services::platform_connections::kernel_create_connection(
