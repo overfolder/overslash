@@ -301,6 +301,57 @@ async fn exchange_rejects_cross_org_state_without_consuming() {
 }
 
 #[tokio::test]
+async fn unauthenticated_callback_refuses_white_label_flow() {
+    // A white-label flow (custom redirect_uri) must NOT be completable through
+    // the unauthenticated GET /v1/oauth/callback — that would sidestep the
+    // WriteAcl org-boundary + single-use guarantees of /v1/oauth/exchange.
+    set_github_creds_env();
+    let pool = common::test_pool().await;
+    let mock = common::start_mock().await;
+    override_github_token_endpoint(&pool, mock).await;
+
+    let (org_id, user_id, _key) = seed_org_user_key(
+        &pool,
+        SeedOptions {
+            is_admin: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let flow_id = seed_flow(&pool, org_id, user_id, Some(PARTNER_REDIRECT)).await;
+
+    let (addr, _client) = start_api(pool.clone()).await;
+    // No-redirect client so we observe the 400 rather than following anything.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let resp = client
+        .get(format!(
+            "http://{addr}/v1/oauth/callback?code=test_code&state={flow_id}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+
+    // The flow must remain unconsumed and no connection created.
+    let consumed: Option<OffsetDateTime> =
+        sqlx::query_scalar("SELECT consumed_at FROM oauth_connection_flows WHERE id = $1")
+            .bind(&flow_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(consumed.is_none());
+    let conns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM connections WHERE org_id = $1")
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(conns, 0);
+}
+
+#[tokio::test]
 async fn exchange_rejects_unknown_state() {
     set_github_creds_env();
     let pool = common::test_pool().await;

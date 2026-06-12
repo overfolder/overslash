@@ -402,17 +402,28 @@ async fn oauth_callback(
         Err(e) => return AppError::from(e).into_response(),
     };
 
+    // White-label flows carry a custom `redirect_uri`, so the provider redirects
+    // the user to the *partner's* URL — a white-label flow legitimately never
+    // lands here. Refuse to complete it through this unauthenticated callback:
+    // the partner must forward `{code, state}` to the authenticated, org-checked,
+    // single-use `POST /v1/oauth/exchange`. Without this, an attacker holding the
+    // code + opaque flow id could complete the exchange here, sidestepping the
+    // `WriteAcl` org-boundary and single-use guarantees of the exchange path.
+    if flow.redirect_uri.is_some() {
+        return AppError::BadRequest(
+            "this flow uses a custom redirect_uri; complete it via POST /v1/oauth/exchange".into(),
+        )
+        .into_response();
+    }
+
     let redirect_target = resolve_redirect_target(&state, &flow);
 
-    // Reuse the exact `redirect_uri` the authorize URL was built with (a custom
-    // white-label callback when set, else the default), so the token-exchange
-    // `redirect_uri` byte-matches what the provider saw. Legacy NULL rows fall
-    // back to the historical default.
-    let redirect_uri = flow.redirect_uri.clone().unwrap_or_else(|| {
-        crate::services::platform_connections::default_callback_redirect_uri(
-            &state.config.public_url,
-        )
-    });
+    // The default callback `redirect_uri` (legacy/non-white-label flows only —
+    // custom-redirect flows are refused above). Recomputed from config so it
+    // byte-matches what the authorize URL was built with.
+    let redirect_uri = crate::services::platform_connections::default_callback_redirect_uri(
+        &state.config.public_url,
+    );
 
     let outcome = oauth_callback_inner(
         &state,
