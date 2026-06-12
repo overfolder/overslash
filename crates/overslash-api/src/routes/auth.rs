@@ -920,16 +920,22 @@ async fn request_magic_link(
         urlencoding::encode(&raw_token)
     );
 
-    if let Err(e) = crate::services::magic_link_email::send(&state, &email, &verify_url).await {
-        // Drop the orphaned token so a transient mailer failure doesn't leave
-        // a valid login link no one received. Best-effort cleanup.
-        tracing::warn!(error = %e, "magic-link email send failed");
-        let _ = magic_link_token::delete(state.db(&ext), row.id).await;
-        // Still return the opaque success — surfacing the failure would leak
-        // mailer state. (Dev still gets the URL below for manual testing.)
-    }
+    let send_ok = match crate::services::magic_link_email::send(&state, &email, &verify_url).await {
+        Ok(()) => true,
+        Err(e) => {
+            // Drop the orphaned token so a transient mailer failure doesn't
+            // leave a valid login link no one received. Best-effort cleanup.
+            tracing::warn!(error = %e, "magic-link email send failed");
+            let _ = magic_link_token::delete(state.db(&ext), row.id).await;
+            false
+        }
+    };
 
-    if state.config.dev_auth_enabled {
+    // Only echo the dev link when the token is actually live — on a send
+    // failure we just deleted it, so returning the URL would hand the
+    // developer a link that 404s at verify. Fall through to the opaque
+    // success instead. (Surfacing the failure itself would leak mailer state.)
+    if send_ok && state.config.dev_auth_enabled {
         tracing::info!(%verify_url, "magic-link dev: verify URL (dev_auth_enabled)");
         return Ok(
             axum::Json(json!({ "sent": true, "dev_verify_url": verify_url })).into_response(),
