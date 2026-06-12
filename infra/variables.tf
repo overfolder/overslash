@@ -75,6 +75,12 @@ variable "enable_dev_auth" {
   default     = false
 }
 
+variable "enable_magic_link" {
+  description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on: it's the working login on an env with no external IdP configured."
+  type        = bool
+  default     = true
+}
+
 variable "rust_log" {
   description = "RUST_LOG value for the API container. Defaults to `info`; set to `debug` in dev for verbose logging."
   type        = string

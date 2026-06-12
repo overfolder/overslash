@@ -143,6 +143,12 @@ variable "enable_dev_auth" {
   default = false
 }
 
+variable "enable_magic_link" {
+  type        = bool
+  default     = true
+  description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on — it's the working login with no external IdP configured."
+}
+
 variable "overslash_env" {
   type        = string
   default     = ""
@@ -286,6 +292,10 @@ locals {
       LOG_FORMAT   = "json"
       RUST_LOG     = var.rust_log
       SERVICES_DIR = "/app/services"
+      # Passwordless email magic-link login. Default-on in the app; set
+      # explicitly here so each env's state is visible in the plan. Disabling
+      # requires a falsey value ("0"); "1" keeps it on.
+      MAGIC_LINK_ENABLED = var.enable_magic_link ? "1" : "0"
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},

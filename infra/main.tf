@@ -149,6 +149,7 @@ module "cloud_run" {
   mcp_extra_origins         = var.mcp_extra_origins
   dashboard_url             = var.dashboard_url
   enable_dev_auth           = var.enable_dev_auth
+  enable_magic_link         = var.enable_magic_link
   extra_api_domain_mappings = var.extra_api_domain_mappings
 
   overslash_env               = var.env

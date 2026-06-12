@@ -50,6 +50,44 @@
 		}
 	}
 
+	// Passwordless email magic-link. Submitting POSTs to the backend, which
+	// always responds 200 (no account enumeration) and emails a one-time link;
+	// we swap to a "check your inbox" confirmation rather than redirecting —
+	// the user continues by clicking the emailed link.
+	let email = $state('');
+	let magicLinkSubmitting = $state(false);
+	let magicLinkSentTo = $state<string | null>(null);
+	let magicLinkError = $state<string | null>(null);
+	// Only populated when the backend runs with DEV_AUTH (local/dev): the
+	// NoopMailer drops the body, so the verify URL is echoed back for testing.
+	let devVerifyUrl = $state<string | null>(null);
+
+	async function submitMagicLink(e: SubmitEvent) {
+		e.preventDefault();
+		if (magicLinkSubmitting) return;
+		magicLinkError = null;
+		magicLinkSubmitting = true;
+		try {
+			const res = await fetch('/auth/magic-link/request', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'include',
+				body: JSON.stringify({ email, next })
+			});
+			if (!res.ok) {
+				magicLinkError = 'Something went wrong. Please try again.';
+				return;
+			}
+			const body = await res.json().catch(() => ({}));
+			devVerifyUrl = typeof body?.dev_verify_url === 'string' ? body.dev_verify_url : null;
+			magicLinkSentTo = email;
+		} catch {
+			magicLinkError = 'Network error. Please try again.';
+		} finally {
+			magicLinkSubmitting = false;
+		}
+	}
+
 	function brandClass(key: string): string {
 		if (key === 'google') return 'btn-google';
 		if (key === 'github') return 'btn-github';
@@ -88,6 +126,10 @@
 			<div class="toast">Session expired — please sign in again.</div>
 		{/if}
 
+		{#if reason === 'magic_link_invalid'}
+			<div class="toast">That sign-in link is invalid or has expired. Request a new one below.</div>
+		{/if}
+
 		<h1>Sign in</h1>
 
 		{#if providers.length === 0 && scope === 'org'}
@@ -105,7 +147,46 @@
 		{:else}
 			<div class="providers">
 				{#each providers as p (p.key)}
-					{#if p.key === 'dev'}
+					{#if p.key === 'email'}
+						{#if magicLinkSentTo}
+							<div class="magic-sent" data-testid="magic-link-sent">
+								<p class="magic-sent-title">Check your inbox</p>
+								<p class="magic-sent-body">
+									We sent a sign-in link to <strong>{magicLinkSentTo}</strong>. Click it to
+									finish signing in — it expires in 15 minutes.
+								</p>
+								{#if devVerifyUrl}
+									<a class="magic-dev-link" href={devVerifyUrl} data-testid="magic-link-dev-url"
+										>Dev: open sign-in link</a
+									>
+								{/if}
+							</div>
+						{:else}
+							<form class="magic-form" onsubmit={submitMagicLink}>
+								<input
+									class="magic-input"
+									type="email"
+									bind:value={email}
+									placeholder="you@example.com"
+									autocomplete="email"
+									aria-label="Email address"
+									data-testid="magic-link-email"
+									required
+								/>
+								<button
+									class="btn btn-primary"
+									type="submit"
+									disabled={magicLinkSubmitting}
+									data-testid="magic-link-submit"
+								>
+									{magicLinkSubmitting ? 'Sending…' : 'Email me a sign-in link'}
+								</button>
+								{#if magicLinkError}
+									<p class="magic-error">{magicLinkError}</p>
+								{/if}
+							</form>
+						{/if}
+					{:else if p.key === 'dev'}
 						<div class="dev-row">
 							<button class="btn {brandClass(p.key)}" onclick={devLogin}>
 								Continue with {p.display_name}
@@ -264,5 +345,76 @@
 		padding: 0.1rem 0.3rem;
 		border-radius: 3px;
 		font-size: 0.8rem;
+	}
+
+	.btn-primary {
+		background: var(--color-primary);
+		color: #fff;
+		border-color: var(--color-primary);
+	}
+
+	.btn-primary:hover {
+		background: var(--color-primary-hover);
+		border-color: var(--color-primary-hover);
+	}
+
+	.btn-primary:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.magic-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.magic-input {
+		padding: 0.7rem 0.85rem;
+		border-radius: 8px;
+		border: 1px solid var(--color-border);
+		background: var(--color-surface);
+		color: var(--color-text);
+		font-size: 0.9rem;
+	}
+
+	.magic-input:focus {
+		outline: none;
+		border-color: var(--color-primary);
+		box-shadow: 0 0 0 3px rgba(99, 89, 217, 0.15);
+	}
+
+	.magic-error {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--color-danger);
+		text-align: center;
+	}
+
+	.magic-sent {
+		text-align: center;
+		padding: 0.5rem 0;
+	}
+
+	.magic-sent-title {
+		margin: 0 0 0.4rem 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--color-text);
+	}
+
+	.magic-sent-body {
+		margin: 0;
+		font-size: 0.85rem;
+		line-height: 1.5;
+		color: var(--color-text-muted);
+	}
+
+	.magic-dev-link {
+		display: inline-block;
+		margin-top: 0.75rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--color-primary);
 	}
 </style>

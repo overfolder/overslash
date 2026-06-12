@@ -1162,6 +1162,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         github_auth_client_secret: None,
         public_url: fx.base.clone(),
         dev_auth_enabled: false,
+        magic_link_enabled: true,
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
