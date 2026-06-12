@@ -18,6 +18,8 @@ enable_api_lb         = true
 dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"
 dashboard_url    = "https://app.overslash.com"
 enable_dev_auth  = false
+# Passwordless email magic-link login — on (email is configured below).
+enable_magic_link = true
 
 # Cloud SQL — minimum viable for pre-GA
 cloud_sql_tier         = "db-f1-micro"
