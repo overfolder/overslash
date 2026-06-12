@@ -290,6 +290,35 @@ async fn malformed_email_is_opaque_and_mints_no_token() {
 }
 
 #[tokio::test]
+async fn repeated_requests_for_one_email_are_throttled() {
+    // The anonymous request endpoint isn't covered by the API-key rate-limit
+    // middleware, so it throttles per-email itself (cap = 5 / 15 min). Past the
+    // cap it stays opaque (200, no dev link) and mints no further tokens — the
+    // inbox-bombing guard. (Per-test in-memory limiter, so no cross-test bleed.)
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
+    let email = unique_email();
+
+    // First 5 are honored (dev link echoed); the 6th is silently dropped.
+    let mut links = 0;
+    for _ in 0..6 {
+        let body = request_link(&base, &client, &email).await;
+        assert_eq!(body["sent"], true, "always opaque-200");
+        if body["dev_verify_url"].as_str().is_some() {
+            links += 1;
+        }
+    }
+    assert_eq!(links, 5, "exactly the cap should produce a sendable link");
+
+    let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM magic_link_tokens WHERE email = $1")
+        .bind(&email)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tokens, 5, "throttled requests mint no token");
+}
+
+#[tokio::test]
 async fn providers_list_includes_email_method() {
     let pool = common::test_pool().await;
     let (base, client) = common::start_api_with_dev_auth(pool).await;

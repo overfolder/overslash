@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
-    extractors::ReqExt,
+    extractors::{ClientIp, ReqExt},
     services::{jwt, oauth},
 };
 use base64::Engine as _;
@@ -845,6 +845,16 @@ async fn list_auth_providers(
 // Passwordless email magic-link login (root apex)
 // ---------------------------------------------------------------------------
 
+// Anti-abuse throttles for the anonymous `POST /auth/magic-link/request`
+// endpoint (the API-key-keyed global middleware doesn't cover it). Generous
+// per-IP backstop against volumetric abuse; tighter per-email cap against
+// inbox-bombing a single victim. Buckets live in the shared rate-limit store
+// (in-memory, or Redis when configured).
+const MAGIC_LINK_REQ_IP_MAX: u32 = 30;
+const MAGIC_LINK_REQ_IP_WINDOW_SECS: u32 = 600;
+const MAGIC_LINK_REQ_EMAIL_MAX: u32 = 5;
+const MAGIC_LINK_REQ_EMAIL_WINDOW_SECS: u32 = 900;
+
 #[derive(Deserialize)]
 struct MagicLinkRequestBody {
     email: String,
@@ -884,6 +894,7 @@ fn normalize_login_email(raw: &str) -> Option<String> {
 async fn request_magic_link(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
+    ClientIp(client_ip): ClientIp,
     axum::Json(body): axum::Json<MagicLinkRequestBody>,
 ) -> Result<Response, AppError> {
     if !state.config.magic_link_enabled {
@@ -892,12 +903,55 @@ async fn request_magic_link(
 
     let opaque_ok = || axum::Json(json!({ "sent": true })).into_response();
 
+    // Anti-abuse. This endpoint is anonymous (no API key), so the global
+    // rate-limit middleware — which keys on the API-key prefix — skips it
+    // entirely. Throttle here on the shared store directly (in-memory by
+    // default, Redis when `REDIS_URL` is set). Two independent buckets:
+    //   - per-IP: a DoS / volumetric backstop → surfaced as 429.
+    //   - per-email: stops bombing a victim's inbox (and burning Resend
+    //     quota) → handled *silently* below so a 429 can't reveal that a
+    //     given address is being targeted.
+    let ip = client_ip.as_deref().unwrap_or("unknown");
+    let ip_rl = state
+        .rate_limiter(&ext)
+        .check_and_increment(
+            &format!("ml:req:ip:{ip}"),
+            MAGIC_LINK_REQ_IP_MAX,
+            MAGIC_LINK_REQ_IP_WINDOW_SECS,
+        )
+        .await;
+    if !ip_rl.allowed {
+        let retry_after = ip_rl
+            .reset_at
+            .saturating_sub(crate::services::rate_limit::now_unix());
+        return Err(AppError::RateLimited {
+            limit: ip_rl.limit,
+            reset_at: ip_rl.reset_at,
+            retry_after,
+        });
+    }
+
     let Some(email) = normalize_login_email(&body.email) else {
         // Don't 400 on a malformed address either — that's still a signal.
         // Silently succeed without minting a token.
         return Ok(opaque_ok());
     };
     let next = body.next.as_deref().and_then(sanitize_next);
+
+    // Per-email throttle. On trip, drop silently (no token, no email, opaque
+    // success) so the response is indistinguishable from a normal send.
+    let email_rl = state
+        .rate_limiter(&ext)
+        .check_and_increment(
+            &format!("ml:req:email:{email}"),
+            MAGIC_LINK_REQ_EMAIL_MAX,
+            MAGIC_LINK_REQ_EMAIL_WINDOW_SECS,
+        )
+        .await;
+    if !email_rl.allowed {
+        tracing::info!("magic-link request throttled (per-email)");
+        return Ok(opaque_ok());
+    }
 
     // 32 random bytes → URL-safe token; store only its SHA-256 hash.
     let mut buf = [0u8; 32];
