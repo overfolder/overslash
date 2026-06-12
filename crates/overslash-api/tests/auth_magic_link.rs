@@ -91,6 +91,10 @@ async fn verify_provisions_email_user_and_sets_session_cookie() {
         "expected oss_session cookie on verify, got {:?}",
         cookies(&resp)
     );
+    // Root-apex flow: redirect to the configured dashboard ("/" in the
+    // harness), never an org subdomain — magic-link mints a personal-org
+    // session and must not honor a stale `oss_auth_org` cookie.
+    assert_eq!(resp.headers().get("location").unwrap(), "/");
 
     // A new Overslash-backed `email`-provider user exists, keyed on the email.
     let user_id: Uuid = sqlx::query_scalar(

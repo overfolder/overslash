@@ -952,7 +952,6 @@ async fn request_magic_link(
 async fn verify_magic_link(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    headers: HeaderMap,
     Query(q): Query<MagicLinkVerifyQuery>,
 ) -> Result<Response, AppError> {
     if !state.config.magic_link_enabled {
@@ -996,11 +995,16 @@ async fn verify_magic_link(
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(header::SET_COOKIE, session_cookie);
 
+    // Magic-link is a root-apex-only flow that always mints a personal-org
+    // session, so redirect straight to the configured root dashboard. Do NOT
+    // route through `absolute_redirect_for_org` — that honors the
+    // `oss_auth_org` cookie left by an OAuth login on a corp subdomain, which
+    // would bounce this personal-org session onto that subdomain and trip the
+    // subdomain↔JWT org-match guard (`org_mismatch`).
     let next_path = row
         .next_path
         .unwrap_or_else(|| state.config.dashboard_url.clone());
-    let redirect_target = absolute_redirect_for_org(&state, &headers, &next_path);
-    Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
+    Ok((resp_headers, Redirect::to(&next_path)).into_response())
 }
 
 // ---------------------------------------------------------------------------
