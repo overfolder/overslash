@@ -439,9 +439,17 @@ async fn list_providers_returns_empty_when_none_configured() {
         .unwrap();
 
     let providers = resp["providers"].as_array().unwrap();
-    // Only dev login should be present (dev_auth_enabled = true in the helper)
-    assert_eq!(providers.len(), 1);
-    assert_eq!(providers[0]["key"], "dev");
+    let keys: Vec<&str> = providers
+        .iter()
+        .map(|p| p["key"].as_str().unwrap())
+        .collect();
+    // No OAuth IdP is configured, but the built-in methods remain: the
+    // passwordless email magic-link (default-on) and dev login
+    // (dev_auth_enabled = true in the helper). No google/github.
+    assert!(keys.contains(&"email"), "got: {keys:?}");
+    assert!(keys.contains(&"dev"), "got: {keys:?}");
+    assert!(!keys.contains(&"google"), "got: {keys:?}");
+    assert!(!keys.contains(&"github"), "got: {keys:?}");
 }
 
 // ---------------------------------------------------------------------------
