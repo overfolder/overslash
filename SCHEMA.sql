@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict Ue2xXtUVagvCgvOs8I3p5Cw7Ff9kRtPm3hNWaTwfP9Qd1IOOex9vHiakiKa1krA
+\restrict Wa9cVbD20aiSD1mg8hdX4ucJSCAI1Zo8GH1ywdS2KyvkPycAg0afifQTGjdzEay
 
 -- Dumped from database version 16.13 (Debian 16.13-1.pgdg12+1)
--- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -388,7 +388,9 @@ CREATE TABLE public.oauth_connection_flows (
     created_ip text,
     created_user_agent text,
     return_url text,
-    upgrade_connection_id uuid
+    upgrade_connection_id uuid,
+    service_instance_id uuid,
+    redirect_uri text
 );
 
 
@@ -465,7 +467,8 @@ CREATE TABLE public.oauth_providers (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     token_auth_method text DEFAULT 'client_secret_post'::text NOT NULL,
     issuer_url text,
-    jwks_uri text
+    jwks_uri text,
+    default_identity_scopes text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 
@@ -547,7 +550,10 @@ CREATE TABLE public.orgs (
     default_deferred_execution boolean DEFAULT false NOT NULL,
     allow_overslash_managed_signin boolean DEFAULT false NOT NULL,
     creator_user_id uuid,
+    audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
+    oauth_callback_allowed_hosts text DEFAULT ''::text NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
+    CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))
 );
 
@@ -1348,6 +1354,13 @@ CREATE INDEX idx_audit_log_org ON public.audit_log USING btree (org_id, created_
 --
 
 CREATE INDEX idx_connections_identity ON public.connections USING btree (identity_id);
+
+
+--
+-- Name: idx_connections_one_default; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_connections_one_default ON public.connections USING btree (identity_id, provider_key) WHERE is_default;
 
 
 --
@@ -2246,6 +2259,14 @@ ALTER TABLE ONLY public.oauth_connection_flows
 
 
 --
+-- Name: oauth_connection_flows oauth_connection_flows_service_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.oauth_connection_flows
+    ADD CONSTRAINT oauth_connection_flows_service_instance_id_fkey FOREIGN KEY (service_instance_id) REFERENCES public.service_instances(id) ON DELETE SET NULL;
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2545,5 +2566,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Ue2xXtUVagvCgvOs8I3p5Cw7Ff9kRtPm3hNWaTwfP9Qd1IOOex9vHiakiKa1krA
+\unrestrict Wa9cVbD20aiSD1mg8hdX4ucJSCAI1Zo8GH1ywdS2KyvkPycAg0afifQTGjdzEay
 
