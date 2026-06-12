@@ -376,6 +376,47 @@ async fn exchange_rejects_unknown_state() {
     assert_eq!(resp.status().as_u16(), 400);
 }
 
+#[tokio::test]
+async fn exchange_rejects_regular_flow_without_custom_redirect_uri() {
+    // Symmetric to the callback guard: a regular flow (redirect_uri NULL) must
+    // complete via GET /v1/oauth/callback, not the exchange endpoint.
+    set_github_creds_env();
+    let pool = common::test_pool().await;
+    let mock = common::start_mock().await;
+    override_github_token_endpoint(&pool, mock).await;
+
+    let (org_id, user_id, key) = seed_org_user_key(
+        &pool,
+        SeedOptions {
+            is_admin: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    // No custom redirect_uri → regular flow.
+    let flow_id = seed_flow(&pool, org_id, user_id, None).await;
+
+    let (addr, client) = start_api(pool.clone()).await;
+    let (h, v) = auth(&key);
+    let resp = client
+        .post(format!("http://{addr}/v1/oauth/exchange"))
+        .header(h, v.as_str())
+        .json(&json!({ "code": "test_code", "state": flow_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+
+    // Rejected before consume — the flow is untouched.
+    let consumed: Option<OffsetDateTime> =
+        sqlx::query_scalar("SELECT consumed_at FROM oauth_connection_flows WHERE id = $1")
+            .bind(&flow_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(consumed.is_none());
+}
+
 // ─── Org settings management API ────────────────────────────────────────────
 
 #[tokio::test]

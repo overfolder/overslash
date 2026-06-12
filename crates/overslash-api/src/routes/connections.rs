@@ -514,18 +514,24 @@ async fn oauth_exchange(
         ));
     }
 
+    // Mirror of the `oauth_callback` guard: this endpoint is *only* for
+    // white-label flows (custom `redirect_uri`). A regular flow has no custom
+    // redirect_uri and must complete through the browser `/v1/oauth/callback`.
+    // Rejecting before `consume` keeps the two flow types strictly separated
+    // and avoids burning a regular flow that was never meant for this path.
+    let Some(redirect_uri) = flow.redirect_uri.clone() else {
+        return Err(AppError::BadRequest(
+            "this flow has no custom redirect_uri; complete it via GET /v1/oauth/callback".into(),
+        ));
+    };
+
     // Single-use: claim the flow atomically. `None` ⇒ expired or already
     // exchanged (also resolves the concurrent-double-exchange race — only one
     // caller wins). The gate is bypassed on this path, so we own single-use.
     let flow = oauth_connection_flow::consume(state.db(&ext), flow_id)
         .await?
         .ok_or_else(|| AppError::BadRequest("state parameter is expired or already used".into()))?;
-
-    let redirect_uri = flow.redirect_uri.clone().unwrap_or_else(|| {
-        crate::services::platform_connections::default_callback_redirect_uri(
-            &state.config.public_url,
-        )
-    });
+    debug_assert_eq!(flow.redirect_uri.as_deref(), Some(redirect_uri.as_str()));
 
     let params = OAuthCallbackParams {
         code: req.code,
