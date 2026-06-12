@@ -821,7 +821,7 @@
 					<!-- Agent detail fields -->
 					<div class="field-row">
 						<span class="field-label">Parent</span>
-						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.kind === 'user' ? ' (you)' : ''}</span>
+						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.id === meIdentityId ? ' (you)' : ''}</span>
 					</div>
 					<div class="field-row">
 						<span class="field-label">Inherits Permissions</span>
@@ -1043,7 +1043,7 @@
 		</span>
 		<span class="status-dot" class:active={node.kind !== 'user' || true}></span>
 		<span class="tree-label">{node.name}</span>
-		{#if node.kind === 'user'}
+		{#if node.id === meIdentityId}
 			<span class="tree-you">(you)</span>
 		{/if}
 		{#if pending > 0}
@@ -1111,7 +1111,7 @@
 					<select name="parent_id" required value={createParentId ?? ''}>
 						<option value="" disabled>Choose a parent…</option>
 						{#each createEligibleParents as p (p.id)}
-							<option value={p.id}>{p.name}{p.kind === 'user' ? ' (you)' : ''}</option>
+							<option value={p.id}>{p.name}{p.id === meIdentityId ? ' (you)' : ''}</option>
 						{/each}
 					</select>
 				</label>
