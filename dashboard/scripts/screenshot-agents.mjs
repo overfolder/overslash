@@ -10,6 +10,7 @@
 
 import { resolve } from 'node:path';
 import {
+	api,
 	login,
 	listIdentities,
 	makeSnapper,
@@ -18,6 +19,25 @@ import {
 } from '../tests/scenarios/index.mjs';
 
 const session = await login('admin');
+
+// A second user identity (not the logged-in admin) so we can show the
+// admin-only "Remove from org" affordance + the non-self user copy.
+async function ensureUser(name) {
+	try {
+		return await api(session, '/v1/identities', {
+			method: 'POST',
+			body: { name, kind: 'user' },
+			expect: [200, 201]
+		});
+	} catch (err) {
+		if (err instanceof Error && /409|already exists|duplicate/i.test(err.message)) {
+			const all = await listIdentities(session);
+			const match = all.find((i) => i.name === name && i.kind === 'user');
+			if (match) return match;
+		}
+		throw err;
+	}
+}
 
 // Build the same hierarchy the mocked version drew, but as real DB rows.
 // idempotent: if a duplicate name 4xx's we just look up the existing row.
@@ -43,6 +63,7 @@ const research = await ensureAgent('research-agent');
 const code = await ensureAgent('code-agent');
 const _githubWorker = await ensureAgent('github-worker', code);
 const _deployWorker = await ensureAgent('deploy-worker', code);
+const teammate = await ensureUser('teammate');
 // Pull a fresh listing so any pre-existing tree (re-runs against the same
 // stack) is fully reflected on the page. The screenshot just needs the
 // hierarchy rendered — we don't assert on row count.
@@ -69,7 +90,7 @@ try {
 		).then((r) => ({ page: r.page, ctx: r.ctx }));
 
 		// Detail panel: select the research agent.
-		const agentNode = page.locator('button.tree-label', {
+		const agentNode = page.locator('.tree-label', {
 			hasText: research.name
 		});
 		if ((await agentNode.count()) > 0) {
@@ -79,14 +100,27 @@ try {
 		}
 
 		// Read-only user node detail (light only — same shape in dark).
+		// The logged-in user keeps the "read-only" copy and no Remove action.
 		if (theme === 'light') {
-			const userNode = page.locator('button.tree-label', {
+			const userNode = page.locator('.tree-label', {
 				hasText: 'Dev User'
 			});
 			if ((await userNode.count()) > 0) {
 				await userNode.first().click();
 				await page.waitForTimeout(800);
 				await snap.snap(page, `agents-${theme}-user-detail`, {
+					fullPage: false
+				});
+			}
+
+			// A different user identity: neutral copy + admin "Remove from org".
+			const otherUser = page.locator('.tree-label', {
+				hasText: teammate.name
+			});
+			if ((await otherUser.count()) > 0) {
+				await otherUser.first().click();
+				await page.waitForTimeout(800);
+				await snap.snap(page, `agents-${theme}-other-user-remove`, {
 					fullPage: false
 				});
 			}
