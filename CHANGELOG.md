@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0](https://github.com/overfolder/overslash/compare/v0.3.0...v0.4.0) (2026-06-13)
+
+
+### Features
+
+* **auth:** passwordless email magic-link login ([#385](https://github.com/overfolder/overslash/issues/385)) ([414a0b8](https://github.com/overfolder/overslash/commit/414a0b8bd66e1a411b41045522ab1d7ac631d08b))
+* **identities:** add on-demand cascade-archive endpoint ([#383](https://github.com/overfolder/overslash/issues/383)) ([d3c2888](https://github.com/overfolder/overslash/commit/d3c28881bffd09f93b8b7a88afc7c83838c96b3e))
+* **identities:** admin can remove user members from an org ([#393](https://github.com/overfolder/overslash/issues/393)) ([6957c8e](https://github.com/overfolder/overslash/commit/6957c8eee9719bea795e73e6c6bc0549b1a70d55))
+* **infra:** provision GitHub login OAuth secrets, gate login providers ([#396](https://github.com/overfolder/overslash/issues/396)) ([3cda726](https://github.com/overfolder/overslash/commit/3cda72602ef45e932d68c2462f92c27ed1799b35))
+* **login:** use landing wordmark's skewed slash on login page ([#395](https://github.com/overfolder/overslash/issues/395)) ([87c9ace](https://github.com/overfolder/overslash/commit/87c9ace13c4910c69e69fa97f91596cda08175b5))
+* **oauth:** allow dashboard override of env-configured OAuth providers ([#382](https://github.com/overfolder/overslash/issues/382)) ([da661af](https://github.com/overfolder/overslash/commit/da661afac213a5cb21b78fe75860e499b2a7d697))
+* **oauth:** expose raw authorize URL on upgrade_scopes reauth ([#392](https://github.com/overfolder/overslash/issues/392)) ([604e3e3](https://github.com/overfolder/overslash/commit/604e3e39b1746bf370f1bb59ed734982e9348f06))
+* **oauth:** white-label custom redirect URIs for connect flows ([#388](https://github.com/overfolder/overslash/issues/388)) ([4382bba](https://github.com/overfolder/overslash/commit/4382bbac87648a48d8f254e49548f8df435c0e15))
+* **services:** add hidden api-key test_email fake for eval fixtures ([#384](https://github.com/overfolder/overslash/issues/384)) ([daf1d60](https://github.com/overfolder/overslash/commit/daf1d6010c47ff1511f4a43c5a025848afb1dbe7))
+
+
+### Bug Fixes
+
+* **agents:** only badge the logged-in identity as "(you)" ([#386](https://github.com/overfolder/overslash/issues/386)) ([27d0f78](https://github.com/overfolder/overslash/commit/27d0f78fbfe36af5568a434cdfccd5d9aaff0377))
+* **connections:** "Wrong account" on /connect-authorize for multi-org + admin/actor override ([#381](https://github.com/overfolder/overslash/issues/381)) ([2578103](https://github.com/overfolder/overslash/commit/25781038f1620216ebd44199b14522748a77e5d6))
+* **dashboard:** don't logout on a service-auth 401 in "try it" ([#379](https://github.com/overfolder/overslash/issues/379)) ([d1fcabb](https://github.com/overfolder/overslash/commit/d1fcabb29ec616c135bf89b9254cef97bad6a5f9))
+* disable local MCP to avoid errs ([82fc93e](https://github.com/overfolder/overslash/commit/82fc93e406f6fadbf71559a7b0280ba19380a12a))
+* **services:** reflect provider auto-resolve in credentials_status ([#378](https://github.com/overfolder/overslash/issues/378)) ([f8ff3af](https://github.com/overfolder/overslash/commit/f8ff3affc1b0468e0321124c0410f1f2e602480d))
+
 ## [0.3.0](https://github.com/overfolder/overslash/compare/v0.2.0...v0.3.0) (2026-06-08)
 
 
