@@ -304,7 +304,9 @@ async fn remove_user_from_org(
             identity_id: acl.identity_id,
             action: "membership.removed",
             resource_type: Some("membership"),
-            resource_id: Some(acl.org_id),
+            // The removed user identity — so audit filtering by resource_id
+            // surfaces this removal (org_id would bury it under the org).
+            resource_id: Some(id),
             detail: serde_json::json!({
                 "user_id": user_id,
                 "identity_id": id,
