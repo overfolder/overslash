@@ -641,8 +641,17 @@
 		}
 	}
 
+	// Whether the current admin can remove a given user identity from the org.
+	// Not yourself (leaving is a separate self-service flow), and admin-only.
+	function canRemoveUser(node: Identity): boolean {
+		return isAdmin && node.kind === 'user' && node.id !== meIdentityId;
+	}
+
 	function requestDelete() {
-		if (!selected || selected.kind === 'user' || !detail) return;
+		if (!selected || !detail) return;
+		// Agents/sub-agents are always deletable here; user identities are only
+		// removable when the viewer is an admin and the target isn't themselves.
+		if (selected.kind === 'user' && !canRemoveUser(selected)) return;
 		detail.deleteModalOpen = true;
 	}
 
@@ -805,8 +814,12 @@
 						<span class="field-label">Kind</span>
 						<span class="field-value">user</span>
 					</div>
-					<p class="muted" style="font-size:0.85rem;">This is the logged-in user. User identities are read-only.</p>
-					<div style="margin-top:0.5rem;">
+					{#if selected.id === meIdentityId}
+						<p class="muted" style="font-size:0.85rem;">This is the logged-in user. User identities are read-only.</p>
+					{:else}
+						<p class="muted" style="font-size:0.85rem;">User identity.</p>
+					{/if}
+					<div style="margin-top:0.5rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
 						<button
 							class="btn-new"
 							onclick={() => {
@@ -816,6 +829,9 @@
 						>
 							+ Add Agent
 						</button>
+						{#if canRemoveUser(selected)}
+							<button class="btn-danger" onclick={requestDelete}>Remove from org</button>
+						{/if}
 					</div>
 				{:else}
 					<!-- Agent detail fields -->
@@ -1059,7 +1075,7 @@
 			aria-label="Add child"
 			title={node.kind === 'user' ? 'Add agent' : 'Add sub-agent'}>+</button
 		>
-		{#if node.kind !== 'user'}
+		{#if node.kind !== 'user' || canRemoveUser(node)}
 			<button
 				class="node-action kebab"
 				onclick={(e) => {
@@ -1070,8 +1086,12 @@
 			>
 			{#if kebabFor === node.id}
 				<div class="menu" role="menu">
-					<button onclick={() => { selectIdentity(node.id); moveOpen = true; kebabFor = null; }}>Move…</button>
-					<button class="danger" onclick={() => { selectIdentity(node.id); kebabFor = null; requestDelete(); }}>Delete</button>
+					{#if node.kind !== 'user'}
+						<button onclick={() => { selectIdentity(node.id); moveOpen = true; kebabFor = null; }}>Move…</button>
+					{/if}
+					<button class="danger" onclick={() => { selectIdentity(node.id); kebabFor = null; requestDelete(); }}>
+						{node.kind === 'user' ? 'Remove from org' : 'Delete'}
+					</button>
 				</div>
 			{/if}
 		{/if}
@@ -1134,13 +1154,16 @@
 
 {#if selected && detail}
 	{@const totalDescendants = descendantCount(selected.id)}
+	{@const isUser = selected.kind === 'user'}
 	<ConfirmModal
 		open={detail.deleteModalOpen}
-		title="Delete agent?"
-		message={totalDescendants > 0
-			? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
-			: `Delete agent:${selected.name}? This cannot be undone.`}
-		confirmLabel="Delete Agent"
+		title={isUser ? 'Remove user from org?' : 'Delete agent?'}
+		message={isUser
+			? `Remove ${selected.name} from this org? This archives ${totalDescendants > 0 ? `their ${totalDescendants} agent${totalDescendants === 1 ? '' : 's'} and ` : ''}revokes all their API keys, and removes their access to the org.`
+			: totalDescendants > 0
+				? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
+				: `Delete agent:${selected.name}? This cannot be undone.`}
+		confirmLabel={isUser ? 'Remove user' : 'Delete Agent'}
 		destructive={true}
 		busy={detail.deleteModalBusy}
 		onConfirm={confirmDelete}
@@ -1660,6 +1683,19 @@
 	}
 	.btn-secondary:hover {
 		background: var(--neutral-100);
+	}
+	.btn-danger {
+		background: var(--color-surface);
+		border: 1px solid var(--color-danger, #e53836);
+		color: var(--color-danger, #e53836);
+		padding: 6px 12px;
+		border-radius: 6px;
+		font-size: 13px;
+		cursor: pointer;
+	}
+	.btn-danger:hover {
+		background: var(--color-danger, #e53836);
+		color: #fff;
 	}
 
 	/* ── Mono text ── */
