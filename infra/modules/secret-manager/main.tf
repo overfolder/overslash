@@ -10,6 +10,18 @@ variable "cloud_run_sa_email" {
   type = string
 }
 
+variable "enable_google_login" {
+  type        = bool
+  default     = true
+  description = "Provision the Google LOGIN OAuth client secrets (Sign-in with Google). On by default to preserve existing behavior."
+}
+
+variable "enable_github_login" {
+  type        = bool
+  default     = false
+  description = "Provision the GitHub LOGIN OAuth App secrets (Sign-in with GitHub). Off by default; enable per-env via tfvars."
+}
+
 # --- Database password ---
 
 resource "google_secret_manager_secret" "db_password" {
@@ -73,6 +85,7 @@ resource "google_secret_manager_secret_version" "signing_key" {
 #     the prod-populated secret value. Feeds `GOOGLE_AUTH_CLIENT_ID/_SECRET`. ---
 
 resource "google_secret_manager_secret" "oauth_client_id" {
+  count     = var.enable_google_login ? 1 : 0
   secret_id = "${var.base_prefix}-oauth-client-id"
   project   = var.project_id
   replication {
@@ -81,7 +94,8 @@ resource "google_secret_manager_secret" "oauth_client_id" {
 }
 
 resource "google_secret_manager_secret_version" "oauth_client_id" {
-  secret      = google_secret_manager_secret.oauth_client_id.id
+  count       = var.enable_google_login ? 1 : 0
+  secret      = google_secret_manager_secret.oauth_client_id[0].id
   secret_data = "REPLACE_ME"
 
   lifecycle {
@@ -90,6 +104,7 @@ resource "google_secret_manager_secret_version" "oauth_client_id" {
 }
 
 resource "google_secret_manager_secret" "oauth_client_secret" {
+  count     = var.enable_google_login ? 1 : 0
   secret_id = "${var.base_prefix}-oauth-client-secret"
   project   = var.project_id
   replication {
@@ -98,7 +113,71 @@ resource "google_secret_manager_secret" "oauth_client_secret" {
 }
 
 resource "google_secret_manager_secret_version" "oauth_client_secret" {
-  secret      = google_secret_manager_secret.oauth_client_secret.id
+  count       = var.enable_google_login ? 1 : 0
+  secret      = google_secret_manager_secret.oauth_client_secret[0].id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# Preserve existing dev/prod state (and the manually-populated secret values)
+# now that the Google login resources are count-gated: un-indexed → [0].
+moved {
+  from = google_secret_manager_secret.oauth_client_id
+  to   = google_secret_manager_secret.oauth_client_id[0]
+}
+moved {
+  from = google_secret_manager_secret.oauth_client_secret
+  to   = google_secret_manager_secret.oauth_client_secret[0]
+}
+moved {
+  from = google_secret_manager_secret_version.oauth_client_id
+  to   = google_secret_manager_secret_version.oauth_client_id[0]
+}
+moved {
+  from = google_secret_manager_secret_version.oauth_client_secret
+  to   = google_secret_manager_secret_version.oauth_client_secret[0]
+}
+
+# --- GitHub LOGIN OAuth App (Sign-in with GitHub, read:user/user:email).
+#     Register an OAuth App (not a GitHub App) under the `overfolder` org, one
+#     per environment. Feeds `GITHUB_AUTH_CLIENT_ID/_SECRET`. Gated on
+#     `enable_github_login`; populate values manually post-apply via
+#     `gcloud secrets versions add`. ---
+
+resource "google_secret_manager_secret" "github_auth_client_id" {
+  count     = var.enable_github_login ? 1 : 0
+  secret_id = "${var.base_prefix}-github-auth-client-id"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "github_auth_client_id" {
+  count       = var.enable_github_login ? 1 : 0
+  secret      = google_secret_manager_secret.github_auth_client_id[0].id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret" "github_auth_client_secret" {
+  count     = var.enable_github_login ? 1 : 0
+  secret_id = "${var.base_prefix}-github-auth-client-secret"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "github_auth_client_secret" {
+  count       = var.enable_github_login ? 1 : 0
+  secret      = google_secret_manager_secret.github_auth_client_secret[0].id
   secret_data = "REPLACE_ME"
 
   lifecycle {
@@ -277,11 +356,19 @@ output "signing_key_secret_id" {
 }
 
 output "oauth_client_id_secret_id" {
-  value = google_secret_manager_secret.oauth_client_id.secret_id
+  value = var.enable_google_login ? google_secret_manager_secret.oauth_client_id[0].secret_id : ""
 }
 
 output "oauth_client_secret_secret_id" {
-  value = google_secret_manager_secret.oauth_client_secret.secret_id
+  value = var.enable_google_login ? google_secret_manager_secret.oauth_client_secret[0].secret_id : ""
+}
+
+output "github_auth_client_id_secret_id" {
+  value = var.enable_github_login ? google_secret_manager_secret.github_auth_client_id[0].secret_id : ""
+}
+
+output "github_auth_client_secret_secret_id" {
+  value = var.enable_github_login ? google_secret_manager_secret.github_auth_client_secret[0].secret_id : ""
 }
 
 output "google_services_client_id_secret_id" {

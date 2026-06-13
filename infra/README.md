@@ -87,6 +87,23 @@ the env-var tier of the OAuth cascade (`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_E
 is set by Terraform). Any org can override with its own client by calling
 `POST /v1/org/oauth-credentials/google` from the dashboard.
 
+**GitHub login client** (Sign-in with GitHub, `read:user user:email`):
+
+Register an **OAuth App** (not a GitHub App — the login flow relies on the
+`read:user` / `user:email` scopes, which GitHub Apps ignore) under the
+`overfolder` org, one per environment for secret isolation. Gated by
+`enable_github_login` (on in dev/prod tfvars).
+
+Authorized callback URL: `https://<your-host>/auth/callback/github`
+
+```bash
+echo -n "your-github-client-id"     | gcloud secrets versions add overslash-prod-github-auth-client-id     --data-file=-
+echo -n "your-github-client-secret" | gcloud secrets versions add overslash-prod-github-auth-client-secret --data-file=-
+```
+
+Cloud Run reads these as `GITHUB_AUTH_CLIENT_ID/_SECRET`; the API advertises
+the GitHub button on `/auth/providers` only once both are populated.
+
 ## Makefile Targets
 
 | Target | Description |
@@ -107,7 +124,7 @@ is set by Terraform). Any org can override with its own client by calling
 | `networking` | VPC + private service access (only when `use_private_vpc = true`) |
 | `iam` | Least-privilege SAs for Cloud Run, Cloud Build, Cloud Scheduler |
 | `artifact-registry` | Docker image repository with cleanup policy |
-| `secret-manager` | DB password, encryption key, login + services OAuth secrets |
+| `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
 | `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode) |
 | `cloud-run` | Overslash API with health checks and secret injection |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
