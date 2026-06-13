@@ -13,6 +13,7 @@ pub mod identity_path;
 pub mod invite_email;
 pub mod jwt;
 pub mod key_rotation;
+pub mod magic_link_email;
 pub mod mcp_auth;
 pub mod mcp_caller;
 pub mod mcp_client;

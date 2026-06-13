@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, patch, post},
 };
@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use overslash_db::OrgScope;
 use overslash_db::repos::audit::AuditEntry;
-use overslash_db::repos::identity::RestoreOutcome;
+use overslash_db::repos::identity::{ARCHIVED_REASON_MANUAL, RestoreOutcome};
 
 use super::util::fmt_time;
 use crate::{
@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/identities/{id}/children", get(list_children))
         .route("/v1/identities/{id}/chain", get(get_chain))
         .route("/v1/identities/{id}/restore", post(restore_identity))
+        .route("/v1/identities/{id}/archive", post(archive_identity))
         .route(
             "/v1/identities/{id}/mcp-connection",
             get(get_mcp_connection).patch(patch_mcp_connection),
@@ -208,6 +209,23 @@ async fn delete_identity(
 ) -> Result<StatusCode> {
     use overslash_db::repos::identity::DeleteLeafOutcome;
 
+    // Look the target up first so we can branch on kind. A `user`-kind identity
+    // that's linked to a human (`user_id`) represents that human's membership in
+    // the org, not a deletable leaf node: hard-deleting just its row would orphan
+    // the surviving `user_org_memberships` row (an invariant violation that 500s
+    // the user's next login). So routing a delete at a linked user means "remove
+    // this member from the org" — cascade-archive their subtree and drop their
+    // membership. Bare user identities (no linked human — e.g. created directly
+    // via the API) keep the original leaf hard-delete behaviour.
+    let target = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    if target.kind == "user" && target.user_id.is_some() {
+        return remove_user_from_org(acl, scope, ip, id).await;
+    }
+
     // Atomic delete: holds FOR UPDATE on the parent row so concurrent
     // FK-checking inserts can't sneak a child in between the leaf check
     // and the delete (which would otherwise be silently cascade-deleted).
@@ -233,6 +251,72 @@ async fn delete_identity(
             resource_id: Some(id),
             detail: serde_json::json!({}),
             description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Remove a human user from the org (admin-only). Cascade-archives the user's
+/// identity subtree (revoking API keys + expiring approvals), drops their
+/// `user_org_memberships` row, and detaches the archived identity from the user
+/// — all atomically. Guards against removing yourself or the org's last admin.
+async fn remove_user_from_org(
+    acl: crate::extractors::OrgAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    id: Uuid,
+) -> Result<StatusCode> {
+    use overslash_db::repos::identity::RemoveUserOutcome;
+
+    // You can't evict yourself here — that would be a self-inflicted lockout
+    // (and the last-admin guard wouldn't fire if you weren't an admin). Leaving
+    // an org is a separate, self-service flow (`DELETE /v1/account/memberships`).
+    if acl.identity_id == Some(id) {
+        return Err(AppError::BadRequest(
+            "cannot remove yourself from the org".into(),
+        ));
+    }
+
+    let (user_id, archived_count, was_admin) = match scope.remove_user_from_org(id).await? {
+        RemoveUserOutcome::Removed {
+            user_id,
+            archived_count,
+            was_admin,
+        } => (user_id, archived_count, was_admin),
+        RemoveUserOutcome::LastAdmin => {
+            return Err(AppError::BadRequest(
+                "cannot remove the last admin of the org".into(),
+            ));
+        }
+        RemoveUserOutcome::NotApplicable => {
+            return Err(AppError::Conflict(
+                "identity is not a removable org member".into(),
+            ));
+        }
+        RemoveUserOutcome::NotFound => {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
+    };
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "membership.removed",
+            resource_type: Some("membership"),
+            // The removed user identity — so audit filtering by resource_id
+            // surfaces this removal (org_id would bury it under the org).
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "user_id": user_id,
+                "identity_id": id,
+                "archived_count": archived_count,
+                "was_admin": was_admin,
+                "removed_by_admin": true,
+            }),
+            description: Some("Admin removed a member from the org"),
             ip_address: ip.0.as_deref(),
         })
         .await;
@@ -450,24 +534,41 @@ async fn create_identity(
     Ok(Json(row.into()))
 }
 
+/// Query params for the identity-listing endpoints. Archived rows are excluded
+/// by default; callers that manage archived state (the dashboard, admin tools)
+/// pass `?include_archived=true` to get the full set.
+#[derive(Deserialize)]
+struct ListIdentitiesQuery {
+    #[serde(default)]
+    include_archived: bool,
+}
+
 async fn list_identities(
     _: crate::extractors::OrgAcl,
     scope: OrgScope,
+    Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
-    let rows = scope.list_identities().await?;
+    let mut rows = scope.list_identities().await?;
+    if !q.include_archived {
+        rows.retain(|r| r.archived_at.is_none());
+    }
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
 async fn list_children(
     scope: OrgScope,
     Path(id): Path<Uuid>,
+    Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
     // Verify the parent itself lives in this org. Cross-tenant ids return None.
     let _ident = scope
         .get_identity(id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-    let rows = scope.list_identity_children(id).await?;
+    let mut rows = scope.list_identity_children(id).await?;
+    if !q.include_archived {
+        rows.retain(|r| r.archived_at.is_none());
+    }
     Ok(Json(rows.into_iter().map(IdentityResponse::from).collect()))
 }
 
@@ -543,6 +644,72 @@ async fn restore_identity(
         )),
         RestoreOutcome::NotFound => Err(AppError::NotFound("identity not found".into())),
     }
+}
+
+#[derive(Deserialize, Default)]
+struct ArchiveRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ArchiveResponse {
+    identity: IdentityResponse,
+    archived_count: u64,
+}
+
+/// Cascade-archive an identity and its descendant subtree.
+///
+/// Unlike restore (sub_agent-only), this accepts any kind — overfolder archives
+/// user identities too (e.g. on ghost-merge/delete). Archiving revokes API keys
+/// and expires pending approvals for everything in the subtree, so it requires
+/// write-level ACL. Idempotent: re-archiving an already-archived root returns
+/// 200 with `archived_count: 0`. The optional JSON body `{ "reason": "..." }`
+/// may be omitted (defaults to `"manual"`).
+async fn archive_identity(
+    WriteAcl(acl): WriteAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(id): Path<Uuid>,
+    body: Option<Json<ArchiveRequest>>,
+) -> Result<Json<ArchiveResponse>> {
+    // Existence + org-scope check up front for a clean 404 (cross-tenant ids
+    // return None). The repo also returns None for a missing root.
+    let _existing = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let reason = req.reason.as_deref().or(Some(ARCHIVED_REASON_MANUAL));
+
+    let outcome = scope
+        .archive_identity(id, reason)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "identity.archived",
+            resource_type: Some("identity"),
+            resource_id: Some(outcome.identity.id),
+            detail: serde_json::json!({
+                "name": &outcome.identity.name,
+                "kind": &outcome.identity.kind,
+                "archived_count": outcome.archived_count,
+                "reason": outcome.identity.archived_reason,
+            }),
+            description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(ArchiveResponse {
+        identity: (*outcome.identity).into(),
+        archived_count: outcome.archived_count,
+    }))
 }
 
 // ---------------------------------------------------------------------------

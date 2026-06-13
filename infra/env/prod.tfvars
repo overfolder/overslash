@@ -1,6 +1,7 @@
 project_id = "overslash"
 region     = "europe-west1"
 env        = "prod"
+rust_log   = "overslash=debug,info"
 
 # Empty `domain` skips the single-host google_cloud_run_domain_mapping in
 # favor of the wildcard GCLB stack (see `enable_api_lb`).
@@ -17,16 +18,22 @@ enable_api_lb         = true
 dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"
 dashboard_url    = "https://app.overslash.com"
 enable_dev_auth  = false
+# Passwordless email magic-link login — on (email is configured below).
+enable_magic_link = true
+# Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
+# client secrets post-apply via `gcloud secrets versions add`.
+enable_google_login = true
+enable_github_login = true
 
 # Cloud SQL — minimum viable for pre-GA
 cloud_sql_tier         = "db-f1-micro"
 cloud_sql_disk_size_gb = 10
 cloud_sql_zone         = "europe-west1-b"
 
-# Cloud Run — scale to zero, minimal resources
+# Cloud Run — one always-warm instance (no cold starts), minimal resources
 cloud_run_cpu           = "1"
 cloud_run_memory        = "1Gi"
-cloud_run_min_instances = 0
+cloud_run_min_instances = 1
 cloud_run_max_instances = 3
 
 # Networking — private VPC required for Memorystore/Valkey reachability

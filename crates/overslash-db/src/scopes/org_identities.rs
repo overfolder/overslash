@@ -13,7 +13,8 @@
 use uuid::Uuid;
 
 use crate::repos::identity::{
-    self, ApplyPatchOutcome, DeleteLeafOutcome, IdentityRow, PatchIdentity, RestoreOutcome,
+    self, ApplyPatchOutcome, ArchiveOutcome, DeleteLeafOutcome, IdentityRow, PatchIdentity,
+    RemoveUserOutcome, RestoreOutcome,
 };
 use crate::scopes::OrgScope;
 
@@ -175,6 +176,16 @@ impl OrgScope {
         identity::restore(self.db(), self.org_id(), id).await
     }
 
+    /// Cascade-archive an identity and its entire descendant subtree in this
+    /// org. Returns `None` if the id does not exist in this org.
+    pub async fn archive_identity(
+        &self,
+        id: Uuid,
+        reason: Option<&str>,
+    ) -> Result<Option<ArchiveOutcome>, sqlx::Error> {
+        identity::archive_identity(self.db(), self.org_id(), id, reason).await
+    }
+
     /// Rename an identity in this org. Returns `None` if the row does not
     /// exist or belongs to another tenant.
     pub async fn rename_identity(
@@ -227,5 +238,14 @@ impl OrgScope {
     /// cascade-deleted).
     pub async fn delete_identity_leaf(&self, id: Uuid) -> Result<DeleteLeafOutcome, sqlx::Error> {
         identity::delete_leaf(self.db(), id, self.org_id()).await
+    }
+
+    /// Remove a human user from this org: cascade-archive their identity
+    /// subtree (revoking API keys + expiring approvals), drop their org
+    /// membership, and detach the archived identity from the user — all in one
+    /// transaction. Refuses to remove the org's last admin. The route layer
+    /// separately refuses self-removal.
+    pub async fn remove_user_from_org(&self, id: Uuid) -> Result<RemoveUserOutcome, sqlx::Error> {
+        identity::remove_user_from_org(self.db(), self.org_id(), id).await
     }
 }

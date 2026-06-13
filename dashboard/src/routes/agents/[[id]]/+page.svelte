@@ -88,9 +88,33 @@
 	let createInherit = $state(false);
 	let kebabFor = $state<string | null>(null);
 	let moveOpen = $state(false);
+	// Opt-in reveal of archived identities in the tree (hidden by default).
+	let showArchived = $state(false);
 
 	const selected = $derived(identities.find((i) => i.id === selectedId) ?? null);
+	// Tree is built from `visibleIdentities`, not the full set, so archived nodes
+	// are hidden by default. `selected`/`scopedUser` stay on the full `identities`
+	// array so the detail pane still resolves an archived selection. Hiding an
+	// archived parent drops its whole branch from the render walk — safe because
+	// cascade-archive marks the entire subtree, so no *live* node is orphaned.
+	const visibleIdentities = $derived(
+		showArchived ? identities : identities.filter((i) => !i.archived_at)
+	);
 	const childrenOf = $derived.by(() => {
+		const m = new Map<string | null, Identity[]>();
+		for (const ident of visibleIdentities) {
+			const arr = m.get(ident.parent_id) ?? [];
+			arr.push(ident);
+			m.set(ident.parent_id, arr);
+		}
+		return m;
+	});
+	const roots = $derived(childrenOf.get(null) ?? []);
+	// Unfiltered parent→children map over ALL identities (incl. archived). Used
+	// for counts that must match the server's cascade delete, which ignores the
+	// display-only "Show archived" filter — otherwise the delete dialog would
+	// undercount and risk unexpected data loss.
+	const allChildrenOf = $derived.by(() => {
 		const m = new Map<string | null, Identity[]>();
 		for (const ident of identities) {
 			const arr = m.get(ident.parent_id) ?? [];
@@ -99,7 +123,6 @@
 		}
 		return m;
 	});
-	const roots = $derived(childrenOf.get(null) ?? []);
 	const pendingByIdentity = $derived.by(() => {
 		const m = new Map<string, number>();
 		for (const a of approvals) m.set(a.identity_id, (m.get(a.identity_id) ?? 0) + 1);
@@ -120,7 +143,16 @@
 			? identities.find((i) => i.id === userFilter && i.kind === 'user') ?? null
 			: null
 	);
-	const displayRoots = $derived(scopedUser ? [scopedUser] : roots);
+	// When scoped to one user, that user is the only root. Honor the archived
+	// filter here too: an archived scoped user is hidden from the tree unless
+	// "Show archived" is on (the banner still names them so the scope is clear).
+	const displayRoots = $derived(
+		scopedUser
+			? showArchived || !scopedUser.archived_at
+				? [scopedUser]
+				: []
+			: roots
+	);
 
 	function clearUserFilter() {
 		const url = new URL($page.url);
@@ -134,7 +166,9 @@
 
 	/** Count all descendants of an identity */
 	function descendantCount(id: string): number {
-		const kids = childrenOf.get(id) ?? [];
+		// Count over ALL descendants (incl. archived) so the delete confirmation
+		// matches the server's cascade, not the filtered tree.
+		const kids = allChildrenOf.get(id) ?? [];
 		let count = kids.length;
 		for (const k of kids) count += descendantCount(k.id);
 		return count;
@@ -607,8 +641,17 @@
 		}
 	}
 
+	// Whether the current admin can remove a given user identity from the org.
+	// Not yourself (leaving is a separate self-service flow), and admin-only.
+	function canRemoveUser(node: Identity): boolean {
+		return isAdmin && node.kind === 'user' && node.id !== meIdentityId;
+	}
+
 	function requestDelete() {
-		if (!selected || selected.kind === 'user' || !detail) return;
+		if (!selected || !detail) return;
+		// Agents/sub-agents are always deletable here; user identities are only
+		// removable when the viewer is an admin and the target isn't themselves.
+		if (selected.kind === 'user' && !canRemoveUser(selected)) return;
 		detail.deleteModalOpen = true;
 	}
 
@@ -654,9 +697,11 @@
 		void navigator.clipboard.writeText(text);
 	}
 
-	// Eligible parents for the create form — all identities can be parents.
+	// Eligible parents for the create form — any live identity can be a parent.
+	// Archived identities are excluded: the server rejects creating a child under
+	// an archived parent.
 	const createEligibleParents = $derived(
-		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind))
+		identities.filter((i) => ['user', 'agent', 'sub_agent'].includes(i.kind) && !i.archived_at)
 	);
 
 	// Parent identity for the selected node
@@ -700,7 +745,18 @@
 	<div class="panels" data-mobile-pane={selected ? 'detail' : 'tree'}>
 		<!-- Left: Agent tree -->
 		<aside class="tree-panel">
-			<div class="tree-head">Agents</div>
+			<div class="tree-head">
+				<span>Agents</span>
+				<label class="archived-toggle">
+					<ToggleSwitch
+						checked={showArchived}
+						onchange={(next) => (showArchived = next)}
+						size="sm"
+						label="Show archived"
+					/>
+					Show archived
+				</label>
+			</div>
 			{#if loading && identities.length === 0}
 				<p class="muted tree-empty">Loading…</p>
 			{:else if displayRoots.length === 0}
@@ -758,8 +814,12 @@
 						<span class="field-label">Kind</span>
 						<span class="field-value">user</span>
 					</div>
-					<p class="muted" style="font-size:0.85rem;">This is the logged-in user. User identities are read-only.</p>
-					<div style="margin-top:0.5rem;">
+					{#if selected.id === meIdentityId}
+						<p class="muted" style="font-size:0.85rem;">This is the logged-in user. User identities are read-only.</p>
+					{:else}
+						<p class="muted" style="font-size:0.85rem;">User identity.</p>
+					{/if}
+					<div style="margin-top:0.5rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
 						<button
 							class="btn-new"
 							onclick={() => {
@@ -769,12 +829,15 @@
 						>
 							+ Add Agent
 						</button>
+						{#if canRemoveUser(selected)}
+							<button class="btn-danger" onclick={requestDelete}>Remove from org</button>
+						{/if}
 					</div>
 				{:else}
 					<!-- Agent detail fields -->
 					<div class="field-row">
 						<span class="field-label">Parent</span>
-						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.kind === 'user' ? ' (you)' : ''}</span>
+						<span class="field-value">{parentIdentity?.name ?? '—'}{parentIdentity?.id === meIdentityId ? ' (you)' : ''}</span>
 					</div>
 					<div class="field-row">
 						<span class="field-label">Inherits Permissions</span>
@@ -974,6 +1037,7 @@
 	<div
 		class="tree-node"
 		class:selected={isSelected}
+		class:archived={!!node.archived_at}
 		style:padding-left={`${depth * 20 + 16}px`}
 		role="treeitem"
 		aria-selected={isSelected}
@@ -995,7 +1059,7 @@
 		</span>
 		<span class="status-dot" class:active={node.kind !== 'user' || true}></span>
 		<span class="tree-label">{node.name}</span>
-		{#if node.kind === 'user'}
+		{#if node.id === meIdentityId}
 			<span class="tree-you">(you)</span>
 		{/if}
 		{#if pending > 0}
@@ -1011,7 +1075,7 @@
 			aria-label="Add child"
 			title={node.kind === 'user' ? 'Add agent' : 'Add sub-agent'}>+</button
 		>
-		{#if node.kind !== 'user'}
+		{#if node.kind !== 'user' || canRemoveUser(node)}
 			<button
 				class="node-action kebab"
 				onclick={(e) => {
@@ -1022,8 +1086,12 @@
 			>
 			{#if kebabFor === node.id}
 				<div class="menu" role="menu">
-					<button onclick={() => { selectIdentity(node.id); moveOpen = true; kebabFor = null; }}>Move…</button>
-					<button class="danger" onclick={() => { selectIdentity(node.id); kebabFor = null; requestDelete(); }}>Delete</button>
+					{#if node.kind !== 'user'}
+						<button onclick={() => { selectIdentity(node.id); moveOpen = true; kebabFor = null; }}>Move…</button>
+					{/if}
+					<button class="danger" onclick={() => { selectIdentity(node.id); kebabFor = null; requestDelete(); }}>
+						{node.kind === 'user' ? 'Remove from org' : 'Delete'}
+					</button>
 				</div>
 			{/if}
 		{/if}
@@ -1063,7 +1131,7 @@
 					<select name="parent_id" required value={createParentId ?? ''}>
 						<option value="" disabled>Choose a parent…</option>
 						{#each createEligibleParents as p (p.id)}
-							<option value={p.id}>{p.name}{p.kind === 'user' ? ' (you)' : ''}</option>
+							<option value={p.id}>{p.name}{p.id === meIdentityId ? ' (you)' : ''}</option>
 						{/each}
 					</select>
 				</label>
@@ -1086,13 +1154,16 @@
 
 {#if selected && detail}
 	{@const totalDescendants = descendantCount(selected.id)}
+	{@const isUser = selected.kind === 'user'}
 	<ConfirmModal
 		open={detail.deleteModalOpen}
-		title="Delete agent?"
-		message={totalDescendants > 0
-			? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
-			: `Delete agent:${selected.name}? This cannot be undone.`}
-		confirmLabel="Delete Agent"
+		title={isUser ? 'Remove user from org?' : 'Delete agent?'}
+		message={isUser
+			? `Remove ${selected.name} from this org? This archives ${totalDescendants > 0 ? `their ${totalDescendants} agent${totalDescendants === 1 ? '' : 's'} and ` : ''}revokes all their API keys, and removes their access to the org.`
+			: totalDescendants > 0
+				? `Delete agent:${selected.name}? This will also delete ${totalDescendants} sub-agent${totalDescendants === 1 ? '' : 's'} and revoke all their API keys.`
+				: `Delete agent:${selected.name}? This cannot be undone.`}
+		confirmLabel={isUser ? 'Remove user' : 'Delete Agent'}
 		destructive={true}
 		busy={detail.deleteModalBusy}
 		onConfirm={confirmDelete}
@@ -1299,6 +1370,21 @@
 	.tree-node.selected .tree-label {
 		color: var(--color-primary);
 		font-weight: 600;
+	}
+	.tree-node.archived {
+		opacity: 0.5;
+	}
+	.tree-node.archived .tree-label {
+		text-decoration: line-through;
+	}
+	.archived-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font: var(--text-body-small);
+		font-weight: 400;
+		color: var(--color-text-muted);
+		cursor: pointer;
 	}
 	.tree-toggle-slot {
 		width: 12px;
@@ -1597,6 +1683,19 @@
 	}
 	.btn-secondary:hover {
 		background: var(--neutral-100);
+	}
+	.btn-danger {
+		background: var(--color-surface);
+		border: 1px solid var(--color-danger, #e53836);
+		color: var(--color-danger, #e53836);
+		padding: 6px 12px;
+		border-radius: 6px;
+		font-size: 13px;
+		cursor: pointer;
+	}
+	.btn-danger:hover {
+		background: var(--color-danger, #e53836);
+		color: #fff;
 	}
 
 	/* ── Mono text ── */

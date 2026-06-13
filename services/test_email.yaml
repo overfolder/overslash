@@ -1,0 +1,69 @@
+openapi: 3.1.0
+info:
+  title: Test Mail
+  # Description is weighted by keyword search, so phrase it around the actions
+  # the eval scenarios ask for ("send an email", "list messages").
+  description: Test email service for end-to-end evals — send an email message and list recent messages.
+  key: test_email
+  category: Communication
+  # Hidden keeps this out of the agent-facing catalog for real orgs/users
+  # (search.rs drops un-instantiated hidden templates). It still surfaces in
+  # search for any identity that has a CONNECTED INSTANCE — which is exactly the
+  # eval fixture: setup-overslash-eval-fixtures.sh seeds an api-key instance for
+  # the eval user, so the eval agent discovers + calls it while nobody else sees it.
+  x-overslash-hidden: true
+servers:
+  # Echo "fake": httpbun.com/anything reflects the request back as JSON, so an
+  # executed action returns plausible data (the email fields) without a real
+  # mail provider. The suite already depends on httpbun (see web-fetch.yaml).
+  # For a fully-local/offline echo, run the overslash openapi fake and set
+  #   OVERSLASH_SERVICE_BASE_OVERRIDES=httpbun.com=<fake-url> (+ OVERSLASH_SSRF_ALLOW_PRIVATE=1).
+  - url: https://httpbun.com
+components:
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-prefix: "Bearer "
+      default_secret_name: test_email_key
+paths:
+  # risk: write -> overslash gates this behind a pending_approval when an agent
+  # identity calls it without a standing permission grant. That gate is what the
+  # overslash-approval-* and search-and-call scenarios exercise.
+  /anything/messages/send:
+    post:
+      operationId: send_email
+      summary: "Send an email to {to} with subject '{subject}'"
+      description: Send an email message on the user's behalf.
+      risk: write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, subject, body]
+              properties:
+                to:
+                  type: string
+                  description: Recipient email address
+                subject:
+                  type: string
+                  description: Email subject line
+                body:
+                  type: string
+                  description: Email body text
+  # risk: read -> no approval gate; executes immediately and returns the echo.
+  /anything/messages:
+    get:
+      operationId: list_messages
+      summary: List recent email messages
+      description: List the user's recent email messages.
+      risk: read
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of messages to return
+          schema:
+            type: integer

@@ -1,14 +1,16 @@
 /**
- * Shared credential-status resolver for a service instance. A service is
- * "connected" when it has a connection bound to it OR a secret name set.
- * `needs-reconnect` and `partially-degraded` come from the backend's
- * scope-health classifier (see routes/services.rs::classify_scopes) — no
- * action will work when the bound connection doesn't cover any of the
- * template's required scopes. The backend's `credentials_status` field is
- * authoritative whenever a connection is bound; the `connections` argument
- * is no longer consulted (kept for signature stability) so agent-owned
- * connections — which never appear in the calling user's personal list —
- * are classified correctly.
+ * Shared credential-status resolver for a service instance.
+ *
+ * The backend's `credentials_status` is the source of truth: its
+ * `compute_credentials_status` resolves the connection the *execution* path
+ * would actually use — an explicit binding, or an OAuth template's provider
+ * auto-resolved on the owner identity — so it stays correct for instances that
+ * work without an explicit `connection_id` bind, and for agent-owned
+ * connections that never appear in the caller's personal connection list (see
+ * PR #321). We therefore trust it regardless of `connection_id` and only fall
+ * back to the structural heuristic when the field is absent (template not
+ * resolvable, or a pre-`credentials_status` API). The `connections` argument is
+ * no longer consulted (kept for signature stability).
  */
 import type { ConnectionSummary, ServiceInstanceSummary } from '$lib/types';
 
@@ -22,22 +24,20 @@ export function credentialStatus(
 	instance: ServiceInstanceSummary,
 	_connections: ConnectionSummary[] | Set<string>
 ): CredentialStatus {
-	if (instance.connection_id) {
-		switch (instance.credentials_status) {
-			case 'needs_reconnect':
-				return 'needs-reconnect';
-			case 'partially_degraded':
-				return 'partially-degraded';
-			case 'needs_authentication':
-				// Connection bound but unresolvable org-scoped (dangling/deleted) —
-				// the backend asks for re-auth, so don't paint it connected.
-				return 'needs-setup';
-			default:
-				// 'ok', or an absent field (template has no OAuth scheme to
-				// classify, or a benign gap): a bound connection is connected.
-				return 'connected';
-		}
+	switch (instance.credentials_status) {
+		case 'ok':
+			return 'connected';
+		case 'needs_reconnect':
+			return 'needs-reconnect';
+		case 'partially_degraded':
+			return 'partially-degraded';
+		case 'needs_authentication':
+			// No usable connection (unbound and no provider connection, or a
+			// dangling/deleted bound one) — the backend asks for auth.
+			return 'needs-setup';
 	}
+	// `credentials_status` absent: classify structurally.
+	if (instance.connection_id) return 'connected';
 	if (instance.secret_name) return 'connected';
 	return 'needs-setup';
 }

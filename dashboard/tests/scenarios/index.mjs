@@ -33,7 +33,8 @@ export {
 	seedApproval,
 	seedApprovalResolution,
 	seedExecution,
-	setAuditResponseBodyMode
+	setAuditResponseBodyMode,
+	setOauthCallbackHosts
 } from './seed.mjs';
 export { makeSnapper } from './snap.mjs';
 export { connectGithubService } from './connect.mjs';

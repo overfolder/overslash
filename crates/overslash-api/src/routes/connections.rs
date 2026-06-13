@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::HeaderMap,
+    extract::{Form, Path, Query, State},
+    http::{HeaderMap, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -16,8 +16,8 @@ use overslash_db::repos::oauth_connection_flow;
 use overslash_db::scopes::{OrgScope, UserScope};
 
 use super::connect_gate::{
-    ParsedSession, SessionError, gone_html, mismatch_html, read_session,
-    session_authorized_for_org_identity,
+    ConnectGateOutcome, SessionError, admin_consent_html, evaluate_connect_gate, gone_html,
+    mismatch_html, read_session,
 };
 use super::util::fmt_time;
 use crate::{
@@ -54,7 +54,12 @@ pub fn router() -> Router<AppState> {
             post(upgrade_connection_scopes),
         )
         .route("/v1/oauth/callback", get(oauth_callback))
+        .route("/v1/oauth/exchange", post(oauth_exchange))
         .route("/connect-authorize", get(connect_authorize))
+        .route(
+            "/connect-authorize/confirm",
+            post(connect_authorize_confirm),
+        )
 }
 
 #[derive(Deserialize)]
@@ -81,6 +86,12 @@ struct InitiateConnectionRequest {
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
+    /// Optional white-label provider `redirect_uri`. See
+    /// [`CreateConnectionInput::redirect_uri`]. Host must be on the org's
+    /// `oauth_callback_allowed_hosts` allow-list; pairs with
+    /// `POST /v1/oauth/exchange`.
+    #[serde(default)]
+    redirect_uri: Option<String>,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -135,6 +146,7 @@ async fn initiate_connection(
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
         return_url: req.return_url,
+        redirect_uri: req.redirect_uri,
         service_instance_id: None,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
@@ -225,37 +237,106 @@ async fn connect_authorize(
         }
     };
 
-    if session_authorized_for_flow(&state, &ext, &session, flow.org_id, flow.identity_id).await? {
-        // Atomically claim the flow for redirect. `consume` is the
-        // gate's single-use UX flag — a concurrent click that already
-        // marked the row returns `None`, in which case we render the
-        // "already been used" page instead of letting two browser tabs
-        // race into the upstream provider. The `/v1/oauth/callback`
-        // security boundary still re-validates everything from the
-        // OAuth `state` parameter regardless.
-        match oauth_connection_flow::consume(state.db(&ext), &flow.id).await? {
-            Some(row) => {
-                return Ok(Redirect::to(&row.upstream_authorize_url).into_response());
-            }
-            None => {
-                return Ok(gone_html(
-                    "This OAuth link has already been used. Initiate the connection again to retry.",
-                ));
-            }
+    match evaluate_connect_gate(&state, &ext, &session, &flow, allow_remint(&ext)).await? {
+        ConnectGateOutcome::Deny => Ok(mismatch_html()),
+        // Admin/actor who is not the owner: render the loud consent page. The
+        // flow is NOT consumed here — the confirm POST is the boundary that
+        // re-validates and consumes. `set_cookie` is recomputed on confirm.
+        ConnectGateOutcome::NeedsConsent {
+            owner_label,
+            provider,
+            ..
+        } => Ok(admin_consent_html(&owner_label, &provider, &flow.id)),
+        ConnectGateOutcome::Allow { set_cookie } => {
+            consume_and_redirect(&state, &ext, &flow.id, set_cookie).await
         }
     }
-
-    Ok(mismatch_html())
 }
 
-async fn session_authorized_for_flow(
+#[derive(Deserialize)]
+struct ConfirmParams {
+    id: String,
+}
+
+/// POST target of the admin/actor consent interstitial ([`admin_consent_html`]).
+/// The consent page is advisory; this handler is the boundary — it re-runs the
+/// full gate evaluation server-side (never trusting the page) and only then
+/// consumes the flow and redirects to the provider. `SameSite=Lax` on the
+/// session cookie blocks a cross-site forge of this POST.
+async fn connect_authorize_confirm(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+    Form(params): Form<ConfirmParams>,
+) -> Result<Response> {
+    let Some(flow) = oauth_connection_flow::get_by_id(state.db(&ext), &params.id).await? else {
+        return Ok(gone_html("This OAuth link is invalid or has been revoked."));
+    };
+    if flow.consumed_at.is_some() {
+        return Ok(gone_html(
+            "This OAuth link has already been used. Initiate the connection again to retry.",
+        ));
+    }
+    if flow.expires_at <= OffsetDateTime::now_utc() {
+        return Ok(gone_html(
+            "This OAuth link has expired. Initiate the connection again to retry.",
+        ));
+    }
+    let session = match read_session(&state, &headers) {
+        Ok(s) => s,
+        Err(SessionError::Missing) => return Err(AppError::Unauthorized("missing session".into())),
+        Err(SessionError::Invalid) => {
+            return Err(AppError::Unauthorized("invalid session cookie".into()));
+        }
+    };
+    match evaluate_connect_gate(&state, &ext, &session, &flow, allow_remint(&ext)).await? {
+        ConnectGateOutcome::Deny => Ok(mismatch_html()),
+        // Owner/auto-switch, or a consented admin/actor — both proceed.
+        ConnectGateOutcome::Allow { set_cookie }
+        | ConnectGateOutcome::NeedsConsent { set_cookie, .. } => {
+            consume_and_redirect(&state, &ext, &flow.id, set_cookie).await
+        }
+    }
+}
+
+/// Whether the connect gate may transparently re-mint the session cookie to the
+/// flow's org. On an explicit org subdomain the dashboard already aligns the
+/// cookie via `/auth/switch-org`, so we never silently re-scope there; on
+/// `Root` (local dev with no subdomains, or the apex) the auto-switch is the
+/// fix for multi-org / multi-IdP users.
+fn allow_remint(ext: &axum::http::Extensions) -> bool {
+    !matches!(
+        ext.get::<crate::middleware::subdomain::RequestOrgContext>(),
+        Some(crate::middleware::subdomain::RequestOrgContext::Org { .. })
+    )
+}
+
+/// Atomically claim the flow for redirect and 303 to the upstream provider,
+/// attaching `set_cookie` only on the winning consume (so we never re-scope a
+/// session for a flow we didn't actually start). `consume` is the gate's
+/// single-use UX flag — a concurrent click that already marked the row returns
+/// `None`, in which case we render the "already been used" page instead of
+/// letting two browser tabs race into the upstream provider. The
+/// `/v1/oauth/callback` security boundary still re-validates everything from the
+/// OAuth `state` parameter regardless.
+async fn consume_and_redirect(
     state: &AppState,
     ext: &axum::http::Extensions,
-    session: &ParsedSession,
-    flow_org_id: Uuid,
-    flow_identity_id: Uuid,
-) -> std::result::Result<bool, AppError> {
-    session_authorized_for_org_identity(state, ext, session, flow_org_id, flow_identity_id).await
+    flow_id: &str,
+    set_cookie: Option<axum::http::HeaderValue>,
+) -> Result<Response> {
+    match oauth_connection_flow::consume(state.db(ext), flow_id).await? {
+        Some(row) => {
+            let mut resp = Redirect::to(&row.upstream_authorize_url).into_response();
+            if let Some(cookie) = set_cookie {
+                resp.headers_mut().insert(header::SET_COOKIE, cookie);
+            }
+            Ok(resp)
+        }
+        None => Ok(gone_html(
+            "This OAuth link has already been used. Initiate the connection again to retry.",
+        )),
+    }
 }
 
 #[derive(Deserialize)]
@@ -321,7 +402,28 @@ async fn oauth_callback(
         Err(e) => return AppError::from(e).into_response(),
     };
 
+    // White-label flows carry a custom `redirect_uri`, so the provider redirects
+    // the user to the *partner's* URL — a white-label flow legitimately never
+    // lands here. Refuse to complete it through this unauthenticated callback:
+    // the partner must forward `{code, state}` to the authenticated, org-checked,
+    // single-use `POST /v1/oauth/exchange`. Without this, an attacker holding the
+    // code + opaque flow id could complete the exchange here, sidestepping the
+    // `WriteAcl` org-boundary and single-use guarantees of the exchange path.
+    if flow.redirect_uri.is_some() {
+        return AppError::BadRequest(
+            "this flow uses a custom redirect_uri; complete it via POST /v1/oauth/exchange".into(),
+        )
+        .into_response();
+    }
+
     let redirect_target = resolve_redirect_target(&state, &flow);
+
+    // The default callback `redirect_uri` (legacy/non-white-label flows only —
+    // custom-redirect flows are refused above). Recomputed from config so it
+    // byte-matches what the authorize URL was built with.
+    let redirect_uri = crate::services::platform_connections::default_callback_redirect_uri(
+        &state.config.public_url,
+    );
 
     let outcome = oauth_callback_inner(
         &state,
@@ -336,30 +438,124 @@ async fn oauth_callback(
         flow.actor_identity_id,
         flow.upgrade_connection_id,
         flow.service_instance_id,
+        &redirect_uri,
     )
     .await;
 
     match (outcome, redirect_target) {
         (Ok(payload), Some(redir)) => success_redirect(redir, &payload),
-        (Ok(payload), None) => {
-            let mut body = serde_json::json!({
-                "status": "connected",
-                "connection_id": payload.connection_id,
-                "provider": payload.provider_key,
-                "account_email": payload.account_email,
-                "scopes": payload.scopes,
-            });
-            if let Some(id) = payload.service_instance_id {
-                body["service_instance_id"] = serde_json::Value::String(id.to_string());
-            }
-            if let Some(code) = payload.service_instance_bind_error {
-                body["service_instance_bind_error"] = serde_json::Value::String(code.into());
-            }
-            Json(body).into_response()
-        }
+        (Ok(payload), None) => Json(callback_success_json(&payload)).into_response(),
         (Err(err), Some(redir)) => error_redirect(redir, &err),
         (Err(err), None) => err.into_response(),
     }
+}
+
+/// The historical `status:"connected"` JSON body for a completed OAuth flow.
+/// Shared by the no-`return_url` branch of [`oauth_callback`] and the
+/// white-label [`oauth_exchange`] endpoint so both stay byte-identical.
+fn callback_success_json(payload: &CallbackSuccess) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "status": "connected",
+        "connection_id": payload.connection_id,
+        "provider": payload.provider_key,
+        "account_email": payload.account_email,
+        "scopes": payload.scopes,
+    });
+    if let Some(id) = payload.service_instance_id {
+        body["service_instance_id"] = serde_json::Value::String(id.to_string());
+    }
+    if let Some(code) = payload.service_instance_bind_error {
+        body["service_instance_bind_error"] = serde_json::Value::String(code.into());
+    }
+    body
+}
+
+#[derive(Deserialize)]
+struct OAuthExchangeRequest {
+    /// The authorization code the provider handed to the partner's callback.
+    code: String,
+    /// The OAuth `state` we emitted at flow creation — the opaque flow-row id.
+    state: String,
+}
+
+/// `POST /v1/oauth/exchange` — server-to-server token exchange for white-label
+/// flows whose provider `redirect_uri` points at a partner-hosted callback
+/// (not `{public_url}/v1/oauth/callback`). The partner receives `{code, state}`
+/// at its own URL and forwards them here with an org API key.
+///
+/// This path deliberately bypasses the browser `/connect-authorize` gate (the
+/// partner ran its own consent UI), so it must enforce single-use itself: it
+/// `consume`s the flow row atomically. The org boundary is enforced by matching
+/// the flow's `org_id` to the caller's. The exchange reuses the flow's persisted
+/// `redirect_uri` (guaranteeing the authorize/exchange match) and returns the
+/// same JSON payload as the JSON branch of `oauth_callback` — no redirect.
+async fn oauth_exchange(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    ip: ClientIp,
+    WriteAcl(acl): WriteAcl,
+    Json(req): Json<OAuthExchangeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let flow_id = req.state.trim();
+    if flow_id.is_empty() {
+        return Err(AppError::BadRequest("missing state parameter".into()));
+    }
+
+    // Look the flow up first so we can enforce the org boundary *before*
+    // consuming — a cross-org caller (who would have to know the unguessable
+    // flow id anyway) must not be able to burn another org's single-use flow.
+    let flow = oauth_connection_flow::get_by_id(state.db(&ext), flow_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("invalid state parameter".into()))?;
+
+    if flow.org_id != acl.org_id {
+        return Err(AppError::Forbidden(
+            "state parameter belongs to another org".into(),
+        ));
+    }
+
+    // Mirror of the `oauth_callback` guard: this endpoint is *only* for
+    // white-label flows (custom `redirect_uri`). A regular flow has no custom
+    // redirect_uri and must complete through the browser `/v1/oauth/callback`.
+    // Rejecting before `consume` keeps the two flow types strictly separated
+    // and avoids burning a regular flow that was never meant for this path.
+    let Some(redirect_uri) = flow.redirect_uri.clone() else {
+        return Err(AppError::BadRequest(
+            "this flow has no custom redirect_uri; complete it via GET /v1/oauth/callback".into(),
+        ));
+    };
+
+    // Single-use: claim the flow atomically. `None` ⇒ expired or already
+    // exchanged (also resolves the concurrent-double-exchange race — only one
+    // caller wins). The gate is bypassed on this path, so we own single-use.
+    let flow = oauth_connection_flow::consume(state.db(&ext), flow_id)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("state parameter is expired or already used".into()))?;
+    debug_assert_eq!(flow.redirect_uri.as_deref(), Some(redirect_uri.as_str()));
+
+    let params = OAuthCallbackParams {
+        code: req.code,
+        state: flow_id.to_string(),
+    };
+
+    let payload = oauth_callback_inner(
+        &state,
+        &ext,
+        &ip,
+        &params,
+        flow.org_id,
+        flow.identity_id,
+        &flow.provider_key,
+        flow.byoc_credential_id,
+        flow.pkce_code_verifier.as_deref(),
+        flow.actor_identity_id,
+        flow.upgrade_connection_id,
+        flow.service_instance_id,
+        &redirect_uri,
+    )
+    .await?;
+
+    Ok(Json(callback_success_json(&payload)))
 }
 
 /// Build a verified redirect target from the flow row, or `None` if any
@@ -460,6 +656,7 @@ async fn oauth_callback_inner(
     actor_identity_id: Uuid,
     upgrade_connection_id: Option<Uuid>,
     service_instance_id: Option<Uuid>,
+    redirect_uri: &str,
 ) -> Result<CallbackSuccess> {
     let provider = overslash_db::repos::oauth_provider::get_by_key(state.db(ext), provider_key)
         .await?
@@ -479,19 +676,17 @@ async fn oauth_callback_inner(
 
     let effective_byoc_id = creds.byoc_credential_id;
 
-    let redirect_uri = format!(
-        "{}/v1/oauth/callback",
-        state.config.public_url.trim_end_matches('/')
-    );
-
-    // Exchange code for tokens
+    // Exchange code for tokens. `redirect_uri` is passed in by the caller — it
+    // is the exact value the authorize URL was built with (read off the flow
+    // row), so it byte-matches what the provider saw. Recomputing it here would
+    // break white-label flows whose authorize `redirect_uri` is partner-hosted.
     let tokens = oauth::exchange_code(
         &state.http_client,
         &provider,
         &creds.client_id,
         &creds.client_secret,
         &params.code,
-        &redirect_uri,
+        redirect_uri,
         code_verifier,
     )
     .await
@@ -840,11 +1035,30 @@ struct UpgradeScopesRequest {
     /// Additional scopes to request on top of the connection's current set.
     /// May overlap the current set — duplicates are deduped.
     scopes: Vec<String>,
+    /// Optional white-label provider `redirect_uri` for the reauth flow. Host
+    /// must be on the org's `oauth_callback_allowed_hosts` allow-list; pairs
+    /// with `POST /v1/oauth/exchange`. See
+    /// [`CreateConnectionInput::redirect_uri`].
+    #[serde(default)]
+    redirect_uri: Option<String>,
+    /// REST-only opt-in: include the raw provider authorize URL alongside
+    /// the proxied form. Intended for white-label integrations that drive
+    /// their own consent UI and exchange via `POST /v1/oauth/exchange`.
+    /// The MCP path never sets this — chat-delivered links go through the gate.
+    #[serde(default)]
+    include_raw: bool,
 }
 
 #[derive(Serialize)]
 struct UpgradeScopesResponse {
     auth_url: String,
+    /// Raw upstream provider authorize URL. Only present when the caller
+    /// opts in via `include_raw: true`. Bypasses the connect gate so a
+    /// white-label partner can run its own consent screen and then complete
+    /// the dance through `POST /v1/oauth/exchange` without the gate
+    /// consuming the single-use flow first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
     state: String,
     connection_id: Uuid,
     /// The union of existing + requested scopes the provider will be asked
@@ -857,6 +1071,11 @@ struct UpgradeScopesResponse {
 /// flow row whose `upgrade_connection_id` points at this connection — the
 /// callback reads that off the row and updates this connection in place
 /// instead of minting a new one.
+///
+/// White-label callers reconnecting through their own consent UI pass
+/// `redirect_uri` (allow-listed host) plus `include_raw: true` to get the
+/// raw provider authorize URL back, then finish via `POST /v1/oauth/exchange`.
+/// Symmetric to `include_raw` on `POST /v1/connections`.
 async fn upgrade_connection_scopes(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -921,6 +1140,7 @@ async fn upgrade_connection_scopes(
             on_behalf_of: None,
             upgrade_connection_id: Some(id),
             return_url: None,
+            redirect_uri: req.redirect_uri.clone(),
             service_instance_id: None,
         },
         RequestMeta {
@@ -930,8 +1150,15 @@ async fn upgrade_connection_scopes(
     )
     .await?;
 
+    // Mirror create's `include_raw` opt-in: the kernel carries `raw` in a
+    // `#[serde(skip)]` field, so only this explicit flag surfaces it. Bypassing
+    // the gate is what lets the white-label `POST /v1/oauth/exchange` follow-up
+    // succeed (the gate would otherwise consume the single-use flow first).
+    let raw = req.include_raw.then(|| response.raw.clone());
+
     Ok(Json(UpgradeScopesResponse {
         auth_url: response.auth_url,
+        raw,
         state: response.state,
         connection_id: id,
         requested_scopes: effective_scopes,

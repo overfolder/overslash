@@ -256,6 +256,42 @@ pub async fn set_audit_response_body_mode(
     Ok(result.rows_affected() > 0)
 }
 
+/// Read the `oauth_callback_allowed_hosts` setting for an org — a
+/// comma-separated, lowercased host allow-list governing which custom OAuth
+/// `redirect_uri` values an org API key may use in a white-label connect flow.
+/// Empty string means custom redirect URIs are disabled for the org. Returns
+/// `None` if the org doesn't exist.
+pub async fn get_oauth_callback_allowed_hosts(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT oauth_callback_allowed_hosts FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.oauth_callback_allowed_hosts))
+}
+
+/// Update the `oauth_callback_allowed_hosts` setting for an org. The caller is
+/// expected to have normalized the value (lowercased, trimmed, deduped,
+/// comma-joined) at the request boundary.
+pub async fn set_oauth_callback_allowed_hosts(
+    pool: &PgPool,
+    id: Uuid,
+    hosts: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET oauth_callback_allowed_hosts = $2, updated_at = now() WHERE id = $1",
+        id,
+        hosts,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Atomically update template settings and return the new values.
 pub async fn update_template_settings(
     pool: &PgPool,

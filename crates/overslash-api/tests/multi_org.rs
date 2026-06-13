@@ -21,6 +21,7 @@ mod common;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use overslash_api::services::jwt;
+use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
 use overslash_db::repos::{identity, membership, org_bootstrap, user as user_repo};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -1250,4 +1251,350 @@ async fn consent_switch_org_rejects_different_user() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+// ── /connect-authorize gate: multi-org + admin/actor override ───────────────
+//
+// Reproduces and guards the "Wrong account" fixes: a multi-org / multi-IdP
+// human auto-switches to the flow's org, and an org admin (or the flow's
+// actor) may complete a connection bound to *another* identity after a loud
+// consent confirmation. See `routes/connect_gate.rs::evaluate_connect_gate`.
+
+/// Insert an `oauth_connection_flows` row directly and return its id.
+async fn seed_connect_flow(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    actor_identity_id: Uuid,
+) -> String {
+    let id = format!("flow-{}", Uuid::new_v4().simple());
+    let scopes: Vec<String> = Vec::new();
+    oauth_connection_flow::create(
+        pool,
+        &CreateOauthConnectionFlow {
+            id: &id,
+            org_id,
+            identity_id,
+            actor_identity_id,
+            provider_key: "google",
+            byoc_credential_id: None,
+            scopes: &scopes,
+            pkce_code_verifier: None,
+            upstream_authorize_url: "https://provider.example/authorize?x=1",
+            expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
+            created_ip: None,
+            created_user_agent: None,
+            return_url: None,
+            redirect_uri: None,
+            upgrade_connection_id: None,
+            service_instance_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    id
+}
+
+/// A bare user-kind identity in `org_id` (no `user_id`/membership) — used as a
+/// flow *owner* the acting session is not.
+async fn seed_owner_identity(pool: &PgPool, org_id: Uuid, name: &str, email: &str) -> Uuid {
+    identity::create_with_email(pool, org_id, name, "user", None, Some(email), json!({}))
+        .await
+        .unwrap()
+        .id
+}
+
+/// A non-admin user-kind identity in `org_id` with its own `user_id` +
+/// membership. Returns `(identity_id, user_id)`.
+async fn seed_member_identity(pool: &PgPool, org_id: Uuid, name: &str) -> (Uuid, Uuid) {
+    let email = format!(
+        "{}-{}@member.test",
+        name.to_lowercase(),
+        Uuid::new_v4().simple()
+    );
+    let user = user_repo::create_overslash_backed(
+        pool,
+        Some(&email),
+        Some(name),
+        "google",
+        &format!("sub-{}", Uuid::new_v4()),
+    )
+    .await
+    .unwrap();
+    let ident =
+        identity::create_with_email(pool, org_id, name, "user", None, Some(&email), json!({}))
+            .await
+            .unwrap();
+    identity::set_user_id(pool, org_id, ident.id, Some(user.id))
+        .await
+        .unwrap();
+    membership::create(pool, user.id, org_id, membership::ROLE_MEMBER)
+        .await
+        .unwrap();
+    (ident.id, user.id)
+}
+
+async fn flow_consumed(pool: &PgPool, flow_id: &str) -> bool {
+    oauth_connection_flow::get_by_id(pool, flow_id)
+        .await
+        .unwrap()
+        .expect("flow row exists")
+        .consumed_at
+        .is_some()
+}
+
+/// A client that does NOT follow redirects, so a 303 to the external provider
+/// is observable instead of triggering a (failing) DNS lookup of that host.
+fn nr_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+async fn get_gate(base: &str, flow_id: &str, cookie: &str) -> reqwest::Response {
+    nr_client()
+        .get(format!("{base}/connect-authorize?id={flow_id}"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn post_confirm(base: &str, flow_id: &str, cookie: &str) -> reqwest::Response {
+    nr_client()
+        .post(format!("{base}/connect-authorize/confirm"))
+        .header("cookie", format!("oss_session={cookie}"))
+        .form(&[("id", flow_id)])
+        .send()
+        .await
+        .unwrap()
+}
+
+/// Tier 1 — the flow's owner clicking in their own org: straight 303, no remint.
+#[tokio::test]
+async fn connect_gate_owner_same_org_redirects_without_remint() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+    let flow = seed_connect_flow(&pool, org_a, ident_a, ident_a).await;
+    let cookie = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert!(
+        resp.headers()[reqwest::header::LOCATION]
+            .to_str()
+            .unwrap()
+            .starts_with("https://provider.example/")
+    );
+    assert!(
+        resp.headers().get("set-cookie").is_none(),
+        "same-org owner must not re-mint the session"
+    );
+    assert!(flow_consumed(&pool, &flow).await);
+}
+
+/// Tier 2 — the same human, active in org A, clicks a flow that lives in org B
+/// (a different org they belong to): transparent auto-switch (303 + Set-Cookie
+/// scoped to org B) instead of "Wrong account".
+#[tokio::test]
+async fn connect_gate_cross_org_same_human_autoswitches() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+    let (org_b, ident_b) = seed_extra_org(&pool, user_id, "Beta").await;
+    let flow = seed_connect_flow(&pool, org_b, ident_b, ident_b).await;
+    let cookie = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let token = resp
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| c.split(';').next())
+        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .expect("cross-org gate must re-mint the session cookie")
+        .to_string();
+    let secret = hex::decode("cd".repeat(32)).unwrap();
+    let claims = jwt::verify(&secret, &token, jwt::AUD_SESSION).expect("re-minted JWT verifies");
+    assert_eq!(claims.org, org_b, "session re-scoped to the flow's org");
+    assert_eq!(claims.sub, ident_b, "sub is the human's identity in org B");
+    assert_eq!(claims.user_id, Some(user_id));
+    assert!(flow_consumed(&pool, &flow).await);
+}
+
+/// Cross-org but NOT a member of the flow's org → "Wrong account", untouched.
+#[tokio::test]
+async fn connect_gate_cross_org_non_member_denies() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+    let stranger_org: Uuid =
+        sqlx::query_scalar("INSERT INTO orgs (name, slug) VALUES ('Stranger', $1) RETURNING id")
+            .bind(format!("stranger-{}", Uuid::new_v4().simple()))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let owner = seed_owner_identity(&pool, stranger_org, "Owner", "owner@stranger.test").await;
+    let flow = seed_connect_flow(&pool, stranger_org, owner, owner).await;
+    let cookie = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(!flow_consumed(&pool, &flow).await, "deny must not consume");
+}
+
+/// Tier 3 — an org admin connecting a service owned by a *different* identity
+/// gets the loud consent page (NOT a silent redirect, NOT consumed); the
+/// confirm POST then re-validates and redirects to the provider.
+#[tokio::test]
+async fn connect_gate_admin_override_shows_consent_then_confirm_redirects() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    // `ident_a` is an org admin (seed sets is_org_admin = true).
+    let (org_a, ident_a, user_id) = seed_user_with_single_org(&pool).await;
+    let owner = seed_owner_identity(&pool, org_a, "Bob", "bob@owner.test").await;
+    let flow = seed_connect_flow(&pool, org_a, owner, owner).await;
+    let cookie = mint_session_cookie_with_user(org_a, ident_a, Some(user_id));
+
+    // GET → consent interstitial naming the owner; flow not consumed.
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Bob"), "consent names the owner: {body}");
+    assert!(
+        body.contains("Continue to google"),
+        "consent has a confirm button"
+    );
+    assert!(
+        !flow_consumed(&pool, &flow).await,
+        "consent page must not consume"
+    );
+
+    // POST confirm → 303 to the provider; flow now consumed; no remint (same org).
+    let resp = post_confirm(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert!(
+        resp.headers()[reqwest::header::LOCATION]
+            .to_str()
+            .unwrap()
+            .starts_with("https://provider.example/")
+    );
+    assert!(
+        resp.headers().get("set-cookie").is_none(),
+        "same-org: no remint"
+    );
+    assert!(flow_consumed(&pool, &flow).await);
+}
+
+/// Tier 3 — the flow's `actor` (here a non-admin) may also override via consent.
+#[tokio::test]
+async fn connect_gate_actor_override_confirm_redirects() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, _ident_a, _user_id) = seed_user_with_single_org(&pool).await;
+    let (carol, carol_user) = seed_member_identity(&pool, org_a, "Carol").await;
+    let owner = seed_owner_identity(&pool, org_a, "Bob", "bob@owner.test").await;
+    // Carol is the actor that created the flow, but it's owned by Bob.
+    let flow = seed_connect_flow(&pool, org_a, owner, carol).await;
+    let cookie = mint_session_cookie_with_user(org_a, carol, Some(carol_user));
+
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "actor sees consent, not a deny"
+    );
+    assert!(!flow_consumed(&pool, &flow).await);
+
+    let resp = post_confirm(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert!(flow_consumed(&pool, &flow).await);
+}
+
+/// An ineligible session (not owner, not admin, not actor) is denied on BOTH
+/// the GET gate and a direct confirm POST — proving the consent page is
+/// advisory and the confirm handler is the real boundary.
+#[tokio::test]
+async fn connect_gate_ineligible_denied_on_get_and_confirm() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, _ident_a, _user_id) = seed_user_with_single_org(&pool).await;
+    let (carol, carol_user) = seed_member_identity(&pool, org_a, "Carol").await;
+    let owner = seed_owner_identity(&pool, org_a, "Bob", "bob@owner.test").await;
+    // Owned by + actor = Bob; Carol is a plain member with no relationship.
+    let flow = seed_connect_flow(&pool, org_a, owner, owner).await;
+    let cookie = mint_session_cookie_with_user(org_a, carol, Some(carol_user));
+
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "GET denied");
+    assert!(!flow_consumed(&pool, &flow).await);
+
+    // Forge a direct confirm POST, skipping the consent page entirely.
+    let resp = post_confirm(&base, &flow, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "confirm re-validates");
+    assert!(
+        !flow_consumed(&pool, &flow).await,
+        "denied confirm must not consume"
+    );
+}
+
+/// Defence-in-depth: an identity flagged `is_org_admin` but with NO live
+/// membership (e.g. a stale row after a future offboarding path) must be denied
+/// — admin status alone, without a membership, does not authorize the override.
+#[tokio::test]
+async fn connect_gate_admin_without_membership_denied() {
+    let pool = common::test_pool().await;
+    let (addr, _client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_a, _ident_a, _user_id) = seed_user_with_single_org(&pool).await;
+
+    // is_org_admin = true, user_id set, but deliberately NO membership row.
+    let email = format!("stale-{}@nomember.test", Uuid::new_v4().simple());
+    let user = user_repo::create_overslash_backed(
+        &pool,
+        Some(&email),
+        Some("Stale Admin"),
+        "google",
+        &format!("sub-{}", Uuid::new_v4()),
+    )
+    .await
+    .unwrap();
+    let stale = identity::create_with_email(
+        &pool,
+        org_a,
+        "Stale Admin",
+        "user",
+        None,
+        Some(&email),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    identity::set_is_org_admin(&pool, org_a, stale.id, true)
+        .await
+        .unwrap();
+    identity::set_user_id(&pool, org_a, stale.id, Some(user.id))
+        .await
+        .unwrap();
+
+    let owner = seed_owner_identity(&pool, org_a, "Bob", "bob@owner.test").await;
+    let flow = seed_connect_flow(&pool, org_a, owner, owner).await;
+    let cookie = mint_session_cookie_with_user(org_a, stale.id, Some(user.id));
+
+    let resp = get_gate(&base, &flow, &cookie).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "admin flag without a live membership must not authorize"
+    );
+    assert!(!flow_consumed(&pool, &flow).await);
 }

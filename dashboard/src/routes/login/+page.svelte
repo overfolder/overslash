@@ -50,6 +50,44 @@
 		}
 	}
 
+	// Passwordless email magic-link. Submitting POSTs to the backend, which
+	// always responds 200 (no account enumeration) and emails a one-time link;
+	// we swap to a "check your inbox" confirmation rather than redirecting —
+	// the user continues by clicking the emailed link.
+	let email = $state('');
+	let magicLinkSubmitting = $state(false);
+	let magicLinkSentTo = $state<string | null>(null);
+	let magicLinkError = $state<string | null>(null);
+	// Only populated when the backend runs with DEV_AUTH (local/dev): the
+	// NoopMailer drops the body, so the verify URL is echoed back for testing.
+	let devVerifyUrl = $state<string | null>(null);
+
+	async function submitMagicLink(e: SubmitEvent) {
+		e.preventDefault();
+		if (magicLinkSubmitting) return;
+		magicLinkError = null;
+		magicLinkSubmitting = true;
+		try {
+			const res = await fetch('/auth/magic-link/request', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				credentials: 'include',
+				body: JSON.stringify({ email, next })
+			});
+			if (!res.ok) {
+				magicLinkError = 'Something went wrong. Please try again.';
+				return;
+			}
+			const body = await res.json().catch(() => ({}));
+			devVerifyUrl = typeof body?.dev_verify_url === 'string' ? body.dev_verify_url : null;
+			magicLinkSentTo = email;
+		} catch {
+			magicLinkError = 'Network error. Please try again.';
+		} finally {
+			magicLinkSubmitting = false;
+		}
+	}
+
 	function brandClass(key: string): string {
 		if (key === 'google') return 'btn-google';
 		if (key === 'github') return 'btn-github';
@@ -78,6 +116,35 @@
 	<title>Sign in — Overslash</title>
 </svelte:head>
 
+{#snippet brandIcon(key: string)}
+	{#if key === 'google'}
+		<svg class="brand-icon" viewBox="0 0 18 18" aria-hidden="true">
+			<path
+				fill="#4285F4"
+				d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"
+			/>
+			<path
+				fill="#34A853"
+				d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"
+			/>
+			<path
+				fill="#FBBC05"
+				d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.997 8.997 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"
+			/>
+			<path
+				fill="#EA4335"
+				d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"
+			/>
+		</svg>
+	{:else if key === 'github'}
+		<svg class="brand-icon" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+			<path
+				d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"
+			/>
+		</svg>
+	{/if}
+{/snippet}
+
 <div class="login-page">
 	<div class="card">
 		<div class="wordmark" aria-label="Overslash">
@@ -86,6 +153,10 @@
 
 		{#if reason === 'expired'}
 			<div class="toast">Session expired — please sign in again.</div>
+		{/if}
+
+		{#if reason === 'magic_link_invalid'}
+			<div class="toast">That sign-in link is invalid or has expired. Request a new one below.</div>
 		{/if}
 
 		<h1>Sign in</h1>
@@ -105,7 +176,46 @@
 		{:else}
 			<div class="providers">
 				{#each providers as p (p.key)}
-					{#if p.key === 'dev'}
+					{#if p.key === 'email'}
+						{#if magicLinkSentTo}
+							<div class="magic-sent" data-testid="magic-link-sent">
+								<p class="magic-sent-title">Check your inbox</p>
+								<p class="magic-sent-body">
+									We sent a sign-in link to <strong>{magicLinkSentTo}</strong>. Click it to
+									finish signing in — it expires in 15 minutes.
+								</p>
+								{#if devVerifyUrl}
+									<a class="magic-dev-link" href={devVerifyUrl} data-testid="magic-link-dev-url"
+										>Dev: open sign-in link</a
+									>
+								{/if}
+							</div>
+						{:else}
+							<form class="magic-form" onsubmit={submitMagicLink}>
+								<input
+									class="magic-input"
+									type="email"
+									bind:value={email}
+									placeholder="you@example.com"
+									autocomplete="email"
+									aria-label="Email address"
+									data-testid="magic-link-email"
+									required
+								/>
+								<button
+									class="btn btn-primary"
+									type="submit"
+									disabled={magicLinkSubmitting}
+									data-testid="magic-link-submit"
+								>
+									{magicLinkSubmitting ? 'Sending…' : 'Email me a sign-in link'}
+								</button>
+								{#if magicLinkError}
+									<p class="magic-error">{magicLinkError}</p>
+								{/if}
+							</form>
+						{/if}
+					{:else if p.key === 'dev'}
 						<div class="dev-row">
 							<button class="btn {brandClass(p.key)}" onclick={devLogin}>
 								Continue with {p.display_name}
@@ -123,7 +233,8 @@
 						</div>
 					{:else}
 						<a class="btn {brandClass(p.key)}" href={loginUrl(p.key)}>
-							Continue with {p.display_name}
+							{@render brandIcon(p.key)}
+							<span>Continue with {p.display_name}</span>
 						</a>
 					{/if}
 				{/each}
@@ -163,7 +274,12 @@
 	}
 
 	.wordmark .slash {
+		font-family: var(--font-mono);
+		font-weight: 800;
 		color: var(--color-primary);
+		display: inline-block;
+		transform: skewX(-12deg);
+		margin: 0 1px;
 	}
 
 	h1 {
@@ -191,7 +307,10 @@
 	}
 
 	.btn {
-		display: block;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.55rem;
 		text-align: center;
 		padding: 0.7rem 1rem;
 		border-radius: 8px;
@@ -203,6 +322,12 @@
 		background: var(--color-surface);
 		color: var(--color-text);
 		transition: background 0.15s, border-color 0.15s;
+	}
+
+	.brand-icon {
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
 	}
 
 	.btn:hover {
@@ -264,5 +389,76 @@
 		padding: 0.1rem 0.3rem;
 		border-radius: 3px;
 		font-size: 0.8rem;
+	}
+
+	.btn-primary {
+		background: var(--color-primary);
+		color: #fff;
+		border-color: var(--color-primary);
+	}
+
+	.btn-primary:hover {
+		background: var(--color-primary-hover);
+		border-color: var(--color-primary-hover);
+	}
+
+	.btn-primary:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.magic-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.magic-input {
+		padding: 0.7rem 0.85rem;
+		border-radius: 8px;
+		border: 1px solid var(--color-border);
+		background: var(--color-surface);
+		color: var(--color-text);
+		font-size: 0.9rem;
+	}
+
+	.magic-input:focus {
+		outline: none;
+		border-color: var(--color-primary);
+		box-shadow: 0 0 0 3px rgba(99, 89, 217, 0.15);
+	}
+
+	.magic-error {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--color-danger);
+		text-align: center;
+	}
+
+	.magic-sent {
+		text-align: center;
+		padding: 0.5rem 0;
+	}
+
+	.magic-sent-title {
+		margin: 0 0 0.4rem 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--color-text);
+	}
+
+	.magic-sent-body {
+		margin: 0;
+		font-size: 0.85rem;
+		line-height: 1.5;
+		color: var(--color-text-muted);
+	}
+
+	.magic-dev-link {
+		display: inline-block;
+		margin-top: 0.75rem;
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--color-primary);
 	}
 </style>

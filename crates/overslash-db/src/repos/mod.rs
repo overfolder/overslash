@@ -27,6 +27,7 @@ pub mod enabled_global_template;
 pub mod execution;
 pub mod group;
 pub mod identity;
+pub mod magic_link_token;
 pub mod mcp_client_agent_binding;
 pub mod mcp_elicitation;
 pub mod mcp_refresh_token;

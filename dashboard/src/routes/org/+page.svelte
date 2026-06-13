@@ -7,6 +7,7 @@
 		IdpConfig,
 		ManagedSigninSettings,
 		McpClient,
+		OAuthCallbackSettings,
 		OAuthCredential,
 		OrgInfo,
 		OrgInvite,
@@ -42,6 +43,11 @@
 	let auditSettings = $state<AuditSettings | null>(null);
 	let auditSaving = $state(false);
 	let auditError = $state<string | null>(null);
+	let oauthCallbackSettings = $state<OAuthCallbackSettings | null>(null);
+	let oauthCallbackSaving = $state(false);
+	let oauthCallbackError = $state<string | null>(null);
+	// Draft host being typed into the "add" input, separate from the saved list.
+	let oauthCallbackNewHost = $state('');
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
@@ -62,6 +68,7 @@
 		secretRequestSettings = data.secretRequestSettings;
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
+		oauthCallbackSettings = data.oauthCallbackSettings;
 		managedSigninSettings = data.managedSigninSettings;
 		invites = data.invites;
 		subscription = data.subscription;
@@ -133,6 +140,7 @@
 	] as const;
 	let showOauthCredForm = $state(false);
 	let oauthCredEditingProvider = $state<string | null>(null);
+	let oauthCredOverridingEnv = $state(false);
 	let oauthCredProvider = $state<string>('google');
 	let oauthCredClientId = $state('');
 	let oauthCredClientSecret = $state('');
@@ -360,6 +368,7 @@
 
 	function openAddOauthCred() {
 		oauthCredEditingProvider = null;
+		oauthCredOverridingEnv = false;
 		// Pick a default provider that isn't already configured, falling back
 		// to "google" if everything is already configured.
 		const taken = new Set(oauthCredentials.map((c) => c.provider_key));
@@ -373,6 +382,7 @@
 
 	function openEditOauthCred(row: OAuthCredential) {
 		oauthCredEditingProvider = row.provider_key;
+		oauthCredOverridingEnv = row.source === 'env';
 		oauthCredProvider = row.provider_key;
 		oauthCredClientId = '';
 		oauthCredClientSecret = '';
@@ -498,6 +508,45 @@
 		} finally {
 			auditSaving = false;
 		}
+	}
+
+	// PATCH the full allow-list. The endpoint replaces the list wholesale and
+	// returns the normalized result, so add/remove both just send the next list.
+	async function saveOauthCallbackHosts(nextHosts: string[]) {
+		if (!org) return;
+		oauthCallbackSaving = true;
+		oauthCallbackError = null;
+		try {
+			const updated = await session.patch<OAuthCallbackSettings>(
+				`/v1/orgs/${org.id}/oauth-callback-settings`,
+				{ allowed_hosts: nextHosts }
+			);
+			oauthCallbackSettings = updated;
+		} catch (err) {
+			oauthCallbackError = asMessage(err);
+		} finally {
+			oauthCallbackSaving = false;
+		}
+	}
+
+	async function addOauthCallbackHost(e: Event) {
+		e.preventDefault();
+		const host = oauthCallbackNewHost.trim().toLowerCase();
+		if (!host || !oauthCallbackSettings) return;
+		if (oauthCallbackSettings.allowed_hosts.includes(host)) {
+			oauthCallbackError = `${host} is already on the allow-list.`;
+			return;
+		}
+		await saveOauthCallbackHosts([...oauthCallbackSettings.allowed_hosts, host]);
+		// Only clear the input when the save actually succeeded (no error set).
+		if (!oauthCallbackError) oauthCallbackNewHost = '';
+	}
+
+	async function removeOauthCallbackHost(host: string) {
+		if (!oauthCallbackSettings) return;
+		await saveOauthCallbackHosts(
+			oauthCallbackSettings.allowed_hosts.filter((h) => h !== host)
+		);
 	}
 
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
@@ -804,6 +853,65 @@
 				{#if auditError}
 					<div class="form-error">{auditError}</div>
 				{/if}
+			{/if}
+		</section>
+
+		<!-- White-label OAuth callback hosts -->
+		<section class="card">
+			<h2>OAuth callback hosts</h2>
+			<p class="section-desc">
+				Hosts an org API key may use as a custom OAuth <code>redirect_uri</code>
+				when starting a white-label connect flow (passed to
+				<code>POST /v1/connections</code> or <code>POST /v1/services</code>). Each
+				host must also be registered as a redirect URI on your provider's OAuth
+				client. The partner backend receives the provider's <code>code</code> and
+				<code>state</code> at its own URL and forwards them to
+				<code>POST /v1/oauth/exchange</code>. An empty list disables custom
+				redirect URIs — connect flows use the default Overslash callback.
+			</p>
+			{#if oauthCallbackSettings}
+				{#if oauthCallbackSettings.allowed_hosts.length > 0}
+					<ul class="host-list">
+						{#each oauthCallbackSettings.allowed_hosts as host (host)}
+							<li class="host-row">
+								<code class="host-name">{host}</code>
+								<button
+									type="button"
+									class="btn-link danger"
+									disabled={oauthCallbackSaving}
+									onclick={() => removeOauthCallbackHost(host)}
+								>
+									Remove
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{:else}
+					<p class="empty-hint">No callback hosts configured.</p>
+				{/if}
+				<form class="inline-form" onsubmit={addOauthCallbackHost}>
+					<label>
+						Add host
+						<input
+							type="text"
+							bind:value={oauthCallbackNewHost}
+							placeholder="app.overfolder.com"
+							disabled={oauthCallbackSaving}
+						/>
+					</label>
+					{#if oauthCallbackError}
+						<p class="form-error">{oauthCallbackError}</p>
+					{/if}
+					<div class="form-actions">
+						<button
+							type="submit"
+							class="btn btn-primary"
+							disabled={oauthCallbackSaving || !oauthCallbackNewHost.trim()}
+						>
+							{oauthCallbackSaving ? 'Saving…' : 'Add host'}
+						</button>
+					</div>
+				</form>
 			{/if}
 		</section>
 
@@ -1209,7 +1317,9 @@
 											Remove
 										</button>
 									{:else}
-										<span class="muted small">read-only</span>
+										<button type="button" class="btn-link" onclick={() => openEditOauthCred(row)}>
+											Override
+										</button>
 									{/if}
 								</td>
 							</tr>
@@ -1220,6 +1330,13 @@
 
 			{#if showOauthCredForm}
 				<form class="inline-form" onsubmit={submitOauthCred}>
+					{#if oauthCredOverridingEnv}
+						<p class="muted small">
+							This provider is currently served by environment variables. Saving an
+							org-level credential here overrides that default for both service
+							connections and IdP login.
+						</p>
+					{/if}
 					<label>
 						Provider
 						<select bind:value={oauthCredProvider} disabled={oauthCredEditingProvider !== null}>
@@ -1877,6 +1994,34 @@
 		color: var(--color-danger, #b42318);
 	}
 
+	.host-list {
+		list-style: none;
+		margin: 0.5rem 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.host-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+		padding: 0.45rem 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 4px;
+	}
+	.host-name {
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		word-break: break-all;
+	}
+	.empty-hint {
+		margin: 0.5rem 0 0;
+		color: var(--color-text-muted);
+		font-size: 0.85rem;
+		font-style: italic;
+	}
 	.inline-form {
 		margin-top: 1rem;
 		display: flex;

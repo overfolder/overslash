@@ -753,7 +753,7 @@ GitHub            Iv1.a8b2c3...            ● Secrets     [Edit] [Remove]
 - **Client Secret**: password input — stored as org secret `OAUTH_{PROVIDER}_CLIENT_SECRET`
 - On save, creates (or updates) two org-level secrets with the well-known names.
 
-Credentials configured via environment variables show an "env" badge and are read-only (same pattern as IdP env overrides).
+Credentials configured via environment variables show an "env" badge and an **Override** action. Saving an org-level credential overrides the environment default for that provider — org secrets win over env vars on both the service-connection cascade and the managed-signin login path — and the row flips from "env vars" to "org secrets".
 
 #### Webhooks
 

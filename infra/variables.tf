@@ -75,6 +75,24 @@ variable "enable_dev_auth" {
   default     = false
 }
 
+variable "enable_magic_link" {
+  description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on: it's the working login on an env with no external IdP configured."
+  type        = bool
+  default     = true
+}
+
+variable "enable_google_login" {
+  description = "Provision + inject the Google LOGIN OAuth client (Sign-in with Google). Default-on to preserve existing behavior; populate the secret values post-apply."
+  type        = bool
+  default     = true
+}
+
+variable "enable_github_login" {
+  description = "Provision + inject the GitHub LOGIN OAuth App (Sign-in with GitHub). Off by default; enable per-env via tfvars and populate the secret values post-apply."
+  type        = bool
+  default     = false
+}
+
 variable "rust_log" {
   description = "RUST_LOG value for the API container. Defaults to `info`; set to `debug` in dev for verbose logging."
   type        = string

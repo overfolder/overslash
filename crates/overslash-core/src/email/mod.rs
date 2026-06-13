@@ -35,6 +35,12 @@ pub const TEST_TEMPLATE_HTML: &str = include_str!("../../templates/email/test.ht
 pub const WELCOME_TEMPLATE_SUBJECT: &str = "Welcome to Overslash";
 pub const WELCOME_TEMPLATE_HTML: &str = include_str!("../../templates/email/welcome.html");
 
+/// Passwordless email magic-link sign-in. Transactional (user-initiated,
+/// one-to-one) — not gated by `welcome_emails_unsubscribed_at` and ships
+/// without an unsubscribe link. Placeholder: `{verify_url}`.
+pub const MAGIC_LINK_TEMPLATE_SUBJECT: &str = "Your Overslash sign-in link";
+pub const MAGIC_LINK_TEMPLATE_HTML: &str = include_str!("../../templates/email/magic_link.html");
+
 /// Daily webhook DLQ digest. One email per (org admin, day) when the org has
 /// terminal webhook failures in the last 24 hours. Placeholders:
 /// `{org_name}`, `{endpoint_count}`, `{rows_html}` (pre-rendered `<tr>` block
