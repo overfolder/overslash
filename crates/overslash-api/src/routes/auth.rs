@@ -1399,7 +1399,9 @@ async fn drop_account_membership(
             identity_id: Some(session.identity_id),
             action: "membership.removed",
             resource_type: Some("membership"),
-            resource_id: Some(org_id),
+            // The user who left — so audit filtering by resource_id surfaces
+            // this departure (org_id would bury it under the org itself).
+            resource_id: Some(user_id),
             detail: json!({
                 "user_id": user_id,
                 "was_original_creator": was_original_creator,

@@ -209,6 +209,23 @@ async fn delete_identity(
 ) -> Result<StatusCode> {
     use overslash_db::repos::identity::DeleteLeafOutcome;
 
+    // Look the target up first so we can branch on kind. A `user`-kind identity
+    // that's linked to a human (`user_id`) represents that human's membership in
+    // the org, not a deletable leaf node: hard-deleting just its row would orphan
+    // the surviving `user_org_memberships` row (an invariant violation that 500s
+    // the user's next login). So routing a delete at a linked user means "remove
+    // this member from the org" — cascade-archive their subtree and drop their
+    // membership. Bare user identities (no linked human — e.g. created directly
+    // via the API) keep the original leaf hard-delete behaviour.
+    let target = scope
+        .get_identity(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    if target.kind == "user" && target.user_id.is_some() {
+        return remove_user_from_org(acl, scope, ip, id).await;
+    }
+
     // Atomic delete: holds FOR UPDATE on the parent row so concurrent
     // FK-checking inserts can't sneak a child in between the leaf check
     // and the delete (which would otherwise be silently cascade-deleted).
@@ -234,6 +251,72 @@ async fn delete_identity(
             resource_id: Some(id),
             detail: serde_json::json!({}),
             description: None,
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Remove a human user from the org (admin-only). Cascade-archives the user's
+/// identity subtree (revoking API keys + expiring approvals), drops their
+/// `user_org_memberships` row, and detaches the archived identity from the user
+/// — all atomically. Guards against removing yourself or the org's last admin.
+async fn remove_user_from_org(
+    acl: crate::extractors::OrgAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    id: Uuid,
+) -> Result<StatusCode> {
+    use overslash_db::repos::identity::RemoveUserOutcome;
+
+    // You can't evict yourself here — that would be a self-inflicted lockout
+    // (and the last-admin guard wouldn't fire if you weren't an admin). Leaving
+    // an org is a separate, self-service flow (`DELETE /v1/account/memberships`).
+    if acl.identity_id == Some(id) {
+        return Err(AppError::BadRequest(
+            "cannot remove yourself from the org".into(),
+        ));
+    }
+
+    let (user_id, archived_count, was_admin) = match scope.remove_user_from_org(id).await? {
+        RemoveUserOutcome::Removed {
+            user_id,
+            archived_count,
+            was_admin,
+        } => (user_id, archived_count, was_admin),
+        RemoveUserOutcome::LastAdmin => {
+            return Err(AppError::BadRequest(
+                "cannot remove the last admin of the org".into(),
+            ));
+        }
+        RemoveUserOutcome::NotApplicable => {
+            return Err(AppError::Conflict(
+                "identity is not a removable org member".into(),
+            ));
+        }
+        RemoveUserOutcome::NotFound => {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
+    };
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: acl.org_id,
+            identity_id: acl.identity_id,
+            action: "membership.removed",
+            resource_type: Some("membership"),
+            // The removed user identity — so audit filtering by resource_id
+            // surfaces this removal (org_id would bury it under the org).
+            resource_id: Some(id),
+            detail: serde_json::json!({
+                "user_id": user_id,
+                "identity_id": id,
+                "archived_count": archived_count,
+                "was_admin": was_admin,
+                "removed_by_admin": true,
+            }),
+            description: Some("Admin removed a member from the org"),
             ip_address: ip.0.as_deref(),
         })
         .await;

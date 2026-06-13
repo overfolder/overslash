@@ -985,7 +985,21 @@ pub(crate) async fn archive_identity(
     reason: Option<&str>,
 ) -> Result<Option<ArchiveOutcome>, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let outcome = archive_identity_tx(&mut tx, org_id, id, reason).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
 
+/// Transaction-scoped body of [`archive_identity`]. Factored out so callers that
+/// need to compose archiving with other writes in the same transaction (e.g.
+/// `remove_user_from_org`, which also drops the org membership) can reuse the
+/// cascade without nesting transactions. The caller owns the commit.
+pub(crate) async fn archive_identity_tx(
+    tx: &mut sqlx::PgConnection,
+    org_id: Uuid,
+    id: Uuid,
+    reason: Option<&str>,
+) -> Result<Option<ArchiveOutcome>, sqlx::Error> {
     // Collect the root + all descendants (root seeded at lvl 0 so it's always
     // included, even with no children). Bounded by MAX_TREE_DEPTH as a
     // defence-in-depth against a leftover cycle.
@@ -1008,7 +1022,6 @@ pub(crate) async fn archive_identity(
 
     if subtree_ids.is_empty() {
         // Root id not found in this org.
-        tx.commit().await?;
         return Ok(None);
     }
 
@@ -1052,11 +1065,113 @@ pub(crate) async fn archive_identity(
     .fetch_one(&mut *tx)
     .await?;
 
-    tx.commit().await?;
     Ok(Some(ArchiveOutcome {
         identity: Box::new(root),
         archived_count: archived_ids.len() as u64,
     }))
+}
+
+/// Outcome of an admin attempt to remove a human user from an org.
+pub enum RemoveUserOutcome {
+    /// User evicted: subtree archived, membership dropped, identity detached.
+    Removed {
+        user_id: Uuid,
+        archived_count: u64,
+        was_admin: bool,
+    },
+    /// No identity with this id in this org.
+    NotFound,
+    /// The target identity isn't a user-kind identity (or has no linked user).
+    NotApplicable,
+    /// The target is the org's only admin; removing them would orphan the org.
+    LastAdmin,
+}
+
+/// Remove a human user from an org: cascade-archive their identity subtree
+/// (revoking API keys + expiring approvals via [`archive_identity_tx`]), drop
+/// the `user_org_memberships` row, and detach the archived identity from the
+/// user so the `(org_id, user_id)` slot frees up for a future re-invite.
+///
+/// All in one transaction so a half-removal (membership gone but identity still
+/// live, or vice-versa) can never commit — the codebase treats "membership
+/// without a matching live user identity" as an invariant violation.
+///
+/// Locks the org's admin membership rows in `user_id` order (deterministic, so
+/// concurrent removals serialise instead of deadlocking) and refuses to remove
+/// the last admin. The caller (route layer) separately refuses self-removal.
+pub(crate) async fn remove_user_from_org(
+    pool: &PgPool,
+    org_id: Uuid,
+    id: Uuid,
+) -> Result<RemoveUserOutcome, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Lock the target row first for a clean existence/kind check.
+    let target = sqlx::query!(
+        "SELECT kind, user_id FROM identities WHERE id = $1 AND org_id = $2 FOR UPDATE",
+        id,
+        org_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(target) = target else {
+        return Ok(RemoveUserOutcome::NotFound);
+    };
+    if target.kind != "user" {
+        return Ok(RemoveUserOutcome::NotApplicable);
+    }
+    let Some(user_id) = target.user_id else {
+        return Ok(RemoveUserOutcome::NotApplicable);
+    };
+
+    // Lock all admin rows in deterministic order; guard the last admin.
+    let admin_user_ids: Vec<Uuid> = sqlx::query_scalar!(
+        "SELECT user_id FROM user_org_memberships
+         WHERE org_id = $1 AND role = 'admin'
+         ORDER BY user_id FOR UPDATE",
+        org_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let was_admin = admin_user_ids.contains(&user_id);
+    if was_admin && admin_user_ids.len() <= 1 {
+        return Ok(RemoveUserOutcome::LastAdmin);
+    }
+
+    // Cascade-archive the subtree (revokes keys, expires approvals).
+    let outcome = archive_identity_tx(&mut tx, org_id, id, Some(ARCHIVED_REASON_MANUAL)).await?;
+    let archived_count = outcome.map(|o| o.archived_count).unwrap_or(0);
+
+    // Drop the org membership.
+    sqlx::query!(
+        "DELETE FROM user_org_memberships WHERE user_id = $1 AND org_id = $2",
+        user_id,
+        org_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Detach the archived identity from the user so the partial unique index
+    // `(org_id, user_id) WHERE user_id IS NOT NULL AND kind = 'user'` no longer
+    // holds the slot — otherwise re-inviting the same human into this org would
+    // collide with this tombstone row.
+    sqlx::query!(
+        "UPDATE identities SET user_id = NULL, updated_at = now()
+         WHERE id = $1 AND org_id = $2",
+        id,
+        org_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(RemoveUserOutcome::Removed {
+        user_id,
+        archived_count,
+        was_admin,
+    })
 }
 
 /// Phase 2: hard-delete sub-agents that have been archived past the org retention window.

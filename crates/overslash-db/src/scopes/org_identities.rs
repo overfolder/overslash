@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::repos::identity::{
     self, ApplyPatchOutcome, ArchiveOutcome, DeleteLeafOutcome, IdentityRow, PatchIdentity,
-    RestoreOutcome,
+    RemoveUserOutcome, RestoreOutcome,
 };
 use crate::scopes::OrgScope;
 
@@ -238,5 +238,14 @@ impl OrgScope {
     /// cascade-deleted).
     pub async fn delete_identity_leaf(&self, id: Uuid) -> Result<DeleteLeafOutcome, sqlx::Error> {
         identity::delete_leaf(self.db(), id, self.org_id()).await
+    }
+
+    /// Remove a human user from this org: cascade-archive their identity
+    /// subtree (revoking API keys + expiring approvals), drop their org
+    /// membership, and detach the archived identity from the user — all in one
+    /// transaction. Refuses to remove the org's last admin. The route layer
+    /// separately refuses self-removal.
+    pub async fn remove_user_from_org(&self, id: Uuid) -> Result<RemoveUserOutcome, sqlx::Error> {
+        identity::remove_user_from_org(self.db(), self.org_id(), id).await
     }
 }
