@@ -414,16 +414,16 @@ export async function setAuditResponseBodyMode(session, mode) {
 }
 
 /**
- * Set the org's white-label OAuth callback-host allow-list — the hosts an org
- * API key may use as a custom OAuth `redirect_uri`. Returns the normalized list.
+ * Set the org's white-label OAuth redirect URL — the single admin-set provider
+ * `redirect_uri` a flow opts into via `use_org_redirect`. Returns the stored value.
  *
  * @param {import('./auth.mjs').Session} session
- * @param {string[]} allowedHosts
- * @returns {Promise<{ allowed_hosts: string[] }>}
+ * @param {string} redirectUrl
+ * @returns {Promise<{ redirect_url: string }>}
  */
-export async function setOauthCallbackHosts(session, allowedHosts) {
-	return api(session, `/v1/orgs/${session.orgId}/oauth-callback-settings`, {
+export async function setOauthRedirectUrl(session, redirectUrl) {
+	return api(session, `/v1/orgs/${session.orgId}/oauth-redirect-settings`, {
 		method: 'PATCH',
-		body: { allowed_hosts: allowedHosts }
+		body: { redirect_url: redirectUrl }
 	});
 }
