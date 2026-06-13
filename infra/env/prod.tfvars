@@ -20,6 +20,10 @@ dashboard_url    = "https://app.overslash.com"
 enable_dev_auth  = false
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
+# Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
+# client secrets post-apply via `gcloud secrets versions add`.
+enable_google_login = true
+enable_github_login = true
 
 # Cloud SQL — minimum viable for pre-GA
 cloud_sql_tier         = "db-f1-micro"

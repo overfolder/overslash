@@ -66,12 +66,26 @@ variable "signing_key_secret_id" {
 
 variable "oauth_client_id_secret_id" {
   type        = string
-  description = "GSM secret ID for the Google LOGIN OAuth client (Sign-in with Google). Feeds GOOGLE_AUTH_CLIENT_ID."
+  default     = ""
+  description = "GSM secret ID for the Google LOGIN OAuth client (Sign-in with Google). Feeds GOOGLE_AUTH_CLIENT_ID. Empty disables Google login injection."
 }
 
 variable "oauth_client_secret_secret_id" {
   type        = string
+  default     = ""
   description = "GSM secret ID for the Google LOGIN OAuth client secret. Feeds GOOGLE_AUTH_CLIENT_SECRET."
+}
+
+variable "github_auth_client_id_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID for the GitHub LOGIN OAuth App client ID (Sign-in with GitHub). Feeds GITHUB_AUTH_CLIENT_ID. Empty disables GitHub login injection."
+}
+
+variable "github_auth_client_secret_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID for the GitHub LOGIN OAuth App client secret. Feeds GITHUB_AUTH_CLIENT_SECRET."
 }
 
 variable "google_services_client_id_secret_id" {
@@ -325,13 +339,19 @@ locals {
   env_secrets = merge(
     {
       DB_PASSWORD                = var.db_password_secret_id
-      GOOGLE_AUTH_CLIENT_ID      = var.oauth_client_id_secret_id
-      GOOGLE_AUTH_CLIENT_SECRET  = var.oauth_client_secret_secret_id
       OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id
       OAUTH_GOOGLE_CLIENT_SECRET = var.google_services_client_secret_secret_id
       SECRETS_ENCRYPTION_KEY     = var.encryption_key_secret_id
       SIGNING_KEY                = var.signing_key_secret_id
     },
+    var.oauth_client_id_secret_id != "" ? {
+      GOOGLE_AUTH_CLIENT_ID     = var.oauth_client_id_secret_id
+      GOOGLE_AUTH_CLIENT_SECRET = var.oauth_client_secret_secret_id
+    } : {},
+    var.github_auth_client_id_secret_id != "" ? {
+      GITHUB_AUTH_CLIENT_ID     = var.github_auth_client_id_secret_id
+      GITHUB_AUTH_CLIENT_SECRET = var.github_auth_client_secret_secret_id
+    } : {},
     var.cloud_billing && var.stripe_secret_key_secret_id != "" ? {
       STRIPE_SECRET_KEY     = var.stripe_secret_key_secret_id
       STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret_secret_id

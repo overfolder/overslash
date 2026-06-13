@@ -64,6 +64,9 @@ module "secret_manager" {
 
   cloud_run_sa_email = module.iam.cloud_run_sa_email
 
+  enable_google_login = var.enable_google_login
+  enable_github_login = var.enable_github_login
+
   depends_on = [google_project_service.apis]
 }
 
@@ -122,6 +125,8 @@ module "cloud_run" {
   signing_key_secret_id                   = module.secret_manager.signing_key_secret_id
   oauth_client_id_secret_id               = module.secret_manager.oauth_client_id_secret_id
   oauth_client_secret_secret_id           = module.secret_manager.oauth_client_secret_secret_id
+  github_auth_client_id_secret_id         = module.secret_manager.github_auth_client_id_secret_id
+  github_auth_client_secret_secret_id     = module.secret_manager.github_auth_client_secret_secret_id
   google_services_client_id_secret_id     = module.secret_manager.google_services_client_id_secret_id
   google_services_client_secret_secret_id = module.secret_manager.google_services_client_secret_secret_id
 
