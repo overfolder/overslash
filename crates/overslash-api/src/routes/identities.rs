@@ -210,17 +210,19 @@ async fn delete_identity(
     use overslash_db::repos::identity::DeleteLeafOutcome;
 
     // Look the target up first so we can branch on kind. A `user`-kind identity
-    // represents a human's membership in the org, not a deletable leaf node:
-    // hard-deleting just its row would orphan the surviving
-    // `user_org_memberships` row (an invariant violation that 500s the user's
-    // next login). So routing a delete at a user means "remove this member from
-    // the org" — cascade-archive their subtree and drop their membership.
+    // that's linked to a human (`user_id`) represents that human's membership in
+    // the org, not a deletable leaf node: hard-deleting just its row would orphan
+    // the surviving `user_org_memberships` row (an invariant violation that 500s
+    // the user's next login). So routing a delete at a linked user means "remove
+    // this member from the org" — cascade-archive their subtree and drop their
+    // membership. Bare user identities (no linked human — e.g. created directly
+    // via the API) keep the original leaf hard-delete behaviour.
     let target = scope
         .get_identity(id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
-    if target.kind == "user" {
+    if target.kind == "user" && target.user_id.is_some() {
         return remove_user_from_org(acl, scope, ip, id).await;
     }
 
