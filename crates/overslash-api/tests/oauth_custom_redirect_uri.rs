@@ -16,6 +16,7 @@
 mod common;
 
 use common::{SeedOptions, auth, seed_org_user_key, start_api};
+use overslash_core::crypto;
 use overslash_db::repos::oauth_connection_flow::{self, CreateOauthConnectionFlow};
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime};
@@ -415,6 +416,140 @@ async fn exchange_rejects_regular_flow_without_custom_redirect_uri() {
             .await
             .unwrap();
     assert!(consumed.is_none());
+}
+
+// ─── Reauth / upgrade_scopes (white-label) ──────────────────────────────────
+
+/// Seed a connection row directly so the upgrade flow has something to point
+/// its `upgrade_connection_id` at, without running a full OAuth dance first.
+async fn seed_connection(
+    pool: &sqlx::PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    scopes: &[&str],
+) -> Uuid {
+    let enc_key = crypto::Keyring::test();
+    let access = crypto::encrypt(&enc_key, b"mock_access_token").unwrap();
+    let scope_vec: Vec<String> = scopes.iter().map(|s| (*s).to_string()).collect();
+    sqlx::query_scalar(
+        "INSERT INTO connections (org_id, identity_id, provider_key,
+             encrypted_access_token, scopes, account_email, is_default)
+         VALUES ($1, $2, $3, $4, $5, NULL, true) RETURNING id",
+    )
+    .bind(org_id)
+    .bind(identity_id)
+    .bind(provider_key)
+    .bind(&access)
+    .bind(&scope_vec)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn upgrade_scopes_include_raw_exposes_upstream_authorize_url() {
+    set_github_creds_env();
+    let pool = common::test_pool().await;
+    let (org_id, user_id, key) = seed_org_user_key(
+        &pool,
+        SeedOptions {
+            is_admin: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    set_allowed_hosts(&pool, org_id, "app.overfolder.com").await;
+    let conn_id = seed_connection(&pool, org_id, user_id, "github", &["read:user"]).await;
+
+    let (addr, client) = start_api(pool.clone()).await;
+    let (h, v) = auth(&key);
+    let resp = client
+        .post(format!(
+            "http://{addr}/v1/connections/{conn_id}/upgrade_scopes"
+        ))
+        .header(h, v.as_str())
+        .json(&json!({
+            "scopes": ["user:email"],
+            "redirect_uri": PARTNER_REDIRECT,
+            "include_raw": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    // `auth_url` stays the gated proxy form...
+    let auth_url = body["auth_url"].as_str().unwrap();
+    assert!(
+        auth_url.contains("/connect-authorize?id="),
+        "auth_url should be the gated proxy URL, got {auth_url}"
+    );
+
+    // ...while `raw` is the upstream provider URL (bypasses the gate) carrying
+    // the partner redirect_uri, so the white-label `/v1/oauth/exchange`
+    // follow-up can complete without the gate consuming the flow first.
+    let raw = body["raw"].as_str().expect("include_raw → raw present");
+    let raw_url = url::Url::parse(raw).unwrap();
+    assert_eq!(raw_url.host_str(), Some("github.com"));
+    let built_redirect = raw_url
+        .query_pairs()
+        .find(|(k, _)| k == "redirect_uri")
+        .map(|(_, v)| v.into_owned());
+    assert_eq!(built_redirect.as_deref(), Some(PARTNER_REDIRECT));
+
+    // The minted flow is the white-label kind: custom redirect_uri persisted
+    // and pointed at the connection being upgraded.
+    let row: (Option<String>, Option<Uuid>) = sqlx::query_as(
+        "SELECT redirect_uri, upgrade_connection_id
+           FROM oauth_connection_flows WHERE org_id = $1",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0.as_deref(), Some(PARTNER_REDIRECT));
+    assert_eq!(row.1, Some(conn_id));
+}
+
+#[tokio::test]
+async fn upgrade_scopes_omits_raw_by_default() {
+    set_github_creds_env();
+    let pool = common::test_pool().await;
+    let (org_id, user_id, key) = seed_org_user_key(
+        &pool,
+        SeedOptions {
+            is_admin: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    set_allowed_hosts(&pool, org_id, "app.overfolder.com").await;
+    let conn_id = seed_connection(&pool, org_id, user_id, "github", &["read:user"]).await;
+
+    let (addr, client) = start_api(pool.clone()).await;
+    let (h, v) = auth(&key);
+    let resp = client
+        .post(format!(
+            "http://{addr}/v1/connections/{conn_id}/upgrade_scopes"
+        ))
+        .header(h, v.as_str())
+        // No `include_raw` — same white-label redirect_uri, gated form only.
+        .json(&json!({
+            "scopes": ["user:email"],
+            "redirect_uri": PARTNER_REDIRECT,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["auth_url"].is_string());
+    assert!(
+        body.get("raw").is_none() || body["raw"].is_null(),
+        "raw must be omitted without include_raw, got {body}"
+    );
 }
 
 // ─── Org settings management API ────────────────────────────────────────────

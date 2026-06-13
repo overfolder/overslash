@@ -169,6 +169,11 @@ export const setConnectionDefault = (id: string) =>
 
 export interface UpgradeScopesResponse {
 	auth_url: string;
+	/**
+	 * Raw upstream provider authorize URL. Only present for REST callers that
+	 * opt in via `include_raw: true`; the in-app reconnect flow uses `auth_url`.
+	 */
+	raw?: string;
 	state: string;
 	connection_id: string;
 	requested_scopes: string[];

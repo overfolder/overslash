@@ -1041,11 +1041,24 @@ struct UpgradeScopesRequest {
     /// [`CreateConnectionInput::redirect_uri`].
     #[serde(default)]
     redirect_uri: Option<String>,
+    /// REST-only opt-in: include the raw provider authorize URL alongside
+    /// the proxied form. Intended for white-label integrations that drive
+    /// their own consent UI and exchange via `POST /v1/oauth/exchange`.
+    /// The MCP path never sets this — chat-delivered links go through the gate.
+    #[serde(default)]
+    include_raw: bool,
 }
 
 #[derive(Serialize)]
 struct UpgradeScopesResponse {
     auth_url: String,
+    /// Raw upstream provider authorize URL. Only present when the caller
+    /// opts in via `include_raw: true`. Bypasses the connect gate so a
+    /// white-label partner can run its own consent screen and then complete
+    /// the dance through `POST /v1/oauth/exchange` without the gate
+    /// consuming the single-use flow first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
     state: String,
     connection_id: Uuid,
     /// The union of existing + requested scopes the provider will be asked
@@ -1058,6 +1071,11 @@ struct UpgradeScopesResponse {
 /// flow row whose `upgrade_connection_id` points at this connection — the
 /// callback reads that off the row and updates this connection in place
 /// instead of minting a new one.
+///
+/// White-label callers reconnecting through their own consent UI pass
+/// `redirect_uri` (allow-listed host) plus `include_raw: true` to get the
+/// raw provider authorize URL back, then finish via `POST /v1/oauth/exchange`.
+/// Symmetric to `include_raw` on `POST /v1/connections`.
 async fn upgrade_connection_scopes(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -1132,8 +1150,15 @@ async fn upgrade_connection_scopes(
     )
     .await?;
 
+    // Mirror create's `include_raw` opt-in: the kernel carries `raw` in a
+    // `#[serde(skip)]` field, so only this explicit flag surfaces it. Bypassing
+    // the gate is what lets the white-label `POST /v1/oauth/exchange` follow-up
+    // succeed (the gate would otherwise consume the single-use flow first).
+    let raw = req.include_raw.then(|| response.raw.clone());
+
     Ok(Json(UpgradeScopesResponse {
         auth_url: response.auth_url,
+        raw,
         state: response.state,
         connection_id: id,
         requested_scopes: effective_scopes,
