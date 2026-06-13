@@ -244,7 +244,12 @@
 	}
 
 	.wordmark .slash {
+		font-family: var(--font-mono);
+		font-weight: 800;
 		color: var(--color-primary);
+		display: inline-block;
+		transform: skewX(-12deg);
+		margin: 0 1px;
 	}
 
 	h1 {
