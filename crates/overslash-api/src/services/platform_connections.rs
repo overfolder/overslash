@@ -105,18 +105,15 @@ pub struct CreateConnectionInput {
     /// response, preserving today's behavior.
     #[serde(default)]
     pub return_url: Option<String>,
-    /// Optional white-label provider `redirect_uri` — the URL the provider
-    /// redirects to with the auth code, e.g.
-    /// `https://app.overfolder.com/auth/google/integrations/callback`. When
-    /// set, it is baked into the authorize URL and reused verbatim at token
-    /// exchange (the partner forwards `{code, state}` to
-    /// `POST /v1/oauth/exchange`). Unlike `return_url`, the host MUST be on the
-    /// org's `oauth_callback_allowed_hosts` allow-list at create time —
-    /// validation hard-fails rather than falling back, because the value is
-    /// baked into the provider URL with no recovery. Omit for the historical
-    /// `{public_url}/v1/oauth/callback` behavior.
+    /// White-label opt-in. When `true`, this flow uses the org's admin-set
+    /// `oauth_redirect_url` as the provider `redirect_uri`: it is baked into the
+    /// authorize URL and reused verbatim at token exchange (the partner forwards
+    /// `{code, state}` to `POST /v1/oauth/exchange`). Requires the org to have a
+    /// valid `oauth_redirect_url` configured — hard-fails with 400 otherwise,
+    /// since the value is baked into the provider URL with no recovery. Default
+    /// `false` uses the historical `{public_url}/v1/oauth/callback` behavior.
     #[serde(default)]
-    pub redirect_uri: Option<String>,
+    pub use_org_redirect: bool,
     /// When `POST /v1/services` orchestrates an OAuth flow as part of
     /// setting up a new service, this carries the just-created instance's
     /// id so the callback can bind the resulting connection back onto the
@@ -173,13 +170,12 @@ pub(crate) fn parse_return_url(raw: Option<&str>) -> Result<Option<String>, AppE
     Ok(Some(parsed.into()))
 }
 
-/// Parse and validate a caller-supplied white-label `redirect_uri`, returning
-/// the normalized `(url, lowercased_host)` pair. Format rules mirror
+/// Parse and validate a white-label `redirect_uri` (the org's
+/// `oauth_redirect_url`), returning the normalized URL. Format rules mirror
 /// [`parse_return_url`] (https-only except localhost, no fragment, no userinfo,
-/// ≤2048 bytes). The host is returned so the kernel can enforce the org's
-/// `oauth_callback_allowed_hosts` allow-list — unlike `return_url`, membership
-/// is mandatory because the value is baked into the provider authorize URL.
-pub(crate) fn parse_redirect_uri(raw: Option<&str>) -> Result<Option<(String, String)>, AppError> {
+/// ≤2048 bytes). Used both at write time (the settings PATCH handler) and at
+/// read time (the kernel, before baking the value into the authorize URL).
+pub(crate) fn parse_redirect_uri(raw: Option<&str>) -> Result<Option<String>, AppError> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -212,7 +208,7 @@ pub(crate) fn parse_redirect_uri(raw: Option<&str>) -> Result<Option<(String, St
             "redirect_uri must not contain userinfo".into(),
         ));
     }
-    Ok(Some((parsed.into(), host)))
+    Ok(Some(parsed.into()))
 }
 
 /// The historical provider `redirect_uri`: `{public_url}/v1/oauth/callback`.
@@ -220,16 +216,6 @@ pub(crate) fn parse_redirect_uri(raw: Option<&str>) -> Result<Option<(String, St
 /// flows), at both authorize build and token exchange.
 pub(crate) fn default_callback_redirect_uri(public_url: &str) -> String {
     format!("{}/v1/oauth/callback", public_url.trim_end_matches('/'))
-}
-
-/// Whether `host` appears in an org's comma-separated, lowercased
-/// `oauth_callback_allowed_hosts` column. Defensive about whitespace/casing in
-/// case the stored value predates boundary normalization.
-fn callback_host_allowed(allowed_hosts_csv: &str, host: &str) -> bool {
-    allowed_hosts_csv
-        .split(',')
-        .map(|h| h.trim().to_ascii_lowercase())
-        .any(|h| !h.is_empty() && h == host)
 }
 
 #[derive(Debug, Serialize)]
@@ -333,31 +319,31 @@ async fn kernel_create_connection_for_identity(
     )
     .await?;
 
-    // Resolve the provider `redirect_uri`. A white-label caller may override
-    // it with a partner-hosted callback, but only if the host is on the org's
-    // allow-list — hard-fail otherwise, since this value is baked into the
-    // authorize URL with no callback-time recovery. Omitted ⇒ the historical
-    // overslash.com callback. Whatever we choose is persisted on the flow row
-    // and reused verbatim at token exchange so the two values byte-match.
-    let custom_redirect_uri = match parse_redirect_uri(input.redirect_uri.as_deref())? {
-        Some((url, host)) => {
-            let allowed_hosts =
-                overslash_db::repos::org::get_oauth_callback_allowed_hosts(&ctx.db, ctx.org_id)
-                    .await?
-                    .ok_or_else(|| AppError::NotFound("org not found".into()))?;
-            if !callback_host_allowed(&allowed_hosts, &host) {
-                return Err(AppError::BadRequest(format!(
-                    "redirect_uri host '{host}' is not on this org's allow-list"
-                )));
-            }
-            Some(url)
-        }
-        None => None,
+    // Resolve the provider `redirect_uri`. A white-label flow opts in via
+    // `use_org_redirect` to use the org's admin-set `oauth_redirect_url` (the
+    // partner-hosted callback). It must be configured and valid — hard-fail
+    // otherwise, since this value is baked into the authorize URL with no
+    // callback-time recovery. Default ⇒ the historical overslash.com callback.
+    // Whatever we choose is persisted on the flow row and reused verbatim at
+    // token exchange so the two values byte-match.
+    let custom_redirect_uri = if input.use_org_redirect {
+        let org_url = overslash_db::repos::org::get_oauth_redirect_url(&ctx.db, ctx.org_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+        let parsed = parse_redirect_uri(Some(org_url.as_str()).filter(|s| !s.is_empty()))?
+            .ok_or_else(|| {
+                AppError::BadRequest(
+                    "use_org_redirect set but org has no oauth_redirect_url configured".into(),
+                )
+            })?;
+        Some(parsed)
+    } else {
+        None
     };
     // The value used to build the authorize URL AND reused at token exchange.
-    // The custom partner callback when supplied; otherwise the historical
+    // The org's white-label callback when opted in; otherwise the historical
     // overslash.com callback. Only the custom value is persisted on the flow
-    // row — legacy flows keep `redirect_uri` NULL and recompute the default.
+    // row — default flows keep `redirect_uri` NULL and recompute the default.
     let redirect_uri = custom_redirect_uri
         .clone()
         .unwrap_or_else(|| default_callback_redirect_uri(&ctx.config.public_url));
@@ -557,7 +543,7 @@ pub async fn mint_initial_auth_url(
             // instead of landing on the default JSON response. The host is
             // re-validated against the allow-list at callback time.
             return_url: return_url.map(str::to_string),
-            redirect_uri: None,
+            use_org_redirect: false,
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -628,7 +614,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
-                redirect_uri: None,
+                use_org_redirect: false,
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -660,7 +646,7 @@ pub async fn mint_upgrade_auth_url(
                 on_behalf_of: None,
                 upgrade_connection_id: Some(conn.id),
                 return_url: return_url.map(str::to_string),
-                redirect_uri: None,
+                use_org_redirect: false,
                 service_instance_id: None,
             },
             RequestMeta::default(),
@@ -688,7 +674,7 @@ pub async fn mint_upgrade_auth_url(
             on_behalf_of: Some(conn.identity_id),
             upgrade_connection_id: Some(conn.id),
             return_url: return_url.map(str::to_string),
-            redirect_uri: None,
+            use_org_redirect: false,
             service_instance_id: None,
         },
         RequestMeta::default(),
@@ -780,8 +766,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_redirect_uri_accepts_https_and_returns_host() {
-        let (url, host) = parse_redirect_uri(Some(
+    fn parse_redirect_uri_accepts_and_normalizes_https() {
+        // url::Url lowercases the host.
+        let url = parse_redirect_uri(Some(
             "https://App.Overfolder.com/auth/google/integrations/callback",
         ))
         .expect("valid")
@@ -790,17 +777,14 @@ mod tests {
             url,
             "https://app.overfolder.com/auth/google/integrations/callback"
         );
-        // url::Url lowercases the host in the URL; the returned host is also
-        // lowercased so the allow-list comparison is case-insensitive.
-        assert_eq!(host, "app.overfolder.com");
     }
 
     #[test]
     fn parse_redirect_uri_accepts_http_localhost() {
-        let (_url, host) = parse_redirect_uri(Some("http://localhost:5173/cb"))
+        let url = parse_redirect_uri(Some("http://localhost:5173/cb"))
             .expect("valid")
             .expect("present");
-        assert_eq!(host, "localhost");
+        assert_eq!(url, "http://localhost:5173/cb");
     }
 
     #[test]
@@ -816,20 +800,6 @@ mod tests {
         assert!(parse_redirect_uri(Some("https://u:p@app.overfolder.com/cb")).is_err());
         assert!(parse_redirect_uri(Some("/just/a/path")).is_err());
         assert!(parse_redirect_uri(Some("javascript:alert(1)")).is_err());
-    }
-
-    #[test]
-    fn callback_host_allowed_matches_case_and_whitespace_insensitively() {
-        assert!(callback_host_allowed(
-            "app.overfolder.com",
-            "app.overfolder.com"
-        ));
-        assert!(callback_host_allowed(
-            " App.Overfolder.com , staging.overfolder.com ",
-            "staging.overfolder.com"
-        ));
-        assert!(!callback_host_allowed("app.overfolder.com", "evil.test"));
-        assert!(!callback_host_allowed("", "app.overfolder.com"));
     }
 
     #[test]

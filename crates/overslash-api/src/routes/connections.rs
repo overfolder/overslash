@@ -86,12 +86,11 @@ struct InitiateConnectionRequest {
     /// OAuth dance finishes. See [`CreateConnectionInput::return_url`].
     #[serde(default)]
     return_url: Option<String>,
-    /// Optional white-label provider `redirect_uri`. See
-    /// [`CreateConnectionInput::redirect_uri`]. Host must be on the org's
-    /// `oauth_callback_allowed_hosts` allow-list; pairs with
-    /// `POST /v1/oauth/exchange`.
+    /// White-label opt-in. See [`CreateConnectionInput::use_org_redirect`].
+    /// When `true`, uses the org's admin-set `oauth_redirect_url` as the
+    /// provider `redirect_uri`; pairs with `POST /v1/oauth/exchange`.
     #[serde(default)]
-    redirect_uri: Option<String>,
+    use_org_redirect: bool,
 }
 
 /// Wire shape for `POST /v1/connections`.
@@ -146,7 +145,7 @@ async fn initiate_connection(
         // recovery arms (or the dedicated `/upgrade_scopes` route).
         upgrade_connection_id: None,
         return_url: req.return_url,
-        redirect_uri: req.redirect_uri,
+        use_org_redirect: req.use_org_redirect,
         service_instance_id: None,
     };
     let kernel_response: CreateConnectionResponse = kernel_create_connection(
@@ -1035,12 +1034,11 @@ struct UpgradeScopesRequest {
     /// Additional scopes to request on top of the connection's current set.
     /// May overlap the current set — duplicates are deduped.
     scopes: Vec<String>,
-    /// Optional white-label provider `redirect_uri` for the reauth flow. Host
-    /// must be on the org's `oauth_callback_allowed_hosts` allow-list; pairs
-    /// with `POST /v1/oauth/exchange`. See
-    /// [`CreateConnectionInput::redirect_uri`].
+    /// White-label opt-in for the reauth flow. When `true`, uses the org's
+    /// admin-set `oauth_redirect_url` as the provider `redirect_uri`; pairs with
+    /// `POST /v1/oauth/exchange`. See [`CreateConnectionInput::use_org_redirect`].
     #[serde(default)]
-    redirect_uri: Option<String>,
+    use_org_redirect: bool,
     /// REST-only opt-in: include the raw provider authorize URL alongside
     /// the proxied form. Intended for white-label integrations that drive
     /// their own consent UI and exchange via `POST /v1/oauth/exchange`.
@@ -1073,9 +1071,9 @@ struct UpgradeScopesResponse {
 /// instead of minting a new one.
 ///
 /// White-label callers reconnecting through their own consent UI pass
-/// `redirect_uri` (allow-listed host) plus `include_raw: true` to get the
-/// raw provider authorize URL back, then finish via `POST /v1/oauth/exchange`.
-/// Symmetric to `include_raw` on `POST /v1/connections`.
+/// `use_org_redirect: true` plus `include_raw: true` to get the raw provider
+/// authorize URL back, then finish via `POST /v1/oauth/exchange`. Symmetric to
+/// `include_raw` on `POST /v1/connections`.
 async fn upgrade_connection_scopes(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -1140,7 +1138,7 @@ async fn upgrade_connection_scopes(
             on_behalf_of: None,
             upgrade_connection_id: Some(id),
             return_url: None,
-            redirect_uri: req.redirect_uri.clone(),
+            use_org_redirect: req.use_org_redirect,
             service_instance_id: None,
         },
         RequestMeta {

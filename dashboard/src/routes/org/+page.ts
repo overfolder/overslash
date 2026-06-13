@@ -6,7 +6,7 @@ import type {
 	IdpConfig,
 	ManagedSigninSettings,
 	McpClient,
-	OAuthCallbackSettings,
+	OAuthRedirectSettings,
 	OAuthCredential,
 	OrgInfo,
 	OrgInvite,
@@ -46,7 +46,7 @@ export interface OrgPageData {
 	secretRequestSettings: SecretRequestSettings | null;
 	executionSettings: ExecutionSettings | null;
 	auditSettings: AuditSettings | null;
-	oauthCallbackSettings: OAuthCallbackSettings | null;
+	oauthRedirectSettings: OAuthRedirectSettings | null;
 	managedSigninSettings: ManagedSigninSettings | null;
 	invites: OrgInvite[];
 	subscription: OrgSubscription | null;
@@ -75,7 +75,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				secretRequestSettings: null,
 				executionSettings: null,
 				auditSettings: null,
-				oauthCallbackSettings: null,
+				oauthRedirectSettings: null,
 				managedSigninSettings: null,
 				invites: [],
 				subscription: null,
@@ -93,7 +93,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			secretRequestSettings,
 			executionSettings,
 			auditSettings,
-			oauthCallbackSettings,
+			oauthRedirectSettings,
 			managedSigninSettings,
 			invites
 		] = await Promise.all([
@@ -115,7 +115,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 				? session.get<AuditSettings>(`/v1/orgs/${orgId}/audit-settings`)
 				: Promise.resolve(null),
 			orgId
-				? session.get<OAuthCallbackSettings>(`/v1/orgs/${orgId}/oauth-callback-settings`)
+				? session.get<OAuthRedirectSettings>(`/v1/orgs/${orgId}/oauth-redirect-settings`)
 				: Promise.resolve(null),
 			orgId
 				? session.get<ManagedSigninSettings>(`/v1/orgs/${orgId}/managed-signin`)
@@ -144,7 +144,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			secretRequestSettings,
 			executionSettings,
 			auditSettings,
-			oauthCallbackSettings,
+			oauthRedirectSettings,
 			managedSigninSettings,
 			invites,
 			subscription,
@@ -165,7 +165,7 @@ export const load: PageLoad = async ({ parent }): Promise<OrgPageData> => {
 			secretRequestSettings: null,
 			executionSettings: null,
 			auditSettings: null,
-			oauthCallbackSettings: null,
+			oauthRedirectSettings: null,
 			managedSigninSettings: null,
 			invites: [],
 			subscription: null,

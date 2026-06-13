@@ -551,7 +551,7 @@ CREATE TABLE public.orgs (
     allow_overslash_managed_signin boolean DEFAULT false NOT NULL,
     creator_user_id uuid,
     audit_response_body_mode text DEFAULT 'off'::text NOT NULL,
-    oauth_callback_allowed_hosts text DEFAULT ''::text NOT NULL,
+    oauth_redirect_url text DEFAULT ''::text NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text])))

@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT oauth_callback_allowed_hosts FROM orgs WHERE id = $1",
+  "query": "SELECT oauth_redirect_url FROM orgs WHERE id = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "oauth_callback_allowed_hosts",
+        "name": "oauth_redirect_url",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "orgs",
-            "name": "oauth_callback_allowed_hosts"
+            "name": "oauth_redirect_url"
           }
         }
       }
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "08a4b4a2106fa60cd810048d36180fc3b2676cc64726c9279bf3ae377f90650b"
+  "hash": "1f81a5a6084454945a93c524e248f99942b2ec0f00669a1b20ed62e478d76e6b"
 }

@@ -1,16 +1,14 @@
-//! End-to-end coverage for white-label custom OAuth `redirect_uri`.
+//! End-to-end coverage for white-label per-org OAuth `redirect_uri`.
 //!
-//! Three surfaces:
-//!   1. Create-flow validation — `POST /v1/connections` bakes a partner
-//!      `redirect_uri` into the authorize URL and persists it on the flow row,
-//!      but only when its host is on the org's `oauth_callback_allowed_hosts`
-//!      allow-list (otherwise 400).
+//! The model: an org admin sets a single `oauth_redirect_url`; a connect/reauth
+//! flow opts into it per request via `use_org_redirect`. Surfaces exercised:
+//!   1. Create-flow — `POST /v1/connections` with `use_org_redirect: true` bakes
+//!      the org URL into the authorize URL and persists it on the flow row;
+//!      without the flag it uses the default Overslash callback; with the flag
+//!      but no configured URL it 400s.
 //!   2. The `POST /v1/oauth/exchange` server-to-server token-exchange endpoint
 //!      (org boundary, single-use consume, reused redirect_uri).
-//!   3. The `GET/PATCH /v1/orgs/{id}/oauth-callback-settings` management API.
-//!
-//! Companion to `parse_redirect_uri` / `normalize_callback_hosts` logic — these
-//! exercise the wired behavior, not just the parsers.
+//!   3. The `GET/PATCH /v1/orgs/{id}/oauth-redirect-settings` management API.
 #![allow(clippy::disallowed_methods)]
 
 mod common;
@@ -36,9 +34,10 @@ fn set_github_creds_env() {
     }
 }
 
-async fn set_allowed_hosts(pool: &sqlx::PgPool, org_id: Uuid, csv: &str) {
-    sqlx::query("UPDATE orgs SET oauth_callback_allowed_hosts = $1 WHERE id = $2")
-        .bind(csv)
+/// Set the org's admin-managed white-label callback URL.
+async fn set_oauth_redirect_url(pool: &sqlx::PgPool, org_id: Uuid, url: &str) {
+    sqlx::query("UPDATE orgs SET oauth_redirect_url = $1 WHERE id = $2")
+        .bind(url)
         .bind(org_id)
         .execute(pool)
         .await
@@ -89,10 +88,19 @@ async fn override_github_token_endpoint(pool: &sqlx::PgPool, mock: std::net::Soc
         .unwrap();
 }
 
-// ─── Create-flow validation ─────────────────────────────────────────────────
+/// Read the `redirect_uri` query param from a built authorize URL.
+fn redirect_uri_param(authorize_url: &str) -> Option<String> {
+    url::Url::parse(authorize_url)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "redirect_uri")
+        .map(|(_, v)| v.into_owned())
+}
+
+// ─── Create-flow ────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn create_connection_with_allowed_redirect_uri_persists_and_builds_authorize() {
+async fn create_connection_with_use_org_redirect_persists_and_builds_authorize() {
     set_github_creds_env();
     let pool = common::test_pool().await;
     let (org_id, _user, key) = seed_org_user_key(
@@ -103,7 +111,7 @@ async fn create_connection_with_allowed_redirect_uri_persists_and_builds_authori
         },
     )
     .await;
-    set_allowed_hosts(&pool, org_id, "app.overfolder.com").await;
+    set_oauth_redirect_url(&pool, org_id, PARTNER_REDIRECT).await;
 
     let (addr, client) = start_api(pool.clone()).await;
     let (h, v) = auth(&key);
@@ -113,7 +121,7 @@ async fn create_connection_with_allowed_redirect_uri_persists_and_builds_authori
         .json(&json!({
             "provider": "github",
             "include_raw": true,
-            "redirect_uri": PARTNER_REDIRECT,
+            "use_org_redirect": true,
         }))
         .send()
         .await
@@ -121,14 +129,9 @@ async fn create_connection_with_allowed_redirect_uri_persists_and_builds_authori
     assert_eq!(resp.status().as_u16(), 200);
     let body: Value = resp.json().await.unwrap();
 
-    // The authorize URL the provider will see carries the partner redirect_uri.
+    // The authorize URL the provider will see carries the org redirect_uri.
     let raw = body["raw"].as_str().expect("include_raw → raw present");
-    let raw_url = url::Url::parse(raw).unwrap();
-    let built_redirect = raw_url
-        .query_pairs()
-        .find(|(k, _)| k == "redirect_uri")
-        .map(|(_, v)| v.into_owned());
-    assert_eq!(built_redirect.as_deref(), Some(PARTNER_REDIRECT));
+    assert_eq!(redirect_uri_param(raw).as_deref(), Some(PARTNER_REDIRECT));
 
     // ...and it's persisted on the flow row so token-exchange byte-matches it.
     let stored: Option<String> =
@@ -141,7 +144,7 @@ async fn create_connection_with_allowed_redirect_uri_persists_and_builds_authori
 }
 
 #[tokio::test]
-async fn create_connection_rejects_redirect_uri_host_not_on_allow_list() {
+async fn create_connection_use_org_redirect_without_configured_url_rejected() {
     set_github_creds_env();
     let pool = common::test_pool().await;
     let (org_id, _user, key) = seed_org_user_key(
@@ -152,15 +155,14 @@ async fn create_connection_rejects_redirect_uri_host_not_on_allow_list() {
         },
     )
     .await;
-    // Allow-list has a different host.
-    set_allowed_hosts(&pool, org_id, "other.test").await;
+    // Org has no oauth_redirect_url configured (default empty).
 
     let (addr, client) = start_api(pool.clone()).await;
     let (h, v) = auth(&key);
     let resp = client
         .post(format!("http://{addr}/v1/connections"))
         .header(h, v.as_str())
-        .json(&json!({ "provider": "github", "redirect_uri": PARTNER_REDIRECT }))
+        .json(&json!({ "provider": "github", "use_org_redirect": true }))
         .send()
         .await
         .unwrap();
@@ -177,10 +179,14 @@ async fn create_connection_rejects_redirect_uri_host_not_on_allow_list() {
 }
 
 #[tokio::test]
-async fn create_connection_rejects_redirect_uri_when_allow_list_empty() {
+async fn create_connection_without_flag_uses_default_callback() {
+    // The default path (and the dashboard's own Connect flows): no
+    // `use_org_redirect`, so the flow row keeps `redirect_uri` NULL and the
+    // authorize URL carries the default Overslash callback — even though the
+    // org has a white-label URL configured.
     set_github_creds_env();
     let pool = common::test_pool().await;
-    let (_org_id, _user, key) = seed_org_user_key(
+    let (org_id, _user, key) = seed_org_user_key(
         &pool,
         SeedOptions {
             is_admin: true,
@@ -188,18 +194,36 @@ async fn create_connection_rejects_redirect_uri_when_allow_list_empty() {
         },
     )
     .await;
-    // Default allow-list is empty — any custom redirect_uri is rejected.
+    set_oauth_redirect_url(&pool, org_id, PARTNER_REDIRECT).await;
 
     let (addr, client) = start_api(pool.clone()).await;
     let (h, v) = auth(&key);
     let resp = client
         .post(format!("http://{addr}/v1/connections"))
         .header(h, v.as_str())
-        .json(&json!({ "provider": "github", "redirect_uri": PARTNER_REDIRECT }))
+        .json(&json!({ "provider": "github", "include_raw": true }))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 400);
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+
+    let raw = body["raw"].as_str().expect("include_raw → raw present");
+    let built = redirect_uri_param(raw).expect("redirect_uri present");
+    assert!(
+        built.ends_with("/v1/oauth/callback"),
+        "expected the default Overslash callback, got {built}"
+    );
+    assert_ne!(built, PARTNER_REDIRECT);
+
+    // Flow row keeps redirect_uri NULL → completes via GET /v1/oauth/callback.
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT redirect_uri FROM oauth_connection_flows WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, None);
 }
 
 // ─── Exchange endpoint ──────────────────────────────────────────────────────
@@ -459,7 +483,7 @@ async fn upgrade_scopes_include_raw_exposes_upstream_authorize_url() {
         },
     )
     .await;
-    set_allowed_hosts(&pool, org_id, "app.overfolder.com").await;
+    set_oauth_redirect_url(&pool, org_id, PARTNER_REDIRECT).await;
     let conn_id = seed_connection(&pool, org_id, user_id, "github", &["read:user"]).await;
 
     let (addr, client) = start_api(pool.clone()).await;
@@ -471,7 +495,7 @@ async fn upgrade_scopes_include_raw_exposes_upstream_authorize_url() {
         .header(h, v.as_str())
         .json(&json!({
             "scopes": ["user:email"],
-            "redirect_uri": PARTNER_REDIRECT,
+            "use_org_redirect": true,
             "include_raw": true,
         }))
         .send()
@@ -488,18 +512,14 @@ async fn upgrade_scopes_include_raw_exposes_upstream_authorize_url() {
     );
 
     // ...while `raw` is the upstream provider URL (bypasses the gate) carrying
-    // the partner redirect_uri, so the white-label `/v1/oauth/exchange`
-    // follow-up can complete without the gate consuming the flow first.
+    // the org redirect_uri, so the white-label `/v1/oauth/exchange` follow-up
+    // can complete without the gate consuming the flow first.
     let raw = body["raw"].as_str().expect("include_raw → raw present");
     let raw_url = url::Url::parse(raw).unwrap();
     assert_eq!(raw_url.host_str(), Some("github.com"));
-    let built_redirect = raw_url
-        .query_pairs()
-        .find(|(k, _)| k == "redirect_uri")
-        .map(|(_, v)| v.into_owned());
-    assert_eq!(built_redirect.as_deref(), Some(PARTNER_REDIRECT));
+    assert_eq!(redirect_uri_param(raw).as_deref(), Some(PARTNER_REDIRECT));
 
-    // The minted flow is the white-label kind: custom redirect_uri persisted
+    // The minted flow is the white-label kind: org redirect_uri persisted
     // and pointed at the connection being upgraded.
     let row: (Option<String>, Option<Uuid>) = sqlx::query_as(
         "SELECT redirect_uri, upgrade_connection_id
@@ -525,7 +545,7 @@ async fn upgrade_scopes_omits_raw_by_default() {
         },
     )
     .await;
-    set_allowed_hosts(&pool, org_id, "app.overfolder.com").await;
+    set_oauth_redirect_url(&pool, org_id, PARTNER_REDIRECT).await;
     let conn_id = seed_connection(&pool, org_id, user_id, "github", &["read:user"]).await;
 
     let (addr, client) = start_api(pool.clone()).await;
@@ -535,10 +555,10 @@ async fn upgrade_scopes_omits_raw_by_default() {
             "http://{addr}/v1/connections/{conn_id}/upgrade_scopes"
         ))
         .header(h, v.as_str())
-        // No `include_raw` — same white-label redirect_uri, gated form only.
+        // No `include_raw` — same white-label opt-in, gated form only.
         .json(&json!({
             "scopes": ["user:email"],
-            "redirect_uri": PARTNER_REDIRECT,
+            "use_org_redirect": true,
         }))
         .send()
         .await
@@ -555,7 +575,7 @@ async fn upgrade_scopes_omits_raw_by_default() {
 // ─── Org settings management API ────────────────────────────────────────────
 
 #[tokio::test]
-async fn callback_settings_default_empty_then_normalized_round_trip() {
+async fn redirect_settings_default_empty_then_round_trip_and_clear() {
     let pool = common::test_pool().await;
     let (org_id, _user, key) = seed_org_user_key(
         &pool,
@@ -569,10 +589,10 @@ async fn callback_settings_default_empty_then_normalized_round_trip() {
     let (addr, client) = start_api(pool.clone()).await;
     let (h, v) = auth(&key);
 
-    // Default is an empty list.
+    // Default is an empty string.
     let resp = client
         .get(format!(
-            "http://{addr}/v1/orgs/{org_id}/oauth-callback-settings"
+            "http://{addr}/v1/orgs/{org_id}/oauth-redirect-settings"
         ))
         .header(h, v.as_str())
         .send()
@@ -580,43 +600,51 @@ async fn callback_settings_default_empty_then_normalized_round_trip() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["allowed_hosts"], json!([]));
+    assert_eq!(body["redirect_url"], "");
 
-    // PATCH normalizes (lowercase, trim, dedupe) and round-trips.
+    // PATCH a valid URL → round-trips.
     let resp = client
-        .patch(format!("http://{addr}/v1/orgs/{org_id}/oauth-callback-settings"))
+        .patch(format!(
+            "http://{addr}/v1/orgs/{org_id}/oauth-redirect-settings"
+        ))
         .header(h, v.as_str())
-        .json(&json!({
-            "allowed_hosts": ["App.Overfolder.com", " app.overfolder.com ", "staging.overfolder.com"]
-        }))
+        .json(&json!({ "redirect_url": PARTNER_REDIRECT }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(
-        body["allowed_hosts"],
-        json!(["app.overfolder.com", "staging.overfolder.com"])
-    );
+    assert_eq!(body["redirect_url"], PARTNER_REDIRECT);
 
     // GET reflects the persisted value.
     let resp = client
         .get(format!(
-            "http://{addr}/v1/orgs/{org_id}/oauth-callback-settings"
+            "http://{addr}/v1/orgs/{org_id}/oauth-redirect-settings"
         ))
         .header(h, v.as_str())
         .send()
         .await
         .unwrap();
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(
-        body["allowed_hosts"],
-        json!(["app.overfolder.com", "staging.overfolder.com"])
-    );
+    assert_eq!(body["redirect_url"], PARTNER_REDIRECT);
+
+    // PATCH empty string clears it (disables white-label).
+    let resp = client
+        .patch(format!(
+            "http://{addr}/v1/orgs/{org_id}/oauth-redirect-settings"
+        ))
+        .header(h, v.as_str())
+        .json(&json!({ "redirect_url": "" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["redirect_url"], "");
 }
 
 #[tokio::test]
-async fn callback_settings_rejects_invalid_host() {
+async fn redirect_settings_rejects_invalid_url() {
     let pool = common::test_pool().await;
     let (org_id, _user, key) = seed_org_user_key(
         &pool,
@@ -629,21 +657,30 @@ async fn callback_settings_rejects_invalid_host() {
 
     let (addr, client) = start_api(pool.clone()).await;
     let (h, v) = auth(&key);
-    // A full URL is not a bare hostname.
-    let resp = client
-        .patch(format!(
-            "http://{addr}/v1/orgs/{org_id}/oauth-callback-settings"
-        ))
-        .header(h, v.as_str())
-        .json(&json!({ "allowed_hosts": ["https://app.overfolder.com/cb"] }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 400);
+
+    // A bare hostname is not a valid URL; a non-https scheme, a fragment, and
+    // embedded userinfo are all rejected by the shared `parse_redirect_uri`.
+    for bad in [
+        "app.overfolder.com",
+        "http://app.overfolder.com/cb",
+        "https://app.overfolder.com/cb#frag",
+        "https://u:p@app.overfolder.com/cb",
+    ] {
+        let resp = client
+            .patch(format!(
+                "http://{addr}/v1/orgs/{org_id}/oauth-redirect-settings"
+            ))
+            .header(h, v.as_str())
+            .json(&json!({ "redirect_url": bad }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400, "expected 400 for {bad}");
+    }
 }
 
 #[tokio::test]
-async fn callback_settings_patch_requires_admin() {
+async fn redirect_settings_patch_requires_admin() {
     let pool = common::test_pool().await;
     // Non-admin user key.
     let (org_id, _user, key) = seed_org_user_key(&pool, SeedOptions::default()).await;
@@ -652,10 +689,10 @@ async fn callback_settings_patch_requires_admin() {
     let (h, v) = auth(&key);
     let resp = client
         .patch(format!(
-            "http://{addr}/v1/orgs/{org_id}/oauth-callback-settings"
+            "http://{addr}/v1/orgs/{org_id}/oauth-redirect-settings"
         ))
         .header(h, v.as_str())
-        .json(&json!({ "allowed_hosts": ["app.overfolder.com"] }))
+        .json(&json!({ "redirect_url": PARTNER_REDIRECT }))
         .send()
         .await
         .unwrap();
