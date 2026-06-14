@@ -72,13 +72,14 @@ export interface AuditSettings {
 }
 
 /**
- * Shape of GET/PATCH /v1/orgs/{id}/oauth-callback-settings. `allowed_hosts`
- * is the per-org allow-list of bare hostnames an org API key may use as a
- * custom OAuth `redirect_uri` when starting a white-label connect flow.
- * Empty means custom redirect URIs are disabled for the org.
+ * Shape of GET/PATCH /v1/orgs/{id}/oauth-redirect-settings. `redirect_url` is
+ * the org's single admin-set provider `redirect_uri` (the partner-hosted
+ * callback) used when a connect/reauth flow opts in via `use_org_redirect`.
+ * Empty means white-label is disabled for the org (flows use the default
+ * Overslash callback).
  */
-export interface OAuthCallbackSettings {
-  allowed_hosts: string[];
+export interface OAuthRedirectSettings {
+  redirect_url: string;
 }
 
 export interface IdpConfig {

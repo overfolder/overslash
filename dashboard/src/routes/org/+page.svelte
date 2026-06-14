@@ -7,7 +7,7 @@
 		IdpConfig,
 		ManagedSigninSettings,
 		McpClient,
-		OAuthCallbackSettings,
+		OAuthRedirectSettings,
 		OAuthCredential,
 		OrgInfo,
 		OrgInvite,
@@ -43,11 +43,11 @@
 	let auditSettings = $state<AuditSettings | null>(null);
 	let auditSaving = $state(false);
 	let auditError = $state<string | null>(null);
-	let oauthCallbackSettings = $state<OAuthCallbackSettings | null>(null);
-	let oauthCallbackSaving = $state(false);
-	let oauthCallbackError = $state<string | null>(null);
-	// Draft host being typed into the "add" input, separate from the saved list.
-	let oauthCallbackNewHost = $state('');
+	let oauthRedirectSettings = $state<OAuthRedirectSettings | null>(null);
+	let oauthRedirectSaving = $state(false);
+	let oauthRedirectError = $state<string | null>(null);
+	// Draft URL bound to the input, seeded from the saved value on load.
+	let oauthRedirectInput = $state('');
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
@@ -68,7 +68,8 @@
 		secretRequestSettings = data.secretRequestSettings;
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
-		oauthCallbackSettings = data.oauthCallbackSettings;
+		oauthRedirectSettings = data.oauthRedirectSettings;
+		oauthRedirectInput = data.oauthRedirectSettings?.redirect_url ?? '';
 		managedSigninSettings = data.managedSigninSettings;
 		invites = data.invites;
 		subscription = data.subscription;
@@ -510,43 +511,25 @@
 		}
 	}
 
-	// PATCH the full allow-list. The endpoint replaces the list wholesale and
-	// returns the normalized result, so add/remove both just send the next list.
-	async function saveOauthCallbackHosts(nextHosts: string[]) {
-		if (!org) return;
-		oauthCallbackSaving = true;
-		oauthCallbackError = null;
-		try {
-			const updated = await session.patch<OAuthCallbackSettings>(
-				`/v1/orgs/${org.id}/oauth-callback-settings`,
-				{ allowed_hosts: nextHosts }
-			);
-			oauthCallbackSettings = updated;
-		} catch (err) {
-			oauthCallbackError = asMessage(err);
-		} finally {
-			oauthCallbackSaving = false;
-		}
-	}
-
-	async function addOauthCallbackHost(e: Event) {
+	// PATCH the single org redirect URL. The endpoint validates the value and
+	// returns the stored result; an empty string clears it (disables white-label).
+	async function saveOauthRedirectUrl(e: Event) {
 		e.preventDefault();
-		const host = oauthCallbackNewHost.trim().toLowerCase();
-		if (!host || !oauthCallbackSettings) return;
-		if (oauthCallbackSettings.allowed_hosts.includes(host)) {
-			oauthCallbackError = `${host} is already on the allow-list.`;
-			return;
+		if (!org) return;
+		oauthRedirectSaving = true;
+		oauthRedirectError = null;
+		try {
+			const updated = await session.patch<OAuthRedirectSettings>(
+				`/v1/orgs/${org.id}/oauth-redirect-settings`,
+				{ redirect_url: oauthRedirectInput.trim() }
+			);
+			oauthRedirectSettings = updated;
+			oauthRedirectInput = updated.redirect_url;
+		} catch (err) {
+			oauthRedirectError = asMessage(err);
+		} finally {
+			oauthRedirectSaving = false;
 		}
-		await saveOauthCallbackHosts([...oauthCallbackSettings.allowed_hosts, host]);
-		// Only clear the input when the save actually succeeded (no error set).
-		if (!oauthCallbackError) oauthCallbackNewHost = '';
-	}
-
-	async function removeOauthCallbackHost(host: string) {
-		if (!oauthCallbackSettings) return;
-		await saveOauthCallbackHosts(
-			oauthCallbackSettings.allowed_hosts.filter((h) => h !== host)
-		);
 	}
 
 	async function toggleAllowUnsignedSecretProvide(nextValue?: boolean) {
@@ -856,59 +839,42 @@
 			{/if}
 		</section>
 
-		<!-- White-label OAuth callback hosts -->
+		<!-- White-label OAuth redirect URL -->
 		<section class="card">
-			<h2>OAuth callback hosts</h2>
+			<h2>OAuth redirect URL</h2>
 			<p class="section-desc">
-				Hosts an org API key may use as a custom OAuth <code>redirect_uri</code>
-				when starting a white-label connect flow (passed to
-				<code>POST /v1/connections</code> or <code>POST /v1/services</code>). Each
-				host must also be registered as a redirect URI on your provider's OAuth
-				client. The partner backend receives the provider's <code>code</code> and
-				<code>state</code> at its own URL and forwards them to
-				<code>POST /v1/oauth/exchange</code>. An empty list disables custom
-				redirect URIs — connect flows use the default Overslash callback.
+				The provider <code>redirect_uri</code> Overslash sends when a connect or
+				reauth flow opts into white-label (<code>use_org_redirect: true</code> on
+				<code>POST /v1/connections</code>, <code>/upgrade_scopes</code>, or
+				<code>POST /v1/services</code>). This URL must also be registered as a
+				redirect URI on your provider's OAuth client. The partner backend receives
+				the provider's <code>code</code> and <code>state</code> at this URL and
+				forwards them to <code>POST /v1/oauth/exchange</code>. Leave empty to
+				disable white-label — flows use the default Overslash callback. The
+				dashboard's own Connect flows always use the default callback.
 			</p>
-			{#if oauthCallbackSettings}
-				{#if oauthCallbackSettings.allowed_hosts.length > 0}
-					<ul class="host-list">
-						{#each oauthCallbackSettings.allowed_hosts as host (host)}
-							<li class="host-row">
-								<code class="host-name">{host}</code>
-								<button
-									type="button"
-									class="btn-link danger"
-									disabled={oauthCallbackSaving}
-									onclick={() => removeOauthCallbackHost(host)}
-								>
-									Remove
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{:else}
-					<p class="empty-hint">No callback hosts configured.</p>
-				{/if}
-				<form class="inline-form" onsubmit={addOauthCallbackHost}>
+			{#if oauthRedirectSettings}
+				<form class="inline-form" onsubmit={saveOauthRedirectUrl}>
 					<label>
-						Add host
+						Redirect URL
 						<input
-							type="text"
-							bind:value={oauthCallbackNewHost}
-							placeholder="app.overfolder.com"
-							disabled={oauthCallbackSaving}
+							type="url"
+							bind:value={oauthRedirectInput}
+							placeholder="https://app.overfolder.com/auth/google/integrations/callback"
+							disabled={oauthRedirectSaving}
 						/>
 					</label>
-					{#if oauthCallbackError}
-						<p class="form-error">{oauthCallbackError}</p>
+					{#if oauthRedirectError}
+						<p class="form-error">{oauthRedirectError}</p>
 					{/if}
 					<div class="form-actions">
 						<button
 							type="submit"
 							class="btn btn-primary"
-							disabled={oauthCallbackSaving || !oauthCallbackNewHost.trim()}
+							disabled={oauthRedirectSaving ||
+								oauthRedirectInput.trim() === (oauthRedirectSettings.redirect_url ?? '')}
 						>
-							{oauthCallbackSaving ? 'Saving…' : 'Add host'}
+							{oauthRedirectSaving ? 'Saving…' : 'Save'}
 						</button>
 					</div>
 				</form>
@@ -1994,34 +1960,6 @@
 		color: var(--color-danger, #b42318);
 	}
 
-	.host-list {
-		list-style: none;
-		margin: 0.5rem 0 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.host-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.6rem;
-		padding: 0.45rem 0.6rem;
-		border: 1px solid var(--color-border);
-		border-radius: 4px;
-	}
-	.host-name {
-		font-family: var(--font-mono);
-		font-size: 0.85rem;
-		word-break: break-all;
-	}
-	.empty-hint {
-		margin: 0.5rem 0 0;
-		color: var(--color-text-muted);
-		font-size: 0.85rem;
-		font-style: italic;
-	}
 	.inline-form {
 		margin-top: 1rem;
 		display: flex;
