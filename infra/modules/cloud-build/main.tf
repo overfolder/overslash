@@ -51,23 +51,31 @@ resource "google_cloudbuild_trigger" "deploy" {
   }
 
   build {
+    # Build with Kaniko so the Docker layer cache persists across builds.
+    # Cloud Build runs each build on a fresh VM, so a plain `docker build`
+    # always starts from a cold cache and recompiles every Rust dependency
+    # from scratch (~6 min), wasting the dependency-caching layer the
+    # Dockerfile is carefully designed around. Kaniko stores each layer
+    # (including the builder-stage dependency layer) as a content-addressed
+    # blob in a dedicated cache repo (<dest>/cache), keyed by command+input
+    # hash, so unchanged layers are reused. It also pushes the image
+    # directly, replacing the separate `docker push` step. The cache repo
+    # lives in the same Artifact Registry repository and is isolated per
+    # project (dev vs prod), so it needs no extra IAM; --cache-ttl bounds
+    # staleness to one week.
     step {
-      name = "gcr.io/cloud-builders/docker"
+      name = "gcr.io/kaniko-project/executor:latest"
       args = [
-        "build",
-        "-f", "crates/overslash-api/Dockerfile",
-        "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
-        "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:latest",
-        ".",
-      ]
-    }
-
-    step {
-      name = "gcr.io/cloud-builders/docker"
-      args = [
-        "push",
-        "--all-tags",
-        "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api",
+        "--dockerfile=crates/overslash-api/Dockerfile",
+        "--context=dir:///workspace",
+        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:$COMMIT_SHA",
+        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api:latest",
+        "--cache=true",
+        # Pin the cache repo explicitly. Kaniko otherwise infers it from a
+        # --destination; the tagged ($COMMIT_SHA) destinations make that
+        # inference fragile, so we point every build at one stable repo.
+        "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache",
+        "--cache-ttl=168h",
       ]
     }
 

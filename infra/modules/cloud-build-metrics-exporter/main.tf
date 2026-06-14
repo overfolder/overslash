@@ -74,23 +74,24 @@ resource "google_cloudbuild_trigger" "deploy" {
   ]
 
   build {
+    # Build with Kaniko for persistent layer caching. Cloud Build uses a
+    # fresh VM per run, so a plain `docker build` always hits a cold cache
+    # and recompiles all Rust deps. Kaniko caches each layer (incl. the
+    # builder-stage dependency layer) as content-addressed blobs in
+    # <dest>/cache, isolated per project, and pushes the image directly
+    # (replacing the separate push step). No extra IAM; --cache-ttl bounds
+    # staleness. See the cloud-build (API) module for the full rationale.
     step {
-      name = "gcr.io/cloud-builders/docker"
+      name = "gcr.io/kaniko-project/executor:latest"
       args = [
-        "build",
-        "-f", "crates/overslash-metrics-exporter/Dockerfile",
-        "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:$COMMIT_SHA",
-        "-t", "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:latest",
-        ".",
-      ]
-    }
-
-    step {
-      name = "gcr.io/cloud-builders/docker"
-      args = [
-        "push",
-        "--all-tags",
-        "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter",
+        "--dockerfile=crates/overslash-metrics-exporter/Dockerfile",
+        "--context=dir:///workspace",
+        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:$COMMIT_SHA",
+        "--destination=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter:latest",
+        "--cache=true",
+        # Pin the cache repo explicitly (see cloud-build module for rationale).
+        "--cache-repo=${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-metrics-exporter/cache",
+        "--cache-ttl=168h",
       ]
     }
 
